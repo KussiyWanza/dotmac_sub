@@ -1,6 +1,6 @@
 """Allowlist egress gateway for external connectors.
 
-Phase 4b of ADR 0004. Phase 4a made egress default-deny: a connector with no
+Phase 4b of ADR 0005. Phase 4a made egress default-deny: a connector with no
 declared hosts gets no network, and one that declares hosts was refused because
 nothing could confine it. This supplies the confinement.
 

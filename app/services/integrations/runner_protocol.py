@@ -1,6 +1,6 @@
 """Versioned wire contract between Sub and an out-of-process connector runner.
 
-Phase 2 of ADR 0004. This module defines *what crosses the boundary*, not how
+Phase 2 of ADR 0005. This module defines *what crosses the boundary*, not how
 it is transported: Phase 3 marshals these models over a concrete channel, and
 the same schema is what a third-party connector image implements.
 

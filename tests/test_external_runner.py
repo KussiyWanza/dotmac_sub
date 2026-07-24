@@ -1,6 +1,6 @@
 """ExternalOciRunner marshals the ConnectorRunner protocol over a transport.
 
-Phase 3 of ADR 0004, marshalling half. Exercised with an in-memory transport,
+Phase 3 of ADR 0005, marshalling half. Exercised with an in-memory transport,
 so the security and failure semantics are verified without a container runtime.
 """
 

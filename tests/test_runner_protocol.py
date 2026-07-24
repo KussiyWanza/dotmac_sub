@@ -1,6 +1,6 @@
 """Conformance of the out-of-process runner wire contract.
 
-Phase 2 of ADR 0004. These tests pin the properties a connector image can rely
+Phase 2 of ADR 0005. These tests pin the properties a connector image can rely
 on and that Sub must never regress: no secret material on the wire, a pinned
 connector identity, and a response shape that matches the verb asked.
 """

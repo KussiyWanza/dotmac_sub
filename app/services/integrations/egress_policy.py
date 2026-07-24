@@ -1,6 +1,6 @@
 """Egress allowlist an external connector is confined to.
 
-Phase 4 of ADR 0004. A connector manifest declares the hosts it may reach
+Phase 4 of ADR 0005. A connector manifest declares the hosts it may reach
 (``EgressManifest``). Those hosts are validated at install time but, before
 this, were enforced nowhere at runtime: a running connector could reach any
 host. ``EgressPolicy`` is the canonical, manifest-derived allowlist the

@@ -1,6 +1,6 @@
 """An external connector executes end to end, through every owner.
 
-Phase 6 of ADR 0004. Everything before this proved a layer in isolation. This
+Phase 6 of ADR 0005. Everything before this proved a layer in isolation. This
 drives the whole path exactly as production would: the installations owner
 creates, configures, grants, validates and enables a real ``external_oci``
 installation; ``build_execution_context`` resolves it through the manifest tier;

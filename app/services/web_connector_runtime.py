@@ -1,6 +1,6 @@
 """Read-only operator view of the connector runtime posture.
 
-Phase 5 of ADR 0004. Surfaces, for every registered connector definition, its
+Phase 5 of ADR 0005. Surfaces, for every registered connector definition, its
 runtime trust tier and — for out-of-process connectors — the image, digest,
 egress confinement, and resource bounds it would run under, plus whether the
 tier is executable in this deployment.

@@ -1,6 +1,6 @@
 """The egress gateway's allowlist and privilege posture.
 
-Phase 4b of ADR 0004. Naming, allowlist rendering, and the proxy argv are pure,
+Phase 4b of ADR 0005. Naming, allowlist rendering, and the proxy argv are pure,
 so the security-relevant decisions are asserted here without invoking Podman.
 The live enforcement (allowed passes, denied blocked, direct bypass blocked) is
 covered by the Podman-gated integration test.

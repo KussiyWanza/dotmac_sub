@@ -1,4 +1,4 @@
-# ADR 0004: Complete the external connector runtime tier
+# ADR 0005: Complete the external connector runtime tier
 
 Status: accepted
 

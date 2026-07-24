@@ -1,11 +1,11 @@
 """Rootless-Podman transport for the external connector runtime.
 
-Phase 3 of ADR 0004, transport half. Implements ``RunnerTransport`` by running
+Phase 3 of ADR 0005, transport half. Implements ``RunnerTransport`` by running
 the connector's digest-pinned image as a short-lived, hardened, rootless Podman
 container: the ``RunnerRequest`` JSON goes in on stdin, the ``RunnerResponse``
 JSON comes back on stdout, the container is killed at the deadline and removed.
 
-Security posture (ADR 0004 resolved decision 1). Every container runs
+Security posture (ADR 0005 resolved decision 1). Every container runs
 ``--read-only`` with ``--cap-drop=ALL``, ``--security-opt=no-new-privileges``,
 no host mounts, and bounded memory, CPU, and pids. Rootless execution maps
 container-root to an unprivileged host uid, so an escape lands unprivileged.
@@ -58,7 +58,7 @@ _DEFAULT_PIDS_LIMIT = 128
 # Ubuntu 22.04 (only memory and pids are delegated out of the box). Applying it
 # where the controller is absent makes every operation fail, so the transport
 # only sets it when a deployment explicitly opts in on a host with delegation
-# configured (see the Phase 3 deployment note in ADR 0004). memory and pids —
+# configured (see the Phase 3 deployment note in ADR 0005). memory and pids —
 # the OOM and fork-bomb controls — work rootless everywhere and stay on.
 _DEFAULT_CPUS: str | None = None
 _MIN_DEADLINE_SECONDS = 1
@@ -159,7 +159,7 @@ class PodmanTransport:
                 "connector declares egress hosts "
                 f"({', '.join(self._egress.hosts) or 'installation host'}) but no "
                 "allowlist egress gateway is configured; refusing to run with "
-                "unrestricted network (ADR 0004 Phase 4b)"
+                "unrestricted network (ADR 0005 Phase 4b)"
             )
         try:
             attachment = self._egress_gateway.attach(

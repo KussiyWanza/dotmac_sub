@@ -52,7 +52,7 @@ class RuntimeTierUnavailableError(RuntimeExecutionError):
     installation may be correctly configured, but the tier it declares is not
     executable here. Callers must fail closed rather than substitute another
     tier — silently running an isolated connector in-process would defeat the
-    isolation the tier exists to provide (ADR 0004).
+    isolation the tier exists to provide (ADR 0005).
     """
 
 
@@ -96,7 +96,7 @@ def external_runner_unavailable(manifest: ConnectorManifest) -> ConnectorRunner:
 def _podman_external_runner(manifest: ConnectorManifest) -> ConnectorRunner:
     """Build the out-of-process runner for one external connector.
 
-    Phase 6 of ADR 0004: the tier becomes executable. The connector's own
+    Phase 6 of ADR 0005: the tier becomes executable. The connector's own
     manifest supplies its confinement — the egress allowlist comes from
     ``EgressPolicy``, and a connector declaring no hosts gets no network and no
     gateway at all.

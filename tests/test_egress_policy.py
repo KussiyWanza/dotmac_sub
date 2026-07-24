@@ -1,6 +1,6 @@
 """EgressPolicy is a default-deny projection of a connector's manifest.
 
-Phase 4 of ADR 0004. No Podman needed. Pins that an empty allowlist means no
+Phase 4 of ADR 0005. No Podman needed. Pins that an empty allowlist means no
 network, and that the transport fails closed — never falls back to open
 egress — for a connector that declares hosts before a gateway exists.
 """

@@ -1,6 +1,6 @@
 """Application side of the external connector runtime tier.
 
-Phase 3 of ADR 0004, marshalling half. ``ExternalOciRunner`` implements the
+Phase 3 of ADR 0005, marshalling half. ``ExternalOciRunner`` implements the
 in-process ``ConnectorRunner`` protocol by translating each verb into a
 ``RunnerRequest``, handing it to a ``RunnerTransport`` that carries it to an
 out-of-process connector container, and translating the ``RunnerResponse``

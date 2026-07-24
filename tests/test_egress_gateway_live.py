@@ -1,6 +1,6 @@
 """Live egress confinement through a real PodmanEgressGateway.
 
-Phase 4b of ADR 0004. Proves the property the whole phase exists for: a
+Phase 4b of ADR 0005. Proves the property the whole phase exists for: a
 connector reaches exactly the hosts its manifest declares, and nothing else —
 including when it ignores its proxy environment entirely.
 

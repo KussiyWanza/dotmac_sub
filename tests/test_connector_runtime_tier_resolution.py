@@ -1,6 +1,6 @@
 """Runner selection is driven by the manifest's declared runtime tier.
 
-Phase 1 of ADR 0004. Before this, resolution used the bare connector key, so a
+Phase 1 of ADR 0005. Before this, resolution used the bare connector key, so a
 connector could inherit whatever executor happened to be registered under its
 name regardless of the trust tier it declared. These tests pin the tier as the
 authority and pin failing closed when a tier has no executor.

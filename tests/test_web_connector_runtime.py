@@ -1,6 +1,6 @@
 """The runtime-posture screen reports what the runtime would actually do.
 
-Phase 5 of ADR 0004. The screen's value is that an operator can trust it, so
+Phase 5 of ADR 0005. The screen's value is that an operator can trust it, so
 these pin that executability comes from the real resolver — the page can never
 claim a connector is runnable when an operation against it would be refused.
 """

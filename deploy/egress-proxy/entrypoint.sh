@@ -1,5 +1,5 @@
 #!/bin/sh
-# Egress proxy for external connectors (ADR 0004 Phase 4b).
+# Egress proxy for external connectors (ADR 0005 Phase 4b).
 #
 # The connector runs on an --internal Podman network with no route out. This
 # proxy is dual-homed onto that network and an external one, and is the only

@@ -1,4 +1,4 @@
-# Egress allowlist proxy for external connectors (ADR 0004 Phase 4b).
+# Egress allowlist proxy for external connectors (ADR 0005 Phase 4b).
 FROM alpine:3.20
 
 RUN apk add --no-cache tinyproxy iproute2
