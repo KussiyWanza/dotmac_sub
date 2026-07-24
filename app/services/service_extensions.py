@@ -6,18 +6,34 @@ its end. Capped plans keep their calendar-month allowance — validity, not data
 
 from __future__ import annotations
 
+import enum
+import hashlib
+import json
 import logging
+import secrets
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import (
+    ColumnElement,
+    delete,
+    func,
+    select,
+    table,
+    update,
+)
+from sqlalchemy import (
+    column as sql_column,
+)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import NasDevice, Subscription, SubscriptionStatus
 from app.models.domain_settings import SettingDomain
+from app.models.idempotency import IdempotencyKey
 from app.models.service_extension import (
     ServiceExtension,
     ServiceExtensionAnchorBasis,
@@ -26,7 +42,9 @@ from app.models.service_extension import (
     ServiceExtensionStatus,
 )
 from app.models.subscriber import Subscriber
+from app.schemas.audit import AuditEventCreate
 from app.services import settings_spec
+from app.services.audit import AuditEvents
 from app.services.common import coerce_uuid
 from app.services.customer_identity_resolution import resolve_customer_identity
 from app.services.domain_errors import DomainError
@@ -63,6 +81,12 @@ _CANCEL_COMMAND = OwnerCommandDefinition(
     concern=_LIFECYCLE_CONCERN,
     name="cancel_service_extension",
 )
+_DUPLICATE_RECONCILIATION_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_LIFECYCLE_CONCERN,
+    name="reconcile_duplicate_service_extension_entries",
+)
+_DUPLICATE_RECONCILIATION_SCOPE = "service_extension_duplicate_repair"
 
 
 class ServiceExtensionError(DomainError):
@@ -87,6 +111,104 @@ class ServiceExtensionIntervalRow:
     grant_starts_at: datetime | None
     grant_ends_at: datetime | None
     anchor_basis: ServiceExtensionAnchorBasis | None
+
+
+class ServiceExtensionDuplicateKind(str, enum.Enum):
+    """Reviewed disposition for one legacy duplicate identity."""
+
+    exact_duplicate = "exact_duplicate"
+    chained_grant = "chained_grant"
+    manual_review = "manual_review"
+
+
+class ChainedGrantResolution(str, enum.Enum):
+    """Explicit business decision for a historically chained duplicate grant."""
+
+    preserve_as_corrective_extension = "preserve_as_corrective_extension"
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyServiceExtensionEntryState:
+    """Pre-migration entry state used by the reviewed reconciliation."""
+
+    entry_id: uuid.UUID
+    extension_id: uuid.UUID
+    subscription_id: uuid.UUID
+    subscriber_id: uuid.UUID
+    previous_next_billing_at: datetime | None
+    new_next_billing_at: datetime | None
+    created_at: datetime
+    downstream_reference_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionDuplicateGroup:
+    """Deterministic classification of one duplicate entry identity."""
+
+    extension_id: uuid.UUID
+    subscription_id: uuid.UUID
+    subscriber_id: uuid.UUID
+    extension_reason: str
+    extension_days: int
+    extension_window_start: datetime
+    extension_window_end: datetime
+    extension_status: str
+    extension_affected_count: int
+    extension_skipped_count: int
+    extension_applied_at: datetime | None
+    subscription_next_billing_at: datetime | None
+    kind: ServiceExtensionDuplicateKind
+    entries: tuple[LegacyServiceExtensionEntryState, ...]
+    manual_review_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionDuplicatePreview:
+    """Read-only, fingerprinted production-state preview."""
+
+    groups: tuple[ServiceExtensionDuplicateGroup, ...]
+    fingerprint: str
+
+    @property
+    def exact_duplicate_count(self) -> int:
+        return sum(
+            item.kind is ServiceExtensionDuplicateKind.exact_duplicate
+            for item in self.groups
+        )
+
+    @property
+    def chained_grant_count(self) -> int:
+        return sum(
+            item.kind is ServiceExtensionDuplicateKind.chained_grant
+            for item in self.groups
+        )
+
+    @property
+    def manual_review_count(self) -> int:
+        return sum(
+            item.kind is ServiceExtensionDuplicateKind.manual_review
+            for item in self.groups
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileServiceExtensionDuplicatesCommand:
+    """Exact reviewed command for the legacy duplicate cohort."""
+
+    context: CommandContext
+    preview_fingerprint: str
+    effective_at: datetime
+    chained_grant_resolution: ChainedGrantResolution
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionDuplicateReconciliationResult:
+    """Stable result of one atomic duplicate reconciliation."""
+
+    preview_fingerprint: str
+    exact_duplicates_collapsed: int
+    chained_grants_preserved: int
+    replayed: bool
 
 
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
@@ -167,6 +289,485 @@ def resolve_extension_grant_interval(
         starts_at=starts_at,
         ends_at=starts_at + timedelta(days=days),
         anchor_basis=basis,
+    )
+
+
+def _state_uuid(value: object) -> uuid.UUID:
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _state_datetime(value: object | None) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        value = datetime.fromisoformat(str(value))
+    return _as_utc(value)
+
+
+def _state_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    return int(str(value))
+
+
+def _duplicate_entry_state_rows(
+    db: Session,
+    *,
+    lock: bool = False,
+) -> tuple[dict[str, object], ...]:
+    """Read only columns available before migration 417.
+
+    The candidate image contains the post-417 ORM model while production may
+    still be at revision 413. Keeping this query explicit lets the owner repair
+    the legacy rows before Alembic adds the interval columns and unique index.
+    """
+
+    entries = table(
+        "service_extension_entries",
+        sql_column("id"),
+        sql_column("extension_id"),
+        sql_column("subscription_id"),
+        sql_column("subscriber_id"),
+        sql_column("previous_next_billing_at"),
+        sql_column("new_next_billing_at"),
+        sql_column("created_at"),
+    )
+    extensions = table(
+        "service_extensions",
+        sql_column("id"),
+        sql_column("reason"),
+        sql_column("days"),
+        sql_column("window_start"),
+        sql_column("window_end"),
+        sql_column("status"),
+        sql_column("affected_count"),
+        sql_column("skipped_count"),
+        sql_column("applied_at"),
+    )
+    subscriptions = table(
+        "subscriptions",
+        sql_column("id"),
+        sql_column("next_billing_at"),
+    )
+    coverage_items = table(
+        "prepaid_coverage_reconciliation_items",
+        sql_column("source_service_extension_entry_id"),
+    )
+    duplicate_groups = (
+        select(entries.c.extension_id, entries.c.subscription_id)
+        .group_by(entries.c.extension_id, entries.c.subscription_id)
+        .having(func.count() > 1)
+        .subquery("duplicate_groups")
+    )
+    downstream_reference_count = (
+        select(func.count())
+        .select_from(coverage_items)
+        .where(coverage_items.c.source_service_extension_entry_id == entries.c.id)
+        .correlate(entries)
+        .scalar_subquery()
+    )
+    statement = (
+        select(
+            entries.c.id.label("entry_id"),
+            entries.c.extension_id,
+            entries.c.subscription_id,
+            entries.c.subscriber_id,
+            entries.c.previous_next_billing_at,
+            entries.c.new_next_billing_at,
+            entries.c.created_at,
+            extensions.c.reason.label("extension_reason"),
+            extensions.c.days.label("extension_days"),
+            extensions.c.window_start.label("extension_window_start"),
+            extensions.c.window_end.label("extension_window_end"),
+            extensions.c.status.label("extension_status"),
+            extensions.c.affected_count.label("extension_affected_count"),
+            extensions.c.skipped_count.label("extension_skipped_count"),
+            extensions.c.applied_at.label("extension_applied_at"),
+            subscriptions.c.next_billing_at.label("subscription_next_billing_at"),
+            downstream_reference_count.label("downstream_reference_count"),
+        )
+        .select_from(
+            entries.join(
+                duplicate_groups,
+                (duplicate_groups.c.extension_id == entries.c.extension_id)
+                & (duplicate_groups.c.subscription_id == entries.c.subscription_id),
+            )
+            .join(extensions, extensions.c.id == entries.c.extension_id)
+            .join(subscriptions, subscriptions.c.id == entries.c.subscription_id)
+        )
+        .order_by(
+            entries.c.extension_id,
+            entries.c.subscription_id,
+            entries.c.created_at,
+            entries.c.id,
+        )
+    )
+    if lock:
+        statement = statement.with_for_update(of=entries)
+    rows = tuple(dict(row) for row in db.execute(statement).mappings())
+    if lock and rows:
+        extension_ids = {_state_uuid(row["extension_id"]) for row in rows}
+        subscription_ids = {_state_uuid(row["subscription_id"]) for row in rows}
+        db.execute(
+            select(ServiceExtension.id)
+            .where(ServiceExtension.id.in_(extension_ids))
+            .with_for_update()
+        )
+        db.execute(
+            select(Subscription.id)
+            .where(Subscription.id.in_(subscription_ids))
+            .with_for_update()
+        )
+    return rows
+
+
+def _entry_interval_matches_days(
+    entry: LegacyServiceExtensionEntryState,
+    days: int,
+) -> bool:
+    previous = entry.previous_next_billing_at
+    new = entry.new_next_billing_at
+    return (
+        previous is not None
+        and new is not None
+        and new - previous == timedelta(days=days)
+    )
+
+
+def _classify_duplicate_group(
+    rows: Sequence[dict[str, object]],
+) -> ServiceExtensionDuplicateGroup:
+    first = rows[0]
+    entries = tuple(
+        LegacyServiceExtensionEntryState(
+            entry_id=_state_uuid(row["entry_id"]),
+            extension_id=_state_uuid(row["extension_id"]),
+            subscription_id=_state_uuid(row["subscription_id"]),
+            subscriber_id=_state_uuid(row["subscriber_id"]),
+            previous_next_billing_at=_state_datetime(row["previous_next_billing_at"]),
+            new_next_billing_at=_state_datetime(row["new_next_billing_at"]),
+            created_at=_state_datetime(row["created_at"]) or _now_utc(),
+            downstream_reference_count=_state_int(row["downstream_reference_count"]),
+        )
+        for row in rows
+    )
+    status = str(first["extension_status"])
+    days = _state_int(first["extension_days"])
+    current_anchor = _state_datetime(first["subscription_next_billing_at"])
+    business_states = {
+        (
+            item.subscriber_id,
+            item.previous_next_billing_at,
+            item.new_next_billing_at,
+        )
+        for item in entries
+    }
+    kind = ServiceExtensionDuplicateKind.manual_review
+    manual_reason: str | None = None
+
+    if status != ServiceExtensionStatus.applied.value:
+        manual_reason = "duplicate entries belong to a non-applied extension"
+    elif any(item.downstream_reference_count for item in entries):
+        manual_reason = "one or more duplicate entries have downstream references"
+    elif len(business_states) == 1:
+        kind = ServiceExtensionDuplicateKind.exact_duplicate
+    elif (
+        len(entries) == 2
+        and entries[0].subscriber_id == entries[1].subscriber_id
+        and entries[0].new_next_billing_at == entries[1].previous_next_billing_at
+        and _entry_interval_matches_days(entries[0], days)
+        and _entry_interval_matches_days(entries[1], days)
+        and entries[1].new_next_billing_at is not None
+        and current_anchor is not None
+        and current_anchor >= entries[1].new_next_billing_at
+    ):
+        kind = ServiceExtensionDuplicateKind.chained_grant
+    else:
+        manual_reason = (
+            "duplicate entry values are neither exact copies nor one supported "
+            "two-interval chain"
+        )
+
+    return ServiceExtensionDuplicateGroup(
+        extension_id=_state_uuid(first["extension_id"]),
+        subscription_id=_state_uuid(first["subscription_id"]),
+        subscriber_id=_state_uuid(first["subscriber_id"]),
+        extension_reason=str(first["extension_reason"]),
+        extension_days=days,
+        extension_window_start=_state_datetime(first["extension_window_start"])
+        or _now_utc(),
+        extension_window_end=_state_datetime(first["extension_window_end"])
+        or _now_utc(),
+        extension_status=status,
+        extension_affected_count=_state_int(first["extension_affected_count"]),
+        extension_skipped_count=_state_int(first["extension_skipped_count"]),
+        extension_applied_at=_state_datetime(first["extension_applied_at"]),
+        subscription_next_billing_at=current_anchor,
+        kind=kind,
+        entries=entries,
+        manual_review_reason=manual_reason,
+    )
+
+
+def _fingerprint_datetime(value: datetime | None) -> str | None:
+    return _as_utc(value).isoformat() if value is not None else None
+
+
+def _duplicate_preview_from_rows(
+    rows: Sequence[dict[str, object]],
+) -> ServiceExtensionDuplicatePreview:
+    grouped: dict[tuple[uuid.UUID, uuid.UUID], list[dict[str, object]]] = {}
+    for row in rows:
+        key = (
+            _state_uuid(row["extension_id"]),
+            _state_uuid(row["subscription_id"]),
+        )
+        grouped.setdefault(key, []).append(row)
+    groups = tuple(
+        _classify_duplicate_group(grouped[key])
+        for key in sorted(grouped, key=lambda item: (str(item[0]), str(item[1])))
+    )
+    state = [
+        {
+            "extension_id": str(group.extension_id),
+            "subscription_id": str(group.subscription_id),
+            "subscriber_id": str(group.subscriber_id),
+            "extension_reason": group.extension_reason,
+            "extension_days": group.extension_days,
+            "extension_window_start": _fingerprint_datetime(
+                group.extension_window_start
+            ),
+            "extension_window_end": _fingerprint_datetime(group.extension_window_end),
+            "extension_status": group.extension_status,
+            "extension_affected_count": group.extension_affected_count,
+            "extension_skipped_count": group.extension_skipped_count,
+            "extension_applied_at": _fingerprint_datetime(group.extension_applied_at),
+            "subscription_next_billing_at": _fingerprint_datetime(
+                group.subscription_next_billing_at
+            ),
+            "kind": group.kind.value,
+            "manual_review_reason": group.manual_review_reason,
+            "entries": [
+                {
+                    "entry_id": str(entry.entry_id),
+                    "subscriber_id": str(entry.subscriber_id),
+                    "previous_next_billing_at": _fingerprint_datetime(
+                        entry.previous_next_billing_at
+                    ),
+                    "new_next_billing_at": _fingerprint_datetime(
+                        entry.new_next_billing_at
+                    ),
+                    "created_at": _fingerprint_datetime(entry.created_at),
+                    "downstream_reference_count": (entry.downstream_reference_count),
+                }
+                for entry in group.entries
+            ],
+        }
+        for group in groups
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return ServiceExtensionDuplicatePreview(
+        groups=groups,
+        fingerprint=fingerprint,
+    )
+
+
+def preview_service_extension_duplicate_reconciliation(
+    db: Session,
+) -> ServiceExtensionDuplicatePreview:
+    """Preview the complete legacy duplicate cohort without writes."""
+
+    return _duplicate_preview_from_rows(_duplicate_entry_state_rows(db))
+
+
+def _replayed_duplicate_reconciliation(
+    reservation: IdempotencyKey,
+    command: ReconcileServiceExtensionDuplicatesCommand,
+) -> ServiceExtensionDuplicateReconciliationResult:
+    parts = str(reservation.ref_id or "").split(":")
+    if len(parts) != 3 or parts[0] != command.preview_fingerprint:
+        _error(
+            "duplicate_reconciliation_idempotency_conflict",
+            "Idempotency evidence does not match this reviewed duplicate cohort.",
+        )
+    return ServiceExtensionDuplicateReconciliationResult(
+        preview_fingerprint=parts[0],
+        exact_duplicates_collapsed=int(parts[1]),
+        chained_grants_preserved=int(parts[2]),
+        replayed=True,
+    )
+
+
+def reconcile_service_extension_duplicates(
+    db: Session,
+    command: ReconcileServiceExtensionDuplicatesCommand,
+) -> ServiceExtensionDuplicateReconciliationResult:
+    """Repair one exact reviewed legacy duplicate cohort atomically.
+
+    Exact duplicate rows are collapsed to their earliest evidence row. A
+    supported chained row is preserved as a separately audited corrective
+    extension, so no customer entitlement or billing anchor is reduced.
+    """
+
+    def operation() -> ServiceExtensionDuplicateReconciliationResult:
+        key = (command.context.idempotency_key or "").strip()
+        if not key or len(key) > 120:
+            _error(
+                "duplicate_reconciliation_missing_idempotency_key",
+                "A bounded idempotency key is required.",
+            )
+        if (
+            command.chained_grant_resolution
+            is not ChainedGrantResolution.preserve_as_corrective_extension
+        ):
+            _error(
+                "duplicate_reconciliation_resolution_required",
+                "The reviewed chained-grant entitlement decision is required.",
+            )
+        reservation = db.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.scope == _DUPLICATE_RECONCILIATION_SCOPE,
+                IdempotencyKey.key == key,
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            return _replayed_duplicate_reconciliation(reservation, command)
+
+        current = _duplicate_preview_from_rows(
+            _duplicate_entry_state_rows(db, lock=True)
+        )
+        if not secrets.compare_digest(
+            current.fingerprint,
+            command.preview_fingerprint.strip(),
+        ):
+            _error(
+                "duplicate_reconciliation_stale_preview",
+                "Duplicate entry evidence changed after preview; preview again.",
+                current_fingerprint=current.fingerprint,
+            )
+        if not current.groups:
+            _error(
+                "duplicate_reconciliation_empty_cohort",
+                "No duplicate service-extension identities remain.",
+            )
+        if current.manual_review_count:
+            _error(
+                "duplicate_reconciliation_manual_review",
+                "One or more duplicate groups remain outside the approved repair.",
+                manual_review_count=current.manual_review_count,
+            )
+
+        exact_count = 0
+        chained_count = 0
+        effective_at = _as_utc(command.effective_at)
+        from app.models.audit import AuditActorType
+
+        for group in current.groups:
+            if group.kind is ServiceExtensionDuplicateKind.exact_duplicate:
+                removed_ids = tuple(item.entry_id for item in group.entries[1:])
+                db.execute(
+                    delete(ServiceExtensionEntry).where(
+                        ServiceExtensionEntry.id.in_(removed_ids)
+                    )
+                )
+                exact_count += 1
+                action = "billing.service_extension_duplicate_collapsed"
+                resolution_metadata: dict[str, object] = {
+                    "kept_entry_id": str(group.entries[0].entry_id),
+                    "removed_entry_ids": [str(value) for value in removed_ids],
+                }
+            else:
+                corrective_entry = group.entries[1]
+                corrective_extension = ServiceExtension(
+                    id=uuid.uuid4(),
+                    reason=(
+                        "Corrective preservation of historically granted duplicate "
+                        f"interval: {command.context.reason.strip()}"
+                    ),
+                    window_start=group.extension_window_start,
+                    window_end=group.extension_window_end,
+                    days=group.extension_days,
+                    scope_type=ServiceExtensionScope.subscribers,
+                    scope_subscriber_ids=[str(group.subscriber_id)],
+                    status=ServiceExtensionStatus.applied,
+                    affected_count=1,
+                    skipped_count=0,
+                    created_by=command.context.actor,
+                    applied_by=command.context.actor,
+                    applied_at=effective_at,
+                    created_at=effective_at,
+                )
+                db.add(corrective_extension)
+                db.flush()
+                db.execute(
+                    update(ServiceExtensionEntry)
+                    .where(ServiceExtensionEntry.id == corrective_entry.entry_id)
+                    .values(extension_id=corrective_extension.id)
+                )
+                chained_count += 1
+                action = "billing.service_extension_chained_grant_preserved"
+                resolution_metadata = {
+                    "corrective_entry_id": str(corrective_entry.entry_id),
+                    "corrective_extension_id": str(corrective_extension.id),
+                    "preserved_grant_starts_at": _fingerprint_datetime(
+                        corrective_entry.previous_next_billing_at
+                    ),
+                    "preserved_grant_ends_at": _fingerprint_datetime(
+                        corrective_entry.new_next_billing_at
+                    ),
+                    "billing_anchor_changed": False,
+                }
+
+            AuditEvents.stage(
+                db,
+                AuditEventCreate(
+                    actor_type=AuditActorType.system,
+                    actor_id=command.context.actor,
+                    action=action,
+                    entity_type="service_extension",
+                    entity_id=str(group.extension_id),
+                    metadata_={
+                        "preview_fingerprint": current.fingerprint,
+                        "idempotency_key": key,
+                        "subscription_id": str(group.subscription_id),
+                        "subscriber_id": str(group.subscriber_id),
+                        "extension_days": group.extension_days,
+                        "resolution": group.kind.value,
+                        **resolution_metadata,
+                    },
+                ),
+            )
+
+        reservation = IdempotencyKey(
+            scope=_DUPLICATE_RECONCILIATION_SCOPE,
+            key=key,
+            account_id=None,
+            ref_id=f"{current.fingerprint}:{exact_count}:{chained_count}",
+        )
+        db.add(reservation)
+        try:
+            db.flush()
+        except IntegrityError:
+            _error(
+                "duplicate_reconciliation_idempotency_conflict",
+                "Idempotency key was concurrently reserved.",
+            )
+        return ServiceExtensionDuplicateReconciliationResult(
+            preview_fingerprint=current.fingerprint,
+            exact_duplicates_collapsed=exact_count,
+            chained_grants_preserved=chained_count,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_DUPLICATE_RECONCILIATION_COMMAND,
+        context=command.context,
+        operation=operation,
     )
 
 

@@ -32,10 +32,12 @@ def test_service_extension_owner_contract_is_complete() -> None:
 def test_service_extension_public_writes_use_one_owner_boundary_each() -> None:
     source = OWNER.read_text(encoding="utf-8")
 
-    assert source.count("execute_owner_command(") == 3
+    assert source.count("execute_owner_command(") == 4
     assert "db.commit(" not in source
     assert "db.rollback(" not in source
     assert ".begin_nested(" not in source
+    assert "reconcile_service_extension_duplicates" in source
+    assert "preview_service_extension_duplicate_reconciliation" in source
 
 
 def test_all_grant_consumers_use_the_exact_recorded_interval() -> None:

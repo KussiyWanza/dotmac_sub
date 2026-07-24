@@ -72,6 +72,27 @@ anchor_basis = legacy_previous_anchor
 This records the historical decision exactly as it occurred. The migration
 does not move old billing dates or retroactively grant new service.
 
+Before migration 417, the candidate image runs a read-only duplicate-identity
+preflight against the target database. Historical duplicates are never deleted
+or reinterpreted by Alembic.
+
+`financial.service_extensions` owns the reviewed repair:
+
+- preview hashes the complete duplicate cohort, billing anchors, entry
+  intervals, and downstream references;
+- apply requires that exact fingerprint, actor, reason, timestamp,
+  idempotency key, and an explicit chained-entitlement decision;
+- exact copy rows retain the earliest canonical row and remove only the
+  redundant row;
+- a chained interval that customers already received is preserved by assigning
+  it to a separately audited corrective extension; the subscription billing
+  anchor is not shortened;
+- unsupported shapes or referenced duplicate rows fail closed for manual
+  review.
+
+The repair is audit-only at the event boundary because it preserves existing
+customer service state and emits no new customer-facing grant consequence.
+
 ## Drift and repair
 
 For a newly applied entry, `new_next_billing_at` and `grant_ends_at` must match.

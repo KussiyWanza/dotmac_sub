@@ -4970,7 +4970,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "subscription. Its start is the later of the existing billing "
                     "anchor and application time; next_billing_at, coverage, "
                     "enforcement shielding, audit, events, and UI projections consume "
-                    "that interval rather than maintaining parallel clocks."
+                    "that interval rather than maintaining parallel clocks. A "
+                    "fingerprint-gated historical repair collapses exact duplicate "
+                    "rows and preserves an approved chained interval as a separately "
+                    "audited corrective extension without shortening customer service."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -4981,6 +4984,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authenticated extension command",
                                 "canonical subscription lifecycle and billing anchor",
                                 "service-extension duration policy",
+                                "reviewed historical duplicate reconciliation command",
                             ),
                             canonical_writer="financial.service_extensions",
                         ),
@@ -5020,6 +5024,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="billing.service_extension_max_days",
                         ),
                         AuthorityInput(
+                            name=(
+                                "reviewed historical duplicate reconciliation command"
+                            ),
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "exact cohort fingerprint, actor, reason, timestamp, "
+                                "idempotency key, and chained-entitlement decision"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="exact service-extension grant interval",
                             owner="financial.service_extensions",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -5032,24 +5047,30 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Each create, apply, or cancel command enters "
+                            "Each create, apply, cancel, or historical duplicate "
+                            "reconciliation command enters "
                             "execute_owner_command once; nested lifecycle, event, and "
                             "audit helpers are flush-only."
                         ),
                         locking=(
                             "Apply and cancel lock the ServiceExtension transition row; "
                             "restoration locks each affected subscription, and a unique "
-                            "extension/subscription entry prevents duplicate grants."
+                            "extension/subscription entry prevents duplicate grants. "
+                            "Historical repair locks and re-fingerprints the complete "
+                            "duplicate cohort before changing evidence."
                         ),
                         idempotency=(
                             "An extension may transition from pending once; apply uses "
                             "the extension id as its idempotency identity and duplicate "
-                            "entry evidence is database-rejected."
+                            "entry evidence is database-rejected. Historical repair "
+                            "reserves one bounded idempotency key against the reviewed "
+                            "cohort fingerprint."
                         ),
                         retries=(
                             "Adapters retry only after rollback; a completed transition "
                             "returns a stable invalid-transition outcome rather than "
-                            "granting service twice."
+                            "granting service twice. A repair retry returns its recorded "
+                            "counts and never creates another corrective extension."
                         ),
                     ),
                     errors=ErrorContract(
@@ -5066,6 +5087,30 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "access.service_extensions.invalid_window",
                             "access.service_extensions.missing_reason",
                             "access.service_extensions.missing_scope_id",
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_empty_cohort"
+                            ),
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_idempotency_conflict"
+                            ),
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_manual_review"
+                            ),
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_missing_idempotency_key"
+                            ),
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_resolution_required"
+                            ),
+                            (
+                                "access.service_extensions."
+                                "duplicate_reconciliation_stale_preview"
+                            ),
                             *owner_command_boundary_error_codes(
                                 "financial.service_extensions"
                             ),
@@ -5077,6 +5122,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "duplicate lifecycle transition",
                             "ambiguous customer scope",
                             "incomplete restoration evidence",
+                            "stale, referenced, or unsupported historical duplicates",
                         ),
                     ),
                     events=EventContract(
@@ -5125,6 +5171,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.service_extensions",
                         verification=(
                             "Effective-interval behavior, exact coverage, CRM, migration, "
+                            "historical duplicate preview/apply, candidate preflight, "
                             "and architecture boundary tests."
                         ),
                         cutover_gate=(

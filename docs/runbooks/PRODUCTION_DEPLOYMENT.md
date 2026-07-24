@@ -20,27 +20,60 @@ contain the backup upstream.
 
 1. Verify the image exists and its OCI revision matches the requested SHA tag.
 2. Back up the database.
-3. Pin the immutable image and revision.
-4. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
-5. Verify registered schema contracts and reject every invalid or unready
+3. Run candidate-image pre-migration state checks against the target database.
+4. Pin the immutable image and revision.
+5. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
+6. Verify registered schema contracts and reject every invalid or unready
    user-schema index.
-6. Verify every enabled integration installation pin resolves to a current or
+7. Verify every enabled integration installation pin resolves to a current or
    bounded historical definition in the new image. Unavailable pins block
    replacement; historical pins are reported for explicit adoption.
-7. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
+8. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
    `crm.ticket_observation.v1` binding and one active job bound to it. Complete
    the reviewed
    [`CRM_TICKET_CAPABILITY_CUTOVER.md`](CRM_TICKET_CAPABILITY_CUTOVER.md)
    procedure with the candidate image before deployment when this gate fails.
-8. Start and health-check the new application image on `127.0.0.1:18001`.
-9. Recreate the primary application and workers. Nginx uses the healthy
+9. Start and health-check the new application image on `127.0.0.1:18001`.
+10. Recreate the primary application and workers. Nginx uses the healthy
    candidate while the primary port is unavailable.
-10. Verify the primary image has no source-code bind mount and wait for its
+11. Verify the primary image has no source-code bind mount and wait for its
    health endpoint.
-11. Gracefully drain the candidate and retain the configured rollback images.
+12. Gracefully drain the candidate and retain the configured rollback images.
 
 The candidate runs the same image, environment, and database schema as the
 primary. It is bound to localhost and exists only for the handoff window.
+
+## Service-extension duplicate reconciliation
+
+Migration 417 requires one
+`(service_extension_id, subscription_id)` entry. The deployment owner runs the
+candidate image's read-only check before Alembic:
+
+```bash
+python -m scripts.migration.reconcile_service_extension_duplicates --check
+```
+
+If it reports candidates, do not use direct `DELETE` or `UPDATE` SQL. Preview
+the complete cohort with the candidate image, review the exact fingerprint and
+dispositions, then apply through `financial.service_extensions`:
+
+```bash
+python -m scripts.migration.reconcile_service_extension_duplicates
+
+python -m scripts.migration.reconcile_service_extension_duplicates \
+  --apply \
+  --fingerprint <reviewed-sha256> \
+  --effective-at <iso-8601-with-timezone> \
+  --idempotency-key <stable-key> \
+  --actor <operator-id> \
+  --reason <reviewed-reason> \
+  --preserve-chained-entitlement
+```
+
+Apply collapses exact copies and preserves any approved chained interval as a
+separately audited corrective extension. It does not shorten the current
+customer billing anchor. Run `--check` again and require zero candidates before
+retrying the guarded deployment.
 
 ## Migration/index invariant
 
