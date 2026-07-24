@@ -403,7 +403,7 @@ def get_direct_bank_transfer_context(db: Session) -> dict:
     """Instructions copy from settings; accounts from their owner, read-only.
 
     The accounts are shown here so staff can see what customers will be told,
-    but they are edited at /admin/billing/collection-accounts. Editing them in
+    but they are edited at /admin/settings/billing/collection-accounts. Editing them in
     two places is what produced four divergent copies of the same bank account.
     """
     settings = _read_settings(db, SettingDomain.billing, DIRECT_BANK_TRANSFER_KEYS)
@@ -412,7 +412,7 @@ def get_direct_bank_transfer_context(db: Session) -> dict:
         "collection_accounts": collection_account_directory.enabled_transfer_accounts(
             db
         ),
-        "collection_accounts_url": "/admin/billing/collection-accounts",
+        "collection_accounts_url": "/admin/settings/billing/collection-accounts",
     }
 
 

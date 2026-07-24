@@ -764,16 +764,6 @@ def update_collection_account(
     return billing_service.collection_accounts.update(db, account_id, payload)
 
 
-@router.delete(
-    "/collection-accounts/{account_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["payment-accounts"],
-    dependencies=[Depends(require_permission("billing:account:write"))],
-)
-def delete_collection_account(account_id: str, db: Session = Depends(get_db)):
-    billing_service.collection_accounts.delete(db, account_id)
-
-
 # --- Payment Channels ---
 
 
@@ -858,16 +848,6 @@ def update_payment_channel(
     return billing_service.payment_channels.update(db, channel_id, payload)
 
 
-@router.delete(
-    "/payment-channels/{channel_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["payment-channels"],
-    dependencies=[Depends(require_permission("billing:channel:write"))],
-)
-def delete_payment_channel(channel_id: str, db: Session = Depends(get_db)):
-    billing_service.payment_channels.delete(db, channel_id)
-
-
 # --- Payment Channel Accounts ---
 
 
@@ -932,16 +912,6 @@ def update_payment_channel_account(
     mapping_id: str, payload: PaymentChannelAccountUpdate, db: Session = Depends(get_db)
 ):
     return billing_service.payment_channel_accounts.update(db, mapping_id, payload)
-
-
-@router.delete(
-    "/payment-channel-accounts/{mapping_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    tags=["payment-channels"],
-    dependencies=[Depends(require_permission("billing:channel:write"))],
-)
-def delete_payment_channel_account(mapping_id: str, db: Session = Depends(get_db)):
-    billing_service.payment_channel_accounts.delete(db, mapping_id)
 
 
 # --- Payment Allocations ---

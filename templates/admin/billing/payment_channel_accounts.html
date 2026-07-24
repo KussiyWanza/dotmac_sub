@@ -7,13 +7,19 @@
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
             <nav class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 mb-2">
-                <a href="/admin/billing" class="hover:text-primary-600">Billing</a>
+                <a href="/admin/settings" class="hover:text-primary-600">Settings</a>
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                <span class="text-slate-900 dark:text-white">Channel Routing</span>
+                <a href="/admin/settings?category=billing" class="hover:text-primary-600">Billing Setup</a>
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <span class="text-slate-900 dark:text-white">Settlement Attribution</span>
             </nav>
-            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Channel Routing</h1>
-            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Map channels to collection accounts by currency.</p>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Settlement Attribution</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Map recorded payment channels to collection accounts by currency. These mappings do not route customer checkout.</p>
         </div>
+        <form method="get" class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+            <input type="checkbox" name="show_inactive" value="true" onchange="this.form.submit()" class="rounded border-slate-300 text-primary-600 focus:ring-primary-500" {% if show_inactive %}checked{% endif %}>
+            <span>Show inactive</span>
+        </form>
     </div>
 
     {% if error %}
@@ -25,7 +31,7 @@
     <div class="grid gap-6 lg:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">New Mapping</h2>
-            <form method="post" action="/admin/billing/payment-channel-accounts" class="mt-4 space-y-4">
+            <form method="post" action="/admin/settings/billing/payment-channel-accounts" class="mt-4 space-y-4">
                 {% include "components/forms/csrf_input.html" %}
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Channel</label>
@@ -59,18 +65,7 @@
                                class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                        <input type="checkbox" name="is_default"
-                               class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                        Default
-                    </label>
-                    <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                        <input type="checkbox" name="is_active" checked
-                               class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                        Active
-                    </label>
-                </div>
+                <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-700/50 dark:text-slate-300">New mappings are staged inactive. Activation and default selection require impact review.</p>
                 <button type="submit"
                         class="inline-flex w-full items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">
                     Create Mapping
@@ -85,7 +80,7 @@
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Channel</th>
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Account</th>
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Currency</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Default</th>
+                            <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">State</th>
                             <th class="px-6 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</th>
                         </tr>
                     </thead>
@@ -96,26 +91,32 @@
                             <td class="px-6 py-4 text-sm text-slate-900 dark:text-white">{{ mapping.channel.name }}</td>
                             <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ mapping.collection_account.name }}</td>
                             <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ mapping.currency or "—" }}</td>
-                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ "Yes" if mapping.is_default else "No" }}</td>
+                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ "Active" if mapping.is_active else "Inactive" }}{% if mapping.is_default %}<div class="text-xs text-emerald-600">Default</div>{% endif %}</td>
                             <td class="px-6 py-4 text-right text-sm">
                                 <div class="inline-flex items-center gap-2">
-                                    <a href="/admin/billing/payment-channel-accounts/{{ mapping.id }}/edit"
+                                    <a href="/admin/settings/billing/payment-channel-accounts/{{ mapping.id }}/edit"
                                        class="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
                                         Edit
                                     </a>
-                                    <form method="post" action="/admin/billing/payment-channel-accounts/{{ mapping.id }}/deactivate">
+                                    <form method="post" action="/admin/settings/billing/payment-configuration/channel_mapping/{{ mapping.id }}/{{ 'deactivate' if mapping.is_active else 'activate' }}/review">
                                         {% include "components/forms/csrf_input.html" %}
                                         <button type="submit"
-                                                class="inline-flex items-center rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20">
-                                            Deactivate
+                                                class="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">
+                                            Review {{ "deactivation" if mapping.is_active else "activation" }}
                                         </button>
                                     </form>
+                                    {% if mapping.is_active and not mapping.is_default %}
+                                    <form method="post" action="/admin/settings/billing/payment-configuration/channel_mapping/{{ mapping.id }}/make_default/review">
+                                        {% include "components/forms/csrf_input.html" %}
+                                        <button type="submit" class="inline-flex items-center rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">Make default</button>
+                                    </form>
+                                    {% endif %}
                                 </div>
                             </td>
                         </tr>
                         {% endfor %}
                         {% else %}
-                        <tr><td colspan="5" class="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No routing rules found</td></tr>
+                        <tr><td colspan="5" class="px-6 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No attribution mappings found</td></tr>
                         {% endif %}
                     </tbody>
                 </table>

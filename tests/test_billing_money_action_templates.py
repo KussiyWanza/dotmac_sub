@@ -55,8 +55,17 @@ def test_dunning_and_routing_actions_confirm_before_state_changes():
     assert "Resume this dunning case?" in dunning
     assert "Close this dunning case?" in dunning
     assert "Approve this payment arrangement?" in arrangement
-    assert "Deactivate this payment channel?" in channels
-    assert "Deactivate this collection account?" in collection_accounts
+    # Payment-channel and collection-account lifecycle changes no longer mutate
+    # from an inline confirm; they route through the server-owned review/confirm
+    # flow (impact preview + fingerprinted confirmation) instead. The safeguard
+    # is that the list action cannot change state directly — it opens /review.
+    assert "/payment-configuration/payment_channel/" in channels
+    assert "'deactivate' if channel.is_active else 'activate' }}/review" in channels
+    assert "/payment-configuration/collection_account/" in collection_accounts
+    assert (
+        "'deactivate' if account.is_active else 'activate' }}/review"
+        in collection_accounts
+    )
 
 
 def test_credit_application_requires_owner_preview_and_exact_confirmation():

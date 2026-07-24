@@ -1,0 +1,62 @@
+{% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
+{% from "components/ui/macros.html" import page_header, status_badge %}
+
+{% block title %}Review Payment Configuration - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    {% call page_header(
+        title="Review Payment Configuration",
+        subtitle="Confirm the exact customer-presentment and settlement-attribution impact",
+        icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5-4a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+        color="amber",
+        color2="orange",
+        breadcrumbs=[{"label": "Settings", "href": "/admin/settings"}, {"label": "Billing", "href": "/admin/settings?category=billing"}, {"label": "Review"}]
+    ) %}
+        <a href="{{ cancel_url }}"
+           class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
+            Cancel
+        </a>
+    {% endcall %}
+
+    {% if page_error %}
+    <div class="status-panel status-panel-negative status-foreground status-tone-negative rounded-lg border px-4 py-3 text-sm"
+         role="alert" aria-live="assertive">
+        {{ page_error }}
+    </div>
+    {% endif %}
+
+    <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"
+                 aria-labelledby="configuration-impact-title">
+            <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+                <h2 id="configuration-impact-title" class="font-semibold text-slate-900 dark:text-white">
+                    {{ configuration_preview.resource_name }}
+                </h2>
+                <div class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    {{ configuration_preview.action.value | replace('_', ' ') | title }}
+                    ·
+                    {% if configuration_preview.allowed %}
+                        {{ status_badge("Eligible", variant="success") }}
+                    {% else %}
+                        {{ status_badge("Blocked", variant="warning") }}
+                    {% endif %}
+                </div>
+                {% if configuration_preview.blocked_reason %}
+                <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ configuration_preview.blocked_reason }}</p>
+                {% endif %}
+            </div>
+            <dl class="divide-y divide-slate-200 dark:divide-slate-700">
+                {% for fact in configuration_preview.facts %}
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[14rem_1fr]">
+                    <dt class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ fact.label }}</dt>
+                    <dd class="text-sm text-slate-900 dark:text-white">{{ fact.value }}</dd>
+                </div>
+                {% endfor %}
+            </dl>
+        </section>
+        <div>{{ action_form(configuration_action_form) }}</div>
+    </div>
+</div>
+{% endblock %}

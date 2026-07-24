@@ -303,7 +303,10 @@ def test_direct_bank_transfer_context_surfaces_owned_accounts(db_session):
     assert account["bank_name"] == "Dotmac Bank"
     assert account["account_number"] == "0123456789"
     assert account["sort_code"] == "12-34-56"
-    assert context["collection_accounts_url"] == "/admin/billing/collection-accounts"
+    assert (
+        context["collection_accounts_url"]
+        == "/admin/settings/billing/collection-accounts"
+    )
 
 
 def test_invoice_detail_context_includes_bank_details(db_session, subscriber_account):

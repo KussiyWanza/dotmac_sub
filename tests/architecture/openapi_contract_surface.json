@@ -211,18 +211,6 @@
     "422": "a11c9d9b2af8"
    }
   },
-  "DELETE /api/v1/collection-accounts/{account_id}": {
-   "params": [
-    "header:authorization",
-    "header:x-api-key",
-    "path:account_id!"
-   ],
-   "request": null,
-   "responses": {
-    "204": "cc5fd302f9c4",
-    "422": "a11c9d9b2af8"
-   }
-  },
   "DELETE /api/v1/comms/surveys/{survey_id}": {
    "params": [
     "header:authorization",
@@ -1082,30 +1070,6 @@
     "header:authorization",
     "header:x-api-key",
     "path:allocation_id!"
-   ],
-   "request": null,
-   "responses": {
-    "204": "cc5fd302f9c4",
-    "422": "a11c9d9b2af8"
-   }
-  },
-  "DELETE /api/v1/payment-channel-accounts/{mapping_id}": {
-   "params": [
-    "header:authorization",
-    "header:x-api-key",
-    "path:mapping_id!"
-   ],
-   "request": null,
-   "responses": {
-    "204": "cc5fd302f9c4",
-    "422": "a11c9d9b2af8"
-   }
-  },
-  "DELETE /api/v1/payment-channels/{channel_id}": {
-   "params": [
-    "header:authorization",
-    "header:x-api-key",
-    "path:channel_id!"
    ],
    "request": null,
    "responses": {
@@ -18435,10 +18399,10 @@
   "CatalogOfferUpdate": "b2665d2d726b",
   "ChannelType": "c29499d2167f",
   "ChatSessionResponse": "a5b572df2349",
-  "CollectionAccountCreate": "98c474336c51",
-  "CollectionAccountRead": "fe5fa71f5c25",
+  "CollectionAccountCreate": "2027be22d479",
+  "CollectionAccountRead": "56176641e31a",
   "CollectionAccountType": "7fadbaba9cc5",
-  "CollectionAccountUpdate": "e223b4f2a082",
+  "CollectionAccountUpdate": "eb2028592039",
   "CommunicationIntentRead": "7fe15f4f123f",
   "CommunicationSuppressionCreate": "eb2ddd09e40e",
   "CommunicationSuppressionRead": "db0971c9301f",
@@ -19132,13 +19096,13 @@
   "PaymentAllocationPreviewRead": "378a3d01d4e2",
   "PaymentAllocationPreviewRequest": "a36f13eb689e",
   "PaymentAllocationRead": "e66bef702266",
-  "PaymentChannelAccountCreate": "d909a7fc860f",
-  "PaymentChannelAccountRead": "8f2950366668",
-  "PaymentChannelAccountUpdate": "1c81a997ecfc",
-  "PaymentChannelCreate": "2cfaa08d4fee",
-  "PaymentChannelRead": "7cd546388df6",
+  "PaymentChannelAccountCreate": "2a5c5725785b",
+  "PaymentChannelAccountRead": "278a859a05dd",
+  "PaymentChannelAccountUpdate": "191f2e0e5d23",
+  "PaymentChannelCreate": "5b317b6b3c6f",
+  "PaymentChannelRead": "9f4ec80f8a60",
   "PaymentChannelType": "2b06a87fa394",
-  "PaymentChannelUpdate": "4d24b75ba0df",
+  "PaymentChannelUpdate": "2887cb19ac6a",
   "PaymentCreate": "03250f7f35a3",
   "PaymentCreationAllocationEffectRead": "0a67d93a8b24",
   "PaymentCreationConfirm": "6ba01616637b",

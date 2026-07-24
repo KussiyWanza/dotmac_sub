@@ -2857,6 +2857,147 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.payment_configuration_staff_actions",
+                module="app.services.payment_configuration_staff_actions",
+                owns=(
+                    "reviewed payment configuration lifecycle and audit coordination",
+                ),
+                depends_on=(
+                    "financial.collection_accounts",
+                    "financial.payment_routing",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "Settings adapters preview and submit only. This coordinator "
+                    "locks and rechecks collection-account, payment-channel, and "
+                    "channel-mapping state, applies lifecycle/default changes, and "
+                    "stages the decision audit atomically. It never selects a "
+                    "customer checkout gateway."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "reviewed payment configuration lifecycle and "
+                                "audit coordination"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "payment configuration staff command",
+                                "canonical collection-account state",
+                                "canonical settlement-attribution state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="payment configuration staff command",
+                            owner="financial.payment_configuration_staff_actions",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed resource, action, actor, permission scope, "
+                                "review fingerprint, confirmation, and command context"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical collection-account state",
+                            owner="financial.collection_accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked CollectionAccount identity, currency, "
+                                "presentment priority, and lifecycle"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical settlement-attribution state",
+                            owner="financial.payment_configuration_staff_actions",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked PaymentChannel and PaymentChannelAccount "
+                                "identity, provider, currency, priority, default, "
+                                "and lifecycle facts"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "confirm_payment_configuration_staff_action enters "
+                            "execute_owner_command exactly once on a transaction-free "
+                            "session and commits configuration plus audit atomically."
+                        ),
+                        locking=(
+                            "The target and affected same-provider, same-currency, "
+                            "collection-account, and mapping rows are locked before "
+                            "the preview fingerprint is rechecked."
+                        ),
+                        idempotency=(
+                            "The command context carries the resource, action, and "
+                            "review fingerprint; a stale fingerprint fails closed."
+                        ),
+                        retries=(
+                            "Contention or stale-preview failures return to review; "
+                            "adapters do not replay an unreviewed decision."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.payment_configuration_staff_actions"
+                            ),
+                            "financial.payment_configuration_staff_actions.not_found",
+                            "financial.payment_configuration_staff_actions.invalid_action",
+                            "financial.payment_configuration_staff_actions.invalid_mapping",
+                            "financial.payment_configuration_staff_actions.invalid_scope",
+                            "financial.payment_configuration_staff_actions.invalid_actor",
+                            "financial.payment_configuration_staff_actions.confirmation_required",
+                            "financial.payment_configuration_staff_actions.stale_preview",
+                            "financial.payment_configuration_staff_actions.action_not_available",
+                        ),
+                        mapping_owner="Settings payment-configuration web adapter",
+                        retryable_codes=(
+                            "financial.payment_configuration_staff_actions.stale_preview",
+                        ),
+                        fail_closed_on=(
+                            "missing actor or scope",
+                            "stale reviewed state",
+                            "last customer transfer destination",
+                            "inactive mapping dependencies",
+                            "default mapping replacement not selected",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "Billing templates, form booleans, direct toggle routes, "
+                            "and PaymentChannel.default_collection_account_id"
+                        ),
+                        new_owner="financial.payment_configuration_staff_actions",
+                        verification=(
+                            "Owner behavior, stale-preview, route, template, migration, "
+                            "and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "Canonical Settings routes use reviewed actions and "
+                            "payment_channel_accounts is the sole channel-to-account map."
+                        ),
+                        fallback_retirement=(
+                            "Old Billing routes, browser confirmation toggles, lifecycle "
+                            "form fields, and the duplicate default pointer are absent."
+                        ),
+                    ),
+                    steward="finance operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/PAYMENT_CONFIGURATION_SETTINGS_SAFE_ACTIONS.md",
+                    ),
+                    test_refs=(
+                        "tests/test_payment_configuration_staff_actions.py",
+                        "tests/test_payment_configuration_settings_ui.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.payment_routing",
                 module="app.services.payment_routing",
                 owns=(

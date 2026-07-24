@@ -1539,6 +1539,9 @@ Each follows the same pattern — context dict with list data, form helpers, and
 | `/admin/system/users/{id}` | User detail | user, roles, permissions, activity |
 | `/admin/system/roles` | Role list | roles, permission_groups |
 | `/admin/system/settings` | Settings hub | domains, settings_by_domain |
+| `/admin/settings/billing/collection-accounts` | Receiving accounts and customer transfer destinations | accounts, account_types, show_inactive |
+| `/admin/settings/billing/payment-channels` | Recorded settlement-channel attribution | channels, providers, channel_types, show_inactive |
+| `/admin/settings/billing/payment-channel-accounts` | Channel-to-collection-account attribution | mappings, channels, collection_accounts, show_inactive |
 | `/admin/system/audit` | Audit log | events, filters, page |
 | `/admin/system/health` | System health | cpu, memory, disk, services |
 

@@ -1708,31 +1708,29 @@ class CollectionAccountBase(BaseModel):
     bank_name: str | None = Field(default=None, max_length=120)
     account_name: str | None = Field(default=None, max_length=200)
     account_number: str | None = Field(default=None, max_length=64)
-    account_last4: str | None = Field(default=None, max_length=4)
     sort_code: str | None = Field(default=None, max_length=32)
     accounting_code: str | None = Field(default=None, max_length=64)
     presentment_priority: int = 0
     currency: str = Field(default="NGN", min_length=3, max_length=3)
-    is_active: bool = True
     notes: str | None = None
 
 
 class CollectionAccountCreate(CollectionAccountBase):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class CollectionAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=160)
     account_type: CollectionAccountType | None = None
     bank_name: str | None = Field(default=None, max_length=120)
     account_name: str | None = Field(default=None, max_length=200)
     account_number: str | None = Field(default=None, max_length=64)
-    account_last4: str | None = Field(default=None, max_length=4)
     sort_code: str | None = Field(default=None, max_length=32)
     accounting_code: str | None = Field(default=None, max_length=64)
     presentment_priority: int | None = None
     currency: str | None = Field(default=None, min_length=3, max_length=3)
-    is_active: bool | None = None
     notes: str | None = None
 
 
@@ -1740,6 +1738,8 @@ class CollectionAccountRead(CollectionAccountBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    account_last4: str | None
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 
@@ -1748,27 +1748,23 @@ class PaymentChannelBase(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     channel_type: PaymentChannelType = PaymentChannelType.other
     provider_id: UUID | None = None
-    default_collection_account_id: UUID | None = None
     fee_rules: dict | None = None
     accounting_code: str | None = Field(default=None, max_length=64)
-    is_active: bool = True
-    is_default: bool = False
     notes: str | None = None
 
 
 class PaymentChannelCreate(PaymentChannelBase):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class PaymentChannelUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=160)
     channel_type: PaymentChannelType | None = None
     provider_id: UUID | None = None
-    default_collection_account_id: UUID | None = None
     fee_rules: dict | None = None
     accounting_code: str | None = Field(default=None, max_length=64)
-    is_active: bool | None = None
-    is_default: bool | None = None
     notes: str | None = None
 
 
@@ -1776,6 +1772,8 @@ class PaymentChannelRead(PaymentChannelBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    is_active: bool
+    is_default: bool
     created_at: datetime
     updated_at: datetime
 
@@ -1785,27 +1783,27 @@ class PaymentChannelAccountBase(BaseModel):
     collection_account_id: UUID
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     priority: int = 0
-    is_default: bool = False
-    is_active: bool = True
 
 
 class PaymentChannelAccountCreate(PaymentChannelAccountBase):
-    pass
+    model_config = ConfigDict(extra="forbid")
 
 
 class PaymentChannelAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     channel_id: UUID | None = None
     collection_account_id: UUID | None = None
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     priority: int | None = None
-    is_default: bool | None = None
-    is_active: bool | None = None
 
 
 class PaymentChannelAccountRead(PaymentChannelAccountBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    is_default: bool
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 

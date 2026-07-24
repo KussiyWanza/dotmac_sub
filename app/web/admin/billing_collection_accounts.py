@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from app.services import (
 from app.services.auth_dependencies import require_permission
 
 templates = Jinja2Templates(directory="templates")
-router = APIRouter(prefix="/billing", tags=["web-admin-billing"])
+router = APIRouter(prefix="/settings/billing", tags=["web-admin-settings"])
 
 
 def _base_context(request: Request, db: Session, active_page: str) -> dict[str, object]:
@@ -23,7 +23,7 @@ def _base_context(request: Request, db: Session, active_page: str) -> dict[str, 
     return {
         "request": request,
         "active_page": active_page,
-        "active_menu": "billing",
+        "active_menu": "system",
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
     }
@@ -64,12 +64,10 @@ def collection_accounts_create(
     bank_name: str | None = Form(None),
     account_name: str | None = Form(None),
     account_number: str | None = Form(None),
-    account_last4: str | None = Form(None),
     sort_code: str | None = Form(None),
     accounting_code: str | None = Form(None),
     presentment_priority: int = Form(0),
     notes: str | None = Form(None),
-    is_active: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -81,17 +79,15 @@ def collection_accounts_create(
             bank_name=bank_name,
             account_name=account_name,
             account_number=account_number,
-            account_last4=account_last4,
             sort_code=sort_code,
             accounting_code=accounting_code,
             presentment_priority=presentment_priority,
             notes=notes,
-            is_active=is_active,
         )
         return RedirectResponse(
-            url="/admin/billing/collection-accounts", status_code=303
+            url="/admin/settings/billing/collection-accounts", status_code=303
         )
-    except Exception as exc:
+    except (HTTPException, ValueError) as exc:
         state = web_billing_collection_accounts_service.list_data(
             db, show_inactive=False
         )
@@ -128,7 +124,9 @@ def collection_accounts_edit(
         {
             **_base_context(request, db, "collection-accounts"),
             **state,
-            "action_url": f"/admin/billing/collection-accounts/{account_id}/edit",
+            "action_url": (
+                f"/admin/settings/billing/collection-accounts/{account_id}/edit"
+            ),
             "form_title": "Edit Collection Account",
             "submit_label": "Update Account",
         },
@@ -149,12 +147,10 @@ def collection_accounts_update(
     bank_name: str | None = Form(None),
     account_name: str | None = Form(None),
     account_number: str | None = Form(None),
-    account_last4: str | None = Form(None),
     sort_code: str | None = Form(None),
     accounting_code: str | None = Form(None),
     presentment_priority: int = Form(0),
     notes: str | None = Form(None),
-    is_active: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -167,17 +163,15 @@ def collection_accounts_update(
             bank_name=bank_name,
             account_name=account_name,
             account_number=account_number,
-            account_last4=account_last4,
             sort_code=sort_code,
             accounting_code=accounting_code,
             presentment_priority=presentment_priority,
             notes=notes,
-            is_active=is_active,
         )
         return RedirectResponse(
-            url="/admin/billing/collection-accounts", status_code=303
+            url="/admin/settings/billing/collection-accounts", status_code=303
         )
-    except Exception as exc:
+    except (HTTPException, ValueError) as exc:
         state = web_billing_collection_accounts_service.edit_data(
             db, account_id=str(account_id)
         )
@@ -186,34 +180,12 @@ def collection_accounts_update(
             {
                 **_base_context(request, db, "collection-accounts"),
                 **(state or {}),
-                "action_url": f"/admin/billing/collection-accounts/{account_id}/edit",
+                "action_url": (
+                    f"/admin/settings/billing/collection-accounts/{account_id}/edit"
+                ),
                 "form_title": "Edit Collection Account",
                 "submit_label": "Update Account",
                 "error": str(exc),
             },
             status_code=400,
         )
-
-
-@router.post(
-    "/collection-accounts/{account_id}/deactivate",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:account:write"))],
-)
-def collection_accounts_deactivate(account_id: UUID, db: Session = Depends(get_db)):
-    web_billing_collection_accounts_service.deactivate_collection_account(
-        db, account_id=account_id
-    )
-    return RedirectResponse(url="/admin/billing/collection-accounts", status_code=303)
-
-
-@router.post(
-    "/collection-accounts/{account_id}/activate",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:account:write"))],
-)
-def collection_accounts_activate(account_id: UUID, db: Session = Depends(get_db)):
-    web_billing_collection_accounts_service.activate_collection_account(
-        db, account_id=account_id
-    )
-    return RedirectResponse(url="/admin/billing/collection-accounts", status_code=303)

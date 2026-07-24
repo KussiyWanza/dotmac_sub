@@ -32,6 +32,9 @@
           onsubmit="return window.confirm(this.dataset.confirmMessage)"
           {% endif %}>
         {% include "components/forms/csrf_input.html" %}
+        {% for hidden in form.hidden_values %}
+        <input type="hidden" name="{{ hidden.key }}" value="{{ hidden.value }}">
+        {% endfor %}
 
         {% if form.general_error %}
         <div id="{{ form_id }}-error"

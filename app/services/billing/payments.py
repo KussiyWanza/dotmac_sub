@@ -4464,20 +4464,20 @@ class PaymentChannels(ListResponseMixin):
     @staticmethod
     def create(db: Session, payload: PaymentChannelCreate):
         data = payload.model_dump()
+        data["is_active"] = False
+        data["is_default"] = False
         if "accounting_code" in data:
             data["accounting_code"] = str(data["accounting_code"] or "").strip() or None
-        if data.get("default_collection_account_id"):
-            _validate_collection_account(
-                db, str(data["default_collection_account_id"]), None
-            )
-        if data.get("is_default"):
-            db.query(PaymentChannel).filter(
-                PaymentChannel.provider_id == data.get("provider_id"),
-                PaymentChannel.is_default.is_(True),
-            ).update({"is_default": False})
         channel = PaymentChannel(**data)
         db.add(channel)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Payment channel name already exists",
+            ) from exc
         db.refresh(channel)
         return channel
 
@@ -4543,30 +4543,34 @@ class PaymentChannels(ListResponseMixin):
         data = payload.model_dump(exclude_unset=True)
         if "accounting_code" in data:
             data["accounting_code"] = str(data["accounting_code"] or "").strip() or None
-        if data.get("default_collection_account_id"):
-            _validate_collection_account(
-                db, str(data["default_collection_account_id"]), None
-            )
-        if data.get("is_default"):
-            provider_id = data.get("provider_id", channel.provider_id)
-            db.query(PaymentChannel).filter(
-                PaymentChannel.provider_id == provider_id,
-                PaymentChannel.id != channel.id,
-                PaymentChannel.is_default.is_(True),
-            ).update({"is_default": False})
         for key, value in data.items():
             setattr(channel, key, value)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Payment channel name already exists",
+            ) from exc
         db.refresh(channel)
         return channel
 
     @staticmethod
-    def delete(db: Session, channel_id: str):
-        channel = get_by_id(db, PaymentChannel, channel_id)
-        if not channel:
-            raise HTTPException(status_code=404, detail="Payment channel not found")
-        channel.is_active = False
-        db.commit()
+    def stage_active(channel: PaymentChannel, *, active: bool) -> None:
+        channel.is_active = active
+        if not active:
+            channel.is_default = False
+
+    @staticmethod
+    def stage_default(db: Session, channel: PaymentChannel) -> None:
+        db.query(PaymentChannel).filter(
+            PaymentChannel.provider_id == channel.provider_id,
+            PaymentChannel.id != channel.id,
+            PaymentChannel.is_default.is_(True),
+        ).update({"is_default": False}, synchronize_session=False)
+        channel.is_active = True
+        channel.is_default = True
 
 
 class PaymentChannelAccounts(ListResponseMixin):
@@ -4578,15 +4582,19 @@ class PaymentChannelAccounts(ListResponseMixin):
         _validate_collection_account(
             db, str(payload.collection_account_id), payload.currency
         )
-        if payload.is_default:
-            db.query(PaymentChannelAccount).filter(
-                PaymentChannelAccount.channel_id == channel.id,
-                PaymentChannelAccount.currency == payload.currency,
-                PaymentChannelAccount.is_default.is_(True),
-            ).update({"is_default": False})
-        mapping = PaymentChannelAccount(**payload.model_dump())
+        data = payload.model_dump()
+        data["is_active"] = False
+        data["is_default"] = False
+        mapping = PaymentChannelAccount(**data)
         db.add(mapping)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="That channel-to-account mapping already exists",
+            ) from exc
         db.refresh(mapping)
         return mapping
 
@@ -4648,28 +4656,35 @@ class PaymentChannelAccounts(ListResponseMixin):
             _validate_collection_account(
                 db, str(data["collection_account_id"]), currency
             )
-        if data.get("is_default"):
-            db.query(PaymentChannelAccount).filter(
-                PaymentChannelAccount.channel_id == channel_id,
-                PaymentChannelAccount.currency == currency,
-                PaymentChannelAccount.id != mapping.id,
-                PaymentChannelAccount.is_default.is_(True),
-            ).update({"is_default": False})
         for key, value in data.items():
             setattr(mapping, key, value)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="That channel-to-account mapping already exists",
+            ) from exc
         db.refresh(mapping)
         return mapping
 
     @staticmethod
-    def delete(db: Session, mapping_id: str):
-        mapping = get_by_id(db, PaymentChannelAccount, mapping_id)
-        if not mapping:
-            raise HTTPException(
-                status_code=404, detail="Channel account mapping not found"
-            )
-        mapping.is_active = False
-        db.commit()
+    def stage_active(mapping: PaymentChannelAccount, *, active: bool) -> None:
+        mapping.is_active = active
+        if not active:
+            mapping.is_default = False
+
+    @staticmethod
+    def stage_default(db: Session, mapping: PaymentChannelAccount) -> None:
+        db.query(PaymentChannelAccount).filter(
+            PaymentChannelAccount.channel_id == mapping.channel_id,
+            PaymentChannelAccount.currency == mapping.currency,
+            PaymentChannelAccount.id != mapping.id,
+            PaymentChannelAccount.is_default.is_(True),
+        ).update({"is_default": False}, synchronize_session=False)
+        mapping.is_active = True
+        mapping.is_default = True
 
 
 def _normalize_refund_key(value: str) -> str:

@@ -14,8 +14,14 @@
                 <span class="text-slate-900 dark:text-white">Payment Channels</span>
             </nav>
             <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Payment Channels</h1>
-            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Billing setup for customer-facing payment options and gateway mappings.</p>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Classify how recorded settlement arrived. Customer checkout gateways are configured separately under Payment Routing.</p>
         </div>
+        <form method="get" class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+            <input type="checkbox" name="show_inactive" value="true" onchange="this.form.submit()"
+                   class="rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                   {% if show_inactive %}checked{% endif %}>
+            <span>Show inactive</span>
+        </form>
     </div>
 
     {% if error %}
@@ -27,7 +33,7 @@
     <div class="grid gap-6 lg:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">New Payment Channel</h2>
-            <form method="post" action="/admin/billing/payment-channels" class="mt-4 space-y-4">
+            <form method="post" action="/admin/settings/billing/payment-channels" class="mt-4 space-y-4">
                 {% include "components/forms/csrf_input.html" %}
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Name</label>
@@ -53,28 +59,7 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div>
-                    <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Default Collection Account</label>
-                    <select name="default_collection_account_id"
-                            class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="">None</option>
-                        {% for account in collection_accounts %}
-                        <option value="{{ account.id }}">{{ account.name }} ({{ account.currency }})</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="grid grid-cols-2 gap-3">
-                    <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                        <input type="checkbox" name="is_default"
-                               class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                        Default
-                    </label>
-                    <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                        <input type="checkbox" name="is_active" checked
-                               class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                        Active
-                    </label>
-                </div>
+                <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-700/50 dark:text-slate-300">New channels are staged inactive. Review and activate them after configuration is complete.</p>
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Fee Rules (JSON)</label>
                     <textarea name="fee_rules" rows="3"
@@ -104,7 +89,7 @@
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Name</th>
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Type</th>
                             <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Provider</th>
-                            <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Default</th>
+                            <th class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">State</th>
                             <th class="px-6 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Actions</th>
                         </tr>
                     </thead>
@@ -114,25 +99,30 @@
                         <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                             <td class="px-6 py-4 text-sm text-slate-900 dark:text-white">
                                 <div class="font-medium">{{ channel.name }}</div>
-                                <div class="text-xs text-slate-500 dark:text-slate-400">{{ channel.default_collection_account.name if channel.default_collection_account else "—" }}</div>
                                 {% if channel.accounting_code %}<div class="font-mono text-xs text-slate-500 dark:text-slate-400">GL: {{ channel.accounting_code }}</div>{% endif %}
                             </td>
                             <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ channel.channel_type.value | replace('_',' ') | title }}</td>
                             <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ channel.provider.name if channel.provider else "—" }}</td>
-                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ "Yes" if channel.is_default else "No" }}</td>
+                            <td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{{ "Active" if channel.is_active else "Inactive" }}{% if channel.is_default %}<div class="text-xs text-emerald-600">Provider default</div>{% endif %}</td>
                             <td class="px-6 py-4 text-right text-sm">
                                 <div class="inline-flex items-center gap-2">
-                                    <a href="/admin/billing/payment-channels/{{ channel.id }}/edit"
+                                    <a href="/admin/settings/billing/payment-channels/{{ channel.id }}/edit"
                                        class="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
                                         Edit
                                     </a>
-                                    <form method="post" action="/admin/billing/payment-channels/{{ channel.id }}/deactivate" onsubmit="return confirm('Deactivate this payment channel?');">
+                                    <form method="post" action="/admin/settings/billing/payment-configuration/payment_channel/{{ channel.id }}/{{ 'deactivate' if channel.is_active else 'activate' }}/review">
                                         {% include "components/forms/csrf_input.html" %}
                                         <button type="submit"
-                                                class="inline-flex items-center rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:hover:bg-red-900/20">
-                                            Deactivate
+                                                class="inline-flex items-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">
+                                            Review {{ "deactivation" if channel.is_active else "activation" }}
                                         </button>
                                     </form>
+                                    {% if channel.provider_id and not channel.is_default %}
+                                    <form method="post" action="/admin/settings/billing/payment-configuration/payment_channel/{{ channel.id }}/make_default/review">
+                                        {% include "components/forms/csrf_input.html" %}
+                                        <button type="submit" class="inline-flex items-center rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">Make default</button>
+                                    </form>
+                                    {% endif %}
                                 </div>
                             </td>
                         </tr>

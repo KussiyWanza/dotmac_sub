@@ -64,7 +64,7 @@ from app.services.billing._common import (
     _validate_invoice_line_amount,
     _validate_invoice_totals,
 )
-from app.services.billing.configuration import _parse_bool, _parse_json
+from app.services.billing.configuration import _parse_json
 from app.services.billing.reporting import BillingReporting
 from app.services.events.handlers.prepaid_renewal import PrepaidRenewalHandler
 from app.services.events.types import Event, EventType
@@ -980,6 +980,7 @@ class TestCollectionAccountCRUD:
         assert account.account_last4 == "6789"
         assert account.accounting_code == "BANK-USD-01"
         assert account.presentment_priority == 200
+        assert account.is_active is False
 
     def test_get_collection_account(self, db_session):
         account = billing_service.collection_accounts.create(
@@ -998,13 +999,15 @@ class TestCollectionAccountCRUD:
         assert exc.value.status_code == 404
 
     def test_list_collection_accounts(self, db_session):
-        billing_service.collection_accounts.create(
+        account = billing_service.collection_accounts.create(
             db_session,
             CollectionAccountCreate(
                 name=f"List-{uuid.uuid4().hex[:6]}",
                 currency="USD",
             ),
         )
+        billing_service.collection_accounts.stage_active(account, active=True)
+        db_session.commit()
         results = billing_service.collection_accounts.list(
             db_session,
             is_active=None,
@@ -1046,7 +1049,6 @@ class TestCollectionAccountCRUD:
             str(account.id),
             CollectionAccountUpdate(
                 account_number="2222 222 345",
-                account_last4="9999",
             ),
         )
 
@@ -1092,7 +1094,7 @@ class TestCollectionAccountCRUD:
             (f"Incomplete-{suffix}", 500, False, "NGN"),
             (f"USD-{suffix}", 900, True, "USD"),
         ):
-            billing_service.collection_accounts.create(
+            account = billing_service.collection_accounts.create(
                 db_session,
                 CollectionAccountCreate(
                     name=name,
@@ -1105,6 +1107,8 @@ class TestCollectionAccountCRUD:
                     currency=currency,
                 ),
             )
+            billing_service.collection_accounts.stage_active(account, active=True)
+            db_session.commit()
 
         accounts = billing_service.collection_accounts.presentment_accounts(
             db_session, currency="NGN"
@@ -1117,18 +1121,6 @@ class TestCollectionAccountCRUD:
         second_index = names_by_number.index(f"{100:010d}{suffix[:2]}")
         assert first_index < second_index
         assert f"{900:010d}{suffix[:2]}" not in names_by_number
-
-    def test_delete_collection_account_soft(self, db_session):
-        account = billing_service.collection_accounts.create(
-            db_session,
-            CollectionAccountCreate(
-                name=f"Del-{uuid.uuid4().hex[:6]}",
-                currency="USD",
-            ),
-        )
-        billing_service.collection_accounts.delete(db_session, str(account.id))
-        db_session.refresh(account)
-        assert account.is_active is False
 
 
 # ============================================================================
@@ -1149,6 +1141,8 @@ class TestPaymentChannelCRUD:
         assert channel.id is not None
         assert channel.channel_type == PaymentChannelType.card
         assert channel.accounting_code == "CARD-CLEARING"
+        assert channel.is_active is False
+        assert channel.is_default is False
 
     def test_get_payment_channel(self, db_session):
         channel = billing_service.payment_channels.create(
@@ -1166,12 +1160,14 @@ class TestPaymentChannelCRUD:
         assert exc.value.status_code == 404
 
     def test_list_payment_channels(self, db_session):
-        billing_service.payment_channels.create(
+        channel = billing_service.payment_channels.create(
             db_session,
             PaymentChannelCreate(
                 name=f"ListCh-{uuid.uuid4().hex[:6]}",
             ),
         )
+        billing_service.payment_channels.stage_active(channel, active=True)
+        db_session.commit()
         results = billing_service.payment_channels.list(
             db_session,
             is_active=None,
@@ -1195,17 +1191,6 @@ class TestPaymentChannelCRUD:
             PaymentChannelUpdate(notes="Updated channel"),
         )
         assert updated.notes == "Updated channel"
-
-    def test_delete_payment_channel_soft(self, db_session):
-        channel = billing_service.payment_channels.create(
-            db_session,
-            PaymentChannelCreate(
-                name=f"DelCh-{uuid.uuid4().hex[:6]}",
-            ),
-        )
-        billing_service.payment_channels.delete(db_session, str(channel.id))
-        db_session.refresh(channel)
-        assert channel.is_active is False
 
 
 # ============================================================================
@@ -2124,23 +2109,6 @@ class TestPureFunctions:
 
 
 class TestConfigurationHelpers:
-    def test_parse_bool_on(self):
-        assert _parse_bool("on") is True
-
-    def test_parse_bool_true(self):
-        assert _parse_bool("true") is True
-
-    def test_parse_bool_one(self):
-        assert _parse_bool("1") is True
-
-    def test_parse_bool_yes(self):
-        assert _parse_bool("yes") is True
-
-    def test_parse_bool_false(self):
-        assert _parse_bool("off") is False
-        assert _parse_bool("false") is False
-        assert _parse_bool(None) is False
-
     def test_parse_json_valid(self):
         result = _parse_json('{"key": "value"}')
         assert result == {"key": "value"}

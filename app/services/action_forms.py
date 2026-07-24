@@ -93,6 +93,16 @@ class ActionConfirmation:
 
 
 @dataclass(frozen=True, slots=True)
+class ActionHiddenValue:
+    key: str
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.key.strip():
+            raise ValueError("Action hidden-value key is required")
+
+
+@dataclass(frozen=True, slots=True)
 class ActionFormSubmission:
     """Normalized submitted values and errors for exactly one action."""
 
@@ -158,6 +168,7 @@ class ActionForm:
     action_url: str
     submit_label: str
     fields: tuple[ActionField, ...]
+    hidden_values: tuple[ActionHiddenValue, ...] = ()
     tone: ActionTone = ActionTone.neutral
     method: ActionMethod = ActionMethod.post
     impact: str | None = None
@@ -180,6 +191,11 @@ class ActionForm:
         field_keys = tuple(field.key for field in self.fields)
         if len(set(field_keys)) != len(field_keys):
             raise ValueError(f"Duplicate fields in action form: {self.key}")
+        hidden_keys = tuple(item.key for item in self.hidden_values)
+        if len(set(hidden_keys)) != len(hidden_keys):
+            raise ValueError(f"Duplicate hidden values in action form: {self.key}")
+        if set(field_keys) & set(hidden_keys):
+            raise ValueError(f"Action values overlap in action form: {self.key}")
         if (
             self.visible
             and not self.allowed

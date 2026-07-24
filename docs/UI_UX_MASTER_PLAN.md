@@ -440,7 +440,7 @@ record.
   sync projections to the existing ERP pull integration. ERP fails closed when
   an effective account mapping is missing or ambiguous.
 
-### 3k. Payment Channels (`/admin/billing/payment-channels`)
+### 3k. Payment Channels (`/admin/settings/billing/payment-channels`)
 
 CRUD table: Name, Type, Provider, Active, Actions
 

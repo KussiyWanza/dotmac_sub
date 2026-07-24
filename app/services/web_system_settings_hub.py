@@ -116,17 +116,17 @@ SETTINGS_CATEGORIES: list[dict] = [
             },
             {
                 "name": "Payment Channels",
-                "url": "/admin/billing/payment-channels",
+                "url": "/admin/settings/billing/payment-channels",
                 "description": "Customer-facing payment options and defaults",
             },
             {
                 "name": "Collection Accounts",
-                "url": "/admin/billing/collection-accounts",
+                "url": "/admin/settings/billing/collection-accounts",
                 "description": "Bank and cash accounts where funds settle",
             },
             {
                 "name": "Channel Mappings",
-                "url": "/admin/billing/payment-channel-accounts",
+                "url": "/admin/settings/billing/payment-channel-accounts",
                 "description": "Map channels to settlement accounts",
             },
             {

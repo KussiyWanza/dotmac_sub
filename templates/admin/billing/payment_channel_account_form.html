@@ -7,16 +7,16 @@
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
             <nav class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 mb-2">
-                <a href="/admin/billing" class="hover:text-primary-600">Billing</a>
+                <a href="/admin/settings" class="hover:text-primary-600">Settings</a>
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                <a href="/admin/billing/payment-channel-accounts" class="hover:text-primary-600">Channel Routing</a>
+                <a href="/admin/settings/billing/payment-channel-accounts" class="hover:text-primary-600">Settlement Attribution</a>
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 <span class="text-slate-900 dark:text-white">{{ form_title }}</span>
             </nav>
             <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{{ form_title }}</h1>
         </div>
-        <a href="/admin/billing/payment-channel-accounts" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
-            Back to Routing
+        <a href="/admin/settings/billing/payment-channel-accounts" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
+            Back to Attribution
         </a>
     </div>
 
@@ -61,20 +61,9 @@
                            class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-                <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                    <input type="checkbox" name="is_default" {% if mapping.is_default %}checked{% endif %}
-                           class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                    Default
-                </label>
-                <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-                    <input type="checkbox" name="is_active" {% if mapping.is_active %}checked{% endif %}
-                           class="rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                    Active
-                </label>
-            </div>
+            <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-700/50 dark:text-slate-300">Lifecycle and default changes are reviewed from the Settlement Attribution list.</p>
             <div class="flex justify-end gap-3">
-                <a href="/admin/billing/payment-channel-accounts"
+                <a href="/admin/settings/billing/payment-channel-accounts"
                    class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
                     Cancel
                 </a>

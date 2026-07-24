@@ -6,7 +6,6 @@ import logging
 from uuid import UUID
 
 from app.models.billing import CollectionAccountType
-from app.schemas.billing import CollectionAccountUpdate
 from app.services import billing as billing_service
 from app.services import display_format
 from app.services.billing import configuration as billing_config_service
@@ -21,12 +20,23 @@ def _default_currency(db) -> str:
 def list_data(db, *, show_inactive: bool) -> dict[str, object]:
     accounts = billing_service.collection_accounts.list(
         db=db,
-        is_active=False if show_inactive else None,
+        is_active=None,
         order_by="created_at",
         order_dir="desc",
         limit=500,
         offset=0,
     )
+    if show_inactive:
+        accounts.extend(
+            billing_service.collection_accounts.list(
+                db=db,
+                is_active=False,
+                order_by="created_at",
+                order_dir="desc",
+                limit=500,
+                offset=0,
+            )
+        )
     return {
         "accounts": accounts,
         "account_types": [item.value for item in CollectionAccountType],
@@ -55,12 +65,10 @@ def create_collection_account_from_form(
     bank_name: str | None,
     account_name: str | None,
     account_number: str | None,
-    account_last4: str | None,
     sort_code: str | None,
     accounting_code: str | None,
     presentment_priority: int,
     notes: str | None,
-    is_active: str | None,
 ):
     return billing_config_service.create_collection_account(
         db=db,
@@ -70,12 +78,10 @@ def create_collection_account_from_form(
         bank_name=bank_name,
         account_name=account_name,
         account_number=account_number,
-        account_last4=account_last4,
         sort_code=sort_code,
         accounting_code=accounting_code,
         presentment_priority=presentment_priority,
         notes=notes,
-        is_active=is_active,
     )
 
 
@@ -89,12 +95,10 @@ def update_collection_account_from_form(
     bank_name: str | None,
     account_name: str | None,
     account_number: str | None,
-    account_last4: str | None,
     sort_code: str | None,
     accounting_code: str | None,
     presentment_priority: int,
     notes: str | None,
-    is_active: str | None,
 ):
     return billing_config_service.update_collection_account(
         db=db,
@@ -105,22 +109,8 @@ def update_collection_account_from_form(
         bank_name=bank_name,
         account_name=account_name,
         account_number=account_number,
-        account_last4=account_last4,
         sort_code=sort_code,
         accounting_code=accounting_code,
         presentment_priority=presentment_priority,
         notes=notes,
-        is_active=is_active,
-    )
-
-
-def deactivate_collection_account(db, *, account_id: UUID) -> None:
-    billing_service.collection_accounts.delete(db, str(account_id))
-
-
-def activate_collection_account(db, *, account_id: UUID):
-    return billing_service.collection_accounts.update(
-        db,
-        str(account_id),
-        CollectionAccountUpdate(is_active=True),
     )

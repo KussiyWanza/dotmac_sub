@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -12,7 +12,7 @@ from app.services import web_billing_channels as web_billing_channels_service
 from app.services.auth_dependencies import require_permission
 
 templates = Jinja2Templates(directory="templates")
-router = APIRouter(prefix="/billing", tags=["web-admin-billing"])
+router = APIRouter(prefix="/settings/billing", tags=["web-admin-settings"])
 
 
 def _base_context(request: Request, db: Session, active_page: str) -> dict[str, object]:
@@ -21,7 +21,7 @@ def _base_context(request: Request, db: Session, active_page: str) -> dict[str, 
     return {
         "request": request,
         "active_page": active_page,
-        "active_menu": "billing",
+        "active_menu": "system",
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
     }
@@ -32,8 +32,14 @@ def _base_context(request: Request, db: Session, active_page: str) -> dict[str, 
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("billing:channel:read"))],
 )
-def payment_channels_list(request: Request, db: Session = Depends(get_db)):
-    state = web_billing_channels_service.list_payment_channels_data(db)
+def payment_channels_list(
+    request: Request,
+    show_inactive: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    state = web_billing_channels_service.list_payment_channels_data(
+        db, show_inactive=show_inactive
+    )
     return templates.TemplateResponse(
         "admin/billing/payment_channels.html",
         {
@@ -53,9 +59,6 @@ def payment_channels_create(
     name: str = Form(...),
     channel_type: str = Form("other"),
     provider_id: str | None = Form(None),
-    default_collection_account_id: str | None = Form(None),
-    is_default: str | None = Form(None),
-    is_active: str | None = Form(None),
     fee_rules: str | None = Form(None),
     accounting_code: str | None = Form(None),
     notes: str | None = Form(None),
@@ -67,15 +70,14 @@ def payment_channels_create(
             name=name,
             channel_type=channel_type,
             provider_id=provider_id,
-            default_collection_account_id=default_collection_account_id,
-            is_default=is_default,
-            is_active=is_active,
             fee_rules=fee_rules,
             accounting_code=accounting_code,
             notes=notes,
         )
-        return RedirectResponse(url="/admin/billing/payment-channels", status_code=303)
-    except Exception as exc:
+        return RedirectResponse(
+            url="/admin/settings/billing/payment-channels", status_code=303
+        )
+    except (HTTPException, ValueError) as exc:
         state = web_billing_channels_service.list_payment_channels_data(db)
         return templates.TemplateResponse(
             "admin/billing/payment_channels.html",
@@ -110,7 +112,9 @@ def payment_channels_edit(
         {
             **_base_context(request, db, "payment_channels"),
             **state,
-            "action_url": f"/admin/billing/payment-channels/{channel_id}/edit",
+            "action_url": (
+                f"/admin/settings/billing/payment-channels/{channel_id}/edit"
+            ),
             "form_title": "Edit Payment Channel",
             "submit_label": "Update Channel",
         },
@@ -128,9 +132,6 @@ def payment_channels_update(
     name: str = Form(...),
     channel_type: str = Form("other"),
     provider_id: str | None = Form(None),
-    default_collection_account_id: str | None = Form(None),
-    is_default: str | None = Form(None),
-    is_active: str | None = Form(None),
     fee_rules: str | None = Form(None),
     accounting_code: str | None = Form(None),
     notes: str | None = Form(None),
@@ -143,15 +144,14 @@ def payment_channels_update(
             name=name,
             channel_type=channel_type,
             provider_id=provider_id,
-            default_collection_account_id=default_collection_account_id,
-            is_default=is_default,
-            is_active=is_active,
             fee_rules=fee_rules,
             accounting_code=accounting_code,
             notes=notes,
         )
-        return RedirectResponse(url="/admin/billing/payment-channels", status_code=303)
-    except Exception as exc:
+        return RedirectResponse(
+            url="/admin/settings/billing/payment-channels", status_code=303
+        )
+    except (HTTPException, ValueError) as exc:
         state = web_billing_channels_service.load_payment_channel_edit_data(
             db, str(channel_id)
         )
@@ -160,7 +160,9 @@ def payment_channels_update(
             {
                 **_base_context(request, db, "payment_channels"),
                 **(state or {}),
-                "action_url": f"/admin/billing/payment-channels/{channel_id}/edit",
+                "action_url": (
+                    f"/admin/settings/billing/payment-channels/{channel_id}/edit"
+                ),
                 "form_title": "Edit Payment Channel",
                 "submit_label": "Update Channel",
                 "error": str(exc),
@@ -169,23 +171,19 @@ def payment_channels_update(
         )
 
 
-@router.post(
-    "/payment-channels/{channel_id}/deactivate",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:channel:write"))],
-)
-def payment_channels_deactivate(channel_id: UUID, db: Session = Depends(get_db)):
-    web_billing_channels_service.deactivate_payment_channel(db, channel_id=channel_id)
-    return RedirectResponse(url="/admin/billing/payment-channels", status_code=303)
-
-
 @router.get(
     "/payment-channel-accounts",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("billing:channel:read"))],
 )
-def payment_channel_accounts_list(request: Request, db: Session = Depends(get_db)):
-    state = web_billing_channels_service.list_payment_channel_accounts_data(db)
+def payment_channel_accounts_list(
+    request: Request,
+    show_inactive: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    state = web_billing_channels_service.list_payment_channel_accounts_data(
+        db, show_inactive=show_inactive
+    )
     return templates.TemplateResponse(
         "admin/billing/payment_channel_accounts.html",
         {
@@ -206,8 +204,6 @@ def payment_channel_accounts_create(
     collection_account_id: str = Form(...),
     currency: str | None = Form(None),
     priority: int = Form(0),
-    is_default: str | None = Form(None),
-    is_active: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -217,13 +213,11 @@ def payment_channel_accounts_create(
             collection_account_id=collection_account_id,
             currency=currency,
             priority=priority,
-            is_default=is_default,
-            is_active=is_active,
         )
         return RedirectResponse(
-            url="/admin/billing/payment-channel-accounts", status_code=303
+            url="/admin/settings/billing/payment-channel-accounts", status_code=303
         )
-    except Exception as exc:
+    except (HTTPException, ValueError) as exc:
         state = web_billing_channels_service.list_payment_channel_accounts_data(db)
         return templates.TemplateResponse(
             "admin/billing/payment_channel_accounts.html",
@@ -258,7 +252,9 @@ def payment_channel_accounts_edit(
         {
             **_base_context(request, db, "payment_channel_accounts"),
             **state,
-            "action_url": f"/admin/billing/payment-channel-accounts/{mapping_id}/edit",
+            "action_url": (
+                f"/admin/settings/billing/payment-channel-accounts/{mapping_id}/edit"
+            ),
             "form_title": "Edit Channel Mapping",
             "submit_label": "Update Mapping",
         },
@@ -277,8 +273,6 @@ def payment_channel_accounts_update(
     collection_account_id: str = Form(...),
     currency: str | None = Form(None),
     priority: int = Form(0),
-    is_default: str | None = Form(None),
-    is_active: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -289,13 +283,11 @@ def payment_channel_accounts_update(
             collection_account_id=collection_account_id,
             currency=currency,
             priority=priority,
-            is_default=is_default,
-            is_active=is_active,
         )
         return RedirectResponse(
-            url="/admin/billing/payment-channel-accounts", status_code=303
+            url="/admin/settings/billing/payment-channel-accounts", status_code=303
         )
-    except Exception as exc:
+    except (HTTPException, ValueError) as exc:
         state = web_billing_channels_service.load_payment_channel_account_edit_data(
             db, str(mapping_id)
         )
@@ -304,26 +296,13 @@ def payment_channel_accounts_update(
             {
                 **_base_context(request, db, "payment_channel_accounts"),
                 **(state or {}),
-                "action_url": f"/admin/billing/payment-channel-accounts/{mapping_id}/edit",
+                "action_url": (
+                    "/admin/settings/billing/payment-channel-accounts/"
+                    f"{mapping_id}/edit"
+                ),
                 "form_title": "Edit Channel Mapping",
                 "submit_label": "Update Mapping",
                 "error": str(exc),
             },
             status_code=400,
         )
-
-
-@router.post(
-    "/payment-channel-accounts/{mapping_id}/deactivate",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:channel:write"))],
-)
-def payment_channel_accounts_deactivate(
-    mapping_id: UUID, db: Session = Depends(get_db)
-):
-    web_billing_channels_service.deactivate_payment_channel_account(
-        db, mapping_id=mapping_id
-    )
-    return RedirectResponse(
-        url="/admin/billing/payment-channel-accounts", status_code=303
-    )

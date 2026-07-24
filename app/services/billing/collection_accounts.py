@@ -29,8 +29,6 @@ def _normalise_account_number(value: object) -> str | None:
 
 def _normalise_data(
     data: dict[str, Any],
-    *,
-    existing_account_number: str | None = None,
 ) -> dict[str, Any]:
     for key in ("account_name", "sort_code", "accounting_code", "notes"):
         if key in data:
@@ -48,12 +46,6 @@ def _normalise_data(
         account_number = _normalise_account_number(data["account_number"])
         data["account_number"] = account_number
         data["account_last4"] = account_number[-4:] if account_number else None
-    elif existing_account_number and "account_last4" in data:
-        # Full account number is the source. The last four digits are its derived
-        # search/reconciliation projection and cannot be edited independently.
-        data["account_last4"] = existing_account_number[-4:]
-    elif "account_last4" in data:
-        data["account_last4"] = _clean_optional(data["account_last4"])
     return data
 
 
@@ -90,6 +82,7 @@ class CollectionAccounts(ListResponseMixin):
     @staticmethod
     def create(db: Session, payload: CollectionAccountCreate) -> CollectionAccount:
         data = _normalise_data(payload.model_dump())
+        data["is_active"] = False
         _assert_unique_destination(db, data)
         account = CollectionAccount(**data)
         db.add(account)
@@ -142,10 +135,7 @@ class CollectionAccounts(ListResponseMixin):
         db: Session, account_id: str, payload: CollectionAccountUpdate
     ) -> CollectionAccount:
         account = CollectionAccounts.get(db, account_id)
-        data = _normalise_data(
-            payload.model_dump(exclude_unset=True),
-            existing_account_number=account.account_number,
-        )
+        data = _normalise_data(payload.model_dump(exclude_unset=True))
         _assert_unique_destination(db, data, existing=account)
         for key, value in data.items():
             setattr(account, key, value)
@@ -161,10 +151,8 @@ class CollectionAccounts(ListResponseMixin):
         return account
 
     @staticmethod
-    def delete(db: Session, account_id: str) -> None:
-        account = CollectionAccounts.get(db, account_id)
-        account.is_active = False
-        db.commit()
+    def stage_active(account: CollectionAccount, *, active: bool) -> None:
+        account.is_active = active
 
     @staticmethod
     def presentment_accounts(

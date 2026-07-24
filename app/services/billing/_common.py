@@ -561,10 +561,6 @@ def _resolve_collection_account(
         return _validate_collection_account(
             db, str(fallback.collection_account_id), currency
         )
-    if channel.default_collection_account_id:
-        return _validate_collection_account(
-            db, str(channel.default_collection_account_id), currency
-        )
     return None
 
 

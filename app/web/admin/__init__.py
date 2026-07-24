@@ -85,6 +85,9 @@ from app.web.admin.network_vendor_capabilities import (
 from app.web.admin.network_weathermap import router as network_weathermap_router
 from app.web.admin.network_zones import router as network_zones_router
 from app.web.admin.notifications import router as notifications_router
+from app.web.admin.payment_configuration_actions import (
+    router as payment_configuration_actions_router,
+)
 from app.web.admin.projects import router as projects_router
 from app.web.admin.provisioning import router as provisioning_router
 from app.web.admin.reports import router as reports_router
@@ -214,6 +217,10 @@ router.include_router(
 )
 router.include_router(
     billing_collection_accounts_router,
+    dependencies=[Depends(module_manager_service.require_module_enabled("billing"))],
+)
+router.include_router(
+    payment_configuration_actions_router,
     dependencies=[Depends(module_manager_service.require_module_enabled("billing"))],
 )
 router.include_router(

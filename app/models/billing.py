@@ -2285,9 +2285,6 @@ class PaymentChannel(Base):
     provider_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("payment_providers.id")
     )
-    default_collection_account_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("collection_accounts.id")
-    )
     fee_rules: Mapped[dict | None] = mapped_column(JSON)
     # External accounting-system mapping code; see CollectionAccount.accounting_code.
     accounting_code: Mapped[str | None] = mapped_column(String(64))
@@ -2305,7 +2302,6 @@ class PaymentChannel(Base):
     )
 
     provider = relationship("PaymentProvider")
-    default_collection_account = relationship("CollectionAccount")
     channel_accounts = relationship("PaymentChannelAccount", back_populates="channel")
     payments = relationship("Payment", back_populates="payment_channel")
     payment_methods = relationship("PaymentMethod", back_populates="payment_channel")
