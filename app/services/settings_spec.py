@@ -1646,6 +1646,14 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.billing,
+        key="withholding_tax_rate_percent",
+        env_var="BILLING_WITHHOLDING_TAX_RATE_PERCENT",
+        value_type=SettingValueType.string,
+        default="5.00",
+        label="Withholding tax rate percent for eligible bank-transfer invoice payments",
+    ),
+    SettingSpec(
+        domain=SettingDomain.billing,
         key="default_payment_method_type",
         env_var="BILLING_DEFAULT_PAYMENT_METHOD_TYPE",
         value_type=SettingValueType.string,

@@ -20,7 +20,7 @@
     <form method="get" class="mb-4 grid gap-3 border-b border-slate-200 pb-4 dark:border-slate-700 sm:grid-cols-[minmax(14rem,1fr)_12rem_auto] sm:items-end">
         <div>
             <label for="wht-search" class="block text-xs font-semibold uppercase tracking-wider text-slate-500">Search</label>
-            <input id="wht-search" type="search" name="wht_search" value="{{ wht_search }}" placeholder="Reseller, record, billing account, certificate" class="mt-1 w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <input id="wht-search" type="search" name="wht_search" value="{{ wht_search }}" placeholder="Customer, reseller, record, account, certificate" class="mt-1 w-full rounded-lg border-slate-300 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
         </div>
         <div>
             <label for="wht-status" class="block text-xs font-semibold uppercase tracking-wider text-slate-500">Status</label>
@@ -35,12 +35,12 @@
     {% if wht_records %}
     <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-            {{ table_head(["Recognized", "Reseller / billing account", "Status", "Receivable", "Certificate", "Action"]) }}
+            {{ table_head(["Recognized", "Customer / account", "Status", "Receivable", "Certificate", "Action"]) }}
             <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
             {% for record in wht_records %}
                 <tr>
                     <td class="px-6 py-3 text-sm text-slate-600 dark:text-slate-300">{{ record.created_at | app_datetime('%Y-%m-%d', include_tz=False) }}<br><span class="font-mono text-xs">{{ record.record_id|string|truncate(8, True, '') }}</span></td>
-                    <td class="px-6 py-3 text-sm"><span class="font-medium text-slate-900 dark:text-white">{{ record.reseller_name or "Direct account" }}</span><br><span class="font-mono text-xs text-slate-500">{{ record.billing_account_id }}</span></td>
+                    <td class="px-6 py-3 text-sm"><span class="font-medium text-slate-900 dark:text-white">{{ record.reseller_name or record.account_name or "Direct account" }}</span><br><span class="font-mono text-xs text-slate-500">{{ record.billing_account_id or record.account_id }}</span></td>
                     <td class="px-6 py-3">{{ status_presentation_badge(wht_status_presentations.get(record.record_id|string), size="sm") }}</td>
                     <td class="px-6 py-3 font-mono text-sm tabular-nums">{{ record.currency }} {{ "{:,.2f}".format(record.wht_amount) }}</td>
                     <td class="px-6 py-3 text-sm text-slate-600 dark:text-slate-300">{{ record.certificate_reference or "—" }}</td>
@@ -66,7 +66,7 @@
             </tbody>
         </table>
     </div>
-    {% else %}{{ empty_state("No WHT receivables", "Verified reseller payments with withholding tax appear here.") }}{% endif %}
+    {% else %}{{ empty_state("No WHT receivables", "Verified customer and reseller payments with withholding tax appear here.") }}{% endif %}
 
     <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-sm dark:border-slate-700">
         <p class="text-slate-600 dark:text-slate-300">Page {{ wht_pagination.page }} of {{ wht_pagination.page_count }} · {{ wht_pagination.total }} records</p>

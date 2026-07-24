@@ -5,6 +5,7 @@
 {% block content %}
 {% set transfer_accounts = bank_transfer_accounts|default([]) %}
 {% set selected_transfer_account = transfer_accounts[0] if transfer_accounts else none %}
+{% set wht = withholding_tax|default({}) %}
 <div class="space-y-6">
     <div>
         <nav class="mb-2 flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400">
@@ -64,6 +65,36 @@
                     <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">Amount to pay</dt>
                     <dd class="text-xl font-bold text-emerald-700 dark:text-emerald-300">{{ intent.currency }} {{ "{:,.2f}".format(intent.requested_amount) }}</dd>
                 </div>
+                {% if wht %}
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">Invoice total</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.gross_amount|float) }}</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">VAT-exclusive basis</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.vat_exclusive_amount|float) }}</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">VAT amount</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.vat_amount|float) }}</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">WHT rate</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.withholding_tax_rate_percent }}%</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">WHT deduction</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.withholding_tax_amount|float) }}</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">Gross credit after verification</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.gross_amount|float) }}</dd>
+                </div>
+                <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]">
+                    <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">Certificate amount outstanding</dt>
+                    <dd class="text-sm font-semibold text-stone-900 dark:text-white">{{ wht.currency }} {{ "{:,.2f}".format(wht.withholding_tax_amount|float) }}</dd>
+                </div>
+                {% endif %}
                 <div class="grid gap-1 px-5 py-4 sm:grid-cols-[11rem,1fr]" x-data="{ copied: false, copyRef() { const text = '{{ intent.reference }}'; (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => { this.copied = true; setTimeout(() => this.copied = false, 2000); }).catch(() => {}); } }">
                     <dt class="text-sm font-medium text-stone-500 dark:text-stone-400">Payment reference</dt>
                     <dd class="flex items-center gap-2">
@@ -87,7 +118,7 @@
 
         <section class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
             <h2 class="text-lg font-semibold text-stone-900 dark:text-white">Submit Receipt</h2>
-            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Accepted files: JPG, PNG, WEBP, or PDF up to 10 MB.</p>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Accepted files: JPG, PNG, WEBP, or PDF up to 10 MB. Upload only the payment receipt and any required WHT evidence.</p>
 
             {% if customer and customer.read_only %}
             <div class="mt-5 rounded-xl bg-stone-100 px-4 py-3 text-sm text-stone-600 dark:bg-stone-700 dark:text-stone-300">

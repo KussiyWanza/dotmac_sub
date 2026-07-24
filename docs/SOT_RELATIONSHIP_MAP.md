@@ -162,7 +162,8 @@ do not hand-edit these rows.
 | `financial.topup_intents` | saved-card top-up intent failure projection | `command_writer` | canonical top-up intent projection target ← `financial.topup_intents`<br>typed saved-card failure evidence ← `financial.gateway_topup_intent_commands`<br>top-up intent transition protocol ← `financial.topup_intents` | `participant` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_proofs.py`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_topup_intent_projection.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_topup_intent_status.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
 | `financial.topup_intents` | top-up intent completed-payment projection | `command_writer` | canonical top-up intent projection target ← `financial.topup_intents`<br>canonical succeeded payment evidence ← `financial.payments`<br>typed top-up intent completion evidence ← `financial.topup_intents` | `participant` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_proofs.py`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_topup_intent_projection.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_topup_intent_status.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
 | `financial.topup_intents` | gateway top-up intent expiry decision | `command_writer` | canonical top-up intent projection target ← `financial.topup_intents`<br>canonical top-up reconciliation expiry policy ← `control.settings_spec`<br>typed gateway expiry observation ← `external:payment_provider` | `participant` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_proofs.py`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_topup_intent_projection.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_topup_intent_status.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
-| `financial.direct_transfer_intent_commands` | customer direct-transfer intent creation coordination | `application_coordinator` | authenticated direct-transfer creation command ← `financial.direct_transfer_intent_commands`<br>canonical customer account ← `customer.accounts`<br>canonical payable invoice ← `financial.invoices`<br>canonical direct-transfer configuration ← `financial.topup_intents`<br>canonical direct-transfer lifetime and amount policy ← `control.settings_spec`<br>canonical deposit intent protocol ← `financial.account_credit_deposits`<br>canonical invoice direct-transfer intent protocol ← `financial.topup_intents` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_customer_portal_topup_flow.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
+| `financial.direct_transfer_intent_commands` | customer direct-transfer intent creation coordination | `application_coordinator` | authenticated direct-transfer creation command ← `financial.direct_transfer_intent_commands`<br>canonical customer account ← `customer.accounts`<br>canonical payable invoice ← `financial.invoices`<br>canonical customer WHT policy ← `financial.customer_tax_policies`<br>canonical direct-transfer configuration ← `financial.topup_intents`<br>canonical direct-transfer lifetime and amount policy ← `control.settings_spec`<br>canonical deposit intent protocol ← `financial.account_credit_deposits`<br>canonical invoice direct-transfer intent protocol ← `financial.topup_intents` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_customer_portal_topup_flow.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
+| `financial.customer_tax_policies` | customer withholding-tax eligibility policy | `command_writer` | customer WHT policy command context ← `financial.customer_tax_policies`<br>canonical customer account ← `customer.accounts`<br>canonical customer WHT policy record ← `financial.customer_tax_policies` | `owner_managed` | `native` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FRONTEND_SPEC.md`<br>`docs/ACCOUNT_CREDIT_DEPOSITS.md`<br>`tests/test_subscriber_billing_config.py`<br>`tests/test_direct_transfer_intents.py`<br>`tests/test_customer_wht_policy_migration.py` |
 | `financial.gateway_topup_intent_commands` | customer gateway top-up intent creation coordination | `application_coordinator` | authenticated customer gateway creation command ← `financial.gateway_topup_intent_commands`<br>canonical payable invoice ← `financial.invoices`<br>canonical gateway lifetime and amount policy ← `control.settings_spec`<br>canonical deposit intent protocol ← `financial.account_credit_deposits`<br>canonical gateway intent protocol ← `financial.topup_intents`<br>enabled checkout capability binding ← `integration.installations` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/PAYMENT_GATEWAY_CONTROL_PLANE_SOT.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_gateway_topup_intents.py`<br>`tests/test_customer_portal_topup_flow.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
 | `financial.gateway_topup_intent_commands` | reseller gateway top-up intent creation coordination | `application_coordinator` | authenticated reseller gateway creation command ← `financial.gateway_topup_intent_commands`<br>canonical reseller billing account ← `financial.billing_accounts`<br>canonical gateway lifetime and amount policy ← `control.settings_spec`<br>canonical gateway intent protocol ← `financial.topup_intents`<br>enabled checkout capability binding ← `integration.installations` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/PAYMENT_GATEWAY_CONTROL_PLANE_SOT.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_gateway_topup_intents.py`<br>`tests/test_customer_portal_topup_flow.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
 | `financial.gateway_topup_intent_commands` | saved-card charge failure coordination | `application_coordinator` | typed saved-card failure command ← `financial.gateway_topup_intent_commands`<br>canonical gateway intent protocol ← `financial.topup_intents`<br>canonical saved-card retry reservation ← `financial.gateway_topup_intent_commands` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/PAYMENT_GATEWAY_CONTROL_PLANE_SOT.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_gateway_topup_intents.py`<br>`tests/test_customer_portal_topup_flow.py`<br>`tests/architecture/test_topup_intent_ownership.py` |
@@ -712,13 +713,15 @@ detailed security and delivery boundary is
    active lifecycle. Inclusive, exclusive, or exempt treatment belongs to the
    invoice/credit-note line, not to a second tax-rate vocabulary.
 4. `financial.payment_proofs` owns proof review, supplies typed verified
-   gross/net/WHT evidence to the tax owner when a reseller pays net cash against
-   a gross obligation, and decides that a submitted proof requires
-   confirmation. `financial.tax_accounting` alone constructs the source WHT
-   record and initial timeline as a flush-only participant of that proof
-   transaction. The proof owner requests one reviewer work item from
-   `communications.staff_notifications`; it does not select staff recipients,
-   construct WHT rows, or construct inbox/delivery rows.
+   gross/net/WHT evidence to the tax owner when a direct customer or reseller
+   payment carries server-owned WHT facts, and decides that a submitted proof
+   requires confirmation. Customer-entered WHT is rejected unless it matches a
+   server-issued invoice direct-transfer snapshot, and arbitrary consolidated
+   credit fails closed for automatic WHT. `financial.tax_accounting` alone
+   constructs the source WHT record and initial timeline as a flush-only
+   participant of that proof transaction. The proof owner requests one reviewer
+   work item from `communications.staff_notifications`; it does not select
+   staff recipients, construct WHT rows, or construct inbox/delivery rows.
 5. `financial.tax_accounting` owns tax-report meaning, periods, currency
    separation, issued-output-tax and credit-note adjustment projection, net
    output-tax liability, WHT-receivable projection and lifecycle, its immutable
@@ -1735,10 +1738,18 @@ Tax-accounting migration record:
   mutating posted lines.
 - Operator control: `/admin/billing/tax-accounting` is the permission-protected
   source-fact and WHT evidence console with server-side search, status filters,
-  counts, and pagination. It does not offer account mapping or journal controls.
+  counts, and pagination. It lists direct-customer and consolidated-account WHT
+  records without assuming every row belongs to a reseller. It does not offer
+  account mapping or journal controls.
 - WHT lifecycle: payment-proof verification submits exact typed evidence to the
   tax owner's flush-only participant, which creates the pending source record,
   initial timeline, and versioned receivable event in the proof transaction.
+- Customer WHT policy and basis: `financial.customer_tax_policies` owns
+  per-customer WHT enablement, `control.settings_spec` owns the global admin
+  rate, and invoice-linked direct bank transfer uses the invoice owner's
+  authoritative VAT-exclusive subtotal as the only automatic WHT basis.
+  Arbitrary account-credit deposits and online/card gateway checkout remain
+  non-WHT and collect the full invoice amount.
   The tax owner alone permits pending -> certified -> reclaimed and
   pending/certified -> written_off, requires certificate evidence or a write-off
   reason, and appends `withholding_tax_transitions`. The public transition owner

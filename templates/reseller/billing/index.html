@@ -122,12 +122,9 @@
     </form>
 
     {% if direct_bank_transfer_enabled %}
-    <!-- Bank transfer + withholding tax + receipt -->
+    <!-- Bank transfer + receipt -->
     <form method="post" action="/reseller/billing/pay/transfer" enctype="multipart/form-data" class="mt-4 space-y-4"
-          x-show="tab === 'transfer'" x-cloak
-          x-data="{ net: '', rate: '',
-                    get gross() { const n = parseFloat(this.net)||0; const r = parseFloat(this.rate)||0; return r > 0 && r < 100 ? n/(1-r/100) : n; },
-                    get wht() { return this.gross - (parseFloat(this.net)||0); } }">
+          x-show="tab === 'transfer'" x-cloak>
       {% include "components/forms/csrf_input.html" %}
       {% if bank_transfer_accounts %}
       <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900">
@@ -143,24 +140,18 @@
         </div>
       </div>
       {% endif %}
-      <div class="grid gap-4 sm:grid-cols-3">
+      <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <label for="t_amount" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Amount transferred ({{ billing_account.currency }})</label>
-          <input type="number" step="0.01" min="0.01" id="t_amount" name="amount" x-model="net" required
+          <input type="number" step="0.01" min="0.01" id="t_amount" name="amount" required
                  class="mt-1.5 block w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-white">
-          <p class="mt-1 text-xs text-slate-400">Net cash you sent (after WHT).</p>
+          <p class="mt-1 text-xs text-slate-400">This adds verified cash to unallocated reseller credit.</p>
         </div>
         <div>
-          <label for="t_rate" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Withholding tax %</label>
-          <input type="number" step="0.01" min="0" max="99" id="t_rate" name="wht_rate" x-model="rate" placeholder="0"
-                 class="mt-1.5 block w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-white">
-          <p class="mt-1 text-xs text-slate-400">Leave blank if none.</p>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">Credited (gross)</label>
-          <p class="mt-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold tabular-nums text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300"
-             x-text="'{{ billing_account.currency }} ' + gross.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})"></p>
-          <p class="mt-1 text-xs text-slate-400" x-show="wht > 0" x-text="'WHT receivable: {{ billing_account.currency }} ' + wht.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})"></p>
+          <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">Scope</label>
+          <p class="mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            Invoice allocation happens after credit is verified. Automatic WHT is available only on invoice-linked customer bank-transfer intents.
+          </p>
         </div>
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
@@ -183,7 +174,7 @@
       <button type="submit" class="rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700">
         Submit transfer receipt
       </button>
-      <p class="text-xs text-slate-500 dark:text-slate-400">We verify the receipt and credit the gross to your account; the withheld tax is tracked until you provide a WHT certificate.</p>
+      <p class="text-xs text-slate-500 dark:text-slate-400">We verify the receipt and add the confirmed cash to your reseller credit, then you can allocate it to invoices.</p>
     </form>
     {% endif %}
 

@@ -557,6 +557,75 @@ def test_verify_with_auto_allocate_pays_open_invoice(db_session):
     assert Decimal(str(allocations[0].amount)) == Decimal("3000.00")
 
 
+def test_verify_direct_transfer_wht_uses_snapshot_and_rejects_amount_tampering(
+    db_session,
+):
+    from app.models.payment_proof import WithholdingTaxRecord
+
+    sub = _account(db_session)
+    invoice = _open_invoice(db_session, sub, amount="107500.00")
+    intent = TopupIntent(
+        account_id=sub.id,
+        reference="TRF-WHT-SNAPSHOT",
+        provider_type=DIRECT_TRANSFER_PROVIDER,
+        currency="NGN",
+        requested_amount=Decimal("102500.00"),
+        status=TopupIntentStatus.submitted.value,
+        metadata_={
+            "payment_method": "bank_transfer",
+            "payment_flow": "invoice_payment",
+            "invoice_id": str(invoice.id),
+            "withholding_tax": {
+                "schema_version": 1,
+                "account_id": str(sub.id),
+                "policy_version": 5,
+                "source_invoice_id": str(invoice.id),
+                "currency": "NGN",
+                "vat_exclusive_amount": "100000.00",
+                "vat_amount": "7500.00",
+                "gross_amount": "107500.00",
+                "withholding_tax_rate_percent": "5.00",
+                "withholding_tax_amount": "5000.00",
+                "net_amount": "102500.00",
+            },
+        },
+    )
+    db_session.add(intent)
+    db_session.commit()
+    proof = _submit_command(
+        db_session,
+        str(sub.id),
+        submitted_by=str(sub.id),
+        amount="102500.00",
+        reference="TRF-WHT-SNAPSHOT",
+        file_path="uploads/payment_proofs/wht-snapshot.png",
+    )
+
+    with pytest.raises(svc.PaymentProofReviewError) as exc:
+        _verify(db_session, proof["id"], verified_by="admin-1", amount="100000.00")
+    assert exc.value.code == "financial.payment_proofs.verified_amount_conflict"
+
+    out = _verify(db_session, proof["id"], verified_by="admin-1")
+    payment = db_session.get(Payment, out["payment_id"])
+    record = db_session.get(WithholdingTaxRecord, out["withholding_tax_record_id"])
+    db_session.refresh(invoice)
+
+    assert payment is not None
+    assert payment.amount == Decimal("107500.00")
+    assert record is not None
+    assert record.account_id == sub.id
+    assert record.billing_account_id is None
+    assert record.source_invoice_id == invoice.id
+    assert record.policy_version == 5
+    assert record.vat_exclusive_amount == Decimal("100000.00")
+    assert record.vat_amount == Decimal("7500.00")
+    assert record.gross_amount == Decimal("107500.00")
+    assert record.net_amount == Decimal("102500.00")
+    assert record.wht_amount == Decimal("5000.00")
+    assert record.wht_rate == Decimal("5.00")
+    assert invoice.status == InvoiceStatus.paid
+
+
 def test_duplicate_reference_is_flagged_on_submit(db_session):
     sub = _account(db_session)
     first = _submit(db_session, sub, reference="TRF-DUP", file_path="a.png")

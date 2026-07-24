@@ -141,6 +141,30 @@ def test_tax_owner_stages_wht_audit_and_events_once() -> None:
     assert "EventType.withholding_tax_receivable_recorded" not in payment_proof_source
 
 
+def test_wht_policy_and_basis_stay_server_owned() -> None:
+    direct_transfer_source = _read("app/services/direct_transfer_intents.py")
+    proof_source = _read("app/services/payment_proofs.py")
+    reseller_route = _read("app/web/reseller/routes.py")
+    reseller_template = _read("templates/reseller/billing/index.html")
+    customer_template = _read("templates/customer/billing/topup_transfer.html")
+
+    assert "customer_tax_policies.get_customer_withholding_tax_policy" in (
+        direct_transfer_source
+    )
+    assert "subtotal * rate_percent" in direct_transfer_source
+    assert "wht_amount = round_money(total * rate_percent" not in (
+        direct_transfer_source
+    )
+    assert "withholding_tax_basis_unavailable" in proof_source
+    assert "allow_server_wht_snapshot=True" in proof_source
+    assert 'name="wht_rate"' not in reseller_template
+    assert 'name="gross_amount"' not in reseller_template
+    assert "wht_rate: str | None = Form" not in reseller_route
+    assert "gross_amount: str | None = Form" not in reseller_route
+    assert "WHT rate" in customer_template
+    assert "Certificate amount outstanding" in customer_template
+
+
 def test_credit_note_owner_persists_tax_point_for_issuance_adapters() -> None:
     owner = _read("app/services/billing/credit_notes.py")
     assert "issued_at=datetime.now(UTC)" in owner

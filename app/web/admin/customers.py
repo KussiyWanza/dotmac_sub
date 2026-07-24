@@ -176,13 +176,21 @@ def _load_tax_rates(db: Session):
 def _billing_form_defaults(db: Session, customer_type: str, customer) -> dict[str, str]:
     values = web_customer_actions_service.billing_form_defaults(customer)
     if customer is not None:
+        from app.services import customer_tax_policies
         from app.services.collections.grace_policy import (
             resolve_effective_grace_policy,
         )
 
         grace = resolve_effective_grace_policy(db, customer)
+        wht_policy = customer_tax_policies.get_customer_withholding_tax_policy(
+            db,
+            account_id=customer.id,
+        )
         values["effective_grace_days"] = str(grace.days)
         values["effective_grace_source"] = grace.source.replace("_", " ")
+        values["withholding_tax_enabled"] = (
+            "true" if wht_policy.withholding_tax_enabled else "false"
+        )
     return values
 
 
@@ -1377,6 +1385,7 @@ def person_update(
     min_balance: str | None = Form(None),
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
+    withholding_tax_enabled: str | None = Form(None),
     payment_method: str | None = Form(None),
     metadata: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -1417,6 +1426,7 @@ def person_update(
             min_balance=min_balance,
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
+            withholding_tax_enabled=withholding_tax_enabled,
             payment_method=payment_method,
             metadata_json=web_customer_actions_service.parse_json_object(
                 metadata, "metadata"
@@ -1497,6 +1507,7 @@ def business_update(
     min_balance: str | None = Form(None),
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
+    withholding_tax_enabled: str | None = Form(None),
     payment_method: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -1519,6 +1530,7 @@ def business_update(
             min_balance=min_balance,
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
+            withholding_tax_enabled=withholding_tax_enabled,
             payment_method=payment_method,
             actor_id=_get_actor_id(request),
         )

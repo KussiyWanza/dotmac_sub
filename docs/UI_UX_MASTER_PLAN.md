@@ -435,10 +435,16 @@ record.
 - `/admin/billing/tax-accounting` owns the Sub operator experience for the WHT
   evidence lifecycle. It provides server-side search, status filters, counts,
   newest-first ordering, and pagination; it has no account-mapping or posting
-  controls.
+  controls. That queue may show direct-customer or consolidated-account WHT
+  records and must render the correct customer/account identity rather than
+  assuming every row belongs to a reseller.
 - Invoice/credit-note tax treatment and payment WHT facts flow through bounded
   sync projections to the existing ERP pull integration. ERP fails closed when
   an effective account mapping is missing or ambiguous.
+- Customer-facing automatic WHT is limited to invoice-linked direct bank
+  transfer with an authoritative VAT-exclusive basis. Arbitrary account-credit
+  deposits and online/card checkout remain full-value and do not ask the
+  customer for a WHT rate.
 
 ### 3k. Payment Channels (`/admin/settings/billing/payment-channels`)
 

@@ -30,7 +30,7 @@ from app.models.payment_proof import (
     WithholdingTaxStatus,
     WithholdingTaxTransition,
 )
-from app.models.subscriber import Reseller
+from app.models.subscriber import Reseller, Subscriber
 from app.schemas.status_presentation import StatusPresentation
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
@@ -144,7 +144,8 @@ class WithholdingTaxReportRow:
     wht_rate: Decimal | None
     status: WithholdingTaxStatus
     status_presentation: StatusPresentation
-    billing_account_id: uuid.UUID
+    account_id: uuid.UUID | None
+    billing_account_id: uuid.UUID | None
     reseller_id: uuid.UUID | None
 
 
@@ -221,7 +222,8 @@ class TaxReportResult:
 @dataclass(frozen=True, slots=True)
 class WithholdingTaxRecordSummary:
     record_id: uuid.UUID
-    billing_account_id: uuid.UUID
+    account_id: uuid.UUID | None
+    billing_account_id: uuid.UUID | None
     reseller_id: uuid.UUID | None
     payment_id: uuid.UUID | None
     gross_amount: Decimal
@@ -236,9 +238,11 @@ class WithholdingTaxRecordSummary:
 @dataclass(frozen=True, slots=True)
 class WithholdingTaxOperationRecord:
     record_id: uuid.UUID
-    billing_account_id: uuid.UUID
+    account_id: uuid.UUID | None
+    billing_account_id: uuid.UUID | None
     reseller_id: uuid.UUID | None
     reseller_name: str | None
+    account_name: str | None
     currency: str
     wht_amount: Decimal
     status: WithholdingTaxStatus
@@ -590,6 +594,7 @@ def _wht_projection(
             wht_rate=record.wht_rate,
             status=record.status,
             status_presentation=withholding_tax_status_presentation(record.status),
+            account_id=record.account_id,
             billing_account_id=record.billing_account_id,
             reseller_id=record.reseller_id,
         )
@@ -682,7 +687,8 @@ def _initialize_withholding_tax_lifecycle(
 def stage_withholding_tax_receivable(
     db: Session,
     *,
-    billing_account_id: uuid.UUID,
+    account_id: uuid.UUID | None,
+    billing_account_id: uuid.UUID | None,
     reseller_id: uuid.UUID | None,
     payment_id: uuid.UUID,
     payment_proof_id: uuid.UUID,
@@ -690,6 +696,10 @@ def stage_withholding_tax_receivable(
     net_amount: Decimal,
     wht_amount: Decimal,
     wht_rate: Decimal | None,
+    vat_exclusive_amount: Decimal | None = None,
+    vat_amount: Decimal | None = None,
+    source_invoice_id: uuid.UUID | None = None,
+    policy_version: int | None = None,
     currency: str,
     context: CommandContext,
 ) -> WithholdingTaxRecord:
@@ -699,6 +709,15 @@ def stage_withholding_tax_receivable(
     gross_value = _money(gross_amount)
     net_value = _money(net_amount)
     wht_value = _money(wht_amount)
+    vat_exclusive_value = (
+        _money(vat_exclusive_amount) if vat_exclusive_amount is not None else None
+    )
+    vat_value = _money(vat_amount) if vat_amount is not None else None
+    if (account_id is None) == (billing_account_id is None):
+        raise _error(
+            "receivable_invalid",
+            "WHT source evidence requires exactly one target account scope.",
+        )
     if gross_value <= 0 or net_value <= 0 or wht_value <= 0:
         raise _error(
             "receivable_invalid",
@@ -722,13 +741,26 @@ def stage_withholding_tax_receivable(
     )
     if existing is not None:
         exact_replay = (
-            existing.billing_account_id == billing_account_id
+            existing.account_id == account_id
+            and existing.billing_account_id == billing_account_id
+            and existing.source_invoice_id == source_invoice_id
             and existing.reseller_id == reseller_id
             and existing.payment_proof_id == payment_proof_id
             and _money(existing.gross_amount) == gross_value
             and _money(existing.net_amount) == net_value
             and _money(existing.wht_amount) == wht_value
             and existing.wht_rate == wht_rate
+            and existing.policy_version == policy_version
+            and (
+                _money(existing.vat_exclusive_amount)
+                if existing.vat_exclusive_amount is not None
+                else None
+            )
+            == vat_exclusive_value
+            and (
+                _money(existing.vat_amount) if existing.vat_amount is not None else None
+            )
+            == vat_value
             and _currency(existing.currency) == normalized_currency
         )
         if not exact_replay:
@@ -740,6 +772,7 @@ def stage_withholding_tax_receivable(
         return existing
 
     record = WithholdingTaxRecord(
+        account_id=account_id,
         billing_account_id=billing_account_id,
         reseller_id=reseller_id,
         payment_id=payment_id,
@@ -748,6 +781,10 @@ def stage_withholding_tax_receivable(
         net_amount=net_value,
         wht_amount=wht_value,
         wht_rate=wht_rate,
+        vat_exclusive_amount=vat_exclusive_value,
+        vat_amount=vat_value,
+        source_invoice_id=source_invoice_id,
+        policy_version=policy_version,
         currency=normalized_currency,
         status=WithholdingTaxStatus.pending,
     )
@@ -764,10 +801,19 @@ def stage_withholding_tax_receivable(
             "aggregate_version": str(context.command_id),
             "payment_proof_id": str(payment_proof_id),
             "payment_id": str(payment_id),
-            "billing_account_id": str(billing_account_id),
+            "account_id": str(account_id) if account_id else None,
+            "billing_account_id": (
+                str(billing_account_id) if billing_account_id else None
+            ),
+            "source_invoice_id": str(source_invoice_id) if source_invoice_id else None,
+            "policy_version": policy_version,
             "gross_amount": str(gross_value),
             "net_amount": str(net_value),
             "wht_amount": str(wht_value),
+            "vat_exclusive_amount": (
+                str(vat_exclusive_value) if vat_exclusive_value is not None else None
+            ),
+            "vat_amount": str(vat_value) if vat_value is not None else None,
             "currency": normalized_currency,
             "command_id": str(context.command_id),
             "correlation_id": str(context.correlation_id),
@@ -835,6 +881,7 @@ def list_withholding_tax_records(
     return tuple(
         WithholdingTaxRecordSummary(
             record_id=record.id,
+            account_id=record.account_id,
             billing_account_id=record.billing_account_id,
             reseller_id=record.reseller_id,
             payment_id=record.payment_id,
@@ -1015,7 +1062,10 @@ def _stage_withholding_tax_transition(
             "aggregate_type": "withholding_tax_record",
             "aggregate_id": str(record.id),
             "aggregate_version": str(context.command_id),
-            "billing_account_id": str(record.billing_account_id),
+            "account_id": str(record.account_id) if record.account_id else None,
+            "billing_account_id": (
+                str(record.billing_account_id) if record.billing_account_id else None
+            ),
             "payment_id": str(record.payment_id) if record.payment_id else None,
             "from_status": previous.value,
             "to_status": command.target_status.value,
@@ -1064,9 +1114,14 @@ def build_tax_operations_state(
         filters.append(
             or_(
                 cast(WithholdingTaxRecord.id, String).ilike(pattern),
+                cast(WithholdingTaxRecord.account_id, String).ilike(pattern),
                 cast(WithholdingTaxRecord.billing_account_id, String).ilike(pattern),
                 WithholdingTaxRecord.certificate_reference.ilike(pattern),
                 Reseller.name.ilike(pattern),
+                Subscriber.company_name.ilike(pattern),
+                Subscriber.first_name.ilike(pattern),
+                Subscriber.last_name.ilike(pattern),
+                Subscriber.email.ilike(pattern),
             )
         )
     total = int(
@@ -1074,6 +1129,7 @@ def build_tax_operations_state(
             select(func.count(WithholdingTaxRecord.id))
             .select_from(WithholdingTaxRecord)
             .outerjoin(Reseller, Reseller.id == WithholdingTaxRecord.reseller_id)
+            .outerjoin(Subscriber, Subscriber.id == WithholdingTaxRecord.account_id)
             .where(*filters)
         )
         or 0
@@ -1082,6 +1138,8 @@ def build_tax_operations_state(
         db.scalars(
             select(WithholdingTaxRecord)
             .outerjoin(Reseller, Reseller.id == WithholdingTaxRecord.reseller_id)
+            .outerjoin(Subscriber, Subscriber.id == WithholdingTaxRecord.account_id)
+            .options(selectinload(WithholdingTaxRecord.account))
             .options(selectinload(WithholdingTaxRecord.reseller))
             .where(*filters)
             .order_by(
@@ -1100,9 +1158,11 @@ def build_tax_operations_state(
         wht_records=tuple(
             WithholdingTaxOperationRecord(
                 record_id=record.id,
+                account_id=record.account_id,
                 billing_account_id=record.billing_account_id,
                 reseller_id=record.reseller_id,
                 reseller_name=record.reseller.name if record.reseller else None,
+                account_name=record.account.name if record.account else None,
                 currency=_currency(record.currency),
                 wht_amount=_money(record.wht_amount),
                 status=record.status,

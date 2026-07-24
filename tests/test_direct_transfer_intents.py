@@ -68,6 +68,7 @@ def _patch_policy(monkeypatch, *, enabled: bool = True) -> None:
             "topup_min_amount": 1000,
             "topup_max_amount": 500000,
             "direct_bank_transfer_intent_ttl_days": 7,
+            "withholding_tax_rate_percent": "5.00",
         }[key]
 
     monkeypatch.setattr(svc, "resolve_value", resolve_policy)
@@ -392,3 +393,163 @@ def test_creation_fails_closed_when_feature_has_no_available_configuration(
 
     assert exc.value.code == "financial.direct_transfer_intent_commands.unavailable"
     assert db_session.query(TopupIntent).count() == 0
+
+
+def test_invoice_creation_snapshots_customer_wht_from_vat_exclusive_basis(
+    db_session, subscriber, monkeypatch
+):
+    _patch_policy(monkeypatch)
+    monkeypatch.setattr(
+        svc.customer_tax_policies,
+        "get_customer_withholding_tax_policy",
+        lambda *_args, **_kwargs: (
+            svc.customer_tax_policies.CustomerWithholdingTaxPolicy(
+                account_id=subscriber.id,
+                withholding_tax_enabled=True,
+                version=3,
+                updated_by="admin-1",
+                updated_at=None,
+            )
+        ),
+    )
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.issued,
+        currency="NGN",
+        subtotal=Decimal("100000.00"),
+        tax_total=Decimal("7500.00"),
+        total=Decimal("107500.00"),
+        balance_due=Decimal("107500.00"),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    result = _create(
+        db_session,
+        account_id=subscriber.id,
+        invoice_id=invoice.id,
+        idempotency_key="invoice-wht-snapshot",
+    )
+
+    intent = db_session.get(TopupIntent, result.intent_id)
+    assert result.requested_amount == Decimal("102500.00")
+    assert intent is not None
+    assert intent.metadata_["payment_flow"] == "invoice_payment"
+    assert intent.metadata_["invoice_id"] == str(invoice.id)
+    assert intent.metadata_["withholding_tax"] == {
+        "schema_version": 1,
+        "account_id": str(subscriber.id),
+        "policy_version": 3,
+        "source_invoice_id": str(invoice.id),
+        "currency": "NGN",
+        "vat_exclusive_amount": "100000.00",
+        "vat_amount": "7500.00",
+        "gross_amount": "107500.00",
+        "withholding_tax_rate_percent": "5.00",
+        "withholding_tax_amount": "5000.00",
+        "net_amount": "102500.00",
+    }
+
+
+def test_invoice_creation_omits_wht_snapshot_when_customer_policy_disabled(
+    db_session, subscriber, monkeypatch
+):
+    _patch_policy(monkeypatch)
+    monkeypatch.setattr(
+        svc.customer_tax_policies,
+        "get_customer_withholding_tax_policy",
+        lambda *_args, **_kwargs: (
+            svc.customer_tax_policies.CustomerWithholdingTaxPolicy(
+                account_id=subscriber.id,
+                withholding_tax_enabled=False,
+                version=0,
+                updated_by=None,
+                updated_at=None,
+            )
+        ),
+    )
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.issued,
+        currency="NGN",
+        subtotal=Decimal("100000.00"),
+        tax_total=Decimal("7500.00"),
+        total=Decimal("107500.00"),
+        balance_due=Decimal("107500.00"),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    result = _create(
+        db_session,
+        account_id=subscriber.id,
+        invoice_id=invoice.id,
+        idempotency_key="invoice-no-wht-snapshot",
+    )
+
+    intent = db_session.get(TopupIntent, result.intent_id)
+    assert result.requested_amount == Decimal("107500.00")
+    assert intent is not None
+    assert "withholding_tax" not in (intent.metadata_ or {})
+
+
+def test_invoice_creation_snapshot_survives_later_setting_change(
+    db_session, subscriber, monkeypatch
+):
+    _patch_policy(monkeypatch)
+    monkeypatch.setattr(
+        svc.customer_tax_policies,
+        "get_customer_withholding_tax_policy",
+        lambda *_args, **_kwargs: (
+            svc.customer_tax_policies.CustomerWithholdingTaxPolicy(
+                account_id=subscriber.id,
+                withholding_tax_enabled=True,
+                version=7,
+                updated_by="admin-1",
+                updated_at=None,
+            )
+        ),
+    )
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.issued,
+        currency="NGN",
+        subtotal=Decimal("100000.00"),
+        tax_total=Decimal("7500.00"),
+        total=Decimal("107500.00"),
+        balance_due=Decimal("107500.00"),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+    first = _create(
+        db_session,
+        account_id=subscriber.id,
+        invoice_id=invoice.id,
+        idempotency_key="invoice-snapshot-stable",
+    )
+
+    monkeypatch.setattr(
+        svc,
+        "resolve_value",
+        lambda _db, _domain, key: {
+            "topup_min_amount": 1000,
+            "topup_max_amount": 500000,
+            "direct_bank_transfer_intent_ttl_days": 7,
+            "withholding_tax_rate_percent": "10.00",
+        }[key],
+    )
+
+    same = _create(
+        db_session,
+        account_id=subscriber.id,
+        invoice_id=invoice.id,
+        idempotency_key="invoice-snapshot-stable",
+    )
+
+    persisted = db_session.get(TopupIntent, first.intent_id)
+    assert same.intent_id == first.intent_id
+    assert persisted is not None
+    assert (
+        persisted.metadata_["withholding_tax"]["withholding_tax_rate_percent"] == "5.00"
+    )
+    assert persisted.metadata_["withholding_tax"]["withholding_tax_amount"] == "5000.00"

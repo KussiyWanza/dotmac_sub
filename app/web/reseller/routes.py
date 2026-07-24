@@ -424,21 +424,17 @@ def reseller_billing_pay_intent(
 async def reseller_billing_pay_transfer(
     request: Request,
     amount: str = Form(...),
-    gross_amount: str = Form(""),
-    wht_rate: str = Form(""),
     bank_name: str = Form(""),
     reference: str = Form(""),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Reseller bulk bank-transfer receipt (optionally net of withholding tax)."""
+    """Reseller bulk bank-transfer receipt for unallocated credit."""
     return await web_reseller_billing_service.billing_submit_transfer_proof(
         request,
         db,
         file=file,
         amount=amount,
-        gross_amount=gross_amount or None,
-        wht_rate=wht_rate or None,
         bank_name=bank_name or None,
         reference=reference or None,
     )

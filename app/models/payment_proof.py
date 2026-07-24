@@ -17,6 +17,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -117,6 +118,11 @@ class WithholdingTaxRecord(Base):
 
     __tablename__ = "withholding_tax_records"
     __table_args__ = (
+        CheckConstraint(
+            "(CASE WHEN account_id IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN billing_account_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            name="ck_withholding_tax_records_exactly_one_target",
+        ),
         Index(
             "uq_withholding_tax_records_payment_id",
             "payment_id",
@@ -127,10 +133,16 @@ class WithholdingTaxRecord(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    billing_account_id: Mapped[uuid.UUID] = mapped_column(
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id"),
+        nullable=True,
+        index=True,
+    )
+    billing_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("billing_accounts.id"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     reseller_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -146,6 +158,12 @@ class WithholdingTaxRecord(Base):
     net_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     wht_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     wht_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    vat_exclusive_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    vat_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    source_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True, index=True
+    )
+    policy_version: Mapped[int | None] = mapped_column(Integer)
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     status: Mapped[WithholdingTaxStatus] = mapped_column(
         Enum(WithholdingTaxStatus),
@@ -168,8 +186,10 @@ class WithholdingTaxRecord(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
+    account = relationship("Subscriber", foreign_keys=[account_id])
     billing_account = relationship("BillingAccount")
     reseller = relationship("Reseller")
+    source_invoice = relationship("Invoice")
     payment = relationship("Payment", back_populates="withholding_tax_record")
     payment_proof = relationship("PaymentProof")
     transitions = relationship(

@@ -324,16 +324,10 @@ async def billing_submit_transfer_proof(
     *,
     file,
     amount: str,
-    gross_amount: str | None = None,
-    wht_rate: str | None = None,
     bank_name: str | None = None,
     reference: str | None = None,
 ):
-    """Record a reseller bulk bank-transfer receipt (optionally net of WHT).
-
-    ``amount`` is the net cash transferred; ``gross_amount``/``wht_rate`` capture
-    any tax withheld at source. The billing account is credited the gross on
-    staff verification and the WHT becomes a tracked receivable."""
+    """Record a reseller bulk bank-transfer receipt for unallocated credit."""
     context = _require_reseller_context(request, db)
     if not context:
         return RedirectResponse(url="/reseller/auth/login", status_code=303)
@@ -362,8 +356,6 @@ async def billing_submit_transfer_proof(
             reference=reference,
             file_path=path,
             billing_account_id=billing_account_id,
-            gross_amount=gross_amount,
-            wht_rate=wht_rate,
         )
     except Exception as exc:  # noqa: BLE001 - surface as a friendly redirect
         detail = exc.message if isinstance(exc, DomainError) else str(exc)

@@ -163,6 +163,7 @@ def billing_form_defaults(subscriber: Subscriber | None) -> dict[str, str]:
         "grace_period_days": "",
         "min_balance": "",
         "tax_rate_id": "",
+        "withholding_tax_enabled": "false",
         "payment_method": "",
     }
     if not subscriber:
@@ -2129,6 +2130,7 @@ def update_person_customer(
     min_balance: str | None,
     captive_redirect_enabled: str | None,
     tax_rate_id: str | None,
+    withholding_tax_enabled: str | None,
     payment_method: str | None,
     metadata_json: dict | None,
     actor_id: str | None = None,
@@ -2204,6 +2206,30 @@ def update_person_customer(
         subscriber_id=customer_id,
         payload=SubscriberUpdate.model_validate(data),
     )
+    from app.services import customer_tax_policies
+
+    # Capture the command inputs while the read transaction is still open, then
+    # release it before entering the WHT-policy owner boundary, which requires a
+    # transaction-free session at entry. Reading before.id after the release
+    # would re-expire the row and reopen a transaction.
+    wht_account_id = before.id
+    wht_actor = str(actor_id or f"customer:{before.id}")
+    wht_enabled = withholding_tax_enabled == "true"
+    db_session_adapter.release_read_transaction(db)
+    customer_tax_policies.set_customer_withholding_tax_policy(
+        db,
+        customer_tax_policies.SetCustomerWithholdingTaxPolicyCommand(
+            account_id=wht_account_id,
+            withholding_tax_enabled=wht_enabled,
+            updated_by=wht_actor,
+        ),
+        context=CommandContext.system(
+            actor=wht_actor,
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Administrator updated customer withholding-tax eligibility",
+            idempotency_key=f"customer-wht-policy:{wht_account_id}:{wht_enabled}",
+        ),
+    )
     if requested_billing_approval is False:
         _apply_billing_approval_command(
             db,
@@ -2256,6 +2282,7 @@ def update_business_customer(
     min_balance: str | None,
     captive_redirect_enabled: str | None,
     tax_rate_id: str | None,
+    withholding_tax_enabled: str | None,
     payment_method: str | None,
     actor_id: str | None = None,
 ):
@@ -2297,6 +2324,30 @@ def update_business_customer(
         db=db,
         subscriber_id=customer_id,
         payload=payload,
+    )
+    from app.services import customer_tax_policies
+
+    # Capture the command inputs while the read transaction is still open, then
+    # release it before entering the WHT-policy owner boundary, which requires a
+    # transaction-free session at entry. Reading before.id after the release
+    # would re-expire the row and reopen a transaction.
+    wht_account_id = before.id
+    wht_actor = str(actor_id or f"customer:{before.id}")
+    wht_enabled = withholding_tax_enabled == "true"
+    db_session_adapter.release_read_transaction(db)
+    customer_tax_policies.set_customer_withholding_tax_policy(
+        db,
+        customer_tax_policies.SetCustomerWithholdingTaxPolicyCommand(
+            account_id=wht_account_id,
+            withholding_tax_enabled=wht_enabled,
+            updated_by=wht_actor,
+        ),
+        context=CommandContext.system(
+            actor=wht_actor,
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Administrator updated customer withholding-tax eligibility",
+            idempotency_key=f"customer-wht-policy:{wht_account_id}:{wht_enabled}",
+        ),
     )
     if requested_billing_approval is False:
         _apply_billing_approval_command(

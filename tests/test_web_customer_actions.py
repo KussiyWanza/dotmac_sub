@@ -65,6 +65,7 @@ def test_update_person_customer_persists_billing_overrides(db_session, subscribe
         min_balance="125.50",
         captive_redirect_enabled="false",
         tax_rate_id=str(tax_rate.id),
+        withholding_tax_enabled=None,
         payment_method="transfer",
         metadata_json=None,
     )
@@ -112,6 +113,7 @@ def test_update_business_customer_applies_billing_overrides_to_linked_subscriber
         min_balance="75.00",
         captive_redirect_enabled="false",
         tax_rate_id=str(tax_rate.id),
+        withholding_tax_enabled=None,
         payment_method="cash",
     )
 
@@ -434,6 +436,7 @@ def test_update_person_rejects_blank_name(db_session, subscriber):
             min_balance=None,
             captive_redirect_enabled="false",
             tax_rate_id=None,
+            withholding_tax_enabled=None,
             payment_method=None,
             metadata_json=None,
         )
@@ -472,6 +475,7 @@ def _update_person(db, subscriber, **overrides):
         min_balance=None,
         captive_redirect_enabled="false",
         tax_rate_id=None,
+        withholding_tax_enabled=None,
         payment_method=None,
         metadata_json=None,
     )

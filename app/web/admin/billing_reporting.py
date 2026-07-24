@@ -23,6 +23,7 @@ from app.services.audit_helpers import (
     log_audit_event,
 )
 from app.services.auth_dependencies import require_permission
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 
 templates = Jinja2Templates(directory="templates")
@@ -149,6 +150,66 @@ def billing_tax_rate_create(
         )
     except Exception as exc:
         db.rollback()
+        state = web_billing_tax_rates_service.list_data(db)
+        from app.web.admin import get_current_user, get_sidebar_stats
+
+        return templates.TemplateResponse(
+            "admin/billing/tax_rates.html",
+            {
+                "request": request,
+                **state,
+                "audit_items": _tax_rate_audit_items(db),
+                "error": str(exc),
+                "active_page": "tax-rates",
+                "active_menu": "billing",
+                "current_user": get_current_user(request),
+                "sidebar_stats": get_sidebar_stats(db),
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/admin/billing/tax-rates", status_code=303)
+
+
+@router.post(
+    "/tax-rates/withholding-tax",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:tax:write"))],
+)
+def billing_withholding_tax_rate_update(
+    request: Request,
+    rate_percent: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        before = web_billing_tax_rates_service.get_withholding_tax_rate_percent(db)
+        setting = web_billing_tax_rates_service.save_withholding_tax_rate_percent(
+            db,
+            rate_percent=rate_percent,
+        )
+        after = web_billing_tax_rates_service.get_withholding_tax_rate_percent(db)
+        if before != after:
+            log_audit_event(
+                db=db,
+                request=request,
+                action="update",
+                entity_type="domain_setting",
+                entity_id=str(setting.id),
+                actor_id=_actor_id(request),
+                metadata={
+                    "changes": {
+                        "withholding_tax_rate_percent": {
+                            "from": before,
+                            "to": after,
+                        }
+                    }
+                },
+            )
+    except Exception as exc:
+        # The WHT-rate save validates before writing and its settings owner
+        # manages its own transaction, so the adapter only needs to release the
+        # read transaction (fails closed on any pending mutation) before
+        # re-rendering — it must not own a rollback.
+        db_session_adapter.release_read_transaction(db)
         state = web_billing_tax_rates_service.list_data(db)
         from app.web.admin import get_current_user, get_sidebar_stats
 

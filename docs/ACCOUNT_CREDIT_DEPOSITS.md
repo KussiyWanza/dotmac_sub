@@ -43,6 +43,14 @@ duration. When the downstream renewal owner actually funds a period it
 publishes the exact `prepaid_service.renewed` outcome; portal and notification
 views display that owner-provided renewed-through date.
 
+Arbitrary account-credit deposits do not invent a WHT basis. The deposit owner
+never calculates withholding tax from a deposit amount, never snapshots a
+customer-entered WHT rate, and never turns an unallocated reseller or customer
+credit into proof-backed WHT. Automatic WHT is reserved for invoice-linked
+direct bank-transfer intents whose authoritative VAT-exclusive basis is owned by
+the invoice and whose customer eligibility is owned by
+`financial.customer_tax_policies`.
+
 `financial.account_credit_applications` then locks the account, chooses eligible
 invoices and payment-backed credit deterministically, and invokes the payment
 allocation preview/confirmation owner. It never constructs allocation or ledger

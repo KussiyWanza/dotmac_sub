@@ -1757,6 +1757,7 @@ def get_direct_transfer_topup_page(db: Session, customer: dict) -> dict:
         "intent": intent,
         "bank_transfer": direct_bank_transfer_settings(db),
         "bank_transfer_accounts": enabled_direct_bank_transfer_accounts(db),
+        "withholding_tax": dict((intent.metadata_ or {}).get("withholding_tax") or {}),
     }
 
 

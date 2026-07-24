@@ -2097,6 +2097,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "control.settings_spec",
                     "customer.accounts",
+                    "financial.customer_tax_policies",
                     "financial.account_credit_deposits",
                     "financial.invoices",
                     "financial.topup_intents",
@@ -2104,8 +2105,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
                 notes=(
                     "This coordinator admits one typed customer creation command, resolves "
-                    "configuration and invoice/deposit policy from their owners, and "
-                    "commits the selected canonical intent participant exactly once."
+                    "configuration plus customer-specific WHT policy from their owners, "
+                    "fails closed when invoice-linked WHT lacks an authoritative VAT-"
+                    "exclusive basis, and commits the selected canonical intent "
+                    "participant exactly once."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2116,6 +2119,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authenticated direct-transfer creation command",
                                 "canonical customer account",
                                 "canonical payable invoice",
+                                "canonical customer WHT policy",
                                 "canonical direct-transfer configuration",
                                 "canonical direct-transfer lifetime and amount policy",
                                 "canonical deposit intent protocol",
@@ -2149,6 +2153,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical customer WHT policy",
+                            owner="financial.customer_tax_policies",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked customer withholding-tax eligibility, version, "
+                                "and operator provenance"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="canonical direct-transfer configuration",
                             owner="financial.topup_intents",
                             kind=AuthorityKind.CONTROL_INPUT,
@@ -2161,8 +2174,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="control.settings_spec",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed top-up minimum/maximum and direct-transfer intent "
-                                "lifetime settings with checked-in defaults and bounds"
+                                "typed top-up minimum/maximum, direct-transfer lifetime, "
+                                "and global WHT percentage settings with checked-in "
+                                "defaults and bounds"
                             ),
                         ),
                         AuthorityInput(
@@ -2229,9 +2243,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         retryable_codes=(),
                         fail_closed_on=(
                             "disabled feature or no enabled configured bank",
-                            "invalid lifetime or amount policy",
+                            "invalid lifetime, amount, or WHT rate policy",
                             "missing, wrong-account, draft, terminal, zero-balance, or "
                             "unsupported-currency invoice",
+                            "missing customer WHT policy, missing authoritative VAT-exclusive "
+                            "invoice basis, partial settlement, or inconsistent invoice tax "
+                            "evidence for an enabled WHT customer",
                             "deposit policy rejection or concurrent intent conflict",
                             "active caller transaction or manifest mismatch",
                         ),
@@ -2282,6 +2299,123 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_direct_transfer_intents.py",
                         "tests/test_customer_portal_topup_flow.py",
                         "tests/architecture/test_topup_intent_ownership.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="financial.customer_tax_policies",
+                module="app.services.customer_tax_policies",
+                owns=("customer withholding-tax eligibility policy",),
+                depends_on=("customer.accounts", "events.dispatcher"),
+                notes=(
+                    "This owner persists per-customer WHT eligibility as an audited "
+                    "financial policy. It does not own the global WHT rate, invoice tax "
+                    "basis, payment intent snapshot, or WHT lifecycle."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer withholding-tax eligibility policy",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "customer WHT policy command context",
+                                "canonical customer account",
+                                "canonical customer WHT policy record",
+                            ),
+                            canonical_writer="financial.customer_tax_policies",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="customer WHT policy command context",
+                            owner="financial.customer_tax_policies",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed actor, scope, reason, command, correlation, and "
+                                "idempotency evidence for a customer WHT policy change"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer account",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked customer account identity and existence",
+                        ),
+                        AuthorityInput(
+                            name="canonical customer WHT policy record",
+                            owner="financial.customer_tax_policies",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "unique per-account WHT enablement flag, version, actor, and "
+                                "updated timestamp"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "set_customer_withholding_tax_policy enters "
+                            "execute_owner_command once on a transaction-free session, "
+                            "locks the target customer and policy row, stages one "
+                            "versioned update, and commits or rolls back once."
+                        ),
+                        locking=(
+                            "The owner locks the target Subscriber first, then the unique "
+                            "CustomerTaxPolicy row for that account."
+                        ),
+                        idempotency=(
+                            "Repeated commands with the same target enabled state replay the "
+                            "existing policy version. State changes increment the policy "
+                            "version exactly once."
+                        ),
+                        retries=(
+                            "Adapters retry only the full command after rollback with the "
+                            "same context and idempotency evidence."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.customer_tax_policies.actor_required",
+                            "financial.customer_tax_policies.account_not_found",
+                            "financial.customer_tax_policies.invalid_command_context",
+                            "financial.customer_tax_policies.command_contract_violation",
+                            "financial.customer_tax_policies.nested_owner_command",
+                            "financial.customer_tax_policies.active_caller_transaction",
+                            "financial.customer_tax_policies.nested_transaction_completion",
+                        ),
+                        mapping_owner="admin customer billing adapters",
+                        retryable_codes=(),
+                        fail_closed_on=(
+                            "missing actor, missing customer account, or manifest mismatch",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("customer_tax_policy.updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries account identity, enabled state, policy "
+                            "version, and actor provenance only."
+                        ),
+                        replay=(
+                            "Replay may refresh projections or audit consumers only; it "
+                            "never re-enters the policy command."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="financial.customer_tax_policies",
+                    ),
+                    steward="finance operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FRONTEND_SPEC.md",
+                        "docs/ACCOUNT_CREDIT_DEPOSITS.md",
+                    ),
+                    test_refs=(
+                        "tests/test_subscriber_billing_config.py",
+                        "tests/test_direct_transfer_intents.py",
+                        "tests/test_customer_wht_policy_migration.py",
                     ),
                 ),
             ),
@@ -3570,8 +3704,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "The proof owner records submitted transfer evidence and review "
                     "state, then composes the canonical payment, WHT lifecycle, staff "
                     "work-item, audit, customer-intent, and event participants in one "
-                    "owner-managed transaction. HTTP adapters only map typed results "
-                    "and domain errors."
+                    "owner-managed transaction. Customer-entered WHT is admitted only "
+                    "through a server-issued invoice intent snapshot; consolidated "
+                    "arbitrary credit fails closed for automatic WHT. HTTP adapters only "
+                    "map typed results and domain errors."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3629,8 +3765,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="external:bank-transfer-submitter",
                             kind=AuthorityKind.EXTERNAL_OBSERVATION,
                             source=(
-                                "receipt file, claimed net/gross/WHT values, currency, "
-                                "bank, reference, and transfer timestamp"
+                                "receipt file, claimed net cash, currency, bank, reference, "
+                                "transfer timestamp, and optional receipt-side evidence; WHT "
+                                "money fields remain server-owned when admitted"
                             ),
                         ),
                         AuthorityInput(
@@ -3677,7 +3814,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "locked pending intent validation plus participant staging "
                                 "of the submitted status, exact proof/configured-bank link, "
-                                "and versioned intent event"
+                                "versioned intent event, and immutable invoice WHT snapshot "
+                                "metadata when present"
                             ),
                         ),
                         AuthorityInput(
@@ -3774,6 +3912,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.payment_proofs.duplicate_transfer_reference",
                             "financial.payment_proofs.deposit_settlement_rejected",
                             "financial.payment_proofs.billing_account_not_found",
+                            "financial.payment_proofs.withholding_tax_basis_unavailable",
+                            "financial.payment_proofs.verified_amount_conflict",
                             "financial.payment_proofs.verified_net_exceeds_gross",
                             "financial.payment_proofs.rejection_reason_required",
                             "financial.payment_proofs.invalid_command_context",
@@ -3788,7 +3928,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "missing or malformed transfer evidence",
                             "non-submitted or concurrently reviewed proof state",
                             "duplicate verified transfer references",
-                            "unreconciled withholding-tax values",
+                            "customer-entered WHT for arbitrary customer or consolidated "
+                            "bank-transfer proofs",
+                            "missing or conflicting server-owned WHT snapshot values",
                             "failure to stage an eligible payment, tax source, review work "
                             "item, top-up intent link, audit, notification, or event "
                             "consequence",
@@ -3994,9 +4136,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.payment_proofs",
                             kind=AuthorityKind.OBSERVATION,
                             source=(
-                                "typed billing-account, reseller, payment, proof, gross, net, "
-                                "WHT, rate, currency, actor, and correlation evidence admitted "
-                                "by the payment-proof coordinator"
+                                "typed subscriber-or-billing-account target, reseller, "
+                                "payment, proof, authoritative gross, net cash, WHT, VAT-"
+                                "exclusive basis, VAT, source invoice, policy version, "
+                                "currency, actor, and correlation evidence admitted by the "
+                                "payment-proof coordinator"
                             ),
                         ),
                         AuthorityInput(
@@ -4108,7 +4252,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "missing or malformed currency, date, filter, page, actor, or record "
                             "identity",
-                            "non-positive or unreconciled gross/net/WHT source evidence",
+                            "non-positive, dual-target, or unreconciled gross/net/WHT source "
+                            "evidence",
                             "illegal, unexplained, uncertified, or conflicting lifecycle evidence",
                             "active caller transaction or manifest mismatch",
                         ),

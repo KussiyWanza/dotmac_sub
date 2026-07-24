@@ -1090,6 +1090,64 @@ def test_create_invoice_payment_intent_bank_transfer_hands_off(
     assert intent.metadata_["payment_flow"] == "invoice_payment"
 
 
+def test_direct_transfer_topup_page_surfaces_server_calculated_wht(
+    monkeypatch, db_session, subscriber
+):
+    from app.services.customer_portal_flow_payments import (
+        get_direct_transfer_topup_page,
+    )
+    from app.services.topup_intents import DIRECT_TRANSFER_PROVIDER, TopupIntentStatus
+
+    intent = TopupIntent(
+        account_id=subscriber.id,
+        reference="TRF-WHT-PAGE",
+        provider_type=DIRECT_TRANSFER_PROVIDER,
+        currency="NGN",
+        requested_amount=Decimal("102500.00"),
+        status=TopupIntentStatus.pending.value,
+        metadata_={
+            "payment_flow": "invoice_payment",
+            "invoice_id": "11111111-1111-1111-1111-111111111111",
+            "withholding_tax": {
+                "schema_version": 1,
+                "account_id": str(subscriber.id),
+                "policy_version": 3,
+                "source_invoice_id": "11111111-1111-1111-1111-111111111111",
+                "currency": "NGN",
+                "vat_exclusive_amount": "100000.00",
+                "vat_amount": "7500.00",
+                "gross_amount": "107500.00",
+                "withholding_tax_rate_percent": "5.00",
+                "withholding_tax_amount": "5000.00",
+                "net_amount": "102500.00",
+            },
+        },
+    )
+    db_session.add(intent)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.customer_portal_flow_payments.direct_bank_transfer_enabled",
+        lambda _db: True,
+    )
+    monkeypatch.setattr(
+        "app.services.customer_portal_flow_payments.enabled_direct_bank_transfer_accounts",
+        lambda _db: [],
+    )
+
+    page = get_direct_transfer_topup_page(
+        db_session,
+        _invoice_customer(subscriber),
+    )
+
+    assert page["intent"].reference == "TRF-WHT-PAGE"
+    assert page["withholding_tax"]["gross_amount"] == "107500.00"
+    assert page["withholding_tax"]["vat_exclusive_amount"] == "100000.00"
+    assert page["withholding_tax"]["vat_amount"] == "7500.00"
+    assert page["withholding_tax"]["withholding_tax_rate_percent"] == "5.00"
+    assert page["withholding_tax"]["withholding_tax_amount"] == "5000.00"
+    assert page["withholding_tax"]["net_amount"] == "102500.00"
+
+
 def test_create_invoice_payment_intent_bank_transfer_allows_below_topup_min(
     monkeypatch, db_session, subscriber
 ):

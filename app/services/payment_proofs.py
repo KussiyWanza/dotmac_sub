@@ -48,7 +48,10 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.topup_intents import DirectTransferBankAccountEvidence
+from app.services.topup_intents import (
+    DIRECT_TRANSFER_PROVIDER,
+    DirectTransferBankAccountEvidence,
+)
 
 if TYPE_CHECKING:
     from app.schemas.billing import PaymentAllocationApply
@@ -440,6 +443,13 @@ def _submit_direct_transfer_proof(
         reference=intent.reference,
         paid_at=command.paid_at,
         file_path=command.file_path,
+        gross_amount=((intent.metadata_ or {}).get("withholding_tax") or {}).get(
+            "gross_amount"
+        ),
+        wht_rate=((intent.metadata_ or {}).get("withholding_tax") or {}).get(
+            "withholding_tax_rate_percent"
+        ),
+        allow_server_wht_snapshot=True,
     )
     topup_intents.stage_direct_transfer_proof_submission(
         db,
@@ -466,6 +476,7 @@ def _submit_proof(
     billing_account_id: str | None = None,
     gross_amount: MoneyInput = None,
     wht_rate: MoneyInput = None,
+    allow_server_wht_snapshot: bool = False,
 ) -> PaymentProofResult:
     """Record a transfer receipt.
 
@@ -493,6 +504,24 @@ def _submit_proof(
             "amount_non_positive",
             "Amount must be greater than 0",
             field="amount",
+        )
+    if (
+        account_id
+        and not allow_server_wht_snapshot
+        and (gross_amount not in (None, "") or wht_rate not in (None, ""))
+    ):
+        raise _error(
+            "withholding_tax_basis_unavailable",
+            "Customer transfer proofs cannot declare WHT outside the server-issued invoice intent snapshot",
+            field="account_id",
+        )
+    if billing_account_id and (
+        gross_amount not in (None, "") or wht_rate not in (None, "")
+    ):
+        raise _error(
+            "withholding_tax_basis_unavailable",
+            "Consolidated transfer proofs cannot declare WHT without an authoritative invoice basis",
+            field="billing_account_id",
         )
 
     try:
@@ -719,7 +748,7 @@ def _verify_proof(
             proof_id=proof_id,
         )
 
-    from app.schemas.billing import PaymentCreate
+    from app.schemas.billing import PaymentAllocationApply, PaymentCreate
     from app.services import billing as billing_service
     from app.services.billing._common import lock_account
 
@@ -773,6 +802,29 @@ def _verify_proof(
             TopupIntent.purpose == "account_credit_deposit",
         )
     )
+    direct_transfer_intent = db.scalar(
+        select(TopupIntent)
+        .where(
+            TopupIntent.account_id == proof.account_id,
+            TopupIntent.reference == proof.reference,
+            TopupIntent.provider_type == DIRECT_TRANSFER_PROVIDER,
+        )
+        .order_by(TopupIntent.created_at.desc())
+    )
+    direct_transfer_metadata = (
+        dict(direct_transfer_intent.metadata_ or {})
+        if direct_transfer_intent is not None
+        else {}
+    )
+    invoice_id_raw = (
+        str(direct_transfer_metadata.get("invoice_id") or "").strip()
+        if direct_transfer_metadata.get("payment_flow") == "invoice_payment"
+        else ""
+    )
+    withholding_tax_snapshot = dict(
+        direct_transfer_metadata.get("withholding_tax") or {}
+    )
+    wht_record_id: UUID | None = None
     if deposit_intent is not None:
         from app.services.account_credit_deposits import (
             AccountCreditDeposits,
@@ -803,16 +855,57 @@ def _verify_proof(
             ) from exc
         payment = settlement.payment
     else:
-        allocations = (
-            _open_invoice_allocations(db, proof.account_id, value)
-            if auto_allocate
-            else None
-        )
+        payment_amount = value
+        allocations = None
+        if invoice_id_raw:
+            try:
+                invoice_uuid = coerce_uuid(invoice_id_raw)
+            except (TypeError, ValueError) as exc:
+                raise _error(
+                    "invoice_not_found",
+                    "Direct-transfer intent is missing valid invoice evidence",
+                    invoice_id=invoice_id_raw,
+                ) from exc
+            if withholding_tax_snapshot:
+                expected_net = round_money(
+                    to_decimal(withholding_tax_snapshot.get("net_amount") or 0)
+                )
+                if value != expected_net:
+                    raise _error(
+                        "verified_amount_conflict",
+                        "Verified net cash does not match the server-issued WHT transfer amount",
+                        proof_id=str(proof.id),
+                    )
+                payment_amount = round_money(
+                    to_decimal(withholding_tax_snapshot.get("gross_amount") or 0)
+                )
+                proof.gross_amount = payment_amount
+                proof.wht_amount = round_money(
+                    to_decimal(
+                        withholding_tax_snapshot.get("withholding_tax_amount") or 0
+                    )
+                )
+                proof.wht_rate = round_money(
+                    to_decimal(
+                        withholding_tax_snapshot.get("withholding_tax_rate_percent")
+                        or 0
+                    )
+                )
+            allocations = [
+                PaymentAllocationApply(
+                    invoice_id=invoice_uuid,
+                    amount=payment_amount,
+                    memo="bank-transfer proof",
+                )
+            ]
+            auto_allocate = False
+        elif auto_allocate:
+            allocations = _open_invoice_allocations(db, proof.account_id, value)
         payment = billing_service.payments.stage_create(
             db,
             PaymentCreate(
                 account_id=proof.account_id,
-                amount=value,
+                amount=payment_amount,
                 currency=proof.currency,
                 status=PaymentStatus.succeeded,
                 paid_at=proof.paid_at or datetime.now(UTC),
@@ -822,6 +915,48 @@ def _verify_proof(
             ),
             auto_allocate=auto_allocate,
         )
+        if withholding_tax_snapshot:
+            from app.services import tax_accounting
+
+            wht_record = tax_accounting.stage_withholding_tax_receivable(
+                db,
+                account_id=proof.account_id,
+                billing_account_id=None,
+                reseller_id=None,
+                payment_id=payment.id,
+                payment_proof_id=proof.id,
+                gross_amount=payment_amount,
+                net_amount=value,
+                wht_amount=round_money(
+                    to_decimal(
+                        withholding_tax_snapshot.get("withholding_tax_amount") or 0
+                    )
+                ),
+                wht_rate=round_money(
+                    to_decimal(
+                        withholding_tax_snapshot.get("withholding_tax_rate_percent")
+                        or 0
+                    )
+                ),
+                vat_exclusive_amount=round_money(
+                    to_decimal(
+                        withholding_tax_snapshot.get("vat_exclusive_amount") or 0
+                    )
+                ),
+                vat_amount=round_money(
+                    to_decimal(withholding_tax_snapshot.get("vat_amount") or 0)
+                ),
+                source_invoice_id=coerce_uuid(
+                    str(
+                        withholding_tax_snapshot.get("source_invoice_id")
+                        or invoice_id_raw
+                    )
+                ),
+                policy_version=int(withholding_tax_snapshot.get("policy_version") or 0),
+                currency=proof.currency,
+                context=context,
+            )
+            wht_record_id = wht_record.id
     proof.status = PaymentProofStatus.verified
     proof.verified_amount = value
     proof.verified_by = str(verified_by)
@@ -850,7 +985,10 @@ def _verify_proof(
         proof=proof,
         event_type=EventType.payment_proof_verified,
     )
-    return PaymentProofResult.from_model(proof)
+    return PaymentProofResult.from_model(
+        proof,
+        withholding_tax_record_id=wht_record_id,
+    )
 
 
 def _verify_consolidated_proof(
@@ -999,6 +1137,7 @@ def _verify_consolidated_proof(
 
         record = tax_accounting.stage_withholding_tax_receivable(
             db,
+            account_id=None,
             billing_account_id=ba.id,
             reseller_id=ba.reseller_id,
             payment_id=payment.id,

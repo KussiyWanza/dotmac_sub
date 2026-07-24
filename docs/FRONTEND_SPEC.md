@@ -1093,9 +1093,22 @@ Page contract: this is the Sub finance-admin source-fact plane for moving WHT
 receivables through evidence-backed transitions. `financial.tax_accounting`
 owns both the read/context contract and commands; billing tax RBAC owns access.
 The WHT queue has server-side status/search filtering, newest-first ordering,
-counts, and pagination. Search covers reseller name, record ID, billing account
-ID, and certificate reference. Account mapping and journal operations belong in
-Dotmac ERP and are not presented here.
+counts, and pagination. Search covers reseller name, direct-customer identity,
+record ID, customer/billing account ID, and certificate reference. Rows may
+represent either a direct customer account or a consolidated billing account.
+Account mapping and journal operations belong in Dotmac ERP and are not
+presented here.
+
+For invoice-linked direct bank-transfer payments where the customer WHT policy
+is enabled, the customer portal receives a read-only server-owned snapshot with
+invoice total, VAT-exclusive WHT basis, VAT amount, configured WHT percentage,
+WHT deduction, exact bank-transfer amount, gross credit after verification, and
+the certificate amount that remains outstanding. Templates and clients must not
+ask the customer for a WHT rate, must not recalculate VAT-exclusive basis from
+gross or net values, and must not offer automatic WHT for arbitrary
+account-credit deposits or online/card checkout. When WHT is disabled or the
+payment method is not direct bank transfer, the portal preserves the existing
+full-value payment experience.
 
 ---
 
