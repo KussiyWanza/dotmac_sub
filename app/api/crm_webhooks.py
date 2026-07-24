@@ -37,6 +37,14 @@ QUOTE_EVENTS = {
 }
 
 
+class CrmTicketObservationNotReady(RuntimeError):
+    """The ticket event is valid but its executable capability is unavailable."""
+
+    def __init__(self, issue_codes: tuple[str, ...]) -> None:
+        super().__init__("CRM ticket observation capability is not ready")
+        self.issue_codes = issue_codes
+
+
 def _verify_signature(raw_body: bytes, presented: str | None, secret: str) -> None:
     if not secret:
         raise HTTPException(
@@ -197,6 +205,13 @@ async def receive_crm_event(
                     "event": event_type,
                 },
             )
+        from app.services.integrations.crm_ticket_readiness import (
+            resolve_crm_ticket_pull_readiness,
+        )
+
+        readiness = resolve_crm_ticket_pull_readiness(db, control_enabled=True)
+        if not readiness.ready:
+            raise CrmTicketObservationNotReady(readiness.issue_codes)
         ticket_id = str(payload.get("ticket_id") or "").strip()
         if not ticket_id:
             return _complete(
@@ -223,7 +238,15 @@ async def receive_crm_event(
             {"status": "queued", "event": event_type, "ticket_id": ticket_id},
         )
     except Exception as exc:
-        _failed(db, receipt, exc)
+        if isinstance(exc, CrmTicketObservationNotReady):
+            integration_inbox.fail_claimed_consequence(
+                db,
+                receipt_id=receipt.id,
+                error_code="crm_ticket_observation_not_ready",
+                error_detail=",".join(exc.issue_codes),
+            )
+        else:
+            _failed(db, receipt, exc)
         if isinstance(exc, HTTPException):
             raise
         raise HTTPException(

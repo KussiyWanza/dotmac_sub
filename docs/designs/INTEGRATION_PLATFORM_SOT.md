@@ -131,11 +131,12 @@ connector never converts external state directly into a Sub table write.
 | Owner | Responsibility |
 | --- | --- |
 | `integration.registry` | Deployed definitions, manifest validation, compatibility, capability implementation catalogue |
-| `integration.installations` | Installation lifecycle, immutable config revisions, capability grants and bindings |
+| `integration.installations` | Installation lifecycle, immutable config revisions, connection-validated capability grants and bindings |
 | `integration.runtime` | Runner selection, version pinning, operation envelopes, deadlines and cancellation |
 | `integration.inbox` | Verified inbound receipt, provider-event dedupe and processing lifecycle |
 | `integration.delivery` | External delivery rows, queueing, retry, dead letter and replay |
-| `integration.sync` | Jobs, runs, leases, checkpoints and per-record outcomes |
+| `integration.jobs` | Integration targets, capability-bound jobs, pinned runs and their operator lifecycle |
+| `integration.sync` | Sync orchestration, leases, checkpoints and per-record outcomes |
 | `events.store` | Transactional domain-event persistence and handler-attempt evidence |
 | `scheduler.registry` | Effective cadence, enablement and Celery schedule registration |
 | `secrets.reference_store` | OpenBao reference parsing, resolution and bounded caching |
@@ -299,6 +300,13 @@ Enablement requires current manifest/config compatibility, resolvable secret
 references, successful connection validation, explicit capability grants,
 required domain policy bindings, and current security approval.
 
+Adding a capability to an enabled installation uses
+`provision_installation_capability`. The owner locks the reviewed installation,
+checks its exact manifest pin and prior binding state, stages the new grant,
+performs static and live connection validation, and commits the restored
+enabled installation atomically. Failed validation rolls the entire change
+back, including the temporary disabled state of sibling bindings.
+
 ## Security and authorization
 
 Every manifest declares requested capabilities, data classes, secret bindings,
@@ -409,7 +417,7 @@ interactive traffic uses typed service ports.
 | Connector catalogue | File discovery and static catalogue projections | Manifest-based `integration.registry` | Runtime registration and manifest validation are required |
 | Installation configuration | Provider environment settings and provider-specific credential columns | `integration.installations` with immutable config revisions and secret references | Platform-managed callers resolve enabled version-pinned bindings only |
 | Sync dispatch | String `adapter_key/action` selection | Capability-bound `integration.sync` through `integration.runtime` | Active jobs require a capability binding |
-| CRM | Direct `CRMClient` construction and CRM-specific delivery records | `dotmac.crm` capabilities plus `integration.inbox` | All subscriber, ticket, operational, portal, quote, and inbound-event calls use the runtime |
+| CRM | Direct `CRMClient` construction and CRM-specific delivery records | `dotmac.crm` capabilities plus `integration.inbox` | All subscriber, ticket, operational, portal, quote, and inbound-event calls use the runtime; enabled ticket pull additionally requires one connection-validated ticket binding and one active bound manual job |
 | Outbound webhooks and hooks | `events.webhook_deliveries`, webhook endpoint tables, and `integration.hooks` | `integration.delivery` using `events.deliver.v1` | Duplicate tables, services, routes, tasks, and CLI execution are removed |
 | WhatsApp messaging | Settings-backed provider client | Direct Meta `messaging.send.v1`, `messaging.receive.v1`, and `messaging.templates.read.v1` bindings | Outbound callers and the verified inbound route use one installation |
 | ERP | Direct ERP client construction | `dotmac.erp` versioned capabilities | Outbox, inventory, operations, expense, purchasing, and regulatory calls use the runtime |
@@ -435,6 +443,9 @@ delivery/inbox evidence remain intact.
 7. Paystack and Flutterwave payment intent, webhook verification,
    reconciliation, and refunds while billing retains financial authority.
 8. Destructive cutover migration and removal of superseded application paths.
+9. Explicit CRM ticket-observation provisioning, exact job activation, and a
+   deployment/scheduler readiness invariant preventing an enabled control from
+   running without its binding and job.
 
 Signed external artifacts and OAuth installation grants require separate
 approved designs before they can become live owners. They are not implicit

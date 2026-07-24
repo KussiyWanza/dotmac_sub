@@ -62,6 +62,10 @@ class EventType(enum.Enum):
     integration_installation_manifest_adopted = (
         "integration.installation.manifest_adopted"
     )
+    integration_installation_capability_provisioned = (
+        "integration.installation.capability_provisioned"
+    )
+    integration_job_capability_activated = "integration.job.capability_activated"
     account_credit_deposited = "account_credit.deposited"
     prepaid_service_renewed = "prepaid_service.renewed"
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"

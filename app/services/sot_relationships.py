@@ -18331,6 +18331,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "integration.installations.invalid_transition",
                             "integration.installations.manifest_adoption_incompatible",
                             "integration.installations.manifest_adoption_scope_invalid",
+                            "integration.installations.capability_provisioning_scope_invalid",
+                            "integration.installations.invalid_capability",
+                            "integration.installations.stale_capability_binding",
+                            "integration.installations.connection_validation_failed",
                             "integration.installations.stale_manifest_pin",
                             "integration.installations.target_manifest_not_deployed",
                             "integration.installations.invalid_command_context",
@@ -18354,6 +18358,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         event_types=(
                             "integration.installation.lifecycle.v1",
                             "integration.installation.manifest_adopted",
+                            "integration.installation.capability_provisioned",
                         ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
@@ -18931,10 +18936,167 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="integration.jobs",
                 module="app.services.integration",
                 owns=("integration targets", "integration jobs", "integration runs"),
-                depends_on=("integration.registry",),
+                depends_on=(
+                    "integration.registry",
+                    "integration.installations",
+                    "scheduler.registry",
+                ),
                 notes=(
                     "Jobs bind directly to versioned connector capabilities; "
-                    "adapter/action transport selection is not a runtime input."
+                    "adapter/action transport selection is not a runtime input. "
+                    "The CRM ticket cutover activates its historical job only "
+                    "through the exact-state owner command."
+                ),
+                contract=ServiceContract(
+                    concerns=tuple(
+                        ConcernContract(
+                            name=concern,
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "deployed capability contract",
+                                "enabled integration capability binding",
+                                "integration job lifecycle protocol",
+                                "scheduler-owned cadence",
+                            ),
+                            canonical_writer="integration.jobs",
+                        )
+                        for concern in (
+                            "integration targets",
+                            "integration jobs",
+                            "integration runs",
+                        )
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="deployed capability contract",
+                            owner="integration.registry",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "registered capability identity, supported modes, "
+                                "and connector contract version"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="enabled integration capability binding",
+                            owner="integration.installations",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "enabled version-pinned installation binding selected "
+                                "for one exact integration job"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="integration job lifecycle protocol",
+                            owner="integration.jobs",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "target, inactive or active job, exact capability "
+                                "binding, run identity, and terminal run evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="scheduler-owned cadence",
+                            owner="scheduler.registry",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "canonical feature enablement and cadence; a manual "
+                                "capability job does not create a second schedule"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each migrated public job command completes one exact "
+                            "target/job/run aggregate transaction."
+                        ),
+                        locking=(
+                            "Capability activation locks the selected job, target, and "
+                            "binding in stable order before changing executable state."
+                        ),
+                        idempotency=(
+                            "An already active job on the reviewed binding replays; "
+                            "changed reviewed job state fails closed."
+                        ),
+                        retries=(
+                            "Stale state and lifecycle conflicts require a new preview; "
+                            "database conflicts retry the complete command."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "integration.jobs.job_activation_scope_invalid",
+                            "integration.jobs.invalid_capability",
+                            "integration.jobs.job_not_found",
+                            "integration.jobs.target_not_found",
+                            "integration.jobs.target_type_mismatch",
+                            "integration.jobs.target_disabled",
+                            "integration.jobs.job_type_mismatch",
+                            "integration.jobs.binding_not_found",
+                            "integration.jobs.binding_capability_mismatch",
+                            "integration.jobs.binding_disabled",
+                            "integration.jobs.stale_job_state",
+                            "integration.jobs.binding_conflict",
+                            "integration.jobs.invalid_command_context",
+                            "integration.jobs.command_contract_violation",
+                            "integration.jobs.nested_owner_command",
+                            "integration.jobs.active_caller_transaction",
+                            "integration.jobs.nested_transaction_completion",
+                        ),
+                        mapping_owner=(
+                            "integration admin API and reviewed integration cutover CLI"
+                        ),
+                        fail_closed_on=(
+                            "missing or disabled capability binding",
+                            "inactive or wrong-type target",
+                            "stale reviewed job state",
+                            "a second scheduler cadence path",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("integration.job.capability_activated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the job, target, connector, "
+                            "capability binding, actor, and command without secrets."
+                        ),
+                        replay=(
+                            "The authoritative job and binding rows rebuild executable "
+                            "state; replay does not emit another activation event."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "legacy adapter/action jobs disabled without explicit "
+                            "capability reactivation"
+                        ),
+                        new_owner="integration.jobs",
+                        verification=(
+                            "Exact-state activation, replay, stale-state, scheduler "
+                            "readiness, deployment-gate, and CRM sync tests."
+                        ),
+                        cutover_gate=(
+                            "Enabled crm.ticket_pull requires exactly one enabled "
+                            "ticket-observation binding and one active bound manual job."
+                        ),
+                        fallback_retirement=(
+                            "Unbound active jobs and independent interval scheduling "
+                            "remain prohibited."
+                        ),
+                    ),
+                    steward="platform integrations",
+                    design_refs=(
+                        "docs/designs/INTEGRATION_PLATFORM_SOT.md",
+                        "docs/runbooks/CRM_TICKET_CAPABILITY_CUTOVER.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_integration_capability_sync.py",
+                        "tests/test_crm_ticket_capability_cutover.py",
+                        "tests/architecture/test_integration_platform_boundary.py",
+                    ),
                 ),
             ),
             SOTService(

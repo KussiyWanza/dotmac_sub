@@ -364,6 +364,10 @@ log "Verifying enabled integration manifest pins"
 "${COMPOSE[@]}" run --rm --no-deps app \
   python -m scripts.integrations.verify_manifest_pins
 
+log "Verifying CRM ticket capability readiness"
+"${COMPOSE[@]}" run --rm --no-deps app \
+  python -m scripts.integrations.verify_crm_ticket_readiness
+
 log "Starting warm candidate on 127.0.0.1:${CANDIDATE_PORT}"
 docker rm -f "${CANDIDATE_CONTAINER}" >/dev/null 2>&1 || true
 "${COMPOSE[@]}" run --rm --no-deps -d \

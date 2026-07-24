@@ -69,7 +69,6 @@ financial.tax_configuration
 gis.geocoding
 gis.spatial_sync
 integration.backoffice_adapter
-integration.jobs
 integration.registry
 integration.sync
 network.access_path

@@ -158,9 +158,13 @@ def test_manifest_adoption_has_one_owner_and_a_pre_replacement_gate() -> None:
     assert "require_pinned_connector_definition" in installation_owner
     assert "require_pinned_connector_definition" in runtime
     assert "scripts.integrations.verify_manifest_pins" in deploy
+    assert "scripts.integrations.verify_crm_ticket_readiness" in deploy
     assert deploy.index("scripts.integrations.verify_manifest_pins") < deploy.index(
-        "Starting warm candidate"
+        "scripts.integrations.verify_crm_ticket_readiness"
     )
+    assert deploy.index(
+        "scripts.integrations.verify_crm_ticket_readiness"
+    ) < deploy.index("Starting warm candidate")
 
 
 def test_alembic_registry_does_not_import_retired_integration_models() -> None:
@@ -214,6 +218,8 @@ def test_integration_sot_names_the_live_cutover_owners() -> None:
     )
     assert sot_relationships.dependencies_for("integration.jobs") == (
         "integration.registry",
+        "integration.installations",
+        "scheduler.registry",
     )
     assert sot_relationships.dependencies_for("integration.installations") == (
         "integration.registry",

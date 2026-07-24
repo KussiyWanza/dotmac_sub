@@ -20,6 +20,7 @@ def _run_deploy(
     proxy_ready: bool = True,
     migration_lock_failures: int = 0,
     manifest_pins_ready: bool = True,
+    crm_ticket_ready: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     deploy_dir = tmp_path / "deploy"
     bin_dir = tmp_path / "bin"
@@ -51,6 +52,9 @@ if [[ "$*" == *"alembic upgrade heads"* ]]; then
 fi
 if [[ "$*" == *"scripts.integrations.verify_manifest_pins"* ]]; then
   exit {0 if manifest_pins_ready else 1}
+fi
+if [[ "$*" == *"scripts.integrations.verify_crm_ticket_readiness"* ]]; then
+  exit {0 if crm_ticket_ready else 1}
 fi
 exit 0
 """,
@@ -151,6 +155,11 @@ def test_deploy_verifies_schema_then_warms_candidate_before_recreate(
         for index, command in enumerate(commands)
         if "scripts.integrations.verify_manifest_pins" in command
     )
+    crm_ticket = next(
+        index
+        for index, command in enumerate(commands)
+        if "scripts.integrations.verify_crm_ticket_readiness" in command
+    )
     candidate = next(
         index
         for index, command in enumerate(commands)
@@ -162,7 +171,7 @@ def test_deploy_verifies_schema_then_warms_candidate_before_recreate(
         if "compose -f docker-compose.yml up -d app" in command
     )
 
-    assert migration < verification < manifest_pins < candidate < recreate
+    assert migration < verification < manifest_pins < crm_ticket < candidate < recreate
 
 
 def test_deploy_rejects_unavailable_manifest_pin_before_candidate(
@@ -179,6 +188,25 @@ def test_deploy_rejects_unavailable_manifest_pin_before_candidate(
     )
     commands = docker_log.read_text().splitlines()
     assert any("scripts.integrations.verify_manifest_pins" in item for item in commands)
+    assert not any("127.0.0.1:18001:8001" in item for item in commands)
+
+
+def test_deploy_rejects_unready_crm_ticket_cutover_before_candidate(
+    tmp_path: Path,
+) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        crm_ticket_ready=False,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in env_file.read_text()
+    )
+    commands = docker_log.read_text().splitlines()
+    assert any(
+        "scripts.integrations.verify_crm_ticket_readiness" in item for item in commands
+    )
     assert not any("127.0.0.1:18001:8001" in item for item in commands)
 
 

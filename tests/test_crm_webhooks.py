@@ -18,6 +18,10 @@ from app.db import get_db
 from app.models.audit import AuditEvent
 from app.models.integration_platform import IntegrationInbox
 from app.models.subscriber import Subscriber
+from app.schemas.integration import IntegrationJobCreate, IntegrationTargetCreate
+from app.services import integration as integration_service
+from app.services.integrations import installations
+from app.services.integrations.runtime import ValidationResult
 from tests.integration_platform_helpers import enable_crm_inbound
 
 SECRET = "test-webhook-secret"
@@ -31,7 +35,39 @@ def _with_secret(value: str):
 
 @pytest.fixture(autouse=True)
 def _crm_inbound_installation(db_session, monkeypatch):
-    enable_crm_inbound(db_session, monkeypatch, signing_secret=SECRET)
+    inbound = enable_crm_inbound(db_session, monkeypatch, signing_secret=SECRET)
+    ticket = installations.bind_capability(
+        db_session,
+        installation_id=inbound.installation_id,
+        capability_id="crm.ticket_observation.v1",
+        policy={"default": True},
+    )
+    installations.validate_static(
+        db_session,
+        installation_id=inbound.installation_id,
+    )
+    installations.enable_after_connection_validation(
+        db_session,
+        installation_id=inbound.installation_id,
+        connection_result=ValidationResult(valid=True),
+    )
+    target = integration_service.integration_targets.create(
+        db_session,
+        IntegrationTargetCreate(
+            name="DotMac CRM",
+            target_type="crm",
+        ),
+    )
+    integration_service.integration_jobs.create(
+        db_session,
+        IntegrationJobCreate(
+            target_id=target.id,
+            name="Pull CRM Tickets",
+            job_type="sync",
+            schedule_type="manual",
+            capability_binding_id=ticket.id,
+        ),
+    )
 
 
 class _FakeRequest:
@@ -147,6 +183,42 @@ def test_valid_ticket_created_enqueues_sync(monkeypatch, db_session):
     assert resp.json()["status"] == "queued"
     enqueue.assert_called_once()
     assert enqueue.call_args.kwargs["args"] == ["abc-123"]
+
+
+def test_ticket_event_fails_retryably_when_capability_cutover_is_incomplete(
+    db_session,
+) -> None:
+    from app.services import control_registry
+
+    control_registry.update_canonical_feature_controls(
+        db_session,
+        payload={"crm.ticket_pull": True},
+    )
+    binding = installations.require_enabled_capability_binding(
+        db_session,
+        connector_key="dotmac.crm",
+        capability_id="crm.ticket_observation.v1",
+    )
+    installations.disable_capability_binding(
+        db_session,
+        capability_binding_id=binding.id,
+        actor="test:cutover-drift",
+    )
+    db_session.commit()
+    body = {"ticket_id": "abc-unready"}
+    raw = json.dumps(body).encode()
+
+    with (
+        _with_secret(SECRET),
+        patch("app.services.queue_adapter.enqueue_task") as enqueue,
+    ):
+        response = _post(body, "ticket.created", _sign(raw), db_session)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Unable to apply CRM ticket observation."
+    enqueue.assert_not_called()
+    receipt = db_session.query(IntegrationInbox).one()
+    assert receipt.error_code == "crm_ticket_observation_not_ready"
 
 
 def test_ticket_event_noop_when_pull_disabled(monkeypatch, db_session):

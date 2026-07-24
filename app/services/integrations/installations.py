@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -51,6 +51,10 @@ class InstallationError(ValueError):
 
 class ManifestAdoptionError(DomainError, ValueError):
     """Stable rejection from the installation manifest-adoption owner."""
+
+
+class CapabilityProvisioningError(DomainError, ValueError):
+    """Stable rejection from the installation capability-provisioning owner."""
 
 
 class ManifestPinState(StrEnum):
@@ -108,11 +112,39 @@ class ManifestAdoptionResult:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ProvisionCapabilityCommand:
+    installation_id: UUID
+    capability_id: str
+    expected_installed_pin: ManifestPin
+    expected_binding_id: UUID | None
+    expected_binding_state: IntegrationBindingState | None
+    capability_scope: Mapping[str, object]
+    policy: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityProvisioningResult:
+    installation_id: UUID
+    connector_key: str
+    capability_binding_id: UUID
+    capability_id: str
+    installation_state: str
+    binding_state: str
+    replayed: bool
+
+
 MANIFEST_ADOPTION_SCOPE = "integration-installation:adopt-manifest"
+CAPABILITY_PROVISIONING_SCOPE = "integration-installation:provision-capability"
 _ADOPT_MANIFEST_COMMAND = OwnerCommandDefinition(
     owner="integration.installations",
     concern="explicit integration manifest adoption",
     name="adopt_installation_manifest",
+)
+_PROVISION_CAPABILITY_COMMAND = OwnerCommandDefinition(
+    owner="integration.installations",
+    concern="integration capability grants and bindings",
+    name="provision_installation_capability",
 )
 
 
@@ -125,6 +157,18 @@ def _adoption_error(
     **details: object,
 ) -> ManifestAdoptionError:
     return ManifestAdoptionError(
+        code=f"integration.installations.{suffix}",
+        message=message,
+        details=details,
+    )
+
+
+def _capability_provisioning_error(
+    suffix: str,
+    message: str,
+    **details: object,
+) -> CapabilityProvisioningError:
+    return CapabilityProvisioningError(
         code=f"integration.installations.{suffix}",
         message=message,
         details=details,
@@ -699,6 +743,217 @@ def retire_installation(
         installation.updated_by = actor
         db.flush()
     return installation
+
+
+def provision_installation_capability(
+    db: Session,
+    command: ProvisionCapabilityCommand,
+    *,
+    context: CommandContext,
+) -> CapabilityProvisioningResult:
+    """Add and connection-validate one capability without an exposed draft state."""
+
+    return execute_owner_command(
+        db,
+        definition=_PROVISION_CAPABILITY_COMMAND,
+        context=context,
+        operation=lambda: _provision_installation_capability(
+            db,
+            command=command,
+            context=context,
+        ),
+    )
+
+
+def _provision_installation_capability(
+    db: Session,
+    *,
+    command: ProvisionCapabilityCommand,
+    context: CommandContext,
+) -> CapabilityProvisioningResult:
+    if context.scope != CAPABILITY_PROVISIONING_SCOPE:
+        raise _capability_provisioning_error(
+            "capability_provisioning_scope_invalid",
+            "Capability provisioning requires the dedicated command scope.",
+            scope=context.scope,
+        )
+    capability_id = command.capability_id.strip()
+    if not capability_id:
+        raise _capability_provisioning_error(
+            "invalid_capability",
+            "Capability provisioning requires a capability identifier.",
+        )
+    if len(context.actor) > 160:
+        raise _capability_provisioning_error(
+            "invalid_command_context",
+            "Capability provisioning actor exceeds the installation audit limit.",
+            field="actor",
+        )
+
+    expected_pin = _normalized_adoption_pin(
+        command.expected_installed_pin,
+        field="expected_installed_pin",
+    )
+    installation = db.scalar(
+        select(IntegrationInstallation)
+        .where(IntegrationInstallation.id == command.installation_id)
+        .with_for_update()
+    )
+    if installation is None:
+        raise _capability_provisioning_error(
+            "not_found",
+            "Integration installation was not found.",
+            installation_id=str(command.installation_id),
+        )
+    actual_pin = ManifestPin(
+        connector_version=installation.connector_version,
+        manifest_digest=installation.manifest_digest,
+    )
+    if actual_pin != expected_pin:
+        raise _capability_provisioning_error(
+            "stale_manifest_pin",
+            "Installation manifest pin changed after capability review.",
+            installation_id=str(installation.id),
+            actual_connector_version=actual_pin.connector_version,
+            actual_manifest_digest=actual_pin.manifest_digest,
+        )
+    if installation.state != IntegrationInstallationState.enabled.value:
+        raise _capability_provisioning_error(
+            "invalid_transition",
+            "Capability provisioning requires an enabled installation.",
+            installation_id=str(installation.id),
+            installation_state=installation.state,
+        )
+    definition = _definition_for_installation(installation)
+    if definition.capability(capability_id) is None:
+        raise _capability_provisioning_error(
+            "invalid_capability",
+            "The pinned connector manifest does not declare this capability.",
+            connector_key=installation.connector_key,
+            capability_id=capability_id,
+        )
+
+    binding = db.scalar(
+        select(IntegrationCapabilityBinding)
+        .where(
+            IntegrationCapabilityBinding.installation_id == installation.id,
+            IntegrationCapabilityBinding.capability_id == capability_id,
+        )
+        .with_for_update()
+    )
+    actual_binding_id = binding.id if binding is not None else None
+    actual_binding_state = (
+        IntegrationBindingState(binding.state) if binding is not None else None
+    )
+    if (
+        actual_binding_id != command.expected_binding_id
+        or actual_binding_state != command.expected_binding_state
+    ):
+        raise _capability_provisioning_error(
+            "stale_capability_binding",
+            "Capability binding changed after provisioning review.",
+            installation_id=str(installation.id),
+            capability_id=capability_id,
+            actual_binding_id=(
+                str(actual_binding_id) if actual_binding_id is not None else None
+            ),
+            actual_binding_state=(
+                actual_binding_state.value if actual_binding_state is not None else None
+            ),
+        )
+
+    expected_scope = dict(command.capability_scope)
+    expected_policy = dict(command.policy)
+    if (
+        binding is not None
+        and binding.state == IntegrationBindingState.enabled.value
+        and dict(binding.scope_json or {}) == expected_scope
+        and dict(binding.policy_json or {}) == expected_policy
+    ):
+        return CapabilityProvisioningResult(
+            installation_id=installation.id,
+            connector_key=installation.connector_key,
+            capability_binding_id=binding.id,
+            capability_id=binding.capability_id,
+            installation_state=installation.state,
+            binding_state=binding.state,
+            replayed=True,
+        )
+
+    binding = bind_capability(
+        db,
+        installation_id=installation.id,
+        capability_id=capability_id,
+        scope=expected_scope,
+        policy=expected_policy,
+        actor=context.actor,
+    )
+    static_result = validate_static(
+        db,
+        installation_id=installation.id,
+        actor=context.actor,
+    )
+    if not static_result.valid:
+        raise _capability_provisioning_error(
+            "invalid_configuration",
+            "Installation static validation failed after capability provisioning.",
+            installation_id=str(installation.id),
+            error_codes=static_result.error_codes,
+        )
+
+    from app.services.integrations.runtime_execution import (
+        build_execution_context,
+        validate_connection,
+    )
+
+    runtime_context = build_execution_context(
+        db,
+        capability_binding_id=binding.id,
+        allow_disabled=True,
+    )
+    connection_result = validate_connection(runtime_context)
+    if not connection_result.valid:
+        raise _capability_provisioning_error(
+            "connection_validation_failed",
+            "Connector connection validation failed; capability was not enabled.",
+            installation_id=str(installation.id),
+            capability_id=capability_id,
+            error_codes=connection_result.error_codes,
+        )
+    enable_after_connection_validation(
+        db,
+        installation_id=installation.id,
+        connection_result=connection_result,
+        actor=context.actor,
+    )
+    db.flush()
+    emit_event(
+        db,
+        EventType.integration_installation_capability_provisioned,
+        {
+            "schema_version": 1,
+            "installation_id": str(installation.id),
+            "connector_key": installation.connector_key,
+            "connector_version": installation.connector_version,
+            "manifest_digest": installation.manifest_digest,
+            "capability_binding_id": str(binding.id),
+            "capability_id": capability_id,
+            "command_id": str(context.command_id),
+            "correlation_id": str(context.correlation_id),
+            "idempotency_key": context.idempotency_key,
+            "reason": context.reason,
+        },
+        actor=context.actor,
+    )
+    return CapabilityProvisioningResult(
+        installation_id=installation.id,
+        connector_key=installation.connector_key,
+        capability_binding_id=binding.id,
+        capability_id=binding.capability_id,
+        installation_state=installation.state,
+        binding_state=binding.state,
+        replayed=False,
+    )
 
 
 def _normalized_adoption_pin(pin: ManifestPin, *, field: str) -> ManifestPin:

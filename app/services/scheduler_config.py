@@ -1946,7 +1946,15 @@ def build_beat_schedule() -> dict:
             session, SettingDomain.scheduler, "crm_ticket_pull_interval_minutes"
         )
         crm_ticket_pull_interval = max(crm_ticket_pull_interval, 1)
-        if crm_ticket_pull_enabled:
+        from app.services.integrations.crm_ticket_readiness import (
+            resolve_crm_ticket_pull_readiness,
+        )
+
+        crm_ticket_readiness = resolve_crm_ticket_pull_readiness(
+            session,
+            control_enabled=crm_ticket_pull_enabled,
+        )
+        if crm_ticket_readiness.schedule_enabled:
             schedule["crm_ticket_pull"] = {
                 "task": "app.tasks.crm_ticket_pull.pull_crm_tickets",
                 "schedule": timedelta(minutes=crm_ticket_pull_interval),
@@ -1959,6 +1967,11 @@ def build_beat_schedule() -> dict:
                 "schedule": crontab(hour=3, minute=40),
                 "kwargs": {"full": True},
             }
+        elif crm_ticket_pull_enabled:
+            logger.error(
+                "crm_ticket_pull_not_ready issue_codes=%s",
+                ",".join(crm_ticket_readiness.issue_codes),
+            )
 
         # ERP schedules derive from validated capability bindings. Per-flow
         # single-writer ownership remains the independent business cutover gate.

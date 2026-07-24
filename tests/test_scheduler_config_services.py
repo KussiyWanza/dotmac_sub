@@ -1,6 +1,7 @@
 """Tests for scheduler config services."""
 
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -649,6 +650,50 @@ class TestBuildBeatSchedule:
                 schedule = scheduler_config.build_beat_schedule()
 
         assert "integration_job_crm-job-123" not in schedule
+
+    @pytest.mark.parametrize(
+        ("ready", "expected"),
+        ((False, False), (True, True)),
+    )
+    def test_crm_ticket_schedule_requires_executable_cutover_readiness(
+        self,
+        ready,
+        expected,
+    ):
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter.return_value.filter.return_value.filter.return_value.first.return_value = None
+        mock_session.query.return_value.filter.return_value.all.return_value = []
+        mock_session.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
+        readiness = SimpleNamespace(
+            schedule_enabled=ready,
+            issue_codes=(
+                ()
+                if ready
+                else (
+                    "enabled_ticket_observation_binding_count:0",
+                    "active_ticket_observation_job_count:0",
+                )
+            ),
+        )
+
+        with (
+            _control_overrides({"crm.ticket_pull": True, "gis.sync": False}),
+            patch.object(scheduler_config, "SessionLocal", return_value=mock_session),
+            patch.object(
+                scheduler_config.integration_service,
+                "list_interval_jobs",
+                return_value=[],
+            ),
+            patch(
+                "app.services.integrations.crm_ticket_readiness."
+                "resolve_crm_ticket_pull_readiness",
+                return_value=readiness,
+            ),
+        ):
+            schedule = scheduler_config.build_beat_schedule()
+
+        assert ("crm_ticket_pull" in schedule) is expected
+        assert ("crm_ticket_pull_full" in schedule) is expected
 
     def test_builds_scheduled_task_schedules(self, monkeypatch):
         """Test builds scheduled task schedules."""

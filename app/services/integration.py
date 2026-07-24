@@ -1,7 +1,10 @@
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.logging import get_logger
@@ -17,6 +20,7 @@ from app.models.integration import (
 from app.models.integration_platform import (
     IntegrationBindingState,
     IntegrationCapabilityBinding,
+    IntegrationInstallation,
     IntegrationInstallationState,
 )
 from app.schemas.integration import (
@@ -31,11 +35,263 @@ from app.services.common import (
     coerce_uuid,
     validate_enum,
 )
+from app.services.domain_errors import DomainError
+from app.services.events import EventType, emit_event
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
 from app.services.response import ListResponseMixin
 
 logger = logging.getLogger(__name__)
 
 logger = get_logger(__name__)
+
+
+class IntegrationJobCommandError(DomainError, ValueError):
+    """Stable rejection from the integration-jobs command owner."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateCapabilityJobCommand:
+    job_id: UUID
+    capability_binding_id: UUID
+    capability_id: str
+    expected_target_type: IntegrationTargetType
+    expected_existing_binding_id: UUID | None
+    expected_is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ActivateCapabilityJobResult:
+    job_id: UUID
+    capability_binding_id: UUID
+    capability_id: str
+    is_active: bool
+    schedule_type: IntegrationScheduleType
+    replayed: bool
+
+
+CAPABILITY_JOB_ACTIVATION_SCOPE = "integration-job:activate-capability"
+_ACTIVATE_CAPABILITY_JOB_COMMAND = OwnerCommandDefinition(
+    owner="integration.jobs",
+    concern="integration jobs",
+    name="activate_capability_job",
+)
+
+
+def _job_command_error(
+    suffix: str,
+    message: str,
+    **details: object,
+) -> IntegrationJobCommandError:
+    return IntegrationJobCommandError(
+        code=f"integration.jobs.{suffix}",
+        message=message,
+        details=details,
+    )
+
+
+def activate_capability_job(
+    db: Session,
+    command: ActivateCapabilityJobCommand,
+    *,
+    context: CommandContext,
+) -> ActivateCapabilityJobResult:
+    """Bind and activate one scheduler-owned capability job atomically."""
+
+    return execute_owner_command(
+        db,
+        definition=_ACTIVATE_CAPABILITY_JOB_COMMAND,
+        context=context,
+        operation=lambda: _activate_capability_job(
+            db,
+            command=command,
+            context=context,
+        ),
+    )
+
+
+def _activate_capability_job(
+    db: Session,
+    *,
+    command: ActivateCapabilityJobCommand,
+    context: CommandContext,
+) -> ActivateCapabilityJobResult:
+    if context.scope != CAPABILITY_JOB_ACTIVATION_SCOPE:
+        raise _job_command_error(
+            "job_activation_scope_invalid",
+            "Capability job activation requires the dedicated command scope.",
+            scope=context.scope,
+        )
+    capability_id = command.capability_id.strip()
+    if not capability_id:
+        raise _job_command_error(
+            "invalid_capability",
+            "Capability job activation requires a capability identifier.",
+        )
+
+    job = db.scalar(
+        select(IntegrationJob)
+        .where(IntegrationJob.id == command.job_id)
+        .with_for_update()
+    )
+    if job is None:
+        raise _job_command_error(
+            "job_not_found",
+            "Integration job was not found.",
+            job_id=str(command.job_id),
+        )
+    target = db.scalar(
+        select(IntegrationTarget)
+        .where(IntegrationTarget.id == job.target_id)
+        .with_for_update()
+    )
+    if target is None:
+        raise _job_command_error(
+            "target_not_found",
+            "Integration job target was not found.",
+            job_id=str(job.id),
+        )
+    if target.target_type != command.expected_target_type:
+        raise _job_command_error(
+            "target_type_mismatch",
+            "Integration job target type changed after review.",
+            job_id=str(job.id),
+            actual_target_type=target.target_type.value,
+        )
+    if not target.is_active:
+        raise _job_command_error(
+            "target_disabled",
+            "Integration job target must be active.",
+            job_id=str(job.id),
+            target_id=str(target.id),
+        )
+    if job.job_type != IntegrationJobType.sync:
+        raise _job_command_error(
+            "job_type_mismatch",
+            "Capability activation requires a sync job.",
+            job_id=str(job.id),
+            actual_job_type=job.job_type.value,
+        )
+
+    reviewed_installation_id = db.scalar(
+        select(IntegrationCapabilityBinding.installation_id).where(
+            IntegrationCapabilityBinding.id == command.capability_binding_id
+        )
+    )
+    if reviewed_installation_id is None:
+        raise _job_command_error(
+            "binding_not_found",
+            "Integration capability binding was not found.",
+            capability_binding_id=str(command.capability_binding_id),
+        )
+    installation = db.scalar(
+        select(IntegrationInstallation)
+        .where(IntegrationInstallation.id == reviewed_installation_id)
+        .with_for_update()
+    )
+    binding = db.scalar(
+        select(IntegrationCapabilityBinding)
+        .where(IntegrationCapabilityBinding.id == command.capability_binding_id)
+        .with_for_update()
+    )
+    if installation is None or binding is None:
+        raise _job_command_error(
+            "binding_not_found",
+            "Integration capability binding was removed during activation.",
+            capability_binding_id=str(command.capability_binding_id),
+        )
+    if binding.capability_id != capability_id:
+        raise _job_command_error(
+            "binding_capability_mismatch",
+            "Integration binding does not provide the reviewed capability.",
+            capability_binding_id=str(binding.id),
+            actual_capability_id=binding.capability_id,
+        )
+    if (
+        binding.state != IntegrationBindingState.enabled.value
+        or installation.state != IntegrationInstallationState.enabled.value
+    ):
+        raise _job_command_error(
+            "binding_disabled",
+            "Capability job activation requires an enabled installation binding.",
+            capability_binding_id=str(binding.id),
+        )
+
+    if (
+        job.capability_binding_id == binding.id
+        and job.is_active
+        and job.schedule_type == IntegrationScheduleType.manual
+    ):
+        return ActivateCapabilityJobResult(
+            job_id=job.id,
+            capability_binding_id=binding.id,
+            capability_id=binding.capability_id,
+            is_active=True,
+            schedule_type=IntegrationScheduleType.manual,
+            replayed=True,
+        )
+    if (
+        job.capability_binding_id != command.expected_existing_binding_id
+        or job.is_active is not command.expected_is_active
+    ):
+        raise _job_command_error(
+            "stale_job_state",
+            "Integration job changed after capability activation review.",
+            job_id=str(job.id),
+            actual_capability_binding_id=(
+                str(job.capability_binding_id)
+                if job.capability_binding_id is not None
+                else None
+            ),
+            actual_is_active=job.is_active,
+        )
+    if (
+        job.capability_binding_id is not None
+        and job.capability_binding_id != binding.id
+    ):
+        raise _job_command_error(
+            "binding_conflict",
+            "Integration job is already bound to another capability.",
+            job_id=str(job.id),
+            actual_capability_binding_id=str(job.capability_binding_id),
+        )
+
+    job.capability_binding_id = binding.id
+    job.is_active = True
+    # The dedicated scheduler control owns cadence. Keeping this job manual
+    # prevents a second interval path from scheduling the same ticket pull.
+    job.schedule_type = IntegrationScheduleType.manual
+    job.interval_minutes = None
+    job.interval_seconds = None
+    db.flush()
+    emit_event(
+        db,
+        EventType.integration_job_capability_activated,
+        {
+            "schema_version": 1,
+            "job_id": str(job.id),
+            "target_id": str(job.target_id),
+            "capability_binding_id": str(binding.id),
+            "capability_id": binding.capability_id,
+            "connector_key": installation.connector_key,
+            "command_id": str(context.command_id),
+            "correlation_id": str(context.correlation_id),
+            "idempotency_key": context.idempotency_key,
+            "reason": context.reason,
+        },
+        actor=context.actor,
+    )
+    return ActivateCapabilityJobResult(
+        job_id=job.id,
+        capability_binding_id=binding.id,
+        capability_id=binding.capability_id,
+        is_active=True,
+        schedule_type=IntegrationScheduleType.manual,
+        replayed=False,
+    )
 
 
 def _require_job_binding(
