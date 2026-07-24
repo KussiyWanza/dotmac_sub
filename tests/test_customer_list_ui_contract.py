@@ -79,6 +79,16 @@ def test_customer_status_surfaces_consume_semantic_presentation_owner():
     assert "forSubscription" not in mobile_chip
 
 
+def test_customer_detail_header_shows_only_the_subscriber_number():
+    record_component = (PROJECT_ROOT / "templates/components/ui/record.html").read_text(
+        encoding="utf-8"
+    )
+    subscriber_hero = record_component.split("{% macro subscriber_hero", maxsplit=1)[1]
+
+    assert "summary.subscriber_number" in subscriber_hero
+    assert "summary.account_number" not in subscriber_hero
+
+
 def test_customer_filter_form_keeps_canonical_query_state_in_browser_history():
     template = (PROJECT_ROOT / "templates/admin/customers/index.html").read_text(
         encoding="utf-8"

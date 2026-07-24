@@ -201,17 +201,19 @@ def test_customer_detail_includes_crm_sync_link_status(db_session, subscriber):
     assert context["account_health"].account_id == subscriber.id
 
 
-def test_customer_360_renders_canonical_service_health() -> None:
+def test_customer_360_rehomes_canonical_service_health() -> None:
     template = Path("templates/admin/customers/detail.html").read_text(encoding="utf-8")
 
     assert (
         'from "components/portal/account_health.html" import service_health_strip'
-        in template
+        not in template
     )
     assert (
         'service_health_strip(account_health, "/admin/catalog/subscriptions/")'
-        in template
+        not in template
     )
+    assert "service_health_by_subscription" in template
+    assert "{% set card_health = card.service_health %}" in template
 
 
 def test_customer_360_service_health_contains_only_active_services(

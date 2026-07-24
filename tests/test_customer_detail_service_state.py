@@ -273,3 +273,43 @@ def test_card_carries_the_known_incident(monkeypatch):
     )
 
     assert cards[0]["known_incident"] == payload
+
+
+def test_card_carries_the_matching_service_health_projection(monkeypatch):
+    monkeypatch.setattr(details, "resolve_customer_access", lambda _s: _decision())
+    subscription = _subscription()
+    service_health = SimpleNamespace(subscription_id=subscription.id)
+
+    cards = details._build_network_access_cards(
+        [subscription],
+        {},
+        service_health_by_subscription={str(subscription.id): service_health},
+    )
+
+    assert cards[0]["service_health"] is service_health
+
+
+def test_customer_detail_rehomes_service_health_facts():
+    template = Path("templates/admin/customers/detail.html").read_text()
+
+    assert "service_health_strip" not in template
+    assert "Subscription ID: {{ subscription.id }}" in template
+    assert "service_health.pending_change" in template
+    assert "card_health.access_reason" in template
+    assert "health_connection.medium" in template
+    assert "No known outage" in template
+    assert "health_connection.checked_at" in template
+
+
+def test_network_access_defaults_to_active_cards_and_expands_inactive_cards():
+    template = Path("templates/admin/customers/detail.html").read_text()
+
+    assert "showAllNetworkAccess: false" in template
+    assert "showAllNetworkAccess || '{{ card.status }}' === 'active'" in template
+    assert "(network_access_inactive_count | default(0)) > 0" in template
+    assert "showAllNetworkAccess ? 'Show active only' : 'View more'" in template
+    assert "cancelled, hidden, and other inactive subscriptions" in template
+    assert (
+        'class="rounded-xl border border-slate-200 p-4 shadow-sm '
+        'dark:border-slate-700"' in template
+    )

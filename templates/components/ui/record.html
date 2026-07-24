@@ -71,8 +71,7 @@
                     <span class="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">{{ "Business" if summary.is_business else "Individual" }}</span>
                 </div>
                 <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-slate-500 dark:text-slate-400">
-                    {% if summary.account_number %}<span class="font-mono">{{ summary.account_number }}</span>{% endif %}
-                    {% if summary.subscriber_number %}<span>·</span><span class="font-mono">{{ summary.subscriber_number }}</span>{% endif %}
+                    {% if summary.subscriber_number %}<span class="font-mono">{{ summary.subscriber_number }}</span>{% endif %}
                     {% if summary.since %}<span>·</span><span>Since {{ rts(summary.since) }}</span>{% endif %}
                     {% if summary.email %}<span>·</span><span class="truncate">{{ summary.email }}</span>{% endif %}
                     {% if summary.phone %}<span>·</span><span>{{ summary.phone }}</span>{% endif %}
