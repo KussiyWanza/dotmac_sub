@@ -26,10 +26,11 @@ from app.services.web_subscriber_forms import (
 
 def deactivate_subscriber(db: Session, subscriber_id: UUID):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=str(subscriber_id))
-    subscriber_service.subscribers.update(
-        db=db,
-        subscriber_id=str(subscriber_id),
-        payload=SubscriberUpdate(is_active=False),
+    web_customer_actions_service.change_customer_account_active_state(
+        db,
+        before,
+        is_active=False,
+        source=f"admin:deactivate_subscriber:{subscriber_id}",
     )
     after = subscriber_service.subscribers.get(db=db, subscriber_id=str(subscriber_id))
     return before, after
@@ -170,8 +171,6 @@ def update_subscriber_from_full_form(
             region=form_data.get("region"),
             postal_code=form_data.get("postal_code"),
             country_code=form_data.get("country_code"),
-            status=form_data.get("status"),
-            is_active=is_active,
             marketing_opt_in=form_data.get("marketing_opt_in"),
             notes=form_data.get("notes"),
             account_start_date=form_data.get("account_start_date"),
@@ -214,7 +213,6 @@ def update_subscriber_from_full_form(
         subscriber_number=subscriber_number.strip() if subscriber_number else None,
         category=_parse_category(subscriber_category),
         notes=(subscriber_notes or form_data.get("notes") or "").strip() or None,
-        is_active=before.is_active if is_active is None else (is_active == "true"),
     )
     updated = subscriber_service.subscribers.update(
         db=db,
@@ -277,7 +275,6 @@ def update_subscriber_from_form(
         person_id=person_id,
         business_account_id=business_account_id,
     )
-    active = before.is_active if is_active is None else (is_active == "true")
     payload = SubscriberUpdate(
         subscriber_number=subscriber_number.strip() if subscriber_number else None,
         category=(
@@ -286,7 +283,6 @@ def update_subscriber_from_form(
             else _parse_category(subscriber_category)
         ),
         notes=notes.strip() if notes else None,
-        is_active=active,
     )
     subscriber = subscriber_service.subscribers.update(
         db=db,
@@ -321,10 +317,14 @@ def bulk_set_subscriber_status(
     failed_count = 0
     for subscriber_id in subscriber_ids:
         try:
-            subscriber_service.subscribers.update(
-                db=db,
-                subscriber_id=str(subscriber_id),
-                payload=SubscriberUpdate(is_active=is_active),
+            subscriber = subscriber_service.subscribers.get(
+                db=db, subscriber_id=str(subscriber_id)
+            )
+            web_customer_actions_service.change_customer_account_active_state(
+                db,
+                subscriber,
+                is_active=is_active,
+                source=f"admin:bulk_subscriber_status:{subscriber_id}",
             )
             updated_count += 1
         except Exception as exc:

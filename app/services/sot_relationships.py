@@ -1017,6 +1017,194 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.account_status_actions",
+                module="app.services.account_status_commands",
+                owns=(
+                    "administrative account-status impact preview",
+                    "administrative account-bound idempotent status confirmation",
+                ),
+                depends_on=(
+                    "customer.accounts",
+                    "customer.identity_scope",
+                    "access.subscription_lifecycle",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "Generic identity and contact edits cannot carry lifecycle state. "
+                    "Administrative account overrides require a reviewed, stale-safe "
+                    "confirmation; subscription locks remain independently authoritative."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="administrative account-status impact preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authenticated administrative status context",
+                                "canonical account and subscription lifecycle state",
+                                "account-status action protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "administrative account-bound idempotent status "
+                                "confirmation"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated administrative status context",
+                                "canonical account and subscription lifecycle state",
+                                "signed account-status preview evidence",
+                                "account-bound status idempotency evidence",
+                                "account-status action protocol",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated administrative status context",
+                            owner="customer.identity_scope",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "authenticated actor, lifecycle write scope, reason, "
+                                "command, correlation, and idempotency identifiers"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical account and subscription lifecycle state",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked Subscriber lifecycle override and every locked "
+                                "Subscription identity, status, and active EnforcementLock "
+                                "for the account"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="signed account-status preview evidence",
+                            owner="customer.account_status_actions",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "SHA-256 fingerprint over account, billing approval, "
+                                "override, subscription, target, and projected status"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="account-bound status idempotency evidence",
+                            owner="customer.account_status_actions",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked IdempotencyKey scope, key, account binding, and "
+                                "persisted result reference"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="account-status action protocol",
+                            owner="customer.account_status_actions",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed activate, suspend, block, or disable action"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "A confirmed command enters execute_owner_command once on a "
+                            "clean session, stages lifecycle, audit, event, and replay "
+                            "evidence, then commits the complete decision once."
+                        ),
+                        locking=(
+                            "The Subscriber, all account Subscription identities, active "
+                            "EnforcementLock rows, and existing idempotency evidence are "
+                            "selected FOR UPDATE in stable identity order before the "
+                            "preview is rechecked."
+                        ),
+                        idempotency=(
+                            "Action scope, caller key, and account identity replay the "
+                            "stored outcome without reapplying the lifecycle transition."
+                        ),
+                        retries=(
+                            "Completed commands replay; a concurrent unique-key conflict "
+                            "rolls back the whole command and is safe to retry."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "customer.account_status_actions.account_not_found",
+                            "customer.account_status_actions.invalid_idempotency_key",
+                            "customer.account_status_actions.idempotency_account_mismatch",
+                            "customer.account_status_actions.idempotency_conflict",
+                            "customer.account_status_actions.invalid_replay_evidence",
+                            "customer.account_status_actions.command_scope_mismatch",
+                            "customer.account_status_actions.invalid_reason",
+                            "customer.account_status_actions.invalid_preview_fingerprint",
+                            "customer.account_status_actions.stale_preview",
+                            "customer.account_status_actions.action_not_allowed",
+                            "customer.account_status_actions.billing_approval_required",
+                            "customer.account_status_actions.invalid_command_context",
+                            "customer.account_status_actions.command_contract_violation",
+                            "customer.account_status_actions.nested_owner_command",
+                            "customer.account_status_actions.active_caller_transaction",
+                            "customer.account_status_actions.nested_transaction_completion",
+                        ),
+                        mapping_owner="app.api.subscribers",
+                        retryable_codes=(
+                            "customer.account_status_actions.idempotency_conflict",
+                        ),
+                        fail_closed_on=(
+                            "missing actor, reason, preview, or idempotency evidence",
+                            "stale account or subscription lifecycle state",
+                            "billing-unapproved activation",
+                            "cross-account idempotency reuse",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("subscriber.updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "The event retains subscriber identity and adds typed account-"
+                            "status command, prior/current status, override, reason, and "
+                            "preview evidence."
+                        ),
+                        replay=(
+                            "The outbox replays delivery; command idempotency prevents "
+                            "duplicate authoritative lifecycle mutation."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "generic SubscriberUpdate and admin customer forms that "
+                            "created or cleared account lifecycle overrides"
+                        ),
+                        new_owner="customer.account_status_actions",
+                        verification=(
+                            "Generic edit rejection, read-only form, preview, stale "
+                            "confirmation, lock, replay, audit, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "All post-creation administrative status changes use the "
+                            "dedicated preview and confirmation owner."
+                        ),
+                        fallback_retirement=(
+                            "Subscriber.update ignores no lifecycle fields and contains "
+                            "no override writer; adapters cannot submit status or is_active."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_account_status_commands.py",
+                        "tests/architecture/test_generic_lifecycle_edit_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="customer.reseller_status_actions",
                 module="app.services.reseller_portal",
                 owns=(

@@ -1594,7 +1594,9 @@ class TestSubscriptions:
         )
         assert len(items) >= 1
 
-    def test_update_subscription(self, db_session, subscriber, catalog_offer):
+    def test_generic_update_rejects_subscription_status(
+        self, db_session, subscriber, catalog_offer
+    ):
         sub = catalog_service.subscriptions.create(
             db_session,
             SubscriptionCreate(
@@ -1603,12 +1605,16 @@ class TestSubscriptions:
                 status=SubscriptionStatus.pending,
             ),
         )
-        updated = catalog_service.subscriptions.update(
-            db_session,
-            str(sub.id),
-            SubscriptionUpdate(status=SubscriptionStatus.active),
-        )
-        assert updated.status == SubscriptionStatus.active
+        with pytest.raises(HTTPException) as exc_info:
+            catalog_service.subscriptions.update(
+                db_session,
+                str(sub.id),
+                SubscriptionUpdate(status=SubscriptionStatus.active),
+            )
+        assert exc_info.value.status_code == 409
+        assert "lifecycle fields are read-only" in str(exc_info.value.detail)
+        db_session.refresh(sub)
+        assert sub.status == SubscriptionStatus.pending
 
     def test_plan_change_clears_stale_offer_version_id(self, db_session, subscriber):
         """Changing offer drops the previous offer's pinned version so price
@@ -1674,7 +1680,7 @@ class TestSubscriptions:
         updated = catalog_service.subscriptions.update(
             db_session,
             str(sub.id),
-            SubscriptionUpdate(status=SubscriptionStatus.pending),
+            SubscriptionUpdate(service_description="routine edit"),
         )
 
         end_at = updated.end_at
@@ -1924,10 +1930,10 @@ class TestSubscriptions:
         assert exc_info.value.status_code == 400
         assert "already has an active subscription" in str(exc_info.value.detail)
 
-    def test_cancel_subscription_requires_canceled_at(
+    def test_generic_update_rejects_cancellation_fields(
         self, db_session, subscriber, catalog_offer
     ):
-        """Canceling requires canceled_at timestamp."""
+        """Cancellation is owned by the subscription lifecycle command."""
         sub = catalog_service.subscriptions.create(
             db_session,
             SubscriptionCreate(
@@ -1937,16 +1943,19 @@ class TestSubscriptions:
             ),
         )
         now = datetime.now(UTC)
-        updated = catalog_service.subscriptions.update(
-            db_session,
-            str(sub.id),
-            SubscriptionUpdate(
-                status=SubscriptionStatus.canceled,
-                canceled_at=now,
-            ),
-        )
-        assert updated.status == SubscriptionStatus.canceled
-        assert updated.canceled_at is not None
+        with pytest.raises(HTTPException) as exc_info:
+            catalog_service.subscriptions.update(
+                db_session,
+                str(sub.id),
+                SubscriptionUpdate(
+                    status=SubscriptionStatus.canceled,
+                    canceled_at=now,
+                ),
+            )
+        assert exc_info.value.status_code == 409
+        db_session.refresh(sub)
+        assert sub.status == SubscriptionStatus.pending
+        assert sub.canceled_at is None
 
     def test_terminal_status_cannot_be_resurrected(
         self, db_session, subscriber, catalog_offer
@@ -1958,14 +1967,9 @@ class TestSubscriptions:
             SubscriptionCreate(
                 subscriber_id=subscriber.id,
                 offer_id=catalog_offer.id,
-                status=SubscriptionStatus.pending,
+                status=SubscriptionStatus.canceled,
+                canceled_at=datetime.now(UTC),
             ),
-        )
-        now = datetime.now(UTC)
-        catalog_service.subscriptions.update(
-            db_session,
-            str(sub.id),
-            SubscriptionUpdate(status=SubscriptionStatus.canceled, canceled_at=now),
         )
 
         for revived in (
@@ -1980,7 +1984,7 @@ class TestSubscriptions:
                     SubscriptionUpdate(status=revived),
                 )
             assert exc_info.value.status_code == 409
-            assert "terminal" in str(exc_info.value.detail)
+            assert "lifecycle fields are read-only" in str(exc_info.value.detail)
 
         # Re-fetch: status must still be terminal, untouched.
         db_session.refresh(sub)
@@ -1996,14 +2000,8 @@ class TestSubscriptions:
             SubscriptionCreate(
                 subscriber_id=subscriber.id,
                 offer_id=catalog_offer.id,
-                status=SubscriptionStatus.pending,
-            ),
-        )
-        catalog_service.subscriptions.update(
-            db_session,
-            str(sub.id),
-            SubscriptionUpdate(
-                status=SubscriptionStatus.canceled, canceled_at=datetime.now(UTC)
+                status=SubscriptionStatus.canceled,
+                canceled_at=datetime.now(UTC),
             ),
         )
         updated = catalog_service.subscriptions.update(
@@ -2046,11 +2044,13 @@ class TestSubscriptions:
             lambda db, subscription: released.append(str(subscription.id)),
         )
 
-        catalog_service.subscriptions.update(
+        al.disable_subscription(
             db_session,
             str(sub.id),
-            SubscriptionUpdate(status=SubscriptionStatus.disabled),
+            reason="pytest disable",
+            source="pytest",
         )
+        db_session.commit()
 
         db_session.refresh(lock)
         assert lock.is_active is False

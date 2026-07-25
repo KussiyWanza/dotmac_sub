@@ -47,9 +47,9 @@ from app.schemas.subscriber import (
     SubscriberCreate,
     SubscriberUpdate,
 )
+from app.services import account_status_commands, customer_portal
 from app.services import audit as audit_service
 from app.services import catalog as catalog_service
-from app.services import customer_portal
 from app.services import notification as notification_service
 from app.services import radius as radius_service
 from app.services import subscriber as subscriber_service
@@ -941,7 +941,7 @@ def bulk_update_customers(
             account_state = updates.get("account_state")
             if account_state and requested_billing_approval is not False:
                 is_active = account_state == "active"
-                _apply_subscriber_activation_state(
+                change_customer_account_active_state(
                     db,
                     subscriber,
                     is_active=is_active,
@@ -1906,31 +1906,58 @@ def _suspend_customer_subscriptions(db: Session, customer_id: str) -> int:
     return suspended_count
 
 
-def _apply_subscriber_activation_state(
+def change_customer_account_active_state(
     db: Session,
     subscriber: Subscriber,
     *,
     is_active: bool,
     source: str,
+    actor_id: str | None = None,
 ) -> None:
-    from app.services.account_lifecycle import (
-        transition_account_status,
-    )
-
-    transition_account_status(
-        db,
-        str(subscriber.id),
-        SubscriberStatus.active if is_active else SubscriberStatus.suspended,
-        reason="Administrative account activation"
+    action = (
+        account_status_commands.AccountStatusAction.activate
         if is_active
-        else "Administrative account suspension",
-        source=source,
+        else account_status_commands.AccountStatusAction.suspend
     )
-    if not is_active:
-        db.query(UserCredential).filter(
-            UserCredential.subscriber_id == subscriber.id
-        ).update({"is_active": False}, synchronize_session=False)
-    db.flush()
+    preview = account_status_commands.preview_account_status_change(
+        db,
+        account_status_commands.PreviewAccountStatusRequest(
+            account_id=subscriber.id,
+            action=action,
+        ),
+    )
+    if not preview.allowed:
+        return
+    account_id = subscriber.id
+    command_id = uuid4()
+    db_session_adapter.release_read_transaction(db)
+    account_status_commands.confirm_account_status_change(
+        db,
+        account_status_commands.ConfirmAccountStatusCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"user:{actor_id}"
+                if actor_id
+                else "system:admin_customer_action",
+                scope=account_status_commands.ACCOUNT_STATUS_WRITE_SCOPE,
+                reason=(
+                    "Administrative account activation"
+                    if is_active
+                    else "Administrative account suspension"
+                ),
+                idempotency_key=(
+                    "admin-account-status:"
+                    + hashlib.sha256(
+                        f"{source}:{preview.fingerprint}".encode()
+                    ).hexdigest()
+                ),
+            ),
+            account_id=account_id,
+            action=action,
+            expected_preview_fingerprint=preview.fingerprint,
+        ),
+    )
 
 
 def _create_subscriber(db: Session, payload: dict[str, Any]) -> Subscriber:
@@ -2438,8 +2465,6 @@ def update_person_customer(
     region: str | None,
     postal_code: str | None,
     country_code: str | None,
-    status: str | None,
-    is_active: str | None,
     marketing_opt_in: str | None,
     notes: str | None,
     account_start_date: str | None,
@@ -2455,16 +2480,10 @@ def update_person_customer(
     metadata_json: dict | None,
     actor_id: str | None = None,
 ):
-    raw_status = str(status or "").strip().lower()
-    should_block_subscriptions = raw_status == "blocked"
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
     # Email is contact info, not an identity — duplicates across customers are
     # valid, so editing one to match another's address is allowed.
     normalized_email = _normalize_optional(email)
-    active = before.is_active if is_active is None else (is_active == "true")
-    normalized_status, active = _normalize_status_for_customer_edit(
-        status, is_active=active
-    )
     billing_payload = _billing_override_payload(
         billing_enabled_override=billing_enabled_override,
         billing_day=billing_day,
@@ -2484,11 +2503,6 @@ def update_person_customer(
             actor_id=actor_id,
             reason="Administrator approved account billing and service",
         )
-    elif requested_billing_approval is False:
-        # Revocation owns the resulting account state. Do not let the generic
-        # profile form submit a contradictory active-state write first.
-        normalized_status = None
-        active = None
     data: dict[str, Any] = {
         "first_name": _require_text(first_name, "First name", max_length=80),
         "last_name": _require_text(last_name, "Last name", max_length=80),
@@ -2509,8 +2523,6 @@ def update_person_customer(
         "region": _normalize_optional(region),
         "postal_code": _normalize_optional(postal_code),
         "country_code": _normalize_optional(country_code),
-        "status": normalized_status,
-        "is_active": active,
         "marketing_opt_in": marketing_opt_in == "true",
         "notes": _normalize_optional(notes),
     }
@@ -2558,8 +2570,6 @@ def update_person_customer(
             actor_id=actor_id,
             reason="Administrator revoked account billing and service approval",
         )
-    if should_block_subscriptions:
-        _suspend_customer_subscriptions(db, customer_id)
     after = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
     if account_start_date:
         subscriber = db.get(Subscriber, customer_id)
@@ -2569,19 +2579,6 @@ def update_person_customer(
                 subscriber.account_start_date = parsed_date
                 db.commit()
     return before, after
-
-
-def _normalize_status_for_customer_edit(
-    status: str | None, *, is_active: bool
-) -> tuple[SubscriberStatus | None, bool]:
-    raw = str(status or "").strip().lower()
-    if raw == "blocked":
-        return SubscriberStatus.suspended, True
-    if raw == "inactive":
-        return SubscriberStatus.active, False
-    if raw == "active":
-        return SubscriberStatus.active, True
-    return _status_from_legacy(status, is_active=None), is_active
 
 
 def update_business_customer(
@@ -2726,28 +2723,32 @@ def convert_person_to_business_customer(
     return before, after
 
 
-def deactivate_person_customer(db: Session, customer_id: str):
+def deactivate_person_customer(
+    db: Session, customer_id: str, *, actor_id: str | None = None
+):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
-    _apply_subscriber_activation_state(
+    change_customer_account_active_state(
         db,
         before,
         is_active=False,
         source=f"admin:deactivate_customer:{customer_id}",
+        actor_id=actor_id,
     )
-    db.commit()
     after = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
     return before, after
 
 
-def deactivate_business_customer(db: Session, customer_id: str) -> None:
+def deactivate_business_customer(
+    db: Session, customer_id: str, *, actor_id: str | None = None
+) -> None:
     subscriber = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
-    _apply_subscriber_activation_state(
+    change_customer_account_active_state(
         db,
         subscriber,
         is_active=False,
         source=f"admin:deactivate_business:{customer_id}",
+        actor_id=actor_id,
     )
-    db.commit()
 
 
 def delete_person_customer(db: Session, customer_id: str) -> None:
@@ -2809,7 +2810,7 @@ def bulk_update_customer_status(
                         }
                     )
                     continue
-                _apply_subscriber_activation_state(
+                change_customer_account_active_state(
                     db,
                     subscriber,
                     is_active=is_active,
@@ -2831,7 +2832,7 @@ def bulk_update_customer_status(
                         }
                     )
                     continue
-                _apply_subscriber_activation_state(
+                change_customer_account_active_state(
                     db,
                     subscriber,
                     is_active=is_active,

@@ -55,6 +55,7 @@ from app.schemas.catalog import (
     SubscriptionAddOnUpdate,
     SubscriptionCreate,
     SubscriptionRead,
+    SubscriptionTechnicalUpdate,
     SubscriptionUpdate,
     UsageAllowanceCreate,
     UsageAllowanceRead,
@@ -654,9 +655,15 @@ def list_subscriptions(
     tags=["subscriptions"],
 )
 def update_subscription(
-    subscription_id: str, payload: SubscriptionUpdate, db: Session = Depends(get_db)
+    subscription_id: str,
+    payload: SubscriptionTechnicalUpdate,
+    db: Session = Depends(get_db),
 ):
-    return catalog_service.subscriptions.update(db, subscription_id, payload)
+    return catalog_service.subscriptions.update(
+        db,
+        subscription_id,
+        SubscriptionUpdate.model_validate(payload.model_dump(exclude_unset=True)),
+    )
 
 
 @router.delete(

@@ -198,7 +198,6 @@ def create_subscriber_with_optional_login(
             else None
         ),
         notes=notes.strip() if notes else None,
-        is_active=True if is_active is None else (is_active == "true"),
     )
     subscriber = subscriber_service.subscribers.update(
         db=db,

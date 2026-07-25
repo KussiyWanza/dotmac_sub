@@ -279,7 +279,6 @@ def create_account_from_form(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
     resolved_subscriber_id = subscriber_id
@@ -301,20 +300,12 @@ def create_account_from_form(
         notes=notes.strip() if notes else None,
     )
     account = subscriber_service.accounts.create(db, payload)
-    if tax_rate_id or status:
-        resolved_status: SubscriberStatus | None = None
-        if status:
-            try:
-                resolved_status = SubscriberStatus(status)
-            except ValueError as exc:
-                allowed = ", ".join(s.value for s in SubscriberStatus)
-                raise ValueError(f"Invalid status. Allowed: {allowed}") from exc
+    if tax_rate_id:
         subscriber_service.subscribers.update(
             db=db,
             subscriber_id=str(account.id),
             payload=SubscriberUpdate(
                 tax_rate_id=UUID(tax_rate_id) if tax_rate_id else None,
-                status=resolved_status,
             ),
         )
     return account, resolved_subscriber_id
@@ -328,7 +319,6 @@ def create_account_from_form_with_metadata(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
     account, resolved_subscriber_id = create_account_from_form(
@@ -338,7 +328,6 @@ def create_account_from_form_with_metadata(
         reseller_id=reseller_id,
         tax_rate_id=tax_rate_id,
         account_number=account_number,
-        status=status,
         notes=notes,
     )
     metadata = {
@@ -359,7 +348,6 @@ def create_account_from_form_web(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
     account, selected_subscriber_id, metadata_payload = (
@@ -370,7 +358,6 @@ def create_account_from_form_web(
             reseller_id=reseller_id,
             tax_rate_id=tax_rate_id,
             account_number=account_number,
-            status=status,
             notes=notes,
         )
     )
@@ -393,17 +380,8 @@ def update_account_from_form(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
-    resolved_status: SubscriberStatus | None = None
-    if status:
-        try:
-            resolved_status = SubscriberStatus(status)
-        except ValueError as exc:
-            allowed = ", ".join(s.value for s in SubscriberStatus)
-            raise ValueError(f"Invalid status. Allowed: {allowed}") from exc
-
     return subscriber_service.subscribers.update(
         db=db,
         subscriber_id=account_id,
@@ -411,7 +389,6 @@ def update_account_from_form(
             reseller_id=UUID(reseller_id) if reseller_id else None,
             tax_rate_id=UUID(tax_rate_id) if tax_rate_id else None,
             account_number=account_number.strip() if account_number else None,
-            status=resolved_status,
             notes=notes.strip() if notes else None,
         ),
     )
@@ -424,7 +401,6 @@ def update_account_from_form_with_metadata(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
     before = subscriber_service.accounts.get(db, account_id)
@@ -434,7 +410,6 @@ def update_account_from_form_with_metadata(
         reseller_id=reseller_id,
         tax_rate_id=tax_rate_id,
         account_number=account_number,
-        status=status,
         notes=notes,
     )
     after = subscriber_service.accounts.get(db, account_id)
@@ -451,7 +426,6 @@ def update_account_from_form_web(
     reseller_id: str | None,
     tax_rate_id: str | None,
     account_number: str | None,
-    status: str | None,
     notes: str | None,
 ):
     account, metadata_payload = update_account_from_form_with_metadata(
@@ -460,7 +434,6 @@ def update_account_from_form_web(
         reseller_id=reseller_id,
         tax_rate_id=tax_rate_id,
         account_number=account_number,
-        status=status,
         notes=notes,
     )
     log_audit_event(

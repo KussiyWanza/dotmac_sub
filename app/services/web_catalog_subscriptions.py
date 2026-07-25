@@ -57,7 +57,11 @@ from app.models.radius import (
 )
 from app.models.radius_error import RadiusAuthError
 from app.models.subscriber import Address, ChannelType, Subscriber
-from app.schemas.catalog import SubscriptionCreate, SubscriptionUpdate
+from app.schemas.catalog import (
+    SubscriptionCreate,
+    SubscriptionTechnicalUpdate,
+    SubscriptionUpdate,
+)
 from app.schemas.network import IPAssignmentCreate, IPAssignmentUpdate
 from app.schemas.subscriber import SubscriberAccountCreate
 from app.services import auth_flow as auth_flow_service
@@ -2934,10 +2938,13 @@ def update_subscription(
     db: Session, subscription_id: str, payload_data: dict[str, object]
 ) -> Subscription:
     """Update subscription."""
+    technical = SubscriptionTechnicalUpdate.model_validate(payload_data)
     return catalog_service.subscriptions.update(
         db=db,
         subscription_id=subscription_id,
-        payload=SubscriptionUpdate.model_validate(payload_data),
+        payload=SubscriptionUpdate.model_validate(
+            technical.model_dump(exclude_unset=True)
+        ),
     )
 
 
@@ -4382,18 +4389,17 @@ def update_subscription_with_audit(
     # Generic edits own technical metadata only; lifecycle and commercial facts
     # change through subscription_lifecycle_commands.
     payload_data = dict(payload_data)
-    payload_data.update(
-        {
-            "offer_id": before.offer_id,
-            "status": before.status,
-            "billing_mode": before.billing_mode,
-            "start_at": before.start_at,
-            "end_at": before.end_at,
-            "next_billing_at": before.next_billing_at,
-            "canceled_at": before.canceled_at,
-            "cancel_reason": before.cancel_reason,
-        }
-    )
+    for protected_field in (
+        "offer_id",
+        "billing_mode",
+        "status",
+        "start_at",
+        "end_at",
+        "next_billing_at",
+        "canceled_at",
+        "cancel_reason",
+    ):
+        payload_data.pop(protected_field, None)
     update_subscription(db, subscription_id, payload_data)
     after = catalog_service.subscriptions.get(db=db, subscription_id=subscription_id)
     manage_ipv4_assignment = ipv4_assignment_submitted or bool(

@@ -103,7 +103,6 @@ def account_create(
     reseller_id: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     account_number: str | None = Form(None),
-    status: str | None = Form(None),
     notes: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -118,7 +117,6 @@ def account_create(
                 reseller_id=reseller_id,
                 tax_rate_id=tax_rate_id,
                 account_number=account_number,
-                status=status,
                 notes=notes,
             )
         )
@@ -185,7 +183,6 @@ def account_update(
     reseller_id: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     account_number: str | None = Form(None),
-    status: str | None = Form(None),
     notes: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -200,7 +197,6 @@ def account_update(
             reseller_id=reseller_id,
             tax_rate_id=tax_rate_id,
             account_number=account_number,
-            status=status,
             notes=notes,
         )
         return RedirectResponse(

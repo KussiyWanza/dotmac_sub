@@ -90,15 +90,14 @@ These are the parallel decision paths the adoption plan requires a cutover-and-r
 gate for. Verified at 7807afcd:
 
 1. **`Subscription.status` single-writer consolidation — DONE, now pinned.** At
-   7807afcd the only modules assigning `SubscriptionStatus` are the owner
-   (`account_lifecycle`), the legality-gated catalog coordinator
-   (`catalog/subscriptions.py` — calls `assert_legal_subscription_transition`;
-   its `_revert_failed_activation` is a commented compensation write), and the
-   snapshot-restore tool (`web_system_restore_tool.py`, maintenance exemption).
-   The historical strays (CRM API, reseller portal — S3 of the 2026-07-13
-   re-audit) were already routed through the owner. The consolidation is pinned
-   going forward by `tests/architecture/test_subscription_status_writers.py`
-   (AST-based, allowlisted owners, sensitivity-proven).
+   this cutover the only modules assigning `SubscriptionStatus` are the owner
+   (`account_lifecycle`) and the snapshot-restore tool
+   (`web_system_restore_tool.py`, maintenance exemption). Generic catalog
+   updates reject lifecycle fields and cannot create administrative locks.
+   The historical strays (CRM API, reseller portal, and catalog update — S3 of
+   the 2026-07-13 re-audit) are routed through the owner. The consolidation is
+   pinned by `tests/architecture/test_subscription_status_writers.py`
+   (AST-based, shrink-only allowlist, sensitivity-proven).
 1b. **`Subscriber.status` mutated in-memory for display** — `web_reports.py`
    (three sites) and `subscriber_growth.py` assign a *derived* `AccountStatus`
    onto live ORM `Subscriber` rows purely for report filtering/rendering. The

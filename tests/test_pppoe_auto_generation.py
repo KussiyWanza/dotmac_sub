@@ -3,6 +3,7 @@
 import uuid
 
 import pytest
+from fastapi import HTTPException
 
 from app.models.catalog import AccessCredential, Subscription, SubscriptionStatus
 from app.models.domain_settings import DomainSetting, SettingDomain
@@ -342,12 +343,14 @@ class TestAutoGeneratePppoeCredential:
         )
         db_session.commit()
 
-        with pytest.raises(ValueError, match="already used"):
+        with pytest.raises(HTTPException) as exc_info:
             catalog_service.subscriptions.update(
                 db_session,
                 str(subscription.id),
                 SubscriptionUpdate(status=SubscriptionStatus.active),
             )
+        assert exc_info.value.status_code == 409
+        assert "lifecycle fields are read-only" in str(exc_info.value.detail)
 
         db_session.refresh(subscription)
         assert subscription.status == SubscriptionStatus.pending

@@ -11,10 +11,6 @@ writer is a build failure, not a re-audit finding.
 Allowlisted writers (each an explicit ownership decision):
 
 - ``app/services/account_lifecycle.py`` — the transition owner.
-- ``app/services/catalog/subscriptions.py`` — gated coordinator: it calls
-  ``assert_legal_subscription_transition`` before transitioning, and its
-  ``_revert_failed_activation`` compensation write restores the
-  pre-transition status when PPPoE credential minting fails mid-activation.
 - ``app/services/web_system_restore_tool.py`` — snapshot-restore tooling:
   reinstates recorded state; not a business transition.
 
@@ -42,7 +38,6 @@ APP_DIR = PROJECT_ROOT / "app"
 
 ALLOWED_WRITERS = {
     "app/services/account_lifecycle.py",
-    "app/services/catalog/subscriptions.py",
     "app/services/web_system_restore_tool.py",
 }
 

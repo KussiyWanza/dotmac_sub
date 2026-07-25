@@ -12484,7 +12484,7 @@
     "header:x-api-key",
     "path:subscription_id!"
    ],
-   "request": "38749479b8a0",
+   "request": "e1c7ba7c2673",
    "responses": {
     "200": "78300ef2dbb8",
     "422": "a11c9d9b2af8"
@@ -17243,6 +17243,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/subscribers/{subscriber_id}/account-status/confirm": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:subscriber_id!"
+   ],
+   "request": "0b8aaf6ff4e2",
+   "responses": {
+    "200": "ad85aa510501",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/subscribers/{subscriber_id}/account-status/preview": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:subscriber_id!"
+   ],
+   "request": "d0fd26b5fc38",
+   "responses": {
+    "200": "5958270a66c2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/subscribers/{subscriber_id}/billing-approval": {
    "params": [
     "header:authorization",
@@ -19386,6 +19410,10 @@
   "StatusIcon": "a2f487075407",
   "StatusPresentation": "849b7d3979d4",
   "StatusTone": "97e30697e883",
+  "SubscriberAccountStatusConfirmRequest": "ed2d2f9f7ae3",
+  "SubscriberAccountStatusOutcomeRead": "2262fe8d6d0d",
+  "SubscriberAccountStatusPreviewRead": "704a6b05ad00",
+  "SubscriberAccountStatusPreviewRequest": "d951cdeb6a92",
   "SubscriberBillingApprovalRead": "dc5c9860df3d",
   "SubscriberBillingApprovalUpdate": "ab4ee6d39406",
   "SubscriberCategory": "31a6680cced1",
@@ -19404,7 +19432,7 @@
   "SubscriberRoleUpdate": "fb77a484b0b4",
   "SubscriberStatus": "04f90e59577f",
   "SubscriberSyncRead": "58184c709835",
-  "SubscriberUpdate": "c91ae8100670",
+  "SubscriberUpdate": "251ac6a402c8",
   "SubscriptionAddOnCreate": "254584caf81b",
   "SubscriptionAddOnRead": "fc2a625323ad",
   "SubscriptionAddOnUpdate": "3eb9493528e7",
@@ -19413,7 +19441,7 @@
   "SubscriptionDefaultsResponse": "3e153d9f51b0",
   "SubscriptionRead": "4217aba4c23f",
   "SubscriptionStatus": "55da6209c756",
-  "SubscriptionUpdate": "4f329c8bf079",
+  "SubscriptionTechnicalUpdate": "9a8baf2ca29b",
   "SuppressionCreate": "875f5ad57243",
   "SuppressionReason": "e3c4e28c7028",
   "SuppressionScope": "8a2a4910b101",

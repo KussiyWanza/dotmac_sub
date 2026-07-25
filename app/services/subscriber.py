@@ -1020,8 +1020,15 @@ class Subscribers(ListResponseMixin):
             data, current_region=subscriber.region, current_lga=subscriber.lga
         )
         updated_fields = list(data.keys())
-        requested_status = data.pop("status", None)
-        requested_is_active = data.pop("is_active", None)
+        lifecycle_fields = {"status", "is_active"} & data.keys()
+        if lifecycle_fields:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Account lifecycle state is read-only in generic updates; use "
+                    "the account-status preview and confirmation endpoints."
+                ),
+            )
         requested_billing_approval = data.pop("billing_enabled", None)
         if requested_billing_approval is not None and bool(
             requested_billing_approval
@@ -1062,23 +1069,6 @@ class Subscribers(ListResponseMixin):
         if category is not None:
             subscriber.category = (
                 category if isinstance(category, SubscriberCategory) else str(category)
-            )
-        if requested_status is not None or requested_is_active is not None:
-            from app.services.account_lifecycle import apply_requested_account_status
-
-            target_status = requested_status
-            if target_status is None:
-                target_status = (
-                    SubscriberStatus.active
-                    if requested_is_active
-                    else SubscriberStatus.suspended
-                )
-            apply_requested_account_status(
-                db,
-                str(subscriber.id),
-                target_status,
-                reason="Subscriber account updated",
-                source="subscriber_service:update",
             )
         _update_restricted_status_metadata(
             subscriber,

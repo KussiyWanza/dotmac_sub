@@ -535,6 +535,40 @@ class SubscriptionUpdate(BaseModel):
         return self
 
 
+class SubscriptionTechnicalUpdate(BaseModel):
+    """Generic PATCH fields that cannot change subscription lifecycle state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subscriber_id: UUID | None = Field(
+        default=None,
+        validation_alias=AliasChoices("account_id", "subscriber_id"),
+        serialization_alias="account_id",
+    )
+    offer_id: UUID | None = None
+    offer_version_id: UUID | None = None
+    service_address_id: UUID | None = None
+    billing_mode: BillingMode | None = None
+    contract_term: ContractTerm | None = None
+    billing_cycle: BillingCycle | None = None
+    splynx_service_id: int | None = None
+    router_id: int | None = None
+    service_description: str | None = None
+    quantity: int | None = None
+    unit: str | None = Field(default=None, max_length=40)
+    unit_price: Decimal | None = None
+    discount: bool | None = None
+    discount_value: Decimal | None = None
+    discount_type: DiscountType | None = None
+    service_status_raw: str | None = Field(default=None, max_length=40)
+    login: str | None = Field(default=None, max_length=120)
+    ipv4_address: str | None = Field(default=None, max_length=64)
+    ipv6_address: str | None = Field(default=None, max_length=128)
+    mac_address: str | None = Field(default=None, max_length=64)
+    provisioning_nas_device_id: UUID | None = None
+    radius_profile_id: UUID | None = None
+
+
 # Statuses where the service has genuinely ended (vs. merely needing a payment,
 # which is blocked/suspended). The one authoritative definition for is_expired.
 _ENDED_SUBSCRIPTION_STATUSES = frozenset(

@@ -1221,20 +1221,13 @@ def _credit_covers_open_ar(db: Session, subscriber_id: str) -> bool:
         return False
 
 
-def derive_account_status(db: Session, subscriber_id: str) -> SubscriberStatus:
-    """Return the subscriber status implied by authoritative lifecycle facts.
-
-    This is the read-only half of ``compute_account_status``. Audits and
-    enforcement planners must be able to report projection drift without
-    temporarily mutating an ORM object or relying on a transaction rollback.
-    An explicit account override outranks the derived service projection.
-    """
+def derive_account_status_without_override(
+    db: Session, subscriber_id: str
+) -> SubscriberStatus:
+    """Return the account status derived only from subscription lifecycle facts."""
     subscriber = db.get(Subscriber, subscriber_id)
     if not subscriber:
         raise ValueError(f"Subscriber {subscriber_id} not found")
-
-    if subscriber.lifecycle_override_status is not None:
-        return subscriber.lifecycle_override_status
 
     subs = list(
         db.scalars(
@@ -1263,6 +1256,24 @@ def derive_account_status(db: Session, subscriber_id: str) -> SubscriberStatus:
     if all(s.status == SubscriptionStatus.disabled for s in subs):
         return SubscriberStatus.disabled
     return SubscriberStatus.canceled
+
+
+def derive_account_status(db: Session, subscriber_id: str) -> SubscriberStatus:
+    """Return the subscriber status implied by authoritative lifecycle facts.
+
+    This is the read-only half of ``compute_account_status``. Audits and
+    enforcement planners must be able to report projection drift without
+    temporarily mutating an ORM object or relying on a transaction rollback.
+    An explicit account override outranks the derived service projection.
+    """
+    subscriber = db.get(Subscriber, subscriber_id)
+    if not subscriber:
+        raise ValueError(f"Subscriber {subscriber_id} not found")
+
+    if subscriber.lifecycle_override_status is not None:
+        return subscriber.lifecycle_override_status
+
+    return derive_account_status_without_override(db, subscriber_id)
 
 
 def derive_account_active_projection(

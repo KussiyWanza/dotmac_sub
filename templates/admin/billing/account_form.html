@@ -73,13 +73,11 @@
             <div class="grid gap-4 sm:grid-cols-2">
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Status</label>
-                    <select name="status"
-                            class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        {% set current_status = account.status.value if account and account.status else 'active' %}
-                        <option value="active" {% if current_status == 'active' %}selected{% endif %}>Active</option>
-                        <option value="suspended" {% if current_status == 'suspended' %}selected{% endif %}>Suspended</option>
-                        <option value="inactive" {% if current_status == 'inactive' %}selected{% endif %}>Inactive</option>
-                    </select>
+                    {% set current_status = account.status.value if account and account.status else 'active' %}
+                    <div class="block w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
+                        {{ current_status | replace('_', ' ') | title }}
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Read-only here; use a reviewed account-status action.</p>
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">Notes</label>

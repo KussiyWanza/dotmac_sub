@@ -223,6 +223,8 @@ class SubscriberCreate(SubscriberBase):
 
 
 class SubscriberUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # Identity fields
     first_name: str | None = Field(default=None, min_length=1, max_length=80)
     last_name: str | None = Field(default=None, min_length=1, max_length=80)
@@ -261,9 +263,7 @@ class SubscriberUpdate(BaseModel):
     subscriber_number: str | None = Field(default=None, max_length=80)
     account_number: str | None = Field(default=None, max_length=80)
     account_start_date: datetime | None = None
-    status: SubscriberStatus | None = None
     category: SubscriberCategory | None = None
-    is_active: bool | None = None
     marketing_opt_in: bool | None = None
 
     # Reseller
@@ -323,6 +323,46 @@ class SubscriberBillingApprovalRead(BaseModel):
     status: SubscriberStatus
     action: str
     affected_subscription_ids: tuple[UUID, ...]
+
+
+class SubscriberAccountStatusPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1, max_length=20)
+
+
+class SubscriberAccountStatusPreviewRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: UUID
+    action: str
+    current_status: SubscriberStatus
+    current_override: SubscriberStatus | None
+    projected_status: SubscriberStatus
+    clears_override: bool
+    allowed: bool
+    fingerprint: str
+
+
+class SubscriberAccountStatusConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1, max_length=20)
+    reason: str = Field(min_length=1, max_length=500)
+    preview_fingerprint: str = Field(min_length=64, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class SubscriberAccountStatusOutcomeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: UUID
+    action: str
+    prior_status: SubscriberStatus
+    status: SubscriberStatus
+    prior_override: SubscriberStatus | None
+    lifecycle_override: SubscriberStatus | None
+    replayed: bool
 
 
 class SubscriberRead(SubscriberBase):

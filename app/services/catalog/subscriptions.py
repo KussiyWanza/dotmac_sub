@@ -162,29 +162,6 @@ def _compute_contract_end_at(start_at: datetime, term: ContractTerm) -> datetime
     return None
 
 
-def _generate_activation_proration(
-    db: Session,
-    subscription: Subscription,
-    from_status: SubscriptionStatus | None,
-) -> None:
-    """Generate the owner-defined proration for a newly activated subscription."""
-    from app.services.billing_automation import generate_prorated_invoice
-
-    # Only prorate on activation (not resume from suspension)
-    if from_status == SubscriptionStatus.suspended:
-        return
-
-    try:
-        generate_prorated_invoice(db, subscription)
-    except Exception as exc:
-        # Log but don't fail the activation
-        logger.warning(
-            "Failed to generate prorated invoice for subscription %s: %s",
-            subscription.id,
-            exc,
-        )
-
-
 def _sync_credentials_to_radius(db: Session, subscriber_id) -> None:
     """Reconcile internal/external RADIUS state for active subscriptions."""
     try:
@@ -428,288 +405,6 @@ def apply_offer_radius_profile(
                 credential.radius_profile_id = resolved_target
 
     return resolved_target
-
-
-def _enforce_stopped_or_disabled_connectivity(
-    db: Session,
-    subscription: Subscription,
-    to_status: SubscriptionStatus,
-) -> None:
-    """Project stopped/disabled lifecycle state to connectivity immediately.
-
-    Transitions to ``stopped``/``disabled`` emit no enforcement event, so the
-    subscriber would otherwise keep connectivity until the next RADIUS orphan
-    sweep. Run the same cleanup as the equivalent suspend or cancel path.
-    """
-    try:
-        if to_status == SubscriptionStatus.disabled:
-            from app.services.enforcement import cleanup_subscription_on_cancel
-
-            cleanup_subscription_on_cancel(db, str(subscription.id))
-        else:  # stopped → walled-garden, like suspend
-            from app.services.enforcement import cleanup_subscription_on_suspend
-
-            cleanup_subscription_on_suspend(db, str(subscription.id))
-    except Exception as exc:
-        logger.warning(
-            "Stopped/disabled enforcement failed for subscription %s: %s",
-            subscription.id,
-            exc,
-        )
-
-
-def _emit_subscription_status_event(
-    db: Session,
-    subscription: Subscription,
-    from_status: SubscriptionStatus | None,
-    to_status: SubscriptionStatus | None,
-) -> None:
-    """Emit the appropriate event based on subscription status transition.
-
-    IMPORTANT: For activation, credentials are synced BEFORE events are emitted
-    to ensure provisioning handlers have access to RadiusUser records.
-    """
-    if to_status is None:
-        return
-
-    from_str = from_status.value if from_status else None
-    to_str = to_status.value if to_status else None
-    offer_name = subscription.offer.name if subscription.offer else None
-
-    payload = {
-        "subscription_id": str(subscription.id),
-        "offer_name": offer_name,
-        "from_status": from_str,
-        "to_status": to_str,
-    }
-
-    # Map status transitions to event types
-    if to_status == SubscriptionStatus.active:
-        # Generate PPPoE BEFORE events so provisioning handler sees credentials
-        _auto_generate_pppoe(db, subscription)
-
-        # CRITICAL: Sync credentials to RADIUS BEFORE emitting events
-        # This ensures provisioning handlers can access RadiusUser records
-        _sync_credentials_to_radius(db, subscription.subscriber_id)
-
-        # If resuming from suspension, restore connectivity
-        if from_status in {
-            SubscriptionStatus.suspended,
-            SubscriptionStatus.disabled,
-        }:
-            try:
-                from app.services.enforcement import restore_subscription_connectivity
-
-                restore_subscription_connectivity(db, str(subscription.id))
-            except Exception as exc:
-                logger.warning(
-                    "Failed to restore connectivity for subscription %s: %s",
-                    subscription.id,
-                    exc,
-                )
-            emit_event(
-                db,
-                EventType.subscription_resumed,
-                payload,
-                subscription_id=subscription.id,
-                account_id=subscription.subscriber_id,
-            )
-        else:
-            emit_event(
-                db,
-                EventType.subscription_activated,
-                payload,
-                subscription_id=subscription.id,
-                account_id=subscription.subscriber_id,
-            )
-            # Generate prorated invoice for new activations
-            _generate_activation_proration(db, subscription, from_status)
-
-    elif to_status == SubscriptionStatus.suspended:
-        # Cleanup RADIUS connectivity on suspension
-        try:
-            from app.services.enforcement import cleanup_subscription_on_suspend
-
-            cleanup_subscription_on_suspend(db, str(subscription.id))
-        except Exception as exc:
-            logger.warning(
-                "Failed to cleanup on suspend for subscription %s: %s",
-                subscription.id,
-                exc,
-            )
-        emit_event(
-            db,
-            EventType.subscription_suspended,
-            payload,
-            subscription_id=subscription.id,
-            account_id=subscription.subscriber_id,
-        )
-    elif to_status == SubscriptionStatus.canceled:
-        emit_event(
-            db,
-            EventType.subscription_canceled,
-            payload,
-            subscription_id=subscription.id,
-            account_id=subscription.subscriber_id,
-        )
-    elif to_status == SubscriptionStatus.expired:
-        emit_event(
-            db,
-            EventType.subscription_expired,
-            payload,
-            subscription_id=subscription.id,
-            account_id=subscription.subscriber_id,
-        )
-    elif to_status == SubscriptionStatus.disabled:
-        emit_event(
-            db,
-            EventType.subscription_disabled,
-            payload,
-            subscription_id=subscription.id,
-            account_id=subscription.subscriber_id,
-        )
-    elif to_status == SubscriptionStatus.stopped:
-        # Previously emitted nothing → subscriber kept connectivity until the
-        # orphan sweep. Gated enforcement (default off) + always-on audit log.
-        _enforce_stopped_or_disabled_connectivity(db, subscription, to_status)
-
-
-def _handle_status_transition_via_lifecycle(
-    db: Session,
-    subscription: Subscription,
-    from_status: SubscriptionStatus | None,
-    to_status: SubscriptionStatus,
-) -> None:
-    """Route status transitions through the lifecycle module.
-
-    Called after the subscription status has already been committed.
-    Manages enforcement locks, computes account status, and emits events.
-    For transitions that also need PPPoE generation or RADIUS sync,
-    delegates to the original ``_emit_subscription_status_event`` which
-    handles those side effects.
-    """
-    from app.models.enforcement_lock import EnforcementReason
-    from app.services.account_lifecycle import (
-        SUSPENDED_EQUIVALENT,
-        compute_account_status,
-        suspend_subscription,
-    )
-
-    sub_id = str(subscription.id)
-    subscriber_id = str(subscription.subscriber_id)
-
-    if to_status == SubscriptionStatus.suspended:
-        # Admin/catalog-initiated suspension — create enforcement lock
-        try:
-            suspend_subscription(
-                db,
-                sub_id,
-                reason=EnforcementReason.admin,
-                source="catalog_update",
-                emit=False,
-            )
-        except ValueError as e:
-            if "not found" in str(e):
-                logger.error(
-                    "Data integrity: subscription %s not found during suspend "
-                    "despite being just committed: %s",
-                    sub_id,
-                    e,
-                )
-            else:
-                logger.info(
-                    "Skipped enforcement lock for subscription %s: %s", sub_id, e
-                )
-        _emit_subscription_status_event(db, subscription, from_status, to_status)
-
-    elif to_status == SubscriptionStatus.active:
-        from app.services.account_lifecycle import resolve_locks_for_trigger
-
-        def _revert_failed_activation() -> None:
-            subscription.status = from_status or SubscriptionStatus.pending
-            compute_account_status(db, subscriber_id)
-            db.commit()
-
-        # Mint/verify the PPPoE credential FIRST. A derived-username collision
-        # raises here, before we resolve enforcement locks — the revert path
-        # cannot recreate those locks, so resolving them ahead of a possible
-        # failure would leave a suspended subscription with its locks cleared.
-        # The re-call inside _emit_subscription_status_event is idempotent (it
-        # finds the now-active credential and skips).
-        try:
-            _auto_generate_pppoe(db, subscription)
-        except Exception:
-            _revert_failed_activation()
-            raise
-
-        if from_status in SUSPENDED_EQUIVALENT:
-            resolve_locks_for_trigger(
-                db,
-                subscription,
-                trigger="admin",
-                resolved_by="catalog_update",
-                emit=False,
-            )
-        compute_account_status(db, subscriber_id)
-        try:
-            _emit_subscription_status_event(db, subscription, from_status, to_status)
-        except Exception:
-            _revert_failed_activation()
-            raise
-
-    elif to_status == SubscriptionStatus.canceled:
-        from app.services.account_lifecycle import (
-            _release_service_ips,
-            resolve_all_locks,
-        )
-
-        resolve_all_locks(db, subscription, "canceled")
-        if not subscription.canceled_at:
-            subscription.canceled_at = datetime.now(UTC)
-            db.flush()
-        _release_service_ips(db, subscription)
-        compute_account_status(db, subscriber_id)
-        _emit_subscription_status_event(db, subscription, from_status, to_status)
-
-    elif to_status == SubscriptionStatus.expired:
-        from app.services.account_lifecycle import (
-            _release_service_ips,
-            resolve_all_locks,
-        )
-
-        resolve_all_locks(db, subscription, "expired")
-        _release_service_ips(db, subscription)
-        compute_account_status(db, subscriber_id)
-        _emit_subscription_status_event(db, subscription, from_status, to_status)
-
-    elif to_status == SubscriptionStatus.disabled:
-        from app.services.account_lifecycle import resolve_all_locks
-
-        resolve_all_locks(db, subscription, "disabled")
-        compute_account_status(db, subscriber_id)
-        _emit_subscription_status_event(db, subscription, from_status, to_status)
-
-    else:
-        # Catch-all branch. The other terminal statuses (hidden/archived) only
-        # reach the catalog write path here — there is no
-        # dedicated domain op for them — so they must get the same terminal
-        # side-effects (resolve enforcement locks + release service IPs) as
-        # cancel/expire.
-        from app.services.account_lifecycle import (
-            TERMINAL_STATUSES,
-            _release_service_ips,
-            resolve_all_locks,
-        )
-
-        if to_status in TERMINAL_STATUSES:
-            resolve_all_locks(db, subscription, to_status.value)
-            _release_service_ips(db, subscription)
-        compute_account_status(db, subscriber_id)
-        _emit_subscription_status_event(db, subscription, from_status, to_status)
-
-    # Ensure lifecycle state (locks, account status) is persisted
-    # independently of event dispatcher's internal commits
-    db.commit()
 
 
 def _validate_plan_change(
@@ -1432,6 +1127,24 @@ class Subscriptions(ListResponseMixin):
         if not subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
         data = payload.model_dump(exclude_unset=True)
+        lifecycle_fields = {
+            "status",
+            "start_at",
+            "end_at",
+            "next_billing_at",
+            "canceled_at",
+            "cancel_reason",
+        }
+        requested_lifecycle_fields = lifecycle_fields.intersection(data)
+        if requested_lifecycle_fields:
+            fields = ", ".join(sorted(requested_lifecycle_fields))
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Subscription lifecycle fields are read-only in generic "
+                    f"updates ({fields}); use the subscription lifecycle command."
+                ),
+            )
         requested_offer_id = data.get("offer_id")
         if (
             requested_offer_id is not None
@@ -1626,19 +1339,7 @@ class Subscriptions(ListResponseMixin):
                 db, str(data["offer_id"])
             )
 
-        status = data.get("status", subscription.status)
-        # State-machine guard: the raw form/CRUD write path must not resurrect a
-        # terminal service (canceled/expired/hidden/archived → active).
-        # The account_lifecycle domain ops already reject these edges; this is
-        # the path that historically bypassed them.
-        from app.services.account_lifecycle import (
-            assert_legal_subscription_transition,
-        )
-
-        try:
-            assert_legal_subscription_transition(previous_status, status)
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        status = subscription.status
         start_at = _ensure_utc(data.get("start_at", subscription.start_at))
         end_at = _ensure_utc(data.get("end_at", subscription.end_at))
         next_billing_at = _ensure_utc(
@@ -1663,7 +1364,11 @@ class Subscriptions(ListResponseMixin):
         catalog_validators.enforce_single_active_subscription(
             db, subscriber_id, status, subscription_id
         )
-        if status == SubscriptionStatus.active and not start_at:
+        if (
+            status == SubscriptionStatus.active
+            and not start_at
+            and {"offer_id", "billing_cycle"}.intersection(data)
+        ):
             start_at = datetime.now(UTC)
             data["start_at"] = start_at
         elif "offer_id" in data and not start_at:
@@ -1754,13 +1459,7 @@ class Subscriptions(ListResponseMixin):
         db.commit()
         db.refresh(subscription)
 
-        # Handle lifecycle events based on status transitions
-        new_status = subscription.status
-        if previous_status != new_status:
-            _handle_status_transition_via_lifecycle(
-                db, subscription, previous_status, new_status
-            )
-        elif (
+        if (
             previous_status == SubscriptionStatus.active
             and previous_profile_id != subscription.radius_profile_id
         ):
