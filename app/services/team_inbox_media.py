@@ -182,3 +182,147 @@ def assets_for_messages(
         if row.message_id is not None:
             grouped.setdefault(row.message_id, []).append(row)
     return grouped
+
+
+ALLOWED_OUTBOUND_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "application/pdf",
+        "text/plain",
+        "text/csv",
+        "application/zip",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+)
+MAX_OUTBOUND_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+
+class MediaUploadError(ValueError):
+    """Rejected operator upload, safe for an admin adapter to render."""
+
+
+def _outbound_asset_type(mime_type: str) -> str:
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type.startswith("video/"):
+        return "video"
+    return "document"
+
+
+def stage_outbound_attachment(
+    db: Session,
+    *,
+    conversation,
+    file_name: str,
+    content_type: str | None,
+    data: bytes,
+    uploaded_by: str | None = None,
+) -> InboxMediaAsset:
+    """Store one operator-supplied file and record it against the conversation.
+
+    Inbound media arrives already hosted by a provider and is promoted by
+    ``promote_message_attachments``. An operator upload has no provider, so the
+    bytes are staged through the shared file-storage participant and the asset
+    is created here with ``message_id`` still unset — it is bound when the reply
+    that carries it is actually sent, so an abandoned composer leaves no
+    attachment claiming to belong to a message.
+    """
+    from app.services.file_storage import file_uploads
+
+    clean_name = _text(file_name, max_length=255) or "attachment"
+    mime_type = (
+        (content_type or "application/octet-stream").split(";")[0].strip().lower()
+    )
+
+    if not data:
+        raise MediaUploadError(f"{clean_name} is empty.")
+    if len(data) > MAX_OUTBOUND_ATTACHMENT_BYTES:
+        limit_mb = MAX_OUTBOUND_ATTACHMENT_BYTES // 1048576
+        raise MediaUploadError(f"{clean_name} is larger than {limit_mb} MB.")
+    if mime_type not in ALLOWED_OUTBOUND_MIME_TYPES:
+        raise MediaUploadError(f"{clean_name} is not an allowed file type.")
+
+    record = file_uploads.stage_upload(
+        db=db,
+        domain="attachments",
+        entity_type="inbox_conversation",
+        entity_id=str(conversation.id),
+        original_filename=clean_name,
+        content_type=mime_type,
+        data=data,
+        uploaded_by=uploaded_by,
+    )
+
+    asset = InboxMediaAsset(
+        conversation_id=conversation.id,
+        message_id=None,
+        channel_type=conversation.channel_type,
+        direction="outbound",
+        provider=None,
+        provider_media_id=None,
+        asset_type=_outbound_asset_type(mime_type),
+        file_name=record.original_filename,
+        mime_type=mime_type,
+        file_size=int(record.file_size),
+        storage_url=record.storage_key_or_relative_path,
+        download_status="stored",
+        metadata_={
+            "source": "operator_upload",
+            "stored_file_id": str(record.id),
+        },
+    )
+    db.add(asset)
+    db.flush()
+    return asset
+
+
+def bind_assets_to_message(
+    db: Session, *, message: InboxMessage, asset_ids: list[str] | tuple[str, ...]
+) -> list[InboxMediaAsset]:
+    """Attach previously staged uploads to the message that carries them.
+
+    Only unbound assets on the same conversation are eligible, so an id from
+    another thread — or one already sent — cannot be re-attached.
+    """
+    from app.services.common import coerce_uuid
+
+    wanted = [value for value in (coerce_uuid(item) for item in asset_ids) if value]
+    if not wanted:
+        return []
+
+    assets = (
+        db.query(InboxMediaAsset)
+        .filter(InboxMediaAsset.id.in_(wanted))
+        .filter(InboxMediaAsset.conversation_id == message.conversation_id)
+        .filter(InboxMediaAsset.message_id.is_(None))
+        .all()
+    )
+    for asset in assets:
+        asset.message_id = message.id
+    db.flush()
+    return assets
+
+
+def pending_outbound_assets(db: Session, conversation_id) -> list[InboxMediaAsset]:
+    """Uploads staged for this conversation that no message carries yet."""
+    from app.services.common import coerce_uuid
+
+    conversation_uuid = coerce_uuid(conversation_id)
+    if conversation_uuid is None:
+        return []
+    return (
+        db.query(InboxMediaAsset)
+        .filter(InboxMediaAsset.conversation_id == conversation_uuid)
+        .filter(InboxMediaAsset.message_id.is_(None))
+        .filter(InboxMediaAsset.direction == "outbound")
+        .order_by(InboxMediaAsset.created_at.asc())
+        .all()
+    )

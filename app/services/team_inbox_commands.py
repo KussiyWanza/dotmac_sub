@@ -26,6 +26,7 @@ from app.models.team_inbox import (
 from app.services import (
     team_inbox_assignment,
     team_inbox_contact_links,
+    team_inbox_media,
     team_inbox_operations,
     team_inbox_outbound,
     team_inbox_routing,
@@ -158,6 +159,7 @@ def reply(
     actor_person_id: str | UUID | None,
     macro_id: str | UUID | None = None,
     template_id: str | UUID | None = None,
+    attachment_ids: Sequence[str] | None = None,
     idempotency_key: str | None = None,
     reply_to_message_id: str | UUID | None = None,
 ) -> ReplyOutcome:
@@ -295,6 +297,15 @@ def reply(
                 result.reason or "Reply could not be sent.",
                 conversation_id=conversation.id,
             )
+        # Bind staged uploads to the message that actually carried them, inside
+        # the same command — an attachment must never outlive a reply that
+        # failed to send.
+        if attachment_ids and result.message_id:
+            message = db.get(InboxMessage, coerce_uuid(result.message_id))
+            if message is not None:
+                team_inbox_media.bind_assets_to_message(
+                    db, message=message, asset_ids=list(attachment_ids)
+                )
         team_inbox_operations.record_macro_use(db, macro_id)
         return ReplyOutcome(
             conversation_id=str(conversation.id),
@@ -824,3 +835,142 @@ def delete_email_route(db: Session, *, route_id: str | UUID) -> None:
         team_inbox_routing.delete_email_route(db, route_id)
 
     _commit(db, action)
+
+
+def stage_attachments(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    uploads: Sequence[tuple[str, str | None, bytes]],
+    actor_person_id: str | UUID | None = None,
+) -> list[str]:
+    """Store operator-supplied files against a conversation.
+
+    Returns the staged asset ids so the composer can submit them with the reply
+    they belong to. They stay unbound until that reply is sent, so abandoning
+    the composer leaves no attachment claiming to belong to a message.
+    """
+
+    def action() -> list[str]:
+        conversation = _active_conversation(db, conversation_id, for_update=True)
+        staged: list[str] = []
+        for file_name, content_type, data in uploads:
+            asset = team_inbox_media.stage_outbound_attachment(
+                db,
+                conversation=conversation,
+                file_name=file_name,
+                content_type=content_type,
+                data=data,
+                uploaded_by=str(actor_person_id) if actor_person_id else None,
+            )
+            staged.append(str(asset.id))
+        return staged
+
+    return _commit(db, action)
+
+
+@dataclass(frozen=True)
+class StartConversationOutcome:
+    conversation_id: str
+    kind: str
+    sender: str
+    contact_status: str
+
+
+def start_conversation(
+    db: Session,
+    *,
+    channel_type: str,
+    contact_address: str,
+    body_text: str,
+    subject: str | None = None,
+    service_team_id: str | UUID | None = None,
+    subscriber_id: str | UUID | None = None,
+    actor_person_id: str | UUID | None = None,
+    attachment_ids: Sequence[str] | None = None,
+) -> StartConversationOutcome:
+    """Open a new outbound conversation and send its first message.
+
+    Reuses the inbound contact resolver, so a thread an operator starts resolves
+    to the same subscriber an inbound message from that address would. An
+    unmatched address is allowed — the operator may be reaching someone the
+    system does not know yet — and the resolution status is recorded on the
+    conversation so the drawer can offer a contact link rather than silently
+    showing an anonymous thread.
+    """
+    from app.models.team_inbox import InboxConversationStatus
+    from app.services import team_inbox_channel_receive
+
+    def action() -> StartConversationOutcome:
+        clean_channel = str(channel_type or "").strip().lower()
+        if clean_channel not in {c.value for c in InboxChannelType}:
+            raise InboxCommandError("Choose a channel for this conversation.")
+        if not str(contact_address or "").strip():
+            raise InboxCommandError("Enter who this conversation is with.")
+        if not str(body_text or "").strip():
+            raise InboxCommandError("Enter the first message.")
+
+        resolution = team_inbox_channel_receive.resolve_contact_context(
+            db,
+            channel_type=clean_channel,
+            contact_address=contact_address,
+            subscriber_id=subscriber_id,
+        )
+
+        conversation = InboxConversation(
+            channel_type=clean_channel,
+            subject=(subject or "").strip()[:200] or None,
+            contact_address=resolution.normalized_contact or contact_address.strip(),
+            status=InboxConversationStatus.open.value,
+            subscriber_id=resolution.subscriber_id,
+            primary_service_team_id=coerce_uuid(service_team_id),
+            first_message_at=datetime.now(UTC),
+            metadata_={
+                "source": "operator_initiated",
+                "contact_resolution": resolution.as_metadata(),
+            },
+        )
+        db.add(conversation)
+        db.flush()
+
+        body_html = (
+            "<p>"
+            + "<br>".join(escape(line) for line in str(body_text).splitlines())
+            + "</p>"
+        )
+        result = team_inbox_outbound.send_inbox_reply(
+            db,
+            conversation=conversation,
+            payload=team_inbox_outbound.InboxReplyPayload(
+                body_html=body_html,
+                body_text=str(body_text).strip(),
+                subject=(subject or "").strip() or None,
+                sent_by_person_id=actor_person_id,
+                metadata={"source": "operator_initiated"},
+            ),
+            record_failure=True,
+        )
+        if result.kind not in {"sent", "queued"}:
+            # Fail the whole command: a conversation whose opening message never
+            # left is worse than no conversation, because the queue would show a
+            # thread the customer never received.
+            raise InboxCommandRejected(
+                result.reason or "Could not send the first message.",
+                conversation_id=conversation.id,
+            )
+
+        if attachment_ids and result.message_id:
+            message = db.get(InboxMessage, coerce_uuid(result.message_id))
+            if message is not None:
+                team_inbox_media.bind_assets_to_message(
+                    db, message=message, asset_ids=list(attachment_ids)
+                )
+
+        return StartConversationOutcome(
+            conversation_id=str(conversation.id),
+            kind=result.kind,
+            sender=result.from_address or result.sender_key or "team sender",
+            contact_status=resolution.status,
+        )
+
+    return _commit(db, action)

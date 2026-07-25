@@ -201,6 +201,7 @@
                the agent edits the inserted body. #}
             <input type="hidden" name="macro_id" :value="resolvedMacroId()">
             <input type="hidden" name="template_id" :value="resolvedTemplateId()">
+            <input type="hidden" name="attachment_ids" :value="attachmentIds()">
             <div class="relative rounded-xl border border-slate-300 bg-white focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-950">
                 <textarea x-ref="textarea" name="body_text" x-model="draft" @input="onInput()" @keydown.meta.enter.prevent="submitFromKeyboard($event)" @keydown.ctrl.enter.prevent="submitFromKeyboard($event)" rows="3" placeholder="Reply to this conversation…  Type / to search responses" class="max-h-48 min-h-[88px] w-full resize-none border-0 bg-transparent px-3 py-3 text-sm focus:ring-0 dark:text-white"></textarea>
                 <div class="flex flex-wrap items-center gap-1.5 border-t border-slate-100 px-2 py-1.5 dark:border-slate-800">
@@ -212,7 +213,6 @@
             </div>
             <div x-show="files.length" x-cloak class="flex flex-wrap gap-2">
                 <template x-for="(file, index) in files" :key="file.name + index"><span class="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"><span x-text="file.name"></span><span x-show="file.uploading" class="text-amber-600">uploading…</span><button type="button" @click="removeFile(index)" class="h-6 w-6 rounded" aria-label="Remove attachment">✕</button></span></template>
-                <p class="w-full text-[10px] text-slate-400">Attachment upload is using demo state until the upload API is mapped.</p>
             </div>
             <div x-show="scheduled" x-cloak class="flex items-center gap-2"><label class="text-xs font-medium text-slate-600">Send at <input type="datetime-local" x-model="scheduledAt" class="ml-2 h-10 rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950"></label></div>
             <div class="flex flex-wrap items-center gap-2">

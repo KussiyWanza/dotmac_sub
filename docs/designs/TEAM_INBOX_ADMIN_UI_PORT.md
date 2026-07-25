@@ -295,7 +295,14 @@ more escalation targets, not after.
 
 **Delivered:** direct teammate escalation, macro execution, the combined
 my-team filter (#1604); custom-date snooze and the AI-handling, sent-to-ticket
-and activity-window filters.
+and activity-window filters (#1605); operator attachment upload and
+conversation initiation.
+
+Attachments stage through the shared file-storage participant and stay unbound
+until the reply that carries them is sent, so an abandoned composer leaves
+nothing claiming to belong to a message. Initiation reuses the inbound contact
+resolver, so an operator-started thread resolves like an inbound one; an
+unmatched address still opens a thread and says so.
 
 **Still open, each needing new domain work rather than an adapter:**
 
@@ -303,13 +310,6 @@ and activity-window filters.
   the next inbound message. That is a change to `team_inbox_channel_receive`
   affecting *every* inbound message, so it wants its own change and its own
   regression cover — not a rider on a UI slice.
-- **Attachment upload.** `team_inbox_media.promote_message_attachments` promotes
-  *inbound* provider media; there is no operator upload path.
-  `app/services/file_upload.py` supplies validation and storage primitives, so
-  the work is a media-owner entry point plus an outbound attachment contract.
-- **Conversation initiation.** `team_inbox_outbound` can only reply to an
-  existing conversation; starting one needs a create-and-send command, and a
-  decision about contact resolution for an address with no thread.
 - **Scheduled send.** Needs a queued-send model and a scheduler entry; the
   composer's `scheduledAt` is currently local state only.
 - **Email transcript.** Render the thread and deliver through the canonical
@@ -320,11 +320,33 @@ and activity-window filters.
   dependency, with its own config, secrets, cost and data-handling decisions.
   That is a product decision, not a UI gap.
 
-### Slice 5 — Migration readiness gate
+### Slice 5 — Migration readiness gate  *(delivered)*
 
-Browser workflow verification, RBAC, audit coverage, responsive states, and tests
-at representative volume. This is the gate before any traffic moves — not a
-formality, given production has never exercised operator workflows at scale.
+RBAC, attribution and volume are covered by `tests/test_team_inbox_readiness_gate.py`;
+browser workflow and responsive states by `tests/playwright/e2e/test_inbox_workspace.py`,
+which CI's existing e2e job runs against the real Docker stack. Running that
+stack on seabone risks the documented swap-freeze, so the browser pass belongs
+in CI rather than on the test host.
+
+**Two findings this gate surfaced, both open decisions rather than defects:**
+
+1. **There is no central audit trail for inbox commands.** Neither
+   `team_inbox_commands` nor `execute_owner_command` writes `audit_events`.
+   `communications.conversation_ticket_handoff` is the only exception, because it
+   crosses an ownership line.
+2. **Attribution is split.** The relational rows carry proper actor columns —
+   `InboxComment.author_person_id`, `InboxConversationLabel.applied_by_person_id`,
+   `InboxConversationAssignment.assigned_by_person_id`. But **everything written
+   to `InboxMessage` keeps the actor in JSON metadata**: replies as
+   `sent_by_person_id`, internal notes as `actor_id`. `InboxMessage` has no actor
+   column at all.
+
+   So *"what did agent X send"* is not a queryable question — it needs a JSON
+   scan and no index helps. That is tolerable at 84 conversations and worth
+   deciding before ~37k arrive. Surfacing it is precisely what this gate is for.
+
+Both are pinned by tests so neither the columns nor the metadata keys can be
+dropped silently.
 
 ### Slice 6 — History migration and staged channel cutover  *(code delivered)*
 

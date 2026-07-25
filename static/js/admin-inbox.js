@@ -437,17 +437,6 @@
         }));
       },
 
-      submitDemoConversation() {
-        if (!this.newConversation.recipient || !this.newConversation.body) {
-          this.newConversation.error = "Recipient and message are required.";
-          return;
-        }
-        this.newConversation.error = "";
-        this.newConversationOpen = false;
-        this.showToast(
-          "Demo conversation prepared. No external message was sent; API mapping is pending.",
-        );
-      },
 
       showDemoNotice(capability) {
         this.showToast(
@@ -832,24 +821,54 @@
         }
       },
 
-      stageFiles(event) {
-        const staged = Array.from(event.target.files || []).map((file) => ({
+      // Uploads are staged server-side immediately and bound to the reply when
+      // it sends, so an abandoned composer never leaves an attachment claiming
+      // to belong to a message.
+      async stageFiles(event) {
+        const chosen = Array.from(event.target.files || []);
+        event.target.value = "";
+        if (!chosen.length) return;
+
+        const staged = chosen.map((file) => ({
           name: file.name,
           size: file.size,
           uploading: true,
+          id: null,
         }));
         this.files.push(...staged);
-        this.uploading = staged.length > 0;
-        window.setTimeout(() => {
-          this.files.forEach((file) => {
+        this.uploading = true;
+
+        const body = new FormData();
+        chosen.forEach((file) => body.append("files", file));
+        try {
+          const response = await fetch(
+            `/admin/inbox/${this.conversationId}/attachments`,
+            { method: "POST", body, headers: { "X-CSRF-Token": csrfToken() } },
+          );
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || "Upload failed.");
+          (payload.attachment_ids || []).forEach((id, index) => {
+            if (staged[index]) staged[index].id = id;
+          });
+          staged.forEach((file) => {
             file.uploading = false;
           });
-          this.uploading = false;
-        }, 650);
-        event.target.value = "";
+        } catch (error) {
+          // Drop the rows rather than leave them looking attached.
+          this.files = this.files.filter((file) => !staged.includes(file));
+          this.workspace()?.showToast?.(error.message || "Upload failed.");
+        } finally {
+          this.uploading = this.files.some((file) => file.uploading);
+        }
       },
       removeFile(index) {
         this.files.splice(index, 1);
+      },
+      attachmentIds() {
+        return this.files
+          .filter((file) => file.id)
+          .map((file) => file.id)
+          .join(",");
       },
       toggleSchedule() {
         this.scheduled = !this.scheduled;
