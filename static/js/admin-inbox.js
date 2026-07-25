@@ -444,13 +444,6 @@
         );
       },
 
-      submitDemoTicket() {
-        this.ticketPanelOpen = false;
-        this.showToast(
-          "Demo ticket prepared. No ticket was created; API mapping is pending.",
-        );
-      },
-
       showDemoNotice(capability) {
         this.showToast(
           `${capability} is connected to demo state until its API is available.`,

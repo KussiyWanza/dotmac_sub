@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
 from app.services import (
+    conversation_ticket_handoff,
     team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_operations,
@@ -986,4 +987,58 @@ def team_inbox_status_action(
         conversation_id,
         status="success",
         message=f"Conversation marked {outcome.status.replace('_', ' ')}.",
+    )
+
+
+@router.post(
+    "/{conversation_id}/tickets",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_issue_ticket(
+    conversation_id: UUID,
+    request: Request,
+    title: str = Form(...),
+    description: str | None = Form(default=None),
+    priority: str | None = Form(default=None),
+    reason: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Open a support ticket from this conversation.
+
+    Thin adapter: `communications.conversation_ticket_handoff` owns eligibility,
+    idempotency and the provenance link, and `support.ticket_lifecycle` still
+    creates the ticket. This route only translates form input and outcome.
+    """
+    _prepare_mutation(db)
+    auth = getattr(request.state, "auth", None) or {}
+    try:
+        result = conversation_ticket_handoff.issue_ticket(
+            db,
+            conversation_ticket_handoff.ConversationTicketIssueCommand(
+                conversation_id=conversation_id,
+                actor_id=_actor_uuid_from_request(request),
+                actor_type=conversation_ticket_handoff.HandoffActorType(
+                    str(auth.get("principal_type") or "system_user")
+                ),
+                permission_keys=frozenset({"support:ticket:update"}),
+                title=title,
+                description=_query_text(description),
+                priority=_query_text(priority),
+                reason=_query_text(reason),
+                request_id=getattr(request.state, "request_id", None),
+            ),
+        )
+    except conversation_ticket_handoff.ConversationTicketHandoffError as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=exc.message,
+        )
+    except ValueError as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    verb = "already open" if result.replayed else "opened"
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=f"Ticket {result.ticket.number or result.ticket.id} {verb}.",
     )

@@ -88,6 +88,13 @@ class Ticket(Base):
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="RESTRICT")
     )
+    # Native provenance for a ticket opened from an inbox conversation. Written
+    # only by ``communications.conversation_ticket_handoff``; one conversation
+    # may issue many tickets. Mirrors ``work_order.origin_ticket_id``.
+    origin_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+    )
     customer_person_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subscribers.id")
     )

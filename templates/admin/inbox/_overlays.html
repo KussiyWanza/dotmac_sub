@@ -69,12 +69,18 @@
             <div><h2 id="ticket-panel-title" class="font-display text-base font-semibold text-slate-950 dark:text-white">Create support ticket</h2><p class="text-xs text-slate-500">Conversation remains visible behind this panel.</p></div>
             <button type="button" @click="ticketPanelOpen = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close ticket panel">✕</button>
         </header>
-        <form @submit.prevent="submitDemoTicket()" class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-            <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200">Preview form. The support-ticket create API will replace this demo adapter.</div>
-            <label class="block text-xs font-semibold">Title<input x-model.trim="ticketDraft.title" required class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
-            <label class="block text-xs font-semibold">Priority<select x-model="ticketDraft.priority" class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"><option>Low</option><option>Medium</option><option>High</option><option>Urgent</option></select></label>
-            <label class="block text-xs font-semibold">Description<textarea x-model.trim="ticketDraft.description" rows="8" required class="mt-1 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></textarea></label>
-            <button type="submit" class="min-h-11 w-full rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600">Create demo ticket</button>
+        {# Real issuance through communications.conversation_ticket_handoff. A
+           plain form post so it works without JS. The owner derives its replay
+           key from conversation + actor + title, so a double submit replays
+           instead of opening a second ticket. #}
+        <form method="post" :action="`/admin/inbox/${selectedId}/tickets`" class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+            {% include "components/forms/csrf_input.html" %}
+            <label class="block text-xs font-semibold">Title<input name="title" x-model.trim="ticketDraft.title" required maxlength="255" class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+            <label class="block text-xs font-semibold">Priority<select name="priority" x-model="ticketDraft.priority" class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+            <label class="block text-xs font-semibold">Description<textarea name="description" x-model.trim="ticketDraft.description" rows="8" class="mt-1 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></textarea></label>
+            <input type="hidden" name="reason" value="Issued from inbox conversation">
+            <p class="text-xs text-slate-500">The ticket inherits this conversation's customer and assigned team. Resolving the conversation stays a separate action.</p>
+            <button type="submit" class="min-h-11 w-full rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600">Create ticket</button>
         </form>
     </section>
 </div>

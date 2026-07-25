@@ -110,12 +110,24 @@ def ticket_owner_command(name: str):
     def decorate(operation):
         @wraps(operation)
         def wrapped(db: Session, *args, **kwargs):
-            if owner_command_active(db, owner="support.ticket_lifecycle"):
+            # Participate in any owner command already in flight, not just this
+            # owner's. A cross-domain coordinator (for example
+            # communications.conversation_ticket_handoff issuing a ticket from a
+            # conversation) provides the transaction; opening a second root
+            # command inside it is rejected as nested. Ticket state is still
+            # decided here — only the transaction boundary is the caller's.
+            #
+            # The participant path intentionally does not emit the realtime
+            # workqueue invalidation: it fires post-commit, and here the commit
+            # belongs to the coordinator, which emits it once its own
+            # transaction lands. Workqueue holds no authority, so a late
+            # invalidation costs a pane its instant refresh, never a fact.
+            if owner_command_active(db):
                 return operation(db, *args, **kwargs)
-            if not owner_command_active(db):
-                from app.services.db_session_adapter import db_session_adapter
 
-                db_session_adapter.release_read_transaction(db)
+            from app.services.db_session_adapter import db_session_adapter
+
+            db_session_adapter.release_read_transaction(db)
             actor = str(kwargs.get("actor_id") or "support-system")
             context = CommandContext.system(
                 actor=actor,
@@ -1423,8 +1435,20 @@ class Tickets:
     @staticmethod
     @ticket_owner_command("create")
     def create(
-        db: Session, payload: TicketCreate, actor_id: str | None = None, request=None
+        db: Session,
+        payload: TicketCreate,
+        actor_id: str | None = None,
+        request=None,
+        *,
+        origin_conversation_id: UUID | None = None,
     ) -> Ticket:
+        """Create a ticket inside the canonical Ticket transaction.
+
+        ``origin_conversation_id`` is keyword-only and deliberately absent from
+        ``TicketCreate``: only ``communications.conversation_ticket_handoff``
+        may assert that a ticket originated from an inbox conversation, so the
+        claim must not be settable by anything that can post a ticket payload.
+        """
         ticket_validation.validate_ticket_creation(db, payload)
         data = payload.model_dump()
         data["status"] = data.get(
@@ -1452,6 +1476,8 @@ class Tickets:
                 }
             }
         )
+        if origin_conversation_id is not None:
+            ticket.origin_conversation_id = origin_conversation_id
         ticket.number = Tickets._resolve_ticket_number(db)
 
         db.add(ticket)
