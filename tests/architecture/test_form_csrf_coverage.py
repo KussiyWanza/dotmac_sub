@@ -195,23 +195,6 @@ def test_tokens_are_placed_inside_their_form():
     assert not stray, f"csrf_input included outside a form (inert): {stray}"
 
 
-# Pre-existing nested-form defects, each a delete form inside an edit or bulk
-# form. Nested forms are invalid HTML: the browser drops the inner one, so the
-# delete button submits the OUTER form. On the GIS pages that means "Delete"
-# saves the record instead of deleting it.
-#
-# They are listed rather than fixed here because they already carry CSRF tokens
-# — they are not part of this change — and repairing them makes genuinely
-# destructive actions start working, which needs its own review. This list must
-# only ever shrink.
-KNOWN_NESTED_FORMS = {
-    "templates/admin/catalog/usage/charges.html",
-    "templates/admin/gis/area_form.html",
-    "templates/admin/gis/layer_form.html",
-    "templates/admin/gis/location_form.html",
-}
-
-
 def test_form_tags_are_balanced_and_never_nested_within_a_template():
     """A form split across a macro or include boundary defeats the scanner.
 
@@ -226,29 +209,11 @@ def test_form_tags_are_balanced_and_never_nested_within_a_template():
         max_depth, unclosed = form_tag_balance(path.read_text(errors="ignore"))
         if unclosed:
             problems[name] = f"{unclosed} unclosed <form> (split across templates?)"
-        elif max_depth > 1 and name not in KNOWN_NESTED_FORMS:
+        elif max_depth > 1:
             problems[name] = f"nested <form> (depth {max_depth})"
     assert not problems, "form structure defeats CSRF scanning:\n" + "\n".join(
         f"  {name}: {issue}" for name, issue in sorted(problems.items())
     )
-
-
-def test_known_nested_form_list_only_shrinks():
-    """Every allowlisted template must still actually be nested.
-
-    If one is repaired the entry has to go, so the exemption cannot outlive the
-    defect it documents.
-    """
-    stale = set()
-    for name in KNOWN_NESTED_FORMS:
-        path = ROOT / name
-        if not path.exists():
-            stale.add(f"{name} (missing)")
-            continue
-        max_depth, _ = form_tag_balance(path.read_text(errors="ignore"))
-        if max_depth <= 1:
-            stale.add(f"{name} (no longer nested)")
-    assert not stale, f"remove from KNOWN_NESTED_FORMS: {sorted(stale)}"
 
 
 def test_htmx_exemption_is_backed_by_base_template():

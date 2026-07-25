@@ -90,10 +90,7 @@
                         </td>
                         <td class="whitespace-nowrap py-4 pl-3 pr-6 text-right text-sm">
                             {% if charge.status.value == 'staged' %}
-                            <form method="post" action="/admin/catalog/usage/charges/{{ charge.id }}/post" class="inline">
-                {% include "components/forms/csrf_input.html" %}
-                                <button type="submit" class="rounded px-2 py-1 text-xs font-medium text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20">Post</button>
-                            </form>
+                            <button type="submit" form="post-charge-{{ charge.id }}" class="rounded px-2 py-1 text-xs font-medium text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20">Post</button>
                             {% endif %}
                         </td>
                     </tr>
@@ -106,6 +103,19 @@
             </table>
         </div>
     </form>
+
+    {# Per-charge post forms live outside the bulk form. Nested forms are
+       invalid HTML: the browser drops the inner one, so each row's Post button
+       submitted the bulk-post form and posted every selected charge instead of
+       that one. #}
+    {% for charge in charges %}
+    {% if charge.status.value == 'staged' %}
+    <form id="post-charge-{{ charge.id }}" method="post"
+          action="/admin/catalog/usage/charges/{{ charge.id }}/post">
+        {% include "components/forms/csrf_input.html" %}
+    </form>
+    {% endif %}
+    {% endfor %}
 
     {% if total_pages > 1 %}
     <div class="flex items-center justify-between border-t border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-800 sm:px-6 rounded-lg">

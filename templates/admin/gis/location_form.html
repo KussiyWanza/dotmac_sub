@@ -88,12 +88,9 @@
         <div class="flex items-center justify-between gap-3">
             <div>
                 {% if location %}
-                <form method="POST" action="/admin/gis/locations/{{ location.id }}/delete" onsubmit="return confirm('Delete this location?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="inline-flex items-center rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-800 dark:text-rose-300">
-                        Delete
-                    </button>
-                </form>
+                <button type="submit" form="delete-location-form" class="inline-flex items-center rounded-lg border border-rose-300 bg-white px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-800 dark:text-rose-300">
+                    Delete
+                </button>
                 {% endif %}
             </div>
             <div class="flex items-center gap-3">
@@ -107,5 +104,16 @@
             </div>
         </div>
     </form>
+
+    {% if location %}
+    {# Sibling of the edit form, not nested inside it. A nested form is
+       invalid HTML: the browser drops the inner one and this button
+       submits the edit form, saving the record instead of deleting it. #}
+    <form id="delete-location-form" method="POST"
+          action="/admin/gis/locations/{{ location.id }}/delete"
+          onsubmit="return confirm('Delete this location?');">
+        {% include "components/forms/csrf_input.html" %}
+    </form>
+    {% endif %}
 </div>
 {% endblock %}

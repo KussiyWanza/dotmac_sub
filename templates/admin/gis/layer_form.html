@@ -73,12 +73,9 @@
         <div class="flex items-center justify-between">
             <div>
                 {% if layer %}
-                <form method="POST" action="/admin/gis/layers/{{ layer.id }}/delete" onsubmit="return confirm('Delete this layer?');">
-                    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-                    <button type="submit" class="inline-flex items-center gap-2 rounded-xl border border-rose-300 bg-white px-5 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-800 dark:text-rose-300">
-                        Delete
-                    </button>
-                </form>
+                <button type="submit" form="delete-layer-form" class="inline-flex items-center gap-2 rounded-xl border border-rose-300 bg-white px-5 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-800 dark:text-rose-300">
+                    Delete
+                </button>
                 {% endif %}
             </div>
             <div class="flex items-center gap-3">
@@ -89,5 +86,16 @@
             </div>
         </div>
     </form>
+
+    {% if layer %}
+    {# Sibling of the edit form, not nested inside it. A nested form is
+       invalid HTML: the browser drops the inner one and this button
+       submits the edit form, saving the record instead of deleting it. #}
+    <form id="delete-layer-form" method="POST"
+          action="/admin/gis/layers/{{ layer.id }}/delete"
+          onsubmit="return confirm('Delete this layer?');">
+        {% include "components/forms/csrf_input.html" %}
+    </form>
+    {% endif %}
 </div>
 {% endblock %}
