@@ -39,6 +39,7 @@
         {% else %}
         <p class="text-xs text-slate-500">Resolution: {{ (resolution.get('status') or 'unmatched') | replace('_',' ') | title }}</p>
         <form method="post" action="/admin/inbox/{{ timeline.id }}/contact-link" class="mt-3 space-y-2">
+            {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="target_type" value="subscriber">
             {% if contact_link_candidates and contact_link_candidates.subscribers %}
             <select name="subscriber_id" required class="h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
@@ -94,6 +95,7 @@
         </div>
         {% if label_options %}
         <form method="post" action="/admin/inbox/{{ timeline.id }}/labels/apply" class="mt-2 flex gap-2">
+            {% include "components/forms/csrf_input.html" %}
             <select name="label_id" required class="h-10 min-w-0 flex-1 rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950"><option value="">Add label…</option>{% for label in label_options %}<option value="{{ label.id }}">{{ label.name }}</option>{% endfor %}</select>
             <button type="submit" class="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold dark:border-slate-700">Add</button>
         </form>

@@ -40,6 +40,7 @@
           <td class="px-4 py-4">
             {% if item.findings|selectattr('repairable')|list %}
             <form method="post" action="/admin/provisioning/service-change-reconciliation/{{ item.request_id }}/repair" class="space-y-2">
+                {% include "components/forms/csrf_input.html" %}
               <input type="hidden" name="expected_head" value="{{ item.reviewed_head }}">
               <input class="w-full rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800" name="idempotency_key" minlength="16" maxlength="160" required placeholder="Unique repair key">
               <input class="w-full rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800" name="reason" minlength="8" maxlength="500" required placeholder="Reviewed reason">

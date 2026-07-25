@@ -235,6 +235,7 @@
             {{ status_badge("Delivery failed", "negative", size="sm") }}
             {% if metadata.get('send_error') %}<span class="text-[11px] text-slate-500 dark:text-slate-400">{{ metadata.get('send_error') }}</span>{% endif %}
             <form method="post" action="/admin/inbox/messages/{{ message.id }}/retry">
+                {% include "components/forms/csrf_input.html" %}
                 <button type="submit" class="min-h-8 rounded-md border border-slate-300 px-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Retry</button>
             </form>
         </div>

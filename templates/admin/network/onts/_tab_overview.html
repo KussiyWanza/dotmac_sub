@@ -341,8 +341,10 @@
                         </div>
                         {% if failure.status == 'pending' %}
                         <div class="flex gap-2">
-                            <form method="post" action="/admin/network/onts/{{ ont.id }}/compensation-failures/{{ failure.id }}/retry" data-confirm="Retry this failed compensation action on the ONT?" data-confirm-variant="warning"><button type="submit" class="rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700">Retry</button></form>
-                            <form method="post" action="/admin/network/onts/{{ ont.id }}/compensation-failures/{{ failure.id }}/resolve" data-confirm="Resolve this compensation failure without retrying it?" data-confirm-variant="warning"><button type="submit" class="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">Resolve</button></form>
+                            <form method="post" action="/admin/network/onts/{{ ont.id }}/compensation-failures/{{ failure.id }}/retry" data-confirm="Retry this failed compensation action on the ONT?" data-confirm-variant="warning">
+                                {% include "components/forms/csrf_input.html" %}<button type="submit" class="rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700">Retry</button></form>
+                            <form method="post" action="/admin/network/onts/{{ ont.id }}/compensation-failures/{{ failure.id }}/resolve" data-confirm="Resolve this compensation failure without retrying it?" data-confirm-variant="warning">
+                                {% include "components/forms/csrf_input.html" %}<button type="submit" class="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300">Resolve</button></form>
                         </div>
                         {% endif %}
                     </div>

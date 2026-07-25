@@ -57,6 +57,7 @@
 
     {% call card("Create Work Order", color="cyan") %}
     <form method="post" action="/admin/dispatch/work-orders" class="grid gap-4 lg:grid-cols-12">
+        {% include "components/forms/csrf_input.html" %}
         <div class="lg:col-span-3">
             <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Subscriber</label>
             <select name="subscriber_id" required class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
@@ -210,6 +211,7 @@
                     </td>
                     <td class="min-w-[28rem] px-5 py-4 align-top">
                         <form method="post" action="/admin/dispatch/work-orders/{{ wo.public_id }}" class="grid grid-cols-2 gap-2">
+                            {% include "components/forms/csrf_input.html" %}
                             <input name="title" value="{{ wo.title }}" required maxlength="200" class="col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
                             <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
                                 Status: {{ wo.status|replace('_', ' ')|title }}
@@ -246,6 +248,7 @@
                         {% set queue_action = item.actions.queue %}
                         {% if action_permitted(request, queue_action) %}
                         <form method="post" action="/admin/dispatch/work-orders/{{ wo.public_id }}/queue" class="space-y-2">
+                            {% include "components/forms/csrf_input.html" %}
                             <select name="assigned_technician_id" required class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
                                 <option value="">Technician</option>
                                 {% for option in technician_options %}

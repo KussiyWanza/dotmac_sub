@@ -20,6 +20,7 @@
 
         {% if can(request, "billing:account:write") %}
         <form method="post" action="/admin/billing/accounts/{{ account_id }}/statement/send" class="grid gap-3 sm:grid-cols-4">
+            {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="start_date" value="{{ statement_range.start_date.isoformat() }}">
             <input type="hidden" name="end_date" value="{{ statement_range.end_date.isoformat() }}">
             <div class="sm:col-span-3">

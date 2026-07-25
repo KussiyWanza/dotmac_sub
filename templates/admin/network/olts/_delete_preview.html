@@ -112,6 +112,7 @@
         {% if impact.can_delete %}
         <form method="POST" action="/admin/network/olts/{{ impact.olt_id }}/delete"
               x-data="{ confirming: false }">
+            {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="csrf_token" value="{{ request.state.csrf_token }}">
             <button type="button"
                     x-show="!confirming"

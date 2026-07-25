@@ -949,6 +949,7 @@
                     {% endfor %}
                 </div>
                 <form method="post" action="/admin/catalog/subscriptions/{{ subscription.id }}/register-radio-mac" class="mt-4 flex flex-wrap items-end gap-3">
+                    {% include "components/forms/csrf_input.html" %}
                     <div class="flex-1 min-w-[220px]">
                         <label for="radio-mac-address" class="block text-xs font-medium text-slate-600 dark:text-slate-300">Radio MAC address</label>
                         <input id="radio-mac-address" name="mac_address" type="text" required
