@@ -92,7 +92,7 @@ be restated in durable domain language here or in the owning design document.
 
 Architecture liveness is checked in both directions. Every declared owner must
 have a real application/operator caller, and every new service module with a
-persistence-like mutation must name a declared owner. The 232 existing
+persistence-like mutation must name a declared owner. The 231 existing
 undeclared writer-like modules are an explicit shrink-only migration baseline,
 not approved parallel writers; resolving an owner or removing its write requires
 deleting the baseline entry. Adding an entry requires an explicit ownership
@@ -250,6 +250,7 @@ do not hand-edit these rows.
 | `network.tr069_commands` | TR-069 command admission coordination | `application_coordinator` | authenticated TR-069 command evidence ← `auth.permission_gate`<br>canonical TR-069 device and ACS binding ← `network.identity`<br>TR-069 command admission capability ← `control.feature_registry`<br>canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
 | `network.tr069_commands` | TR-069 command execution coordination | `application_coordinator` | canonical TR-069 device and ACS binding ← `network.identity`<br>canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
 | `network.tr069_commands` | TR-069 command outcome coordination | `application_coordinator` | canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch`<br>normalized GenieACS command observation ← `external:genieacs` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
+| `network.ip_assignment_service_ownership` | exact service ownership of active IPv4 assignments | `reconciler` | canonical active IPv4 assignment ← `network.ip_assignment_service_ownership`<br>canonical active subscription identity ← `access.subscription_lifecycle`<br>served IPv4 compatibility projection ← `network.ip_assignment_service_ownership`<br>reviewed ownership repair command ← `network.ip_assignment_service_ownership` | `owner_managed` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_ip_assignment_repair.py`<br>`tests/architecture/test_ip_assignment_service_ownership.py` |
 | `network.outage_auto_notify` | automation eligibility for customer outage notification | `policy` | classifier outage incident ← `network.outage_lifecycle`<br>automation gate configuration ← `control.settings_spec` | `owner_managed` | `native` | Network operations | `docs/adr/0004-automated-outage-notification-dispatch.md`<br>`docs/designs/OUTAGE_CLASSIFIER.md`<br>`tests/test_outage_auto_notify.py` |
 | `network.outage_auto_notify` | automated dispatch trigger and its transaction | `application_coordinator` | classifier outage incident ← `network.outage_lifecycle`<br>affected subscription set ← `network.outage_impact`<br>automation gate configuration ← `control.settings_spec` | `owner_managed` | `native` | Network operations | `docs/adr/0004-automated-outage-notification-dispatch.md`<br>`docs/designs/OUTAGE_CLASSIFIER.md`<br>`tests/test_outage_auto_notify.py` |
 | `sessions.radius_resolution` | customer online-now resolution | `resolver` | active RADIUS session projection ← `sessions.radius_reconciliation` | `read_only` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/DASHBOARD_OVERVIEW_PAGE_CONTRACT.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_sot_relationships.py` |
@@ -2990,7 +2991,21 @@ writers are retired; historical rows remain readable evidence.
    do not create operations or decide a parallel retry policy. Delayed bootstrap
    attempts are separate immutable dispatch rows on the same child operation,
    while Inform-driven completion uses the same parent projection.
-48. `network.ip_pool_utilization` (`app/services/ip_pool_utilization_snapshot.py`):
+48. `network.ip_assignment_service_ownership`
+   (`app/services/ip_assignment_repair.py`): owns the exact
+   `IPAssignment.subscription_id` bridge for active IPv4 assignments during
+   the service-ownership migration. Its full-fleet preview classifies every
+   active IPv4 assignment. Confirmation requires the exact assignment cohort,
+   preview SHA-256, actor, reason, and idempotency key; locks and recomputes the
+   evidence; and fills only a missing service link when there is one active
+   assignment, one active service, matching subscriber identity, and matching
+   served-address compatibility evidence. It never creates, moves, releases,
+   reclaims, or deactivates an address and never changes
+   `Subscription.ipv4_address`, RADIUS, or sessions. Ambiguous and conflicting
+   rows remain report-only. The retired subscriber-level repair treated the
+   served projection as allocation authority and committed each item
+   independently; those paths cannot return.
+49. `network.ip_pool_utilization` (`app/services/ip_pool_utilization_snapshot.py`):
    owns IP-pool utilization reads — the daily utilization snapshots and the
    live per-pool used/total counts consumed by the network report. The live
    count (assignment-join basis) is deliberately distinct from the snapshot's

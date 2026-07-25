@@ -404,6 +404,35 @@ deletion requires a separate reviewed decision.
 
 ## Continuous operations
 
+### IPAM service-ownership migration
+
+`IPAssignment` remains the desired-address authority; a subscription's IPv4
+column and RADIUS rows are projections and cannot manufacture, move, or reclaim
+an allocation. The `network.ip_assignment_service_ownership` reconciler audits
+all active IPv4 assignments and may fill only a missing `subscription_id` when
+one active assignment, one active service, subscriber identity, and served-IP
+compatibility evidence all agree.
+
+Begin with a read-only preview:
+
+```bash
+python scripts/one_off/repair_ipam_to_served.py
+```
+
+Apply only the reviewed cohort using the exact printed repair fingerprint:
+
+```bash
+python scripts/one_off/repair_ipam_to_served.py \
+  --apply --limit 25 --fingerprint REVIEWED_REPAIR_SHA256 \
+  --idempotency-key STABLE_OPERATION_KEY --actor APPROVING_OPERATOR \
+  --reason "Reviewed exact service-ownership backfill evidence"
+```
+
+The limit is part of the fingerprinted cohort. Re-run the same limited preview
+immediately before apply. Any changed assignment, subscription, or served-IP
+compatibility evidence fails closed and requires a new review. This migration
+does not itself cut RADIUS or runtime readers over to exact-service ownership.
+
 ### Daily review
 
 1. Review billing-health, funding, coverage, renewal, dunning, notification,

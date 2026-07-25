@@ -9817,6 +9817,197 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=("network.identity",),
             ),
             SOTService(
+                name="network.ip_assignment_service_ownership",
+                module="app.services.ip_assignment_repair",
+                owns=("exact service ownership of active IPv4 assignments",),
+                depends_on=(
+                    "access.subscription_lifecycle",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "IPAssignment remains the address-allocation authority. This "
+                    "migration owner repairs only a missing subscription_id when "
+                    "one active assignment, one active service, the subscriber, "
+                    "and the served-address compatibility projection agree. It "
+                    "never creates, moves, releases, reclaims, or deactivates an "
+                    "address and never writes Subscription.ipv4_address or RADIUS."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="exact service ownership of active IPv4 assignments",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "canonical active IPv4 assignment",
+                                "canonical active subscription identity",
+                                "served IPv4 compatibility projection",
+                                "reviewed ownership repair command",
+                            ),
+                            canonical_writer=(
+                                "network.ip_assignment_service_ownership"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical active IPv4 assignment",
+                            owner="network.ip_assignment_service_ownership",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active IPAssignment identity, address, subscriber, "
+                                "and exact subscription bridge"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical active subscription identity",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active Subscription identity and Subscriber ownership"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="served IPv4 compatibility projection",
+                            owner="network.ip_assignment_service_ownership",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "Subscription.ipv4_address used only to verify an "
+                                "existing assignment-to-service link; never to "
+                                "manufacture or move an allocation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="reviewed ownership repair command",
+                            owner="network.ip_assignment_service_ownership",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "exact assignment cohort, preview SHA-256, actor, "
+                                "reason, and idempotency key"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The public reconciliation command enters "
+                            "execute_owner_command once on a transaction-free "
+                            "session; the operator adapter owns session lifecycle."
+                        ),
+                        locking=(
+                            "Selected IPAssignment, Subscriber, and proposed "
+                            "Subscription rows are locked in stable identifier "
+                            "order before evidence is recomputed."
+                        ),
+                        idempotency=(
+                            "A durable audit row binds the idempotency key to the "
+                            "exact preview fingerprint; changed evidence conflicts."
+                        ),
+                        retries=(
+                            "Retry only after complete rollback using the same "
+                            "fingerprint and idempotency key; stale evidence requires "
+                            "a new preview."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.ip_assignment_service_ownership.active_caller_transaction",
+                            "network.ip_assignment_service_ownership.assignment_not_found",
+                            "network.ip_assignment_service_ownership.command_contract_violation",
+                            "network.ip_assignment_service_ownership.duplicate_assignment",
+                            "network.ip_assignment_service_ownership.empty_cohort",
+                            "network.ip_assignment_service_ownership.idempotency_conflict",
+                            "network.ip_assignment_service_ownership.invalid_command_context",
+                            "network.ip_assignment_service_ownership.missing_idempotency_key",
+                            "network.ip_assignment_service_ownership.nested_owner_command",
+                            "network.ip_assignment_service_ownership.nested_transaction_completion",
+                            "network.ip_assignment_service_ownership.stale_preview",
+                            "network.ip_assignment_service_ownership.unsafe_cohort",
+                        ),
+                        mapping_owner="operator CLI and future administrative adapters",
+                        fail_closed_on=(
+                            "ambiguous service ownership",
+                            "multiple active services or assignments",
+                            "subscriber or served-address disagreement",
+                            "changed preview evidence",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("ip_assignment.service_ownership_reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries only the exact assignment cohort, "
+                            "preview fingerprint, and linked count."
+                        ),
+                        replay=(
+                            "The durable batch audit row and item audit rows "
+                            "reconstruct the ownership-only outcome."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="IPAssignment exact-service ownership bridge",
+                            input_names=(
+                                "canonical active IPv4 assignment",
+                                "canonical active subscription identity",
+                                "served IPv4 compatibility projection",
+                                "reviewed ownership repair command",
+                            ),
+                            writer="network.ip_assignment_service_ownership",
+                            freshness=(
+                                "A linked active assignment is current only while "
+                                "its active service, subscriber, and address "
+                                "compatibility evidence still agree."
+                            ),
+                            stale_behavior=(
+                                "Ambiguous, missing, or conflicting links remain "
+                                "visible blockers and are never inferred at runtime."
+                            ),
+                            drift_signal=(
+                                "The exhaustive preview classifies every active IPv4 "
+                                "assignment and fingerprints the exact cohort."
+                            ),
+                            rebuild_operation=(
+                                "Re-run the dry-run preview and confirm only the "
+                                "reviewed repairable cohort with its exact SHA-256."
+                            ),
+                            repair_owner=("network.ip_assignment_service_ownership"),
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "subscriber-level ip_assignment_repair that treated "
+                            "Subscription.ipv4_address as allocation authority"
+                        ),
+                        new_owner="network.ip_assignment_service_ownership",
+                        verification=(
+                            "Full-fleet classification plus focused contract, "
+                            "stale-preview, idempotency, and sole-writer tests."
+                        ),
+                        cutover_gate=(
+                            "Every active assignment has an exact service link or "
+                            "reviewed blocker, and safe ownership-only backfill is "
+                            "verified before exact-service runtime cutover."
+                        ),
+                        fallback_retirement=(
+                            "Legacy create, repoint, reclaim, deactivate, and "
+                            "per-item commit behavior is removed."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ip_assignment_repair.py",
+                        "tests/architecture/test_ip_assignment_service_ownership.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.ip_pool_utilization",
                 module="app.services.ip_pool_utilization_snapshot",
                 owns=(

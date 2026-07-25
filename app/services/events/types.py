@@ -95,6 +95,9 @@ class EventType(enum.Enum):
     prepaid_enforcement_timer_changed = "prepaid_enforcement.timer_changed"
     prepaid_coverage_reconciled = "prepaid_coverage.reconciled"
     prepaid_draft_reconciled = "prepaid_draft.reconciled"
+    ip_assignment_service_ownership_reconciled = (
+        "ip_assignment.service_ownership_reconciled"
+    )
 
     # Billing - Outage compensation (1)
     service_extended = "billing.service_extended"

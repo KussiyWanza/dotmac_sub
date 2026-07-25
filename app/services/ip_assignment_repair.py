@@ -1,340 +1,454 @@
-"""Step 2a — repair the IPAM ledger to match what RADIUS actually serves.
+"""Exact-service ownership reconciliation for legacy IPv4 assignments.
 
-The 2026-06-17 prod audit (``ip_consistency_audit``) found 593/4022 active subs
-whose ``IPAssignment`` set disagrees with the served IPv4 (the
-``subscription.ipv4_address`` column, which equals the external radreply
-Framed-IP for every sub). The served value is what the customer routes on right
-now, so it is the operational truth; the IPAM set is the drifted, neglected
-side. See ``docs/FINANCIAL_ACCESS_ENFORCEMENT.md``.
+``IPAssignment`` is the address-allocation authority.  This owner repairs only
+the missing bridge from an existing active assignment to its exact
+``Subscription``.  It never creates, releases, moves, reclaims, or deactivates
+an address and never edits the served IPv4 or RADIUS projection.
 
-This module makes the *ledger* reflect that reality — it NEVER changes a served
-IP, so it is non-customer-impacting:
+Preview is exhaustive and read-only.  Confirmation is limited to rows where:
 
-  - ``backfill_create``  — active sub with a served IP but no active IPAM row →
-    create an ``IPAssignment`` (and ``IPv4Address`` if absent) for the served IP.
-  - ``repoint``          — active IPAM row exists but for a different address →
-    deactivate it and ensure an assignment to the served IP instead.
+* the assignment has no ``subscription_id``;
+* the assignment has one subscriber;
+* that subscriber has exactly one active subscription;
+* that subscriber has exactly one active IPv4 assignment; and
+* the subscription's served IPv4 equals the assignment address.
 
-It refuses to auto-fix genuine conflicts (served IP already actively assigned to
-another subscriber, a management/ONT address, or a subscriber with multiple
-active subs claiming different IPs) — those are reported for human review.
-
-Dry-run by design: ``plan_repair`` only reads. ``apply_repair`` writes, and the
-CLI requires an explicit flag. Idempotent: a repaired subscriber re-plans as
-``noop_already_correct``.
+Every other row remains an explicitly classified blocker for operator review.
 """
 
 from __future__ import annotations
 
-import ipaddress
-import logging
-from collections import defaultdict
-from typing import Any
+import hashlib
+import json
+import secrets
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import NoReturn
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.audit import AuditActorType, AuditEvent
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.network import IPAssignment, IpPool, IPv4Address, IPVersion
-from app.services.common import coerce_uuid
-from app.services.ip_consistency_audit import _norm
-
-logger = logging.getLogger(__name__)
-
-# Writable outcomes vs reported-only conflicts.
-#
-#   backfill_create — subscriber has no IPAM row; the served address is free.
-#   repoint         — subscriber's own IPAM row points at the wrong address.
-#   reclaim_stale   — the served address is held by ANOTHER subscriber whose own
-#                     served IP is different (or who has no active service), so
-#                     their claim is provably stale (the asymmetric-release bug).
-#                     Repoint that one address row to the real served owner.
-#   dedupe_active   — the served address is already active for this subscriber,
-#                     but they carry EXTRA active ipv4 assignments (stale rows
-#                     never released). Deactivate the extras, keep the served one.
-ACTIONABLE = ("backfill_create", "repoint", "reclaim_stale", "dedupe_active")
-CONFLICTS = (
-    "conflict_live_contention",  # owner is ALSO served this address — real clash
-    "conflict_addr_reserved",  # management / ONT address
-    "conflict_ambiguous_multi_active",  # subscriber claims two different IPs
+from app.models.network import IPAssignment, IPv4Address, IPVersion
+from app.models.subscriber import Subscriber
+from app.services.audit_adapter import stage_audit_event
+from app.services.domain_errors import DomainError
+from app.services.events import EventType, emit_event
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
 )
-NOOP = ("noop_already_correct",)
+
+_OWNER = "network.ip_assignment_service_ownership"
+_CONCERN = "exact service ownership of active IPv4 assignments"
+_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_CONCERN,
+    name="reconcile_ip_assignment_service_ownership",
+)
+_ITEM_AUDIT_ACTION = "network.ip_assignment.service_ownership_linked"
+_BATCH_AUDIT_ACTION = "network.ip_assignment.service_ownership_reconciled"
 
 
-def _ipv4_pools(db: Session) -> list[tuple[IpPool, Any]]:
-    """Active ipv4 pools paired with their parsed network, for best-effort
-    pool/gateway/prefix backfill on newly-created addresses."""
-    pools: list[tuple[IpPool, Any]] = []
-    for pool in db.scalars(
-        select(IpPool)
-        .where(IpPool.is_active.is_(True))
-        .where(IpPool.ip_version == IPVersion.ipv4)
-    ):
-        try:
-            pools.append((pool, ipaddress.ip_network(pool.cidr, strict=False)))
-        except ValueError:
-            continue
-    return pools
+class IPAssignmentOwnershipDecision(StrEnum):
+    exact = "exact"
+    repairable_missing_service_link = "repairable_missing_service_link"
+    missing_subscriber = "missing_subscriber"
+    missing_subscription = "missing_subscription"
+    subscriber_mismatch = "subscriber_mismatch"
+    served_address_mismatch = "served_address_mismatch"
+    ambiguous_active_services = "ambiguous_active_services"
+    ambiguous_active_assignments = "ambiguous_active_assignments"
 
 
-def _match_pool(
-    ip: str, pools: list[tuple[IpPool, Any]]
-) -> tuple[IpPool | None, int | None]:
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return None, None
-    for pool, net in pools:
-        if addr in net:
-            return pool, net.prefixlen
-    return None, None
+class IPAssignmentOwnershipError(DomainError):
+    """Stable fail-closed service-ownership reconciliation error."""
 
 
-def _served_ip_by_subscriber(db: Session) -> tuple[dict[str, str], set[str]]:
-    """Map subscriber_id → served ipv4 (the active sub's column) and the set of
-    subscribers with conflicting served IPs across multiple active subs."""
-    by_subscriber: dict[str, str] = {}
-    ambiguous: set[str] = set()
-    rows = db.execute(
-        select(Subscription.subscriber_id, Subscription.ipv4_address).where(
-            Subscription.status == SubscriptionStatus.active
+@dataclass(frozen=True, slots=True)
+class IPAssignmentOwnershipItem:
+    assignment_id: UUID
+    subscriber_id: UUID | None
+    current_subscription_id: UUID | None
+    proposed_subscription_id: UUID | None
+    address: str
+    decision: IPAssignmentOwnershipDecision
+
+    @property
+    def repairable(self) -> bool:
+        return (
+            self.decision
+            is IPAssignmentOwnershipDecision.repairable_missing_service_link
         )
-    ).all()
-    for subscriber_id, col_ip_raw in rows:
-        if subscriber_id is None:
-            continue
-        served = _norm(col_ip_raw)
-        if not served:
-            continue
-        sid = str(subscriber_id)
-        existing = by_subscriber.get(sid)
-        if existing and existing != served:
-            ambiguous.add(sid)
-        else:
-            by_subscriber[sid] = served
-    return by_subscriber, ambiguous
 
 
-def _active_ipv4_assignments(
-    db: Session,
-) -> dict[str, list[tuple[str, str]]]:
-    """subscriber_id → list of (assignment_id, address) for active ipv4."""
-    out: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    rows = db.execute(
-        select(IPAssignment.subscriber_id, IPAssignment.id, IPv4Address.address)
-        .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
-        .where(IPAssignment.is_active.is_(True))
-        .where(IPAssignment.ip_version == IPVersion.ipv4)
-    ).all()
-    for subscriber_id, assignment_id, address in rows:
-        if subscriber_id is not None:
-            out[str(subscriber_id)].append((str(assignment_id), _norm(address)))
-    return out
+@dataclass(frozen=True, slots=True)
+class IPAssignmentOwnershipPreview:
+    items: tuple[IPAssignmentOwnershipItem, ...]
+    fingerprint: str
 
-
-def _classify_target_address(
-    db: Session, subscriber_id: str, desired_ip: str, served: dict[str, str]
-) -> str | None:
-    """Inspect the IPv4Address row for ``desired_ip``. Returns a *conflict*
-    string if it can't be safely claimed, ``"reclaim_stale"`` if it's held by a
-    provably-stale other owner, or None if it's free / already ours."""
-    addr = db.scalars(
-        select(IPv4Address).where(IPv4Address.address == desired_ip)
-    ).first()
-    if addr is None:
-        return None  # free — will be created fresh
-    if addr.ont_unit_id is not None or (addr.allocation_type or "") == "management":
-        return "conflict_addr_reserved"
-    existing = addr.assignment
-    if existing is None or str(existing.subscriber_id) == subscriber_id:
-        return None  # ours (active or inactive) — reuse
-    # Held by another subscriber. Stale unless that owner is ALSO served this IP.
-    owner_served = _norm(served.get(str(existing.subscriber_id)) or "")
-    if owner_served == desired_ip:
-        return "conflict_live_contention"
-    return "reclaim_stale"
-
-
-def plan_repair(db: Session) -> dict[str, Any]:
-    """Read-only. Classify every active pinned-IP subscriber and return a plan
-    (per-item actions + summary counts). Mirrors the audit population."""
-    served, ambiguous = _served_ip_by_subscriber(db)
-    active_assign = _active_ipv4_assignments(db)
-
-    items: list[dict[str, Any]] = []
-    for sid, desired_ip in served.items():
-        current = active_assign.get(sid, [])
-        current_ips = [ip for _, ip in current]
-        item: dict[str, Any] = {
-            "subscriber_id": sid,
-            "desired_ip": desired_ip,
-            "current_ipam_ips": current_ips,
+    @property
+    def counts(self) -> dict[IPAssignmentOwnershipDecision, int]:
+        counts = Counter(item.decision for item in self.items)
+        return {
+            decision: counts.get(decision, 0)
+            for decision in IPAssignmentOwnershipDecision
         }
-        if sid in ambiguous:
-            item["action"] = "conflict_ambiguous_multi_active"
-            items.append(item)
-            continue
-        if desired_ip in current_ips:
-            # Correct address is active — but extra active ipv4 rows are stale
-            # cruft (asymmetric-release leftovers) that confuse readers.
-            item["action"] = (
-                "dedupe_active" if len(current) > 1 else "noop_already_correct"
-            )
-            items.append(item)
-            continue
-        classified = _classify_target_address(db, sid, desired_ip, served)
-        if classified in CONFLICTS:
-            item["action"] = classified
-            items.append(item)
-            continue
-        if classified == "reclaim_stale":
-            item["action"] = "reclaim_stale"
-        else:
-            item["action"] = "backfill_create" if not current else "repoint"
-        items.append(item)
 
-    counts: dict[str, int] = defaultdict(int)
-    for it in items:
-        counts[it["action"]] += 1
-
-    return {
-        "population": len(items),
-        "counts": dict(counts),
-        "actionable": sum(counts.get(a, 0) for a in ACTIONABLE),
-        "conflicts": sum(counts.get(c, 0) for c in CONFLICTS),
-        "items": items,
-    }
+    @property
+    def repairable_assignment_ids(self) -> tuple[UUID, ...]:
+        return tuple(item.assignment_id for item in self.items if item.repairable)
 
 
-def _ensure_assignment(
+@dataclass(frozen=True, slots=True)
+class ReconcileIPAssignmentOwnershipCommand:
+    context: CommandContext
+    preview_fingerprint: str
+    assignment_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class IPAssignmentOwnershipOutcome:
+    preview_fingerprint: str
+    linked_count: int
+    replayed: bool
+
+
+def _error(suffix: str, message: str, **details: object) -> NoReturn:
+    raise IPAssignmentOwnershipError(
+        code=f"{_OWNER}.{suffix}",
+        message=message,
+        details=details,
+    )
+
+
+def _normalized_ip(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _preview_payload(
+    items: tuple[IPAssignmentOwnershipItem, ...],
+) -> list[dict[str, str | None]]:
+    return [
+        {
+            "assignment_id": str(item.assignment_id),
+            "subscriber_id": (
+                str(item.subscriber_id) if item.subscriber_id is not None else None
+            ),
+            "current_subscription_id": (
+                str(item.current_subscription_id)
+                if item.current_subscription_id is not None
+                else None
+            ),
+            "proposed_subscription_id": (
+                str(item.proposed_subscription_id)
+                if item.proposed_subscription_id is not None
+                else None
+            ),
+            "address": item.address,
+            "decision": item.decision.value,
+        }
+        for item in items
+    ]
+
+
+def _fingerprint(items: tuple[IPAssignmentOwnershipItem, ...]) -> str:
+    encoded = json.dumps(
+        _preview_payload(items),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def preview_ip_assignment_service_ownership(
     db: Session,
-    subscriber_id: str,
-    desired_ip: str,
-    pools: list[tuple[IpPool, Any]],
-    served: dict[str, str],
-) -> bool:
-    """Ensure the subscriber has an active ipv4 IPAssignment for ``desired_ip``,
-    creating the address/assignment or reclaiming a provably-stale one as
-    needed, and deactivate the subscriber's other active ipv4 assignments.
-    Returns True if anything changed; False (no write) if the target can't be
-    safely claimed (reserved, or live contention)."""
-    sub_uuid = coerce_uuid(subscriber_id)
-    target_subscription = db.scalars(
-        select(Subscription)
-        .where(Subscription.subscriber_id == sub_uuid)
-        .where(Subscription.status == SubscriptionStatus.active)
-        .where(Subscription.ipv4_address == desired_ip)
-    ).first()
-    addr = db.scalars(
-        select(IPv4Address).where(IPv4Address.address == desired_ip)
-    ).first()
+    *,
+    assignment_ids: tuple[UUID, ...] | None = None,
+) -> IPAssignmentOwnershipPreview:
+    """Classify active IPv4 assignment ownership without changing state."""
 
-    if addr is None:
-        pool, prefix = _match_pool(desired_ip, pools)
-        addr = IPv4Address(
-            address=desired_ip,
-            pool_id=pool.id if pool else None,
-            allocation_type="static",
-        )
-        db.add(addr)
-        db.flush()
-        assignment = None
-    else:
-        if addr.ont_unit_id is not None or (addr.allocation_type or "") == "management":
-            return False
-        assignment = addr.assignment
-        if assignment is not None and str(assignment.subscriber_id) != subscriber_id:
-            # Held by another subscriber. Only reclaim if their claim is stale
-            # (they are not actually served this IP) — re-checked here so a
-            # plan/apply race can never steal a live IP.
-            owner_served = _norm(served.get(str(assignment.subscriber_id)) or "")
-            if owner_served == desired_ip:
-                return False  # live contention — refuse
-            assignment.subscriber_id = sub_uuid  # reclaim the single address row
-            assignment.subscription_id = (
-                target_subscription.id if target_subscription else None
+    requested_ids = set(assignment_ids) if assignment_ids is not None else None
+    assignment_rows = list(
+        db.execute(
+            select(IPAssignment, IPv4Address.address)
+            .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
+            .where(
+                IPAssignment.is_active.is_(True),
+                IPAssignment.ip_version == IPVersion.ipv4,
             )
-        pool = db.get(IpPool, addr.pool_id) if addr.pool_id else None
-        prefix = None
-        if pool:
-            _, prefix = _match_pool(
-                desired_ip, [(pool, ipaddress.ip_network(pool.cidr, strict=False))]
-            )
-
-    if assignment is None:
-        assignment = IPAssignment(
-            subscriber_id=sub_uuid,
-            subscription_id=target_subscription.id if target_subscription else None,
-            ip_version=IPVersion.ipv4,
-            ipv4_address_id=addr.id,
-            is_active=True,
-            prefix_length=prefix,
-            gateway=pool.gateway if pool else None,
-            dns_primary=pool.dns_primary if pool else None,
-            dns_secondary=pool.dns_secondary if pool else None,
-        )
-        db.add(assignment)
-    else:
-        assignment.subscriber_id = sub_uuid
-        assignment.subscription_id = (
-            target_subscription.id if target_subscription else None
-        )
-        assignment.is_active = True
-
-    # Deactivate the subscriber's OTHER active ipv4 assignments (the stale IP).
-    others = db.scalars(
-        select(IPAssignment)
-        .where(IPAssignment.subscriber_id == sub_uuid)
-        .where(IPAssignment.ip_version == IPVersion.ipv4)
-        .where(IPAssignment.is_active.is_(True))
-        .where(IPAssignment.ipv4_address_id != addr.id)
-    ).all()
-    for other in others:
-        other.is_active = False
-
-    return True
-
-
-def apply_repair(
-    db: Session, plan: dict[str, Any], *, limit: int | None = None
-) -> dict[str, Any]:
-    """Execute the actionable items of ``plan``. Writes the IPAM ledger only —
-    never a served IP. Commits per item so a mid-run failure leaves prior
-    repairs durable. ``limit`` caps the number of subscribers repaired."""
-    applied = {
-        "backfill_create": 0,
-        "repoint": 0,
-        "reclaim_stale": 0,
-        "dedupe_active": 0,
-        "skipped": 0,
-        "errors": 0,
+            .order_by(IPAssignment.id)
+        ).all()
+    )
+    assignments = [assignment for assignment, _address in assignment_rows]
+    addresses_by_assignment = {
+        assignment.id: _normalized_ip(address)
+        for assignment, address in assignment_rows
     }
-    done = 0
-    pools = _ipv4_pools(db)
-    served, _ = _served_ip_by_subscriber(db)
-    for item in plan["items"]:
-        if item["action"] not in ACTIONABLE:
+    active_subscriptions = list(
+        db.scalars(
+            select(Subscription)
+            .where(Subscription.status == SubscriptionStatus.active)
+            .order_by(Subscription.id)
+        ).all()
+    )
+    subscriptions_by_id = {row.id: row for row in active_subscriptions}
+    subscriptions_by_subscriber: dict[UUID, list[Subscription]] = defaultdict(list)
+    for subscription in active_subscriptions:
+        subscriptions_by_subscriber[subscription.subscriber_id].append(subscription)
+    assignments_by_subscriber: dict[UUID, list[IPAssignment]] = defaultdict(list)
+    for assignment in assignments:
+        if assignment.subscriber_id is not None:
+            assignments_by_subscriber[assignment.subscriber_id].append(assignment)
+
+    items: list[IPAssignmentOwnershipItem] = []
+    for assignment in assignments:
+        if requested_ids is not None and assignment.id not in requested_ids:
             continue
-        if limit is not None and done >= limit:
-            break
-        try:
-            changed = _ensure_assignment(
-                db, item["subscriber_id"], item["desired_ip"], pools, served
-            )
-            if changed:
-                db.commit()
-                applied[item["action"]] += 1
-                done += 1
+        address = addresses_by_assignment[assignment.id]
+        subscriber_id = assignment.subscriber_id
+        current_subscription_id = assignment.subscription_id
+        proposed_subscription_id: UUID | None = None
+
+        if subscriber_id is None:
+            decision = IPAssignmentOwnershipDecision.missing_subscriber
+        elif current_subscription_id is not None:
+            linked_subscription = subscriptions_by_id.get(current_subscription_id)
+            if linked_subscription is None:
+                decision = IPAssignmentOwnershipDecision.missing_subscription
+            elif linked_subscription.subscriber_id != subscriber_id:
+                decision = IPAssignmentOwnershipDecision.subscriber_mismatch
+            elif _normalized_ip(linked_subscription.ipv4_address) != address:
+                decision = IPAssignmentOwnershipDecision.served_address_mismatch
+            elif len(assignments_by_subscriber[subscriber_id]) != 1:
+                decision = IPAssignmentOwnershipDecision.ambiguous_active_assignments
             else:
-                db.rollback()
-                applied["skipped"] += 1
-        except Exception:
-            db.rollback()
-            applied["errors"] += 1
-            logger.exception(
-                "IPAM repair failed for subscriber %s (desired %s)",
-                item["subscriber_id"],
-                item["desired_ip"],
+                decision = IPAssignmentOwnershipDecision.exact
+        else:
+            subscriptions = subscriptions_by_subscriber.get(subscriber_id, [])
+            if len(subscriptions) != 1:
+                decision = IPAssignmentOwnershipDecision.ambiguous_active_services
+            elif len(assignments_by_subscriber[subscriber_id]) != 1:
+                decision = IPAssignmentOwnershipDecision.ambiguous_active_assignments
+            else:
+                subscription = subscriptions[0]
+                if _normalized_ip(subscription.ipv4_address) != address:
+                    decision = IPAssignmentOwnershipDecision.served_address_mismatch
+                else:
+                    proposed_subscription_id = subscription.id
+                    decision = (
+                        IPAssignmentOwnershipDecision.repairable_missing_service_link
+                    )
+        items.append(
+            IPAssignmentOwnershipItem(
+                assignment_id=assignment.id,
+                subscriber_id=subscriber_id,
+                current_subscription_id=current_subscription_id,
+                proposed_subscription_id=proposed_subscription_id,
+                address=address,
+                decision=decision,
             )
-    applied["subscribers_repaired"] = done
-    return applied
+        )
+
+    result = tuple(items)
+    return IPAssignmentOwnershipPreview(items=result, fingerprint=_fingerprint(result))
+
+
+def _prior_outcome(
+    db: Session,
+    *,
+    idempotency_key: str,
+    preview_fingerprint: str,
+) -> IPAssignmentOwnershipOutcome | None:
+    prior = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.action == _BATCH_AUDIT_ACTION,
+            AuditEvent.entity_type == "ip_assignment_service_ownership",
+            AuditEvent.entity_id == idempotency_key,
+        )
+    )
+    if prior is None:
+        return None
+    metadata = prior.metadata_ if isinstance(prior.metadata_, dict) else {}
+    prior_fingerprint = str(metadata.get("preview_fingerprint") or "")
+    if not secrets.compare_digest(prior_fingerprint, preview_fingerprint):
+        _error(
+            "idempotency_conflict",
+            "The idempotency key was already used for different IPAM evidence.",
+        )
+    return IPAssignmentOwnershipOutcome(
+        preview_fingerprint=prior_fingerprint,
+        linked_count=int(metadata.get("linked_count") or 0),
+        replayed=True,
+    )
+
+
+def _reconcile(
+    db: Session,
+    command: ReconcileIPAssignmentOwnershipCommand,
+) -> IPAssignmentOwnershipOutcome:
+    idempotency_key = (command.context.idempotency_key or "").strip()
+    if not idempotency_key:
+        _error("missing_idempotency_key", "An idempotency key is required.")
+    if not command.assignment_ids:
+        _error("empty_cohort", "The reviewed repair cohort is empty.")
+    if len(set(command.assignment_ids)) != len(command.assignment_ids):
+        _error("duplicate_assignment", "The repair cohort repeats an assignment.")
+
+    prior = _prior_outcome(
+        db,
+        idempotency_key=idempotency_key,
+        preview_fingerprint=command.preview_fingerprint,
+    )
+    if prior is not None:
+        return prior
+
+    locked = list(
+        db.scalars(
+            select(IPAssignment)
+            .where(IPAssignment.id.in_(command.assignment_ids))
+            .order_by(IPAssignment.id)
+            .with_for_update()
+        ).all()
+    )
+    if len(locked) != len(command.assignment_ids):
+        _error("assignment_not_found", "A reviewed IP assignment no longer exists.")
+    subscriber_ids = sorted(
+        {
+            assignment.subscriber_id
+            for assignment in locked
+            if assignment.subscriber_id is not None
+        },
+        key=str,
+    )
+    if subscriber_ids:
+        list(
+            db.scalars(
+                select(Subscriber)
+                .where(Subscriber.id.in_(subscriber_ids))
+                .order_by(Subscriber.id)
+                .with_for_update()
+            ).all()
+        )
+    prior = _prior_outcome(
+        db,
+        idempotency_key=idempotency_key,
+        preview_fingerprint=command.preview_fingerprint,
+    )
+    if prior is not None:
+        return prior
+    subscription_ids = sorted(
+        {
+            item.proposed_subscription_id
+            for item in preview_ip_assignment_service_ownership(
+                db, assignment_ids=command.assignment_ids
+            ).items
+            if item.proposed_subscription_id is not None
+        },
+        key=str,
+    )
+    if subscription_ids:
+        list(
+            db.scalars(
+                select(Subscription)
+                .where(Subscription.id.in_(subscription_ids))
+                .order_by(Subscription.id)
+                .with_for_update()
+            ).all()
+        )
+    current = preview_ip_assignment_service_ownership(
+        db,
+        assignment_ids=command.assignment_ids,
+    )
+    if not secrets.compare_digest(current.fingerprint, command.preview_fingerprint):
+        _error(
+            "stale_preview",
+            "IPAM ownership evidence changed after preview; preview again.",
+            current_fingerprint=current.fingerprint,
+        )
+    if any(not item.repairable for item in current.items):
+        _error(
+            "unsafe_cohort",
+            "The reviewed cohort contains an ambiguous or already-linked assignment.",
+        )
+
+    by_id = {assignment.id: assignment for assignment in locked}
+    for item in current.items:
+        assert item.proposed_subscription_id is not None
+        assignment = by_id[item.assignment_id]
+        assignment.subscription_id = item.proposed_subscription_id
+        stage_audit_event(
+            db,
+            action=_ITEM_AUDIT_ACTION,
+            entity_type="ip_assignment",
+            entity_id=str(assignment.id),
+            actor_type=AuditActorType.service,
+            actor_id=command.context.actor,
+            metadata={
+                "subscription_id": str(item.proposed_subscription_id),
+                "preview_fingerprint": current.fingerprint,
+                "reason": command.context.reason,
+            },
+        )
+
+    stage_audit_event(
+        db,
+        action=_BATCH_AUDIT_ACTION,
+        entity_type="ip_assignment_service_ownership",
+        entity_id=idempotency_key,
+        actor_type=AuditActorType.service,
+        actor_id=command.context.actor,
+        metadata={
+            "preview_fingerprint": current.fingerprint,
+            "linked_count": len(current.items),
+            "assignment_ids": [str(item.assignment_id) for item in current.items],
+            "reason": command.context.reason,
+        },
+    )
+    emit_event(
+        db,
+        EventType.ip_assignment_service_ownership_reconciled,
+        {
+            "schema_version": 1,
+            "preview_fingerprint": current.fingerprint,
+            "linked_count": len(current.items),
+            "assignment_ids": [str(item.assignment_id) for item in current.items],
+        },
+        actor=command.context.actor,
+    )
+    db.flush()
+    return IPAssignmentOwnershipOutcome(
+        preview_fingerprint=current.fingerprint,
+        linked_count=len(current.items),
+        replayed=False,
+    )
+
+
+def reconcile_ip_assignment_service_ownership(
+    db: Session,
+    command: ReconcileIPAssignmentOwnershipCommand,
+) -> IPAssignmentOwnershipOutcome:
+    """Apply one exact, fingerprint-bound service-ownership repair."""
+
+    return execute_owner_command(
+        db,
+        definition=_COMMAND,
+        context=command.context,
+        operation=lambda: _reconcile(db, command),
+    )
+
+
+__all__ = [
+    "IPAssignmentOwnershipDecision",
+    "IPAssignmentOwnershipError",
+    "IPAssignmentOwnershipItem",
+    "IPAssignmentOwnershipOutcome",
+    "IPAssignmentOwnershipPreview",
+    "ReconcileIPAssignmentOwnershipCommand",
+    "preview_ip_assignment_service_ownership",
+    "reconcile_ip_assignment_service_ownership",
+]
