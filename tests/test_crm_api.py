@@ -611,6 +611,9 @@ def test_billing_risk_source_batches_page_aggregates(db_session, crm_auth):
     assert row["last_payment_date"] == "2026-06-20T00:00:00Z"
     assert row["blocked_date"] == "2026-06-19T00:00:00Z"
     assert row["service_plan"] == "Fiber 50"
+    # Primary-service monthly price exposed in bulk so omni reads MRR here
+    # instead of an N+1 per-subscriber GET /subscribers/{id}/services.
+    assert row["service_mrr"] == 15000.0
     assert len(statements) <= 20
 
 

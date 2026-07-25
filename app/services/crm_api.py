@@ -1015,6 +1015,10 @@ def billing_risk_rows(
                 "location": location,
                 "service_plan": primary_service.get("plan_name"),
                 "speed": primary_service.get("speed"),
+                # Primary-service monthly price so bulk consumers (e.g. omni's
+                # billing-risk cache) can read MRR here instead of an N+1
+                # per-subscriber GET /subscribers/{id}/services.
+                "service_mrr": primary_service.get("price"),
                 "balance": summary["balance"],
                 "next_bill_date": summary["next_bill_date"],
                 "billing_start_date": summary["billing_start_date"],
