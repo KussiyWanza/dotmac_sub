@@ -765,6 +765,7 @@ def person_detail(
             "detail_config": detail_config,
             "bulk_notification_channels": notification_channels,
             "bulk_notification_templates": notification_templates,
+            **_subscription_action_permission_context(request, db),
             "current_user": current_user,
             "location_capture_enabled": location_capture_enabled,
             "sidebar_stats": sidebar_stats,

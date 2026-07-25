@@ -688,6 +688,7 @@ Dashboard implementation notes:
     "subscribers": list[Subscriber],
     "accounts": list[Subscriber],
     "subscriptions": list[Subscription],
+    "restorable_subscription_ids": set[str], # lifecycle-owner restore candidates
     "account_lookup": dict[str, Subscriber],  # account_id → Subscriber
     "invoices": list[Invoice],
     "payments": list[Payment],
@@ -728,9 +729,20 @@ Dashboard implementation notes:
     "has_any_subscribers": bool,
     "activity_items": list[dict],       # [{type, title, description, timestamp}]
     "customer_user_access": dict,       # portal login state
+    "can_activate_subscriptions": bool, # RBAC-owned visibility for restore actions
+    "can_suspend_subscriptions": bool,  # RBAC-owned visibility for suspend actions
     "active_page": "customers",
 }
 ```
+
+The **All Subscriptions** work surface exposes one visible `Restore` row action
+for blocked, suspended, stopped, or disabled services only when the authenticated
+operator has `catalog:write` or `subscription:activate`. The action consumes the
+canonical subscription-lifecycle preview, shows the exact billing, access, and
+session impact, captures an operational reason, and confirms against the
+reviewed state head before execution. The lifecycle endpoint rechecks the
+kind-specific permission and current eligibility; the template is visibility,
+not authorization.
 
 #### `GET /admin/customers/{type}/{id}` (Organization Detail)
 Same shape as person, plus:

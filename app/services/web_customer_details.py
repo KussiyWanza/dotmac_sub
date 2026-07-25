@@ -104,6 +104,7 @@ from app.services.status_presentation import (
     payment_status_presentation,
     subscription_status_presentation,
 )
+from app.services.subscription_lifecycle import is_subscription_restore_candidate
 from app.services.subscription_lifecycle_policy import (
     is_customer_impact_service_status,
     is_mrr_countable_service_status,
@@ -2012,6 +2013,11 @@ def build_customer_detail_snapshot(db: Session, customer_id: str) -> dict[str, A
             for account in accounts
         },
         "subscriptions": subscriptions,
+        "restorable_subscription_ids": {
+            str(subscription.id)
+            for subscription in subscriptions
+            if is_subscription_restore_candidate(subscription.status)
+        },
         "subscription_status_presentations": {
             str(subscription.id): subscription_status_presentation(subscription.status)
             for subscription in subscriptions

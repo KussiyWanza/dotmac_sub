@@ -49,6 +49,9 @@ _SUSPENDED_EQUIVALENT_STATUSES = frozenset(
         SubscriptionStatus.stopped,
     }
 )
+RESTORE_CANDIDATE_STATUSES = _SUSPENDED_EQUIVALENT_STATUSES | frozenset(
+    {SubscriptionStatus.disabled}
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -96,6 +99,11 @@ class SubscriptionSessionAction(str, enum.Enum):
     disconnect = "disconnect"
     reauthorize = "reauthorize"
     deprovision = "deprovision"
+
+
+def is_subscription_restore_candidate(status: SubscriptionStatus | None) -> bool:
+    """Return owner-defined coarse eligibility for offering a restore preview."""
+    return status in RESTORE_CANDIDATE_STATUSES
 
 
 class ServiceChangeDeliveryMode(str, enum.Enum):
@@ -822,12 +830,7 @@ def _eligibility_reasons(
         SubscriptionCommandKind.disable: set(SubscriptionStatus)
         - set(TERMINAL_SERVICE_STATUSES)
         - {SubscriptionStatus.disabled},
-        SubscriptionCommandKind.restore: {
-            SubscriptionStatus.blocked,
-            SubscriptionStatus.suspended,
-            SubscriptionStatus.stopped,
-            SubscriptionStatus.disabled,
-        },
+        SubscriptionCommandKind.restore: set(RESTORE_CANDIDATE_STATUSES),
         SubscriptionCommandKind.renew: {
             SubscriptionStatus.active,
             SubscriptionStatus.blocked,

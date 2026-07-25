@@ -114,6 +114,18 @@ def _assert_lifecycle_command_permission(
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
+def _assert_lifecycle_preview_permission(
+    request: Request,
+    db: Session,
+    kind: SubscriptionCommandKind,
+) -> None:
+    """Allow catalog readers or the operator authorized for this exact action."""
+    auth = getattr(request.state, "auth", None) or {}
+    if auth and has_permission(auth, db, "catalog:read"):
+        return
+    _assert_lifecycle_command_permission(request, db, kind)
+
+
 @router.get(
     "",
     response_class=HTMLResponse,
@@ -879,7 +891,16 @@ def catalog_subscription_update(
 
 @router.post(
     "/subscriptions/{subscription_id}/lifecycle/preview",
-    dependencies=[Depends(require_permission("catalog:read"))],
+    dependencies=[
+        Depends(
+            require_any_permission(
+                "catalog:read",
+                "catalog:write",
+                "subscription:activate",
+                "subscription:suspend",
+            )
+        )
+    ],
 )
 def catalog_subscription_preview_lifecycle_command(
     request: Request,
@@ -894,6 +915,7 @@ def catalog_subscription_preview_lifecycle_command(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     """Preview one lifecycle command without mutating subscription state."""
+    _assert_lifecycle_preview_permission(request, db, kind)
     payload, status_code = (
         web_catalog_subscription_workflows_service.preview_lifecycle_command_response(
             db,
