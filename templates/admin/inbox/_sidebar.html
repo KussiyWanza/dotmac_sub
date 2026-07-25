@@ -92,8 +92,7 @@
                         ('All', '', assignment_counts.all),
                         ('Assigned to me', actor_person_id, assignment_counts.assigned_to_me),
                         ('Unassigned', 'unassigned', assignment_counts.unassigned),
-                        ('Unreplied', 'unreplied', assignment_counts.unreplied),
-                        ('Needs attention', 'attention', assignment_counts.needs_attention)
+                        ('Unreplied', 'unreplied', assignment_counts.unreplied)
                     ] %}
                     <button type="button"
                             @click="applyAssignmentFilter('{{ item[1] }}')"

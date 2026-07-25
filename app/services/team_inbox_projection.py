@@ -166,8 +166,10 @@ class InboxAssignmentCounts:
     my_team: int
     ai_handling: int
     unassigned: int
+    # One cohort, one name. This was previously also exposed as `needs_attention`
+    # with an identical value, which rendered as two sidebar filters that always
+    # showed the same count and applied the same `needs_response=true` filter.
     unreplied: int
-    needs_attention: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +297,6 @@ def _assignment_counts(
         ai_handling=ai_handling,
         unassigned=queue_metrics.unassigned_open,
         unreplied=queue_metrics.needs_response,
-        needs_attention=queue_metrics.needs_response,
     )
 
 

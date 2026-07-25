@@ -18,7 +18,7 @@ from app.services import (
     team_inbox_projection,
     team_inbox_read_state,
 )
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 from app.services.owner_commands import CommandContext
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
@@ -275,6 +275,13 @@ def team_inbox_contact_context(
             "conversation_labels": projection.conversation_labels,
             "label_options": projection.label_options,
             "agent_options": team_inbox_projection.list_agent_options(db),
+            # The drawer surfaces customer data that is more sensitive than the
+            # conversation itself. Arrears ride billing:account:read and the
+            # session IP rides network:ip:read, so a support principal without
+            # those keys sees the service context without the financial or
+            # network detail. The customer 360 page remains the authority.
+            "can_view_financials": can(request, "billing:account:read"),
+            "can_view_network_detail": can(request, "network:ip:read"),
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)

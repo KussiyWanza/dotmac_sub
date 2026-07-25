@@ -78,7 +78,7 @@
         { id: "reply", label: "Focus reply composer", shortcut: "R" },
         { id: "resolve", label: "Resolve current conversation", shortcut: "E" },
         { id: "contact", label: "Toggle contact details", shortcut: "" },
-        { id: "attention", label: "Open needs attention", shortcut: "" },
+        { id: "unreplied", label: "Open unreplied", shortcut: "" },
       ],
 
       init() {
@@ -192,6 +192,9 @@
               this.updateSelectedHighlight();
               this.scrollThread();
               this.newMessagesAvailable = false;
+              if (thread.dataset.conversationUnread === "true") {
+                this.markConversationRead(this.selectedId);
+              }
             }
           }
           if (target.id === "inbox-sidebar-content") {
@@ -314,10 +317,27 @@
         });
       },
 
+      // Operator read-state is server-owned. Opening an unread thread clears it
+      // through the inbox command boundary; without this the workspace renders
+      // an unread badge it can never retire.
+      async markConversationRead(conversationId) {
+        if (!conversationId) return;
+        try {
+          await fetch(`/admin/inbox/${conversationId}/read`, {
+            method: "POST",
+            headers: { "X-CSRF-Token": csrfToken() },
+            redirect: "manual",
+          });
+        } catch (error) {
+          return;
+        }
+        this.refreshSidebar();
+      },
+
       applyAssignmentFilter(value) {
         if (value === "unassigned") {
           this.navigateFilter({ open_only: "true", unassigned: "true" });
-        } else if (value === "unreplied" || value === "attention") {
+        } else if (value === "unreplied") {
           this.navigateFilter({ needs_response: "true" });
         } else if (value) {
           this.navigateFilter({ assigned_person_id: value });
@@ -604,7 +624,7 @@
         if (id === "contact") {
           this.contactOpen ? this.closeContact() : this.openContact(this.selectedId);
         }
-        if (id === "attention") this.applyAssignmentFilter("attention");
+        if (id === "unreplied") this.applyAssignmentFilter("unreplied");
       },
 
       focusReply() {
@@ -695,6 +715,15 @@
       scheduled: false,
       scheduledAt: "",
       typingTimer: null,
+      // Provenance of the current draft. `reply()` accepts macro_id/template_id
+      // and the reply owner needs them for macro execution, template audit, and
+      // WhatsApp provider-template identity. `identityBody` records the exact
+      // inserted text so identity is dropped if the agent rewrites it — claiming
+      // a macro was sent when the body no longer matches would be a false audit
+      // record, and a WhatsApp provider template must match its approved body.
+      macroId: "",
+      templateId: "",
+      identityBody: "",
 
       init() {
         this.draft = localStorage.getItem(`${KEYS.draftPrefix}${conversationId}`) || "";
@@ -743,27 +772,65 @@
         );
         if (option) {
           this.draft = this.draft.replace(/\/[a-z-]+$/i, option.dataset.body || "");
+          // Slash expansion splices into surrounding text, so the body will not
+          // match the template verbatim — do not claim template identity.
+          this.releaseIdentity();
         }
       },
 
       insertTemplate(event) {
         const option = event.target.selectedOptions[0];
-        if (option?.dataset.body) this.draft = option.dataset.body;
+        if (option?.dataset.body) {
+          this.draft = option.dataset.body;
+          this.claimIdentity({ templateId: option.value });
+        }
         event.target.selectedIndex = 0;
         this.$nextTick(() => this.$refs.textarea?.focus());
       },
       insertIntroduction() {
         this.insertQuickResponse("Hello, this is the Dotmac support team. ");
       },
-      insertQuickResponse(text) {
-        this.draft = this.draft ? `${this.draft}\n${text}` : text;
+      // Accepts a bare string (ad-hoc quick response) or {text, macroId,
+      // templateId} dispatched by the macro menu.
+      insertQuickResponse(payload) {
+        const detail =
+          typeof payload === "string" ? { text: payload } : payload || {};
+        const text = detail.text || "";
+        if (!text) return;
+        // A macro replaces the draft so its body is exactly what gets sent and
+        // its identity stays truthful; ad-hoc snippets append as before.
+        if (detail.macroId || detail.templateId) {
+          this.draft = text;
+          this.claimIdentity(detail);
+        } else {
+          this.draft = this.draft ? `${this.draft}\n${text}` : text;
+          this.releaseIdentity();
+        }
         this.$nextTick(() => this.$refs.textarea?.focus());
+      },
+      claimIdentity({ macroId = "", templateId = "" }) {
+        this.macroId = macroId || "";
+        this.templateId = templateId || "";
+        this.identityBody = this.draft;
+      },
+      releaseIdentity() {
+        this.macroId = "";
+        this.templateId = "";
+        this.identityBody = "";
+      },
+      // Identity survives only while the body is untouched.
+      resolvedMacroId() {
+        return this.draft === this.identityBody ? this.macroId : "";
+      },
+      resolvedTemplateId() {
+        return this.draft === this.identityBody ? this.templateId : "";
       },
       draftWithAI() {
         this.workspace()?.showDemoNotice?.("AI Draft");
         if (!this.draft) {
           this.draft =
             "Hello, thanks for contacting Dotmac. I’m reviewing your request and will update you shortly.";
+          this.releaseIdentity();
         }
       },
 

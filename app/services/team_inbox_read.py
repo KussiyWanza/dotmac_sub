@@ -251,6 +251,7 @@ def list_conversations(
     search: str | None = None,
     status: str | None = None,
     channel_type: str | None = None,
+    subscriber_id: str | UUID | None = None,
     service_team_id: str | UUID | None = None,
     assigned_person_id: str | UUID | None = None,
     needs_response: bool = False,
@@ -325,6 +326,13 @@ def list_conversations(
             query = query.filter(InboxConversation.snoozed_until.isnot(None))
         else:
             query = query.filter(InboxConversation.snoozed_until.is_(None))
+
+    # Customer-scoped read: the conversation carries the resolved subscriber, so
+    # the customer record can project its own communications without joining
+    # through the contact link.
+    subscriber_uuid = _optional_uuid(subscriber_id)
+    if subscriber_uuid is not None:
+        query = query.filter(InboxConversation.subscriber_id == subscriber_uuid)
 
     team_uuid = _optional_uuid(service_team_id)
     if team_uuid is not None:

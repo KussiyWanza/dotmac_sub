@@ -1307,13 +1307,29 @@ def build_ticket_detail_context(
 ) -> dict:
     from uuid import uuid4
 
-    from app.services import ticket_work_order_handoff
+    from app.services import team_inbox_read, ticket_work_order_handoff
     from app.services.audit_helpers import build_audit_activities
 
     status_options = support_ticket_settings_service.list_status_options(db)
     priority_options = support_ticket_settings_service.list_priority_options(db)
     ticket = support_service.tickets.get_by_lookup(db, ticket_lookup)
     linked_work_orders = ticket_work_order_handoff.list_for_ticket(db, ticket.id)
+    # Customer conversation history, so an agent sees what was already said on
+    # other channels before replying here. `communications.team_inbox` owns these
+    # rows; this is a read. Scoped by subscriber because no conversation-to-ticket
+    # link exists yet — once the handoff owner lands this can narrow to the
+    # originating conversation.
+    ticket_conversations = (
+        team_inbox_read.list_conversations(
+            db,
+            subscriber_id=ticket.subscriber_id,
+            order_by="last_message_at",
+            order_dir="desc",
+            limit=5,
+        ).items
+        if ticket.subscriber_id
+        else ()
+    )
     linked_project_tasks = (
         db.query(ProjectTask)
         .filter(ProjectTask.ticket_id == ticket.id)
@@ -1395,6 +1411,7 @@ def build_ticket_detail_context(
         ),
         "identity_resolution": _identity_resolution_summary(ticket),
         "linked_work_orders": linked_work_orders,
+        "ticket_conversations": ticket_conversations,
         "linked_project_tasks": linked_project_tasks,
         "issue_work_order_action": ticket_work_order_handoff.issue_action(
             db, ticket, actor_id=actor_id

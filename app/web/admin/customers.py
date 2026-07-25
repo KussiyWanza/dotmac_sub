@@ -699,10 +699,17 @@ def person_detail(
 ):
     """View customer details (unified — person and org members)."""
     usage_period = _normalize_usage_period(usage_period)
+    request_auth = getattr(getattr(request, "state", None), "auth", None) or {}
+    # Same gate the inbox workspace uses, decided here and honoured by the
+    # snapshot builder so unpermitted conversation data is never assembled.
+    show_conversations = bool(request_auth) and has_permission(
+        request_auth, db, "support:ticket:read"
+    )
     try:
         detail_data = web_customer_details_service.build_customer_detail_snapshot(
             db=db,
             customer_id=customer_id,
+            include_conversations=show_conversations,
         )
     except HTTPException:
         return templates.TemplateResponse(

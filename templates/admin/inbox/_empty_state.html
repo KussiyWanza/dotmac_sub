@@ -5,11 +5,11 @@
     <h2 class="mt-4 font-display text-xl font-semibold text-slate-900 dark:text-white">Your customer conversations, in one place</h2>
     <p class="mt-2 max-w-md text-sm leading-6 text-slate-500 dark:text-slate-400">Select a conversation to read the thread, reply, collaborate privately, and review customer context without leaving the inbox.</p>
     <div class="mt-6 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
-        <button type="button" @click="applyAssignmentFilter('attention')" class="flex min-h-12 items-center justify-between rounded-lg border border-slate-200 bg-white px-4 text-left text-sm font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
-            <span>Needs attention</span><span class="rounded-lg bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">{{ assignment_counts.needs_attention }}</span>
-        </button>
         <button type="button" @click="applyAssignmentFilter('unreplied')" class="flex min-h-12 items-center justify-between rounded-lg border border-slate-200 bg-white px-4 text-left text-sm font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
-            <span>Unreplied</span><span class="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ assignment_counts.unreplied }}</span>
+            <span>Unreplied</span><span class="rounded-lg bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">{{ assignment_counts.unreplied }}</span>
+        </button>
+        <button type="button" @click="applyAssignmentFilter('unassigned')" class="flex min-h-12 items-center justify-between rounded-lg border border-slate-200 bg-white px-4 text-left text-sm font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
+            <span>Unassigned</span><span class="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ assignment_counts.unassigned }}</span>
         </button>
         <button type="button" @click="navigateFilter({open_only: 'true'})" class="flex min-h-12 items-center justify-between rounded-lg border border-slate-200 bg-white px-4 text-left text-sm font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
             <span>Open conversations</span><span class="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ queue_metrics.total_open }}</span>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -1755,11 +1755,20 @@ def _build_access_repair_state(
     }
 
 
-def build_customer_detail_snapshot(db: Session, customer_id: str) -> dict[str, Any]:
+def build_customer_detail_snapshot(
+    db: Session,
+    customer_id: str,
+    *,
+    include_conversations: bool = False,
+) -> dict[str, Any]:
     """Build unified customer detail snapshot.
 
     Every customer is a subscriber. Business accounts store their
     company identity directly on the subscriber row.
+
+    ``include_conversations`` is decided by the caller's permission check. The
+    read is skipped entirely when false, so conversation data never reaches the
+    template context for a principal that may not see it.
     """
     customer = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
     if customer.user_type != UserType.customer:
@@ -1994,8 +2003,25 @@ def build_customer_detail_snapshot(db: Session, customer_id: str) -> dict[str, A
         .first()
     )
 
+    # Communications projection. `communications.team_inbox` owns these rows;
+    # the customer record reads its own scoped slice and links back to the
+    # workspace to act on one.
+    customer_conversations: Sequence[Any] = ()
+    if include_conversations:
+        from app.services import team_inbox_read
+
+        customer_conversations = team_inbox_read.list_conversations(
+            db,
+            subscriber_id=customer.id,
+            order_by="last_message_at",
+            order_dir="desc",
+            limit=5,
+        ).items
+
     return {
         "customer": customer,
+        "can_view_conversations": include_conversations,
+        "customer_conversations": customer_conversations,
         "customer_status_presentation": account_status_presentation(
             customer.status,
             is_active=customer.is_active,
