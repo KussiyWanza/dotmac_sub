@@ -351,7 +351,14 @@ class QueueStrategyAdapter:
     def get_all_queue_health(self) -> dict[str, dict[str, Any]]:
         """Get health status for all tracked queues."""
         result = {}
-        for queue_name in ["celery", "tr069", "acs", "bandwidth", "ingestion"]:
+        for queue_name in [
+            "celery",
+            "tr069",
+            "acs",
+            "bandwidth",
+            "monitoring",
+            "ingestion",
+        ]:
             state = self._update_queue_health(queue_name)
             result[queue_name] = {
                 "depth": state.depth,

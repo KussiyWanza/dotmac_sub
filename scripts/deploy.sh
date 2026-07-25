@@ -50,8 +50,8 @@ CANDIDATE_HEALTH_URL="${CANDIDATE_HEALTH_URL:-http://127.0.0.1:${CANDIDATE_PORT}
 CANDIDATE_DRAIN_SECONDS="${CANDIDATE_DRAIN_SECONDS:-2}"
 # Every service that runs the app image and must be recreated on a new build.
 APP_SERVICES=(app celery-worker celery-worker-bandwidth celery-worker-ingestion \
-  celery-worker-billing celery-worker-tr069 celery-beat bandwidth-poller \
-  syslog-listener)
+  celery-worker-monitoring celery-worker-billing celery-worker-tr069 celery-beat \
+  bandwidth-poller syslog-listener)
 
 DB_CONTAINER="${DB_CONTAINER:-dotmac_pg_local}"
 

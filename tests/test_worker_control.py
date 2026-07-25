@@ -55,6 +55,9 @@ def test_restart_containers_uses_default_mapping(monkeypatch):
     containers = worker_control.restart_containers()
 
     assert containers["celery-worker-billing"] == "dotmac_sub_celery_worker_billing"
+    assert (
+        containers["celery-worker-monitoring"] == "dotmac_sub_celery_worker_monitoring"
+    )
 
 
 def test_restart_worker_target_uses_docker_api_by_default(monkeypatch):

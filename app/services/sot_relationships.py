@@ -12277,6 +12277,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "poll heartbeat result counters",
                 ),
                 depends_on=("runtime.db_sessions",),
+                notes=(
+                    "Polling and topology warming use reserved monitoring-queue "
+                    "capacity. Bulk ingestion, including independently bounded "
+                    "per-OLT MAC harvests, does not share that worker; queue "
+                    "placement does not change observation ownership."
+                ),
             ),
             SOTService(
                 name="runtime.infrastructure_health",

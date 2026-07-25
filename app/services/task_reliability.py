@@ -391,6 +391,13 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
     "app.tasks.olt_mac_harvest.run_olt_mac_harvest": _c(
         "network", SWEEP, IDEMP, HEALTH
     ),
+    "app.tasks.olt_mac_harvest.run_single_olt_mac_harvest": _c(
+        "network",
+        AUTORETRY,
+        PER_ITEM,
+        HEALTH,
+        "Each OLT has an independent advisory lock, timeout, and retry budget.",
+    ),
     "app.tasks.olt_firmware.rollback": _c(
         "network",
         NONE,

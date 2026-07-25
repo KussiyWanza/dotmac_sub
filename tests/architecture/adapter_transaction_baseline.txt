@@ -23,7 +23,6 @@ commit 2 app/tasks/oauth.py
 commit 3 app/tasks/olt_config_backup.py
 commit 6 app/tasks/olt_firmware.py
 commit 2 app/tasks/olt_health_retry.py
-commit 1 app/tasks/olt_mac_harvest.py
 commit 6 app/tasks/ont_firmware.py
 commit 3 app/tasks/ont_reconcile.py
 commit 5 app/tasks/ont_runtime_status.py
@@ -73,7 +72,6 @@ rollback 2 app/tasks/nin_tasks.py
 rollback 2 app/tasks/oauth.py
 rollback 2 app/tasks/olt_config_backup.py
 rollback 3 app/tasks/olt_firmware.py
-rollback 2 app/tasks/olt_mac_harvest.py
 rollback 2 app/tasks/ont_provisioning.py
 rollback 2 app/tasks/ont_reconcile.py
 rollback 2 app/tasks/ont_runtime_status.py

@@ -3129,6 +3129,10 @@ Dependency order:
    and the generic network-device pollability predicate. Domain-specific
    collectors such as Huawei ONT runtime status depend on these polling
    mechanics while owning their own observation and eligibility contracts.
+   Its polling and topology-warming adapters consume reserved `monitoring`
+   queue capacity; bulk ingestion and independently bounded per-OLT MAC harvest
+   tasks cannot occupy that worker. Queue placement is transport isolation and
+   does not transfer observation or device-state decision ownership.
 6. `runtime.infrastructure_health`: owns dependency health checks for
    Postgres, Redis, VictoriaMetrics, Celery, and related infrastructure.
 

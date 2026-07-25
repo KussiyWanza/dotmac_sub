@@ -1,4 +1,6 @@
+import asyncio
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -42,6 +44,13 @@ from app.services.customer_portal_flow_payments import (
 from app.services.integrations.runtime_execution import RuntimeExecutionError
 from app.services.settings_cache import SettingsCache
 from tests.integration_platform_helpers import enable_payment_provider
+
+
+def _run_async(coro):
+    """Run a coroutine outside pytest's already-running suite event loop."""
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 def _upsert_billing_setting(db_session, key: str, value: str) -> None:
@@ -1266,8 +1275,7 @@ def test_create_invoice_payment_intent_bank_transfer_allows_below_topup_min(
     assert payload["redirect_url"] == "/portal/billing/topup/transfer"
 
 
-@pytest.mark.asyncio
-async def test_direct_transfer_portal_delegates_atomic_proof_intent_submission(
+def test_direct_transfer_portal_delegates_atomic_proof_intent_submission(
     monkeypatch, db_session, subscriber
 ):
     from app.services import payment_proofs
@@ -1311,11 +1319,13 @@ async def test_direct_transfer_portal_delegates_atomic_proof_intent_submission(
 
     monkeypatch.setattr(payment_proofs, "save_proof_file", fake_save_proof_file)
 
-    result = await submit_direct_transfer_topup(
-        db_session,
-        _invoice_customer(subscriber),
-        made_payment=True,
-        file=SimpleNamespace(filename="portal-atomic.png"),
+    result = _run_async(
+        submit_direct_transfer_topup(
+            db_session,
+            _invoice_customer(subscriber),
+            made_payment=True,
+            file=SimpleNamespace(filename="portal-atomic.png"),
+        )
     )
 
     proof = db_session.get(PaymentProof, result["id"])

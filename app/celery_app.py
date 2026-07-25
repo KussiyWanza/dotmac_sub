@@ -74,9 +74,12 @@ celery_app.conf.task_routes = {
     "app.tasks.bandwidth.process_bandwidth_stream": {"queue": "bandwidth"},
     "app.tasks.bandwidth.aggregate_to_metrics": {"queue": "bandwidth"},
     "app.tasks.bandwidth.flush_bandwidth_buffer": {"queue": "bandwidth"},
+    # Reachability observations and their status projection need reserved
+    # capacity: stale health data is customer-visible and must not wait behind
+    # long-running inventory/SSH collection on the ingestion queue.
+    "app.tasks.topology_sync.warm_topology_status": {"queue": "monitoring"},
+    "app.tasks.infrastructure_polling.run_infrastructure_poll": {"queue": "monitoring"},
     # High-volume ingestion tasks - dedicated queue
-    "app.tasks.topology_sync.warm_topology_status": {"queue": "ingestion"},
-    "app.tasks.infrastructure_polling.run_infrastructure_poll": {"queue": "ingestion"},
     "app.tasks.radius_health.run_radius_health_check": {"queue": "ingestion"},
     "app.tasks.customer_impact_metrics.export_customer_impact_metrics": {
         "queue": "ingestion"
@@ -101,6 +104,7 @@ celery_app.conf.task_routes = {
     "app.tasks.topology_ufiber_link.run_ufiber_onu_link": {"queue": "ingestion"},
     "app.tasks.topology_metrics.export_topology_metrics": {"queue": "ingestion"},
     "app.tasks.olt_mac_harvest.run_olt_mac_harvest": {"queue": "ingestion"},
+    "app.tasks.olt_mac_harvest.run_single_olt_mac_harvest": {"queue": "ingestion"},
     "app.tasks.ont_signal_observations.record_ont_observations": {"queue": "ingestion"},
     "app.tasks.ont_runtime_status.dispatch_huawei_ont_status": {"queue": "ingestion"},
     "app.tasks.ont_runtime_status.refresh_huawei_olt_status": {"queue": "ingestion"},
@@ -159,6 +163,7 @@ celery_app.conf.task_queues = (
     Queue("tr069"),  # Dedicated OLT/TR-069 operations queue
     Queue("acs"),  # Dedicated GenieACS/TR-069 queue
     Queue("bandwidth"),  # High-volume bandwidth processing
+    Queue("monitoring"),  # Reserved device reachability/status processing
     Queue("ingestion"),  # High-volume data ingestion (usage, topology)
     Queue("crm"),  # CRM ticket/comment pull (external API paced)
     Queue("billing"),  # Daily business runners (billing/dunning/expiry/FUP)

@@ -44,6 +44,11 @@ services:
     volumes:
       - ./app:/app/app
 
+  celery-worker-monitoring:
+    build: .
+    volumes:
+      - ./app:/app/app
+
   celery-worker-billing:
     build: .
     volumes:

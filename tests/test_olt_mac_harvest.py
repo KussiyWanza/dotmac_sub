@@ -8,8 +8,8 @@ task's advisory-lock single-flight skip.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
 
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.network import (
@@ -23,6 +23,7 @@ from app.models.network import (
 from app.models.subscriber import Subscriber
 from app.services.topology import olt_mac_harvest
 from app.services.topology.olt_mac_harvest import (
+    harvest_olt_mac_table,
     harvest_olt_mac_tables,
     parse_mac_address_port,
 )
@@ -220,6 +221,65 @@ def test_harvest_prunes_aged_out(db_session, monkeypatch):
     assert "9C:74:1A:3F:98:C7" in macs
 
 
+def test_single_olt_harvest_is_scoped(db_session, monkeypatch):
+    selected = _huawei_olt(db_session, name="Selected OLT")
+    _online_ont(
+        db_session,
+        selected,
+        board="0/1",
+        port="7",
+        ont_id=5,
+        serial="HWTCSELECT07",
+    )
+    other = _huawei_olt(db_session, name="Other OLT")
+    _online_ont(
+        db_session,
+        other,
+        board="0/1",
+        port="7",
+        ont_id=5,
+        serial="HWTCOTHER007",
+    )
+    stale_at = datetime.now(UTC) - timedelta(hours=48)
+    db_session.add_all(
+        [
+            ForwardingObservation(
+                olt_device_id=selected.id,
+                ont_id_on_olt=99,
+                mac="AA:BB:CC:DD:EE:01",
+                source="huawei_olt_mac",
+                observed_at=stale_at,
+            ),
+            ForwardingObservation(
+                olt_device_id=other.id,
+                ont_id_on_olt=99,
+                mac="AA:BB:CC:DD:EE:02",
+                source="huawei_olt_mac",
+                observed_at=stale_at,
+            ),
+        ]
+    )
+    db_session.commit()
+    walked_olts = []
+
+    def _run(olt, _command):
+        walked_olts.append(olt.id)
+        return True, "ok", _PORT_7
+
+    monkeypatch.setattr(olt_mac_harvest, "_run_readonly_command", _run)
+
+    counters = harvest_olt_mac_table(db_session, selected.id)
+    db_session.commit()
+
+    assert counters["olts_polled"] == 1
+    assert walked_olts == [selected.id]
+    macs = {
+        row.mac for row in db_session.scalars(select_all(ForwardingObservation)).all()
+    }
+    assert "AA:BB:CC:DD:EE:01" not in macs
+    assert "AA:BB:CC:DD:EE:02" in macs
+
+
 def test_harvest_isolates_per_olt_failure(db_session, monkeypatch):
     good = _huawei_olt(db_session, name="Good OLT")
     _online_ont(
@@ -333,30 +393,67 @@ def test_harvest_no_drift_when_mac_matches_assignment(
 
 
 # --------------------------------------------------------------------------- #
-# Task advisory-lock single-flight
+# Task dispatch and per-OLT single-flight
 # --------------------------------------------------------------------------- #
-def test_task_skips_when_advisory_lock_held(monkeypatch):
+def test_single_olt_task_skips_when_advisory_lock_held(monkeypatch):
     from app.tasks import olt_mac_harvest as task_mod
 
-    fake_db = MagicMock()
-    # pg_try_advisory_lock -> 0 (not acquired).
-    fake_db.execute.return_value.scalar.return_value = 0
-    monkeypatch.setattr(task_mod.db_session_adapter, "create_session", lambda: fake_db)
+    @contextmanager
+    def _lock_not_acquired(_key):
+        yield False
 
-    called = {"n": 0}
+    monkeypatch.setattr(task_mod, "postgres_session_advisory_lock", _lock_not_acquired)
 
-    def _boom(_db):
-        called["n"] += 1
-        raise AssertionError("harvest must not run when lock is held")
+    result = task_mod.run_single_olt_mac_harvest("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
-    monkeypatch.setattr(
-        "app.services.topology.olt_mac_harvest.harvest_olt_mac_tables", _boom
-    )
+    assert result == {
+        "olt_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "skipped": "already_running",
+    }
+
+
+def test_dispatcher_queues_each_olt_and_isolates_enqueue_failure(
+    db_session, monkeypatch
+):
+    from app.tasks import olt_mac_harvest as task_mod
+
+    first = _huawei_olt(db_session, name="First OLT")
+    second = _huawei_olt(db_session, name="Second OLT")
+    db_session.commit()
+
+    @contextmanager
+    def _read_session():
+        yield db_session
+
+    queued = []
+
+    def _enqueue(_task, *, args, **_kwargs):
+        queued.append(args[0])
+        if args[0] == str(second.id):
+            raise RuntimeError("broker rejected one message")
+        return object()
+
+    monkeypatch.setattr(task_mod.db_session_adapter, "read_session", _read_session)
+    monkeypatch.setattr(task_mod, "enqueue_celery_task", _enqueue)
 
     result = task_mod.run_olt_mac_harvest()
-    assert result == {"skipped_due_to_lock": 1}
-    assert called["n"] == 0
-    fake_db.commit.assert_not_called()
+
+    assert result == {"olts": 2, "queued": 1, "failed": 1}
+    assert queued == sorted([str(first.id), str(second.id)])
+
+
+def test_mac_harvest_tasks_registered_routed_and_exported():
+    import app.tasks as tasks
+    from app.celery_app import celery_app
+
+    dispatcher = "app.tasks.olt_mac_harvest.run_olt_mac_harvest"
+    child = "app.tasks.olt_mac_harvest.run_single_olt_mac_harvest"
+
+    assert dispatcher in celery_app.tasks
+    assert child in celery_app.tasks
+    assert celery_app.conf.task_routes[dispatcher] == {"queue": "ingestion"}
+    assert celery_app.conf.task_routes[child] == {"queue": "ingestion"}
+    assert "run_single_olt_mac_harvest" in tasks.__all__
 
 
 def select_all(model):

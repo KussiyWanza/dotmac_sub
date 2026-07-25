@@ -31,6 +31,7 @@ _DEFAULT_CELERY_QUEUES = (
     "tr069",
     "acs",
     "bandwidth",
+    "monitoring",
     "ingestion",
     "crm",
     "billing",
@@ -42,6 +43,7 @@ _DEFAULT_CELERY_QUEUE_RESTART_TARGETS = {
     "tr069": "celery-worker-tr069",
     "acs": "celery-worker-tr069",
     "bandwidth": "celery-worker-bandwidth",
+    "monitoring": "celery-worker-monitoring",
     "ingestion": "celery-worker-ingestion",
     "billing": "celery-worker-billing",
 }

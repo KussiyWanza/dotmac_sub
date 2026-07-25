@@ -15,7 +15,7 @@ def test_warm_task_registered_and_routed():
     import app.tasks  # noqa: F401 - triggers task module imports
 
     assert WARM_TASK in celery_app.tasks
-    assert celery_app.conf.task_routes[WARM_TASK] == {"queue": "ingestion"}
+    assert celery_app.conf.task_routes[WARM_TASK] == {"queue": "monitoring"}
 
 
 def test_retired_reconcile_task_not_registered():

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -20,6 +22,12 @@ from app.services.workqueue import WorkqueueAudience, WorkqueuePrincipal, Workqu
 from app.services.workqueue.events import channels_for_scope
 from app.websocket.events import WebSocketEvent
 from app.websocket.manager import ConnectionManager
+
+
+def _run_async(coro):
+    """Run a coroutine outside pytest's already-running suite event loop."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 class _Socket:
@@ -80,55 +88,67 @@ def test_publish_degrades_when_the_broker_call_fails(monkeypatch) -> None:
     assert realtime_platform.publish_event(event) is False
 
 
-@pytest.mark.asyncio
-async def test_manager_scopes_topics_to_one_socket_per_principal() -> None:
-    manager = ConnectionManager()
-    first = _Socket()
-    second = _Socket()
-    user_id = str(uuid4())
-    await manager.register_connection(user_id, first)  # type: ignore[arg-type]
-    await manager.register_connection(user_id, second)  # type: ignore[arg-type]
-    first.sent.clear()
-    second.sent.clear()
+def test_manager_scopes_topics_to_one_socket_per_principal() -> None:
+    async def exercise() -> None:
+        manager = ConnectionManager()
+        first = _Socket()
+        second = _Socket()
+        user_id = str(uuid4())
+        await manager.register_connection(user_id, first)  # type: ignore[arg-type]
+        await manager.register_connection(user_id, second)  # type: ignore[arg-type]
+        first.sent.clear()
+        second.sent.clear()
 
-    manager.subscribe_topic(first, "workqueue:audience:org")  # type: ignore[arg-type]
-    await manager._dispatch_to_subscribers(
-        build_event("workqueue:audience:org", "workqueue_changed", {})
-    )
+        manager.subscribe_topic(first, "workqueue:audience:org")  # type: ignore[arg-type]
+        await manager._dispatch_to_subscribers(
+            build_event("workqueue:audience:org", "workqueue_changed", {})
+        )
 
-    assert len(first.sent) == 1
-    assert second.sent == []
-    assert principal_topic(user_id) in manager._subscriptions
+        assert len(first.sent) == 1
+        assert second.sent == []
+        assert principal_topic(user_id) in manager._subscriptions
+
+    _run_async(exercise())
 
 
-@pytest.mark.asyncio
-async def test_manager_does_not_double_dispatch_a_redis_publish(monkeypatch) -> None:
-    manager = ConnectionManager()
-    socket = _Socket()
-    await manager.register_connection("operator", socket)  # type: ignore[arg-type]
-    manager.subscribe_topic(socket, "operation:00000000-0000-0000-0000-000000000001")  # type: ignore[arg-type]
-    socket.sent.clear()
-    manager._running = True
-    monkeypatch.setattr(
-        "app.websocket.manager.publish_event",
-        lambda event: True,
-    )
+def test_manager_does_not_double_dispatch_a_redis_publish(monkeypatch) -> None:
+    async def exercise() -> None:
+        async def run_inline(func, *args, **kwargs):
+            return func(*args, **kwargs)
 
-    await manager.broadcast_to_topic(
-        "operation:00000000-0000-0000-0000-000000000001",
-        WebSocketEvent(event=EventType.OPERATION_STATUS, data={"status": "running"}),
-    )
-    assert socket.sent == []
+        manager = ConnectionManager()
+        socket = _Socket()
+        await manager.register_connection("operator", socket)  # type: ignore[arg-type]
+        manager.subscribe_topic(
+            socket, "operation:00000000-0000-0000-0000-000000000001"
+        )  # type: ignore[arg-type]
+        socket.sent.clear()
+        manager._running = True
+        monkeypatch.setattr(
+            "app.websocket.manager.publish_event",
+            lambda event: True,
+        )
+        monkeypatch.setattr("app.websocket.manager.asyncio.to_thread", run_inline)
 
-    event = build_event(
-        "operation:00000000-0000-0000-0000-000000000001",
-        EventType.OPERATION_STATUS,
-        {"status": "running"},
-    )
-    await manager._handle_redis_message(
-        redis_channel(event.topic), event.model_dump_json()
-    )
-    assert len(socket.sent) == 1
+        await manager.broadcast_to_topic(
+            "operation:00000000-0000-0000-0000-000000000001",
+            WebSocketEvent(
+                event=EventType.OPERATION_STATUS, data={"status": "running"}
+            ),
+        )
+        assert socket.sent == []
+
+        event = build_event(
+            "operation:00000000-0000-0000-0000-000000000001",
+            EventType.OPERATION_STATUS,
+            {"status": "running"},
+        )
+        await manager._handle_redis_message(
+            redis_channel(event.topic), event.model_dump_json()
+        )
+        assert len(socket.sent) == 1
+
+    _run_async(exercise())
 
 
 def test_operation_notifications_use_the_platform_topic(monkeypatch) -> None:
@@ -211,8 +231,7 @@ def test_workqueue_scope_topics_are_server_derived() -> None:
     ]
 
 
-@pytest.mark.asyncio
-async def test_workqueue_sse_releases_db_and_signals_no_replay(monkeypatch) -> None:
+def test_workqueue_sse_releases_db_and_signals_no_replay(monkeypatch) -> None:
     from app.api import workqueue as workqueue_api
 
     person_id = uuid4()
@@ -275,12 +294,18 @@ async def test_workqueue_sse_releases_db_and_signals_no_replay(monkeypatch) -> N
         auth={"principal_id": str(person_id)},
         db=db,  # type: ignore[arg-type]
     )
-    stream = response.body_iterator
-    ready = await anext(stream)
-    reset = await anext(stream)
 
-    assert db.committed is True
-    assert db.closed is True
-    assert ready["event"] == "realtime.ready"
-    assert reset["event"] == "realtime.reset"
-    assert json.loads(reset["data"])["data"]["reason"] == "redis_pubsub_has_no_replay"
+    async def exercise() -> None:
+        stream = response.body_iterator
+        ready = await anext(stream)
+        reset = await anext(stream)
+
+        assert db.committed is True
+        assert db.closed is True
+        assert ready["event"] == "realtime.ready"
+        assert reset["event"] == "realtime.reset"
+        assert (
+            json.loads(reset["data"])["data"]["reason"] == "redis_pubsub_has_no_replay"
+        )
+
+    _run_async(exercise())

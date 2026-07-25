@@ -106,7 +106,10 @@ from app.tasks.olt_health_retry import (
     retry_single_olt,
     trigger_immediate_retry,
 )
-from app.tasks.olt_mac_harvest import run_olt_mac_harvest
+from app.tasks.olt_mac_harvest import (
+    run_olt_mac_harvest,
+    run_single_olt_mac_harvest,
+)
 from app.tasks.ont_bulk import execute_bulk_action as execute_ont_bulk_action
 from app.tasks.ont_firmware import (
     apply_huawei_ont_firmware,
@@ -284,6 +287,7 @@ __all__ = [
     "rollback_firmware_task",
     "upgrade_firmware_task",
     "run_olt_mac_harvest",
+    "run_single_olt_mac_harvest",
     "dispatch_operational_escalation_deliveries",
     "retry_failed_olt_connections",
     "retry_single_olt",

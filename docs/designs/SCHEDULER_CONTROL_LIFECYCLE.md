@@ -96,6 +96,10 @@ the control on downgrade.
 Observation age is an internal verification-due input, not a public state.
 Coverage, monitoring inventory, and channel-health observations are required
 inputs to verification and drift repair, so their tasks are permanent.
+Native reachability polling and topology warming also have reserved execution
+capacity on the `monitoring` queue; bulk ingestion cannot consume that worker.
+The Huawei OLT MAC harvest remains bulk ingestion and fans out into bounded
+per-OLT tasks.
 
 Migration `416_binary_device_operational_lifecycle` removes
 `monitoring_coverage_enabled`, `monitoring_inventory_sync_enabled`, and

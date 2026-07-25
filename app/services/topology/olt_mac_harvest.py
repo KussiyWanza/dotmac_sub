@@ -326,13 +326,19 @@ def _age_out_delta(db: Session) -> timedelta:
     return timedelta(hours=hours)
 
 
-def _prune_aged_out(db: Session, cutoff: datetime) -> int:
-    result = db.execute(
-        delete(ForwardingObservation).where(
-            ForwardingObservation.source == SOURCE,
-            ForwardingObservation.observed_at < cutoff,
-        )
-    )
+def _prune_aged_out(
+    db: Session,
+    cutoff: datetime,
+    *,
+    olt_id: uuid.UUID | None = None,
+) -> int:
+    criteria = [
+        ForwardingObservation.source == SOURCE,
+        ForwardingObservation.observed_at < cutoff,
+    ]
+    if olt_id is not None:
+        criteria.append(ForwardingObservation.olt_device_id == olt_id)
+    result = db.execute(delete(ForwardingObservation).where(*criteria))
     return int(result.rowcount or 0)
 
 
@@ -349,8 +355,12 @@ def _new_counters() -> dict[str, int]:
     }
 
 
-def harvest_olt_mac_tables(db: Session) -> dict[str, int]:
-    """Harvest MAC-forwarding tables from every active Huawei OLT.
+def _harvest_olt_mac_tables(
+    db: Session,
+    *,
+    olt_id: uuid.UUID | None,
+) -> dict[str, int]:
+    """Harvest one or every active Huawei OLT.
 
     For each OLT: discover active PON ports from the DB, run the read-only
     ``display mac-address port <F/S/P>`` per port, parse learned MACs, upsert a
@@ -363,12 +373,13 @@ def harvest_olt_mac_tables(db: Session) -> dict[str, int]:
     age_out = _age_out_delta(db)
     macs_seen: set[str] = set()
 
-    olts = db.scalars(
-        select(OLTDevice).where(
-            OLTDevice.vendor.ilike("%huawei%"),
-            OLTDevice.is_active.is_(True),
-        )
-    ).all()
+    query = select(OLTDevice).where(
+        OLTDevice.vendor.ilike("%huawei%"),
+        OLTDevice.is_active.is_(True),
+    )
+    if olt_id is not None:
+        query = query.where(OLTDevice.id == olt_id)
+    olts = db.scalars(query).all()
 
     # Read stage: materialize every OLT's port context plus a plain-data
     # SSH snapshot, then END the transaction. The SSH walk below takes seconds
@@ -473,6 +484,23 @@ def harvest_olt_mac_tables(db: Session) -> dict[str, int]:
             )
 
     counters["macs_seen"] = len(macs_seen)
-    counters["pruned"] = _prune_aged_out(db, now - age_out)
+    counters["pruned"] = _prune_aged_out(db, now - age_out, olt_id=olt_id)
     logger.info("olt_mac_harvest_done %s", counters)
     return counters
+
+
+def harvest_olt_mac_tables(db: Session) -> dict[str, int]:
+    """Harvest every active Huawei OLT.
+
+    This compatibility entry point retains the original fleet-wide behavior.
+    Scheduled execution dispatches :func:`harvest_olt_mac_table` per OLT so a
+    slow device cannot monopolize one task for the entire fleet.
+    """
+
+    return _harvest_olt_mac_tables(db, olt_id=None)
+
+
+def harvest_olt_mac_table(db: Session, olt_id: uuid.UUID) -> dict[str, int]:
+    """Harvest one active Huawei OLT and prune only that OLT's stale rows."""
+
+    return _harvest_olt_mac_tables(db, olt_id=olt_id)

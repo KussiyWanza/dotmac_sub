@@ -90,6 +90,20 @@ disable verification or projection repair. Migration
 re-enables their scheduled tasks, backfills the projection, and adds the
 database vocabulary constraint.
 
+### Reserved execution capacity
+
+Native infrastructure polling and topology status warming run on the dedicated
+`monitoring` Celery queue, consumed by `celery-worker-monitoring`. Bulk
+collection remains on `ingestion`; in particular, the scheduled Huawei OLT MAC
+harvest dispatches one independently locked, time-limited, and retryable task
+per OLT on that queue.
+
+This is a transport-capacity boundary, not a second status decision path.
+`runtime.infrastructure_polling` still owns reachability observations and
+`network.device_state` still owns their interpretation. A slow inventory or OLT
+SSH collection must not delay verification until devices appear
+`not_working(verification_not_started|verification_expired)`.
+
 ## Projection and UI
 
 `network.device_projection` is the sole writer of the rebuildable

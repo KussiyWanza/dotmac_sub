@@ -24,7 +24,8 @@ def test_task_registered_routed_and_exported():
     import app.tasks as tasks
 
     assert TASK_NAME in celery_app.tasks
-    assert celery_app.conf.task_routes[TASK_NAME] == {"queue": "ingestion"}
+    assert celery_app.conf.task_routes[TASK_NAME] == {"queue": "monitoring"}
+    assert "monitoring" in {queue.name for queue in celery_app.conf.task_queues}
     assert "run_infrastructure_poll" in tasks.__all__
     assert hasattr(tasks, "run_infrastructure_poll")
 

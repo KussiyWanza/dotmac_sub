@@ -348,6 +348,49 @@ services:
     - -Q
     - ingestion
 
+  # Reserved consumer for native reachability observations and the topology
+  # status projection. Bulk SSH/inventory jobs stay on `ingestion`, so they
+  # cannot make customer-visible device health stale by monopolizing a worker.
+  celery-worker-monitoring:
+    image: ${APP_IMAGE:?APP_IMAGE must be set in .env to an immutable app image}
+    container_name: dotmac_sub_celery_worker_monitoring
+    restart: unless-stopped
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 0.5
+    pids_limit: 64
+    logging: *id001
+    extra_hosts: *observability_extra_hosts
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      CELERY_WORKER_PREFETCH_MULTIPLIER: ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      REDIS_URL: ${REDIS_URL}
+      VICTORIAMETRICS_URL: http://victoriametrics:8428
+      OPENBAO_ADDR: ${OPENBAO_ADDR}
+      OPENBAO_TOKEN: ${OPENBAO_TOKEN}
+      APP_RELEASE: ${APP_RELEASE:-}
+      GIT_SHA: ${GIT_SHA:-}
+      NETWORK_MONITORING_MAX_WORKERS: ${NETWORK_MONITORING_MAX_WORKERS:-4}
+    env_file:
+    - .env
+    depends_on:
+      victoriametrics:
+        condition: service_started
+    volumes:
+    - ./uploads:/app/uploads
+    command:
+    - celery
+    - -A
+    - app.celery_app.celery_app
+    - worker
+    - --loglevel=info
+    - --concurrency=2
+    - --max-tasks-per-child=50
+    - -Q
+    - monitoring
+
   # Consumer for the `billing` queue (daily invoice cycle,
   # dunning, autopay, payment-topup reconciliation, usage/FUP, expiry,
   # suspension audit, billing-switch guard). Isolated from the default worker
