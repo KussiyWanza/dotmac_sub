@@ -78,6 +78,9 @@ class InboxQueueRequest:
     status: str | None = None
     channel_type: str | None = None
     service_team_id: str | UUID | None = None
+    # Multi-team scope for "My team": an agent may belong to several teams and
+    # the my_team count spans all of them, so the filter must select the same set.
+    service_team_ids: tuple[str, ...] = ()
     assigned_person_id: str | UUID | None = None
     needs_response: bool = False
     contact_resolution_status: str | None = None
@@ -166,6 +169,9 @@ class InboxAssignmentCounts:
     my_team: int
     ai_handling: int
     unassigned: int
+    # The teams the actor belongs to, so the "My team" filter can select exactly
+    # the cohort my_team counted rather than approximating it.
+    my_team_ids: tuple[str, ...]
     # One cohort, one name. This was previously also exposed as `needs_attention`
     # with an identical value, which rendered as two sidebar filters that always
     # showed the same count and applied the same `needs_response=true` filter.
@@ -259,6 +265,7 @@ def _assignment_counts(
         else 0
     )
     my_team = 0
+    my_team_ids: tuple[str, ...] = ()
     if actor_person_id is not None:
         team_ids = [
             row[0]
@@ -267,6 +274,7 @@ def _assignment_counts(
             .filter(ServiceTeamMember.is_active.is_(True))
             .all()
         ]
+        my_team_ids = tuple(str(value) for value in team_ids)
         if team_ids:
             my_team = int(
                 db.query(func.count(func.distinct(InboxConversation.id)))
@@ -295,6 +303,7 @@ def _assignment_counts(
         assigned_to_me=assigned_to_me,
         my_team=my_team,
         ai_handling=ai_handling,
+        my_team_ids=my_team_ids,
         unassigned=queue_metrics.unassigned_open,
         unreplied=queue_metrics.needs_response,
     )
@@ -481,6 +490,7 @@ def build_queue_projection(
             status=status,
             channel_type=channel,
             service_team_id=team_id,
+            service_team_ids=request.service_team_ids,
             assigned_person_id=assignee_id,
             needs_response=needs_response,
             contact_resolution_status=contact_status,

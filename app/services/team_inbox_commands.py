@@ -24,6 +24,7 @@ from app.models.team_inbox import (
     InboxSavedFilter,
 )
 from app.services import (
+    team_inbox_assignment,
     team_inbox_contact_links,
     team_inbox_operations,
     team_inbox_outbound,
@@ -700,6 +701,65 @@ def update_status(
             conversation_id=str(conversation.id),
             status=clean_status,
             already_set=False,
+        )
+
+    return _commit(db, action)
+
+
+def assign_conversation(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    service_team_id: str | UUID,
+    person_id: str | UUID,
+    actor_person_id: str | UUID | None = None,
+    reason: str | None = None,
+) -> team_inbox_assignment.InboxAssignmentResult:
+    """Assign one conversation to one agent.
+
+    ``team_inbox_assignment`` decides routing and records the assignment;
+    this is its committed entry point. Bulk escalation already had one through
+    ``bulk_action(action="escalate")`` — the single-conversation case did not,
+    which is why the workspace could only hand a thread to a teammate by
+    pretending it was a bulk action of one.
+    """
+
+    def action() -> team_inbox_assignment.InboxAssignmentResult:
+        conversation = _active_conversation(db, conversation_id, for_update=True)
+        return team_inbox_assignment.assign_conversation_to_agent(
+            db,
+            conversation=conversation,
+            service_team_id=service_team_id,
+            person_id=person_id,
+            assigned_by_person_id=actor_person_id,
+            reason=reason,
+        )
+
+    return _commit(db, action)
+
+
+def run_macro(
+    db: Session,
+    *,
+    conversation_id: str | UUID,
+    macro_id: str | UUID,
+    actor_person_id: str | UUID | None = None,
+) -> dict[str, object]:
+    """Execute a macro's actions against one conversation.
+
+    Distinct from inserting a macro body into the composer: that is text, this
+    runs the macro's recorded actions (labels, status, assignment) through
+    ``team_inbox_operations`` and counts the use. Until now
+    ``execute_macro_actions`` had no committed entry point and no caller.
+    """
+
+    def action() -> dict[str, object]:
+        conversation = _active_conversation(db, conversation_id, for_update=True)
+        return team_inbox_operations.execute_macro_actions(
+            db,
+            conversation=conversation,
+            macro_id=macro_id,
+            actor_person_id=actor_person_id,
         )
 
     return _commit(db, action)

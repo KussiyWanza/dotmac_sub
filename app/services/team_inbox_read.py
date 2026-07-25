@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -253,6 +254,7 @@ def list_conversations(
     channel_type: str | None = None,
     subscriber_id: str | UUID | None = None,
     service_team_id: str | UUID | None = None,
+    service_team_ids: Sequence[str | UUID] | None = None,
     assigned_person_id: str | UUID | None = None,
     needs_response: bool = False,
     contact_resolution_status: str | None = None,
@@ -333,6 +335,23 @@ def list_conversations(
     subscriber_uuid = _optional_uuid(subscriber_id)
     if subscriber_uuid is not None:
         query = query.filter(InboxConversation.subscriber_id == subscriber_uuid)
+
+    # Multi-team scope for "my team": an agent may belong to several teams and
+    # the my_team count already spans all of them, so the filter must too or the
+    # badge and the list disagree.
+    team_uuids = [
+        value
+        for value in (_optional_uuid(item) for item in (service_team_ids or ()))
+        if value is not None
+    ]
+    if team_uuids:
+        query = query.join(
+            InboxConversationTeam,
+            InboxConversationTeam.conversation_id == InboxConversation.id,
+        ).filter(
+            InboxConversationTeam.service_team_id.in_(team_uuids),
+            InboxConversationTeam.is_active.is_(True),
+        )
 
     team_uuid = _optional_uuid(service_team_id)
     if team_uuid is not None:

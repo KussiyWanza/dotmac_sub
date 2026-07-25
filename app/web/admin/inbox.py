@@ -72,6 +72,7 @@ def team_inbox_queue(
     status: str | None = Query(default=None),
     channel_type: str | None = Query(default=None),
     service_team_id: str | None = Query(default=None),
+    service_team_ids: str | None = Query(default=None),
     assigned_person_id: str | None = Query(default=None),
     needs_response: bool = Query(default=False),
     contact_resolution_status: str | None = Query(default=None),
@@ -101,6 +102,11 @@ def team_inbox_queue(
             status=_query_text(status),
             channel_type=_query_text(channel_type),
             service_team_id=_query_text(service_team_id),
+            service_team_ids=tuple(
+                item.strip()
+                for item in (_query_text(service_team_ids) or "").split(",")
+                if item.strip()
+            ),
             assigned_person_id=_query_text(assigned_person_id),
             needs_response=_query_bool(needs_response),
             contact_resolution_status=_query_text(contact_resolution_status),
@@ -1041,4 +1047,108 @@ def team_inbox_issue_ticket(
         conversation_id,
         status="success",
         message=f"Ticket {result.ticket.number or result.ticket.id} {verb}.",
+    )
+
+
+@router.post(
+    "/{conversation_id}/assign",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_assign(
+    conversation_id: UUID,
+    request: Request,
+    person_id: str = Form(...),
+    service_team_id: str | None = Form(default=None),
+    reason: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Hand one conversation to a named teammate."""
+    _prepare_mutation(db)
+    try:
+        team_id = _query_text(service_team_id)
+        if not team_id:
+            projection = team_inbox_projection.get_conversation_projection(
+                db,
+                conversation_id=conversation_id,
+                actor_person_id=_actor_uuid_from_request(request),
+            )
+            team_id = (
+                projection.timeline.primary_service_team_id if projection else None
+            )
+        if not team_id:
+            return _detail_redirect(
+                conversation_id,
+                status="error",
+                message="Assign the conversation to a team before an agent.",
+            )
+        outcome = team_inbox_commands.assign_conversation(
+            db,
+            conversation_id=conversation_id,
+            service_team_id=team_id,
+            person_id=person_id,
+            actor_person_id=_actor_id_from_request(request),
+            reason=_query_text(reason),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    # The assignment owner reports refusals in the result rather than raising —
+    # an agent who is not an active member of the target team comes back as
+    # `invalid_agent`. Reporting success here would tell the operator the
+    # conversation moved when it did not.
+    if outcome.kind != "assigned":
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=outcome.reason or "Could not assign this conversation.",
+        )
+    return _detail_redirect(
+        conversation_id, status="success", message="Conversation assigned."
+    )
+
+
+@router.post(
+    "/{conversation_id}/run-macro",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_run_macro(
+    conversation_id: UUID,
+    request: Request,
+    macro_id: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Execute a macro's recorded actions against this conversation.
+
+    Distinct from inserting its body into the composer, which is text only.
+    """
+    _prepare_mutation(db)
+    try:
+        result = team_inbox_commands.run_macro(
+            db,
+            conversation_id=conversation_id,
+            macro_id=macro_id,
+            actor_person_id=_actor_id_from_request(request),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    executed = result.get("executed") if isinstance(result, dict) else None
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message=f"Macro applied ({executed} action{'' if executed == 1 else 's'}).",
     )

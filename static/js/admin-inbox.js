@@ -30,6 +30,7 @@
   window.inboxWorkspace = function inboxWorkspace(config) {
     return {
       selectedId: config.selectedId || "",
+      myTeamIds: config.myTeamIds || "",
       actorId: config.actorId || "",
       mode: config.initialMode || "list",
       sidebarWidth: clamp(
@@ -346,10 +347,14 @@
         }
       },
 
+      // Scopes the queue to every team the operator belongs to — the same set
+      // the "My team" badge counts, so the number and the list agree.
       applyTeamFilter() {
-        this.showDemoNotice(
-          "My-team membership is counted live; the combined team filter API is pending.",
-        );
+        if (!this.myTeamIds) {
+          this.showToast("You are not a member of any service team.");
+          return;
+        }
+        this.navigateFilter({ service_team_ids: this.myTeamIds });
       },
 
       applySavedView(payload) {

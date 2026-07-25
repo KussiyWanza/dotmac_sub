@@ -12,6 +12,7 @@
 <div x-data="inboxWorkspace({
         selectedId: '{{ selected.id if selected else '' }}',
         actorId: '{{ actor_person_id }}',
+        myTeamIds: '{{ assignment_counts.my_team_ids | join(",") }}',
         initialMode: '{{ 'detail' if selected else 'list' }}'
      })"
      x-init="init()"
