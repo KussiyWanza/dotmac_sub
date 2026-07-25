@@ -45,20 +45,28 @@ def test_credit_and_collection_forms_seed_currency_from_default_setting_context(
 
 def test_dunning_and_routing_actions_confirm_before_state_changes():
     dunning = _template("templates/admin/billing/dunning.html")
+    dunning_detail = _template("templates/admin/billing/dunning_detail.html")
+    dunning_confirmation = _template(
+        "templates/admin/billing/dunning_bulk_confirm.html"
+    )
     arrangement = _template("templates/admin/billing/payment_arrangement_detail.html")
+    shared_action = _template("templates/components/forms/action_form.html")
     channels = _template("templates/admin/billing/payment_channels.html")
     collection_accounts = _template("templates/admin/billing/collection_accounts.html")
 
-    assert "Pause all selected dunning cases?" in dunning
-    assert "Resume all selected dunning cases?" in dunning
-    assert "Pause this dunning case?" in dunning
-    assert "Resume this dunning case?" in dunning
-    assert "Close this dunning case?" in dunning
-    assert "Approve this payment arrangement?" in arrangement
-    # Payment-channel and collection-account lifecycle changes no longer mutate
-    # from an inline confirm; they route through the server-owned review/confirm
-    # flow (impact preview + fingerprinted confirmation) instead. The safeguard
-    # is that the list action cannot change state directly — it opens /review.
+    # Dunning and payment-arrangement actions route through the review/action-form
+    # flow (this PR's feature).
+    assert "/bulk/{{ bulk_action.key }}/preview" in dunning
+    assert "{{ action_form(case_action) }}" in dunning_detail
+    assert "{{ action_form(bulk_action_form) }}" in dunning_confirmation
+    assert "confirm(" not in dunning
+    assert "confirm(" not in dunning_detail
+    assert "{{ action_form(arrangement_action) }}" in arrangement
+    assert 'name="confirmed"' in shared_action
+    assert "window.confirm" not in shared_action
+    # Payment-channel and collection-account lifecycle changes route through the
+    # server-owned review/confirm flow (landed in #1590): the list action cannot
+    # change state directly — it opens /review.
     assert "/payment-configuration/payment_channel/" in channels
     assert "'deactivate' if channel.is_active else 'activate' }}/review" in channels
     assert "/payment-configuration/collection_account/" in collection_accounts
@@ -91,6 +99,8 @@ def test_credit_application_templates_compile():
     env.get_template("admin/billing/payment_refund_confirm.html")
     env.get_template("admin/billing/invoice_closure_confirm.html")
     env.get_template("admin/billing/invoice_bulk_void_confirm.html")
+    env.get_template("admin/billing/invoice_bulk_review.html")
+    env.get_template("admin/billing/invoice_batch.html")
 
 
 def test_payment_refund_requires_owner_preview_and_confirmation():

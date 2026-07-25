@@ -13,7 +13,6 @@ app.services.autopay
 app.services.bandwidth
 app.services.billing.reconcile_unposted
 app.services.billing.unwall_paid_accounts
-app.services.billing_automation
 app.services.billing_cleanup_remediation
 app.services.billing_invoice_pdf
 app.services.billing_prepaid_overlap_repair
@@ -186,7 +185,6 @@ app.services.unmatched_radio_queue
 app.services.usage
 app.services.user_profile
 app.services.vendor_admin
-app.services.web_billing_invoice_batch
 app.services.web_billing_reconciliation
 app.services.web_catalog_offers
 app.services.web_catalog_subscriptions

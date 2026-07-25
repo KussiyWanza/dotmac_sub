@@ -8,6 +8,7 @@ from app.services.action_forms import (
     ActionFieldKind,
     ActionForm,
     ActionFormSubmission,
+    ActionHiddenValue,
     ActionOption,
     ActionTone,
 )
@@ -110,6 +111,19 @@ def test_visible_disabled_action_requires_an_explanation() -> None:
         disabled_reason="This reference already backs a payment.",
     )
     assert disabled.allowed is False
+
+
+def test_transport_owned_confirmation_cannot_be_forged_as_hidden_state() -> None:
+    with pytest.raises(ValueError, match="Reserved or duplicate action-form keys"):
+        ActionForm(
+            key="billing.hidden-confirmation",
+            title="Unsafe confirmation",
+            description="A transport value must not stand in for operator consent.",
+            action_url="/billing/unsafe",
+            submit_label="Submit",
+            fields=(),
+            hidden_values=(ActionHiddenValue(key="confirmed", value="yes"),),
+        )
 
 
 def test_select_fields_require_unique_declared_options() -> None:

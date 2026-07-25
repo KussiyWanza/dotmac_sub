@@ -22,7 +22,7 @@ from app.services.audit_helpers import (
     build_audit_activities_for_types,
     log_audit_event,
 )
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import has_permission, require_permission
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 
@@ -344,6 +344,7 @@ def billing_ar_aging(
     partner_id: str | None = Query(None),
     location: str | None = Query(None),
     debtor_period: str | None = Query(None),
+    auth: dict = Depends(require_permission("billing:ledger:read")),
     db: Session = Depends(get_db),
 ):
     state = web_billing_overview_service.build_ar_aging_data(
@@ -365,6 +366,11 @@ def billing_ar_aging(
             "active_menu": "billing",
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
+            "can_send_reminders": has_permission(
+                auth,
+                db,
+                "billing:invoice:update",
+            ),
         },
     )
 

@@ -24,6 +24,7 @@ from app.services.web_billing_invoice_bulk import (
 )
 from app.services.web_billing_invoice_bulk_actions import (
     build_invoice_bulk_action_contract,
+    build_invoice_bulk_review,
 )
 
 
@@ -41,6 +42,28 @@ def _issued(db, subscriber, num):
     db.commit()
     db.refresh(inv)
     return inv
+
+
+def test_bulk_review_projects_exact_scope_into_shared_action_form(
+    db_session, subscriber
+):
+    eligible = _issued(db_session, subscriber, "INV-BULK-REVIEW")
+    missing_id = uuid4()
+
+    state = build_invoice_bulk_review(
+        db_session,
+        action_key="mark_paid",
+        invoice_ids_csv=f"{eligible.id},{missing_id}",
+    )
+
+    preview = state["bulk_preview"]
+    form = state["bulk_action_form"]
+    assert preview.eligible_ids == (str(eligible.id),)
+    assert preview.skipped[0]["id"] == str(missing_id)
+    assert form.action_url.endswith("/confirm/mark-paid")
+    assert {item.key: item.value for item in form.hidden_values}[
+        "expected_scope_token"
+    ] == preview.scope_token
 
 
 def test_bulk_mark_paid_survives_recalc(db_session, subscriber):

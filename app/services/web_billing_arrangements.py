@@ -1,34 +1,202 @@
-"""Service helpers for billing payment-arrangement web routes."""
+"""Read-side projections for admin payment-arrangement pages."""
 
 from __future__ import annotations
 
-import logging
+from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING
 
-from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from app.models.payment_arrangement import (
     ArrangementStatus,
+    InstallmentStatus,
     PaymentArrangement,
     PaymentFrequency,
 )
+from app.services import display_format
 from app.services import payment_arrangements as arrangement_service
-from app.services.audit_helpers import log_audit_event
+from app.services.action_forms import (
+    ActionConfirmation,
+    ActionField,
+    ActionFieldKind,
+    ActionForm,
+    ActionFormSubmission,
+    ActionHiddenValue,
+    ActionTone,
+)
 from app.services.common import validate_enum as _validate_enum
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-logger = logging.getLogger(__name__)
+
+APPROVE_ACTION_KEY = "payment_arrangement.approve"
+CANCEL_ACTION_KEY = "payment_arrangement.cancel"
+RECORD_PAYMENT_ACTION_KEY = "payment_arrangement.record_payment"
+
+_ARRANGEMENT_PRESENTATION = {
+    ArrangementStatus.pending: ("Pending", "pending"),
+    ArrangementStatus.active: ("Active", "active"),
+    ArrangementStatus.completed: ("Completed", "success"),
+    ArrangementStatus.defaulted: ("Defaulted", "error"),
+    ArrangementStatus.canceled: ("Canceled", "neutral"),
+}
+_INSTALLMENT_PRESENTATION = {
+    InstallmentStatus.pending: ("Pending", "pending"),
+    InstallmentStatus.due: ("Due", "info"),
+    InstallmentStatus.paid: ("Paid", "active"),
+    InstallmentStatus.overdue: ("Overdue", "error"),
+    InstallmentStatus.waived: ("Waived", "neutral"),
+}
 
 
-def _actor_id(request) -> str | None:
-    from app.web.admin import get_current_user
+@dataclass(frozen=True, slots=True)
+class PaymentArrangementInstallmentProjection:
+    number: int
+    amount: str
+    due_date: str
+    status_label: str
+    status_variant: str
+    paid_at: str
 
-    current_user = get_current_user(request)
-    actor = current_user.get("id") if current_user else None
-    return str(actor) if actor else None
+
+@dataclass(frozen=True, slots=True)
+class PaymentArrangementDetailProjection:
+    id: str
+    status_label: str
+    status_variant: str
+    total_amount: str
+    installment_amount: str
+    frequency: str
+    progress: str
+    start_date: str
+    end_date: str
+    next_due_date: str
+    created_at: str
+    notes: str | None
+    installments: tuple[PaymentArrangementInstallmentProjection, ...]
+
+
+def _date_display(value: date | None) -> str:
+    return value.isoformat() if value else "—"
+
+
+def _action_form(
+    preview: arrangement_service.PaymentArrangementStaffActionPreview,
+) -> ActionForm:
+    action = preview.action
+    action_url = (
+        f"/admin/billing/payment-arrangements/{preview.arrangement_id}/"
+        f"{action.value.replace('_', '-')}"
+    )
+    hidden_values = (
+        ActionHiddenValue(
+            key="preview_fingerprint",
+            value=preview.fingerprint,
+        ),
+    )
+    if action is arrangement_service.PaymentArrangementStaffAction.approve:
+        return ActionForm(
+            key=APPROVE_ACTION_KEY,
+            title="Approve arrangement",
+            description="Activate the reviewed installment schedule.",
+            action_url=action_url,
+            submit_label="Approve arrangement",
+            fields=(),
+            tone=ActionTone.positive,
+            impact=(
+                f"{preview.current_status.value.title()} → "
+                f"{preview.resulting_status.value.title()}. "
+                f"{preview.collection_shield_change}"
+            ),
+            confirmation=ActionConfirmation(
+                title="Confirm approval",
+                message=(
+                    "I reviewed the schedule and authorize this arrangement to "
+                    "become active."
+                ),
+            ),
+            hidden_values=hidden_values,
+        )
+    if action is arrangement_service.PaymentArrangementStaffAction.cancel:
+        return ActionForm(
+            key=CANCEL_ACTION_KEY,
+            title="Cancel arrangement",
+            description="Stop this payment arrangement without changing receivables.",
+            action_url=action_url,
+            submit_label="Cancel arrangement",
+            fields=(),
+            tone=ActionTone.negative,
+            impact=(
+                f"{preview.current_status.value.title()} → "
+                f"{preview.resulting_status.value.title()}. "
+                f"{preview.collection_shield_change}"
+            ),
+            confirmation=ActionConfirmation(
+                title="Confirm cancellation",
+                message=(
+                    "I understand the arrangement will stop and invoice balances "
+                    "will remain unchanged."
+                ),
+            ),
+            hidden_values=hidden_values,
+        )
+    amount = display_format.format_currency_amount(
+        preview.installment_amount,
+        preview.currency,
+    )
+    return ActionForm(
+        key=RECORD_PAYMENT_ACTION_KEY,
+        title=f"Record installment #{preview.installment_number}",
+        description="Record an externally verified installment payment.",
+        action_url=action_url,
+        submit_label="Record installment payment",
+        fields=(
+            ActionField(
+                key="note",
+                label="Evidence note",
+                kind=ActionFieldKind.textarea,
+                max_length=255,
+                rows=2,
+                help_text=(
+                    "Optional operational evidence only; this does not create a "
+                    "billing Payment document."
+                ),
+            ),
+        ),
+        tone=ActionTone.positive,
+        impact=(
+            f"Installment #{preview.installment_number} for {amount} will be marked "
+            f"paid. Resulting arrangement state: "
+            f"{preview.resulting_status.value.title()}. "
+            f"{preview.collection_shield_change}"
+        ),
+        confirmation=ActionConfirmation(
+            title="Confirm external payment evidence",
+            message=(
+                "I verified this installment was paid outside the billing payment "
+                "workflow and understand no Payment or ledger entry will be created."
+            ),
+        ),
+        hidden_values=hidden_values,
+    )
+
+
+def _bind_submission(
+    forms: tuple[ActionForm, ...],
+    submission: ActionFormSubmission | None,
+) -> tuple[ActionForm, ...]:
+    if submission is None:
+        return forms
+    bound: list[ActionForm] = []
+    for form in forms:
+        if form.key != submission.action_key:
+            bound.append(form)
+            continue
+        field_keys = {field.key for field in form.fields}
+        bound.append(form.bind(submission.restrict(field_keys)))
+    return tuple(bound)
 
 
 def list_data(
@@ -39,6 +207,7 @@ def list_data(
     per_page: int,
 ) -> dict[str, object]:
     """Build template context for the payment arrangements list page."""
+
     offset = (page - 1) * per_page
     arrangements = arrangement_service.payment_arrangements.list(
         db=db,
@@ -72,12 +241,16 @@ def list_data(
     }
 
 
-def detail_data(db: Session, *, arrangement_id: str) -> dict[str, object] | None:
-    """Build template context for the payment arrangement detail page."""
-    arrangement = arrangement_service.payment_arrangements.get(db, arrangement_id)
-    if not arrangement:
-        return None
+def detail_data(
+    db: Session,
+    *,
+    arrangement_id: str,
+    can_write: bool,
+    submission: ActionFormSubmission | None = None,
+) -> dict[str, object]:
+    """Build a pure-render detail projection and its permitted safe actions."""
 
+    arrangement = arrangement_service.payment_arrangements.get(db, arrangement_id)
     installments = arrangement_service.installments.list(
         db=db,
         arrangement_id=arrangement_id,
@@ -87,84 +260,90 @@ def detail_data(db: Session, *, arrangement_id: str) -> dict[str, object] | None
         limit=500,
         offset=0,
     )
-
-    # The "record payment" action only applies to in-progress arrangements,
-    # and only to the next unpaid installment.
-    next_actionable_id = None
-    if arrangement.status in (ArrangementStatus.active, ArrangementStatus.defaulted):
-        next_actionable = arrangement_service.get_next_actionable_installment(
-            db, arrangement_id
+    currency = display_format.currency_code(
+        arrangement.invoice.currency
+        if arrangement.invoice and arrangement.invoice.currency
+        else display_format.default_currency(db)
+    )
+    status_label, status_variant = _ARRANGEMENT_PRESENTATION[arrangement.status]
+    installment_projections = tuple(
+        PaymentArrangementInstallmentProjection(
+            number=item.installment_number,
+            amount=display_format.format_currency_amount(item.amount, currency),
+            due_date=_date_display(item.due_date),
+            status_label=_INSTALLMENT_PRESENTATION[item.status][0],
+            status_variant=_INSTALLMENT_PRESENTATION[item.status][1],
+            paid_at=display_format.format_timestamp(item.paid_at, db),
         )
-        next_actionable_id = str(next_actionable.id) if next_actionable else None
-
+        for item in installments
+    )
+    detail = PaymentArrangementDetailProjection(
+        id=str(arrangement.id),
+        status_label=status_label,
+        status_variant=status_variant,
+        total_amount=display_format.format_currency_amount(
+            arrangement.total_amount,
+            currency,
+        ),
+        installment_amount=display_format.format_currency_amount(
+            arrangement.installment_amount,
+            currency,
+        ),
+        frequency=arrangement.frequency.value.replace("_", " ").title(),
+        progress=(
+            f"{arrangement.installments_paid} / "
+            f"{arrangement.installments_total} installments"
+        ),
+        start_date=_date_display(arrangement.start_date),
+        end_date=_date_display(arrangement.end_date),
+        next_due_date=_date_display(arrangement.next_due_date),
+        created_at=display_format.format_timestamp(arrangement.created_at, db),
+        notes=arrangement.notes,
+        installments=installment_projections,
+    )
+    previews = (
+        arrangement_service.available_staff_action_previews(
+            db,
+            arrangement_id=arrangement.id,
+        )
+        if can_write
+        else ()
+    )
+    forms = _bind_submission(
+        tuple(_action_form(preview) for preview in previews),
+        submission,
+    )
     return {
-        "arrangement": arrangement,
-        "installments": installments,
-        "next_actionable_installment_id": next_actionable_id,
-        "statuses": [s.value for s in ArrangementStatus],
-        "frequencies": [f.value for f in PaymentFrequency],
+        "arrangement_detail": detail,
+        "arrangement_actions": forms,
     }
 
 
-def approve_arrangement(db: Session, request, *, arrangement_id: str):
-    arrangement = arrangement_service.payment_arrangements.approve(
-        db,
-        arrangement_id,
-        approved_by_user_id=_actor_id(request),
-    )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="approve",
-        entity_type="payment_arrangement",
-        entity_id=str(arrangement.id),
-        actor_id=_actor_id(request),
-        metadata={
-            "subscriber_id": str(arrangement.subscriber_id),
-            "total_amount": str(arrangement.total_amount),
-            "installments_total": arrangement.installments_total,
-        },
-    )
-    return arrangement
-
-
-def cancel_arrangement(db: Session, *, arrangement_id: str):
-    return arrangement_service.payment_arrangements.cancel(db, arrangement_id)
-
-
-def record_installment_payment(
-    db: Session,
-    request,
+def action_error_submission(
     *,
-    arrangement_id: str,
-    note: str | None = None,
-):
-    """Record payment for the arrangement's next due/overdue installment."""
-    arrangement = arrangement_service.payment_arrangements.get(db, arrangement_id)
-    installment = arrangement_service.get_next_actionable_installment(
-        db, arrangement_id
+    action: arrangement_service.PaymentArrangementStaffAction,
+    note: str | None,
+    error: Exception,
+) -> ActionFormSubmission:
+    """Bind a typed command failure to its declared safe-action form."""
+
+    key_by_action = {
+        arrangement_service.PaymentArrangementStaffAction.approve: APPROVE_ACTION_KEY,
+        arrangement_service.PaymentArrangementStaffAction.cancel: CANCEL_ACTION_KEY,
+        arrangement_service.PaymentArrangementStaffAction.record_payment: (
+            RECORD_PAYMENT_ACTION_KEY
+        ),
+    }
+    message = getattr(error, "message", str(error))
+    field = getattr(error, "details", {}).get("field")
+    values = (
+        {"note": note}
+        if action is arrangement_service.PaymentArrangementStaffAction.record_payment
+        else {}
     )
-    if installment is None:
-        raise HTTPException(
-            status_code=400, detail="No unpaid installment to record payment for"
-        )
-    installment = arrangement_service.payment_arrangements.record_installment_payment(
-        db,
-        str(installment.id),
-        notes=note,
+    return ActionFormSubmission.from_mapping(
+        key_by_action[action],
+        values,
+        field_errors={str(field): message} if field == "note" else None,
+        general_error=None if field == "note" else message,
     )
-    log_audit_event(
-        db=db,
-        request=request,
-        action="record_installment_payment",
-        entity_type="payment_arrangement",
-        entity_id=str(arrangement.id),
-        actor_id=_actor_id(request),
-        metadata={
-            "installment_id": str(installment.id),
-            "installment_number": installment.installment_number,
-            "amount": str(installment.amount),
-            "note": note or "",
-        },
-    )
-    return installment

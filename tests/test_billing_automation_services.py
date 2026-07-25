@@ -705,6 +705,7 @@ class TestRunInvoiceCycle:
 
     def test_dry_run_no_changes(self, db_session, subscription, subscriber_account):
         """Test dry run doesn't create invoices."""
+        from app.models.billing import Invoice
         from app.models.catalog import (
             BillingCycle,
             OfferPrice,
@@ -734,6 +735,8 @@ class TestRunInvoiceCycle:
         )
         db_session.add(offer_price)
         db_session.commit()
+        original_next_billing_at = subscription.next_billing_at
+        invoice_count_before = db_session.query(Invoice).count()
 
         # Run dry mode - pass naive run_at to match SQLite
         summary = billing_automation.run_invoice_cycle(
@@ -742,7 +745,9 @@ class TestRunInvoiceCycle:
 
         assert summary["run_id"] is None
         assert summary["subscriptions_scanned"] >= 1
-        # No actual invoices created in dry_run
+        assert db_session.query(Invoice).count() == invoice_count_before
+        assert subscription.next_billing_at == original_next_billing_at
+        assert subscription not in db_session.dirty
 
     def test_creates_invoice_for_active_subscription(
         self, db_session, subscription, subscriber_account
@@ -2586,10 +2591,14 @@ class TestPermanentBillingLifecycle:
         summary = billing_automation.run_invoice_cycle(
             db_session, run_at=now, dry_run=True
         )
-        # dry-run is exempt: it still computes would-be work (reported via
-        # subscriptions_billed / lines_created, not invoices_created).
+        # Dry-run is exempt and now returns the exact review scope consumed by
+        # the staff batch preview.
         assert not summary.get("billing_disabled")
         assert summary["subscriptions_billed"] >= 1
+        assert summary["invoices_created"] >= 1
+        assert summary["accounts_affected"] >= 1
+        assert summary["subscriptions"][0]["id"] == str(subscription.id)
+        assert summary["totals_by_currency"]["USD"] == Decimal("100.00")
 
 
 # =============================================================================

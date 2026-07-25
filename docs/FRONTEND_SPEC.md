@@ -1735,6 +1735,13 @@ Template listens:
 
 ### Server-owned action forms
 
+High-impact action contracts may carry owner-produced hidden values such as a
+state-preview fingerprint. The shared renderer emits those values unchanged and
+uses a required, labeled confirmation checkbox when confirmation is declared.
+Do not use `window.confirm`, `onclick`/`onsubmit` confirmation handlers, or
+template-generated fingerprints. The command owner must recheck the fingerprint
+and confirmation under its transaction lock.
+
 High-impact and lifecycle action forms use
 `app.services.action_forms.ActionForm` and the shared
 `components/forms/action_form.html` renderer. The resource projection composes
@@ -1749,6 +1756,21 @@ duplicate-reference policy, payment/WHT consequences, validation, locking, and
 execution. Unauthorized verify/reject forms are absent. An unavailable verify
 action may remain visible with the owner-provided duplicate reason when reject
 is still valid.
+
+Payment-arrangement review and dunning-case staff actions use the same
+server-owned form contract. Dunning bulk actions always preview an explicit set
+of case identifiers, disclose every eligible and skipped case, bind that exact
+scope and current owner state into a fingerprint, and revalidate it while the
+cases are locked. Templates must not infer transition eligibility or submit
+page-filter criteria as an implicit bulk scope.
+
+Invoice batch launch/retry and invoice bulk actions also use server-rendered
+review forms. A manual batch preview lists exact postpaid subscription
+membership and carries its current fingerprint; a retry is available only from
+a failed run and produces a new linked run. Invoice list and AR-aging actions
+submit explicit invoice IDs to a review page and carry the owner-produced
+resolved count and scope token. Client JavaScript may collect visible-page IDs,
+but it does not display confirmation dialogs or execute the financial command.
 
 Failed submissions re-render the detail page with the operator's declared
 values and `aria-invalid` field errors or one `role="alert"` general error.

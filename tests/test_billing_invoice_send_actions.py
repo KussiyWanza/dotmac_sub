@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -174,7 +173,7 @@ def test_bulk_mark_paid_updates_only_eligible_statuses(db_session, subscriber):
     assert inv_draft.status == InvoiceStatus.draft
 
 
-def test_bulk_mark_paid_route_reports_skipped_count(db_session, monkeypatch):
+def test_bulk_mark_paid_confirm_redirect_reports_skipped_count(db_session, monkeypatch):
     def _fake_execute_audited_bulk_action_result(
         db, request, *, action, invoice_ids_csv
     ):
@@ -196,21 +195,25 @@ def test_bulk_mark_paid_route_reports_skipped_count(db_session, monkeypatch):
         "_require_confirmed_invoice_scope",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        bulk_routes,
+        "_require_action_permission",
+        lambda *args, **kwargs: None,
+    )
 
-    response = bulk_routes.invoice_bulk_mark_paid(
+    response = bulk_routes.invoice_bulk_confirm(
         request=None,
+        action="mark-paid",
         invoice_ids="inv-1,inv-2,missing",
-        confirmed=True,
+        confirmed="yes",
         expected_count=3,
         expected_scope_token="preview-token",
+        auth={},
         db=db_session,
     )
-    payload = json.loads(response.body)
 
-    assert response.status_code == 200
-    assert payload["count"] == 1
-    assert payload["skipped"] == 2
-    assert "2 skipped" in payload["message"]
+    assert response.status_code == 303
+    assert "2%20skipped" in response.headers["location"]
 
 
 def test_bulk_queue_pdf_exports_reports_ready_and_queued(

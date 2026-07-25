@@ -92,7 +92,7 @@ be restated in durable domain language here or in the owning design document.
 
 Architecture liveness is checked in both directions. Every declared owner must
 have a real application/operator caller, and every new service module with a
-persistence-like mutation must name a declared owner. The 234 existing
+persistence-like mutation must name a declared owner. The 232 existing
 undeclared writer-like modules are an explicit shrink-only migration baseline,
 not approved parallel writers; resolving an owner or removing its write requires
 deleting the baseline entry. Adding an entry requires an explicit ownership
@@ -217,10 +217,15 @@ do not hand-edit these rows.
 | `financial.prepaid_enforcement_state` | funded and terminal prepaid timer cleanup | `command_writer` | resolved prepaid enforcement transition ← `financial.prepaid_enforcement`<br>resolved account lifecycle transition ← `access.subscription_lifecycle`<br>canonical prepaid enforcement timers ← `financial.prepaid_enforcement_state` | `participant` | `complete` | billing operations | `docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_prepaid_enforcement_state_owner.py`<br>`tests/architecture/test_prepaid_enforcement_state_boundary.py`<br>`tests/test_prepaid_balance_sweep.py`<br>`tests/test_account_lifecycle.py` |
 | `financial.prepaid_draft_reconciliation` | stranded prepaid draft classification | `resolver` | canonical prepaid draft invoice ← `financial.invoices`<br>canonical payment-backed account credit ← `financial.account_credit_applications`<br>canonical funded service entitlement ← `financial.prepaid_service_renewals`<br>canonical direct-renewal debit ← `financial.prepaid_service_renewals` | `owner_managed` | `cut_over` | billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/PREPAID_DRAFT_RECONCILIATION.md`<br>`tests/test_prepaid_draft_reconciliation.py`<br>`tests/test_prepaid_service_renewals.py`<br>`tests/architecture/test_prepaid_draft_reconciliation_ownership.py` |
 | `financial.prepaid_draft_reconciliation` | stranded prepaid draft invoice reconciliation | `reconciler` | reviewed reconciliation command ← `financial.prepaid_draft_reconciliation`<br>canonical prepaid draft invoice ← `financial.invoices`<br>canonical payment-backed account credit ← `financial.account_credit_applications`<br>canonical funded service entitlement ← `financial.prepaid_service_renewals`<br>canonical direct-renewal debit ← `financial.prepaid_service_renewals`<br>invoice and payment participant protocols ← `financial.invoices` | `owner_managed` | `cut_over` | billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/PREPAID_DRAFT_RECONCILIATION.md`<br>`tests/test_prepaid_draft_reconciliation.py`<br>`tests/test_prepaid_service_renewals.py`<br>`tests/architecture/test_prepaid_draft_reconciliation_ownership.py` |
+| `financial.payment_arrangement_staff_actions` | atomic staff arrangement transition and audit coordination | `application_coordinator` | canonical payment-arrangement action preview ← `financial.payment_arrangements`<br>authorized staff command context ← `auth.permission_gate` | `coordinator_managed` | `complete` | billing operations | `docs/designs/PAYMENT_ARRANGEMENT_SAFE_ACTIONS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_payment_arrangement_safe_actions.py`<br>`tests/test_payment_arrangements.py`<br>`tests/architecture/test_action_form_ownership.py` |
 | `financial.access_resolution` | billable service classification | `policy` | canonical subscriber account state ← `customer.accounts`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical billing profile ← `financial.billing_profile` | `read_only` | `complete` | billing and network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/audits/BILLING_SOT_AUDIT_2026-07-12.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_access_resolution.py`<br>`tests/test_customer_service_state.py`<br>`tests/test_prepaid_threshold_resolver.py`<br>`tests/architecture/test_access_resolution_boundary.py` |
 | `financial.access_resolution` | RADIUS access decision | `policy` | canonical subscriber account state ← `customer.accounts`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical access restriction intent ← `access.walled_garden_policy` | `read_only` | `complete` | billing and network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/audits/BILLING_SOT_AUDIT_2026-07-12.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_access_resolution.py`<br>`tests/test_customer_service_state.py`<br>`tests/test_prepaid_threshold_resolver.py`<br>`tests/architecture/test_access_resolution_boundary.py` |
 | `financial.access_resolution` | financial suspension/restoration eligibility | `policy` | canonical subscriber account state ← `customer.accounts`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical billing profile ← `financial.billing_profile`<br>currency-bound customer financial position ← `customer.financial_position`<br>canonical prepaid threshold ← `financial.prepaid_threshold` | `read_only` | `complete` | billing and network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/audits/BILLING_SOT_AUDIT_2026-07-12.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_access_resolution.py`<br>`tests/test_customer_service_state.py`<br>`tests/test_prepaid_threshold_resolver.py`<br>`tests/architecture/test_access_resolution_boundary.py` |
 | `financial.access_resolution` | currency-bound prepaid funding decision | `policy` | currency-bound customer financial position ← `customer.financial_position`<br>canonical prepaid threshold ← `financial.prepaid_threshold`<br>prepaid enforcement currency setting ← `financial.prepaid_currency` | `read_only` | `complete` | billing and network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/audits/BILLING_SOT_AUDIT_2026-07-12.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_access_resolution.py`<br>`tests/test_customer_service_state.py`<br>`tests/test_prepaid_threshold_resolver.py`<br>`tests/architecture/test_access_resolution_boundary.py` |
+| `financial.dunning_staff_actions` | atomic staff dunning-case transition and audit coordination | `application_coordinator` | canonical dunning staff-action impact ← `financial.dunning`<br>authorized dunning staff command context ← `auth.permission_gate` | `coordinator_managed` | `complete` | collections operations | `docs/designs/DUNNING_STAFF_SAFE_ACTIONS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_dunning_staff_safe_actions.py`<br>`tests/test_web_billing_dunning.py`<br>`tests/architecture/test_action_form_ownership.py` |
+| `financial.billing_automation` | postpaid invoice batch execution | `command_writer` | canonical billable subscription facts ← `access.subscription_lifecycle`<br>confirmed staff batch evidence ← `ui.invoice_batch_action_projection` | `owner_managed` | `complete` | billing operations | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_automation_services.py`<br>`tests/architecture/test_action_form_ownership.py` |
+| `financial.billing_automation` | durable billing-run lifecycle and retry lineage | `authoritative_record` | confirmed staff batch evidence ← `ui.invoice_batch_action_projection` | `owner_managed` | `complete` | billing operations | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_automation_services.py`<br>`tests/architecture/test_action_form_ownership.py` |
+| `financial.billing_automation` | billing-run audit projection and repair | `projection_writer` | canonical billing-run record ← `financial.billing_automation` | `owner_managed` | `complete` | billing operations | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_automation_services.py`<br>`tests/architecture/test_action_form_ownership.py` |
 | `financial.payment_provider_events` | payment-provider event ingestion | `observation_collector` | verified external provider observation ← `external:payment_provider`<br>administrative provider observation ← `financial.payment_provider_events`<br>active provider identity ← `financial.payment_routing`<br>provider-event command context ← `financial.payment_provider_events` | `owner_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_provider_events.py`<br>`tests/test_api_billing_webhooks.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/architecture/test_payment_provider_event_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py`<br>`tests/integration/test_payment_provider_event_concurrency.py` |
 | `financial.payment_provider_events` | normalized provider monetary observations | `authoritative_record` | verified external provider observation ← `external:payment_provider`<br>active provider identity ← `financial.payment_routing` | `owner_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_provider_events.py`<br>`tests/test_api_billing_webhooks.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/architecture/test_payment_provider_event_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py`<br>`tests/integration/test_payment_provider_event_concurrency.py` |
 | `financial.payment_provider_events` | provider-event idempotency | `authoritative_record` | canonical provider-event record ← `financial.payment_provider_events`<br>provider-event command context ← `financial.payment_provider_events` | `owner_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_payment_provider_events.py`<br>`tests/test_api_billing_webhooks.py`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/architecture/test_payment_provider_event_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py`<br>`tests/integration/test_payment_provider_event_concurrency.py` |
@@ -434,6 +439,9 @@ do not hand-edit these rows.
 | `ui.support_ticket_bulk_action_projection` | admin support-ticket bulk action visibility | `policy` | bulk interaction contract ← `ui.bulk_action_contracts`<br>support Ticket list projection ← `ui.support_ticket_list_projection`<br>support Ticket bulk preview ← `support.ticket_bulk_commands` | `read_only` | `complete` | support product UI | `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/SUPPORT_UX_POLISH_AUDIT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/test_support_ticket_list_ui_contract.py` |
 | `ui.support_ticket_bulk_action_projection` | admin support-ticket page-selection presentation | `policy` | bulk interaction contract ← `ui.bulk_action_contracts`<br>support Ticket list projection ← `ui.support_ticket_list_projection`<br>support Ticket bulk preview ← `support.ticket_bulk_commands` | `read_only` | `complete` | support product UI | `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/SUPPORT_UX_POLISH_AUDIT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/test_support_ticket_list_ui_contract.py` |
 | `ui.support_ticket_bulk_action_projection` | admin support-ticket row eligibility presentation | `policy` | bulk interaction contract ← `ui.bulk_action_contracts`<br>support Ticket list projection ← `ui.support_ticket_list_projection`<br>support Ticket bulk preview ← `support.ticket_bulk_commands` | `read_only` | `complete` | support product UI | `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/SUPPORT_UX_POLISH_AUDIT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_support_ticket_bulk_actions.py`<br>`tests/test_support_ticket_list_ui_contract.py` |
+| `ui.invoice_batch_action_projection` | admin invoice batch exact-scope preview | `policy` | canonical invoice batch dry-run facts ← `financial.billing_automation`<br>authorized billing staff scope ← `auth.permission_gate` | `read_only` | `complete` | billing operations UI | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/FRONTEND_SPEC.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_invoice_templates.py`<br>`tests/architecture/test_action_form_ownership.py` |
+| `ui.invoice_batch_action_projection` | admin invoice batch fingerprint and confirmation projection | `policy` | canonical invoice batch dry-run facts ← `financial.billing_automation`<br>authorized billing staff scope ← `auth.permission_gate` | `read_only` | `complete` | billing operations UI | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/FRONTEND_SPEC.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_invoice_templates.py`<br>`tests/architecture/test_action_form_ownership.py` |
+| `ui.invoice_batch_action_projection` | admin billing-run retry eligibility presentation | `policy` | canonical invoice batch dry-run facts ← `financial.billing_automation`<br>authorized billing staff scope ← `auth.permission_gate` | `read_only` | `complete` | billing operations UI | `docs/designs/INVOICE_BATCH_AND_REMINDER_SAFE_ACTIONS.md`<br>`docs/FRONTEND_SPEC.md`<br>`tests/test_billing_invoice_batch_web.py`<br>`tests/test_billing_invoice_templates.py`<br>`tests/architecture/test_action_form_ownership.py` |
 | `ui.projection_contracts` | UI value availability and freshness contract | `policy` | UI projection contract vocabulary ← `ui.projection_contracts` | `not_applicable` | `complete` | platform UI | `docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ui_contracts.py`<br>`tests/architecture/test_template_projection_boundary.py` |
 | `ui.projection_contracts` | UI KPI exact-cohort contract | `policy` | UI projection contract vocabulary ← `ui.projection_contracts` | `not_applicable` | `complete` | platform UI | `docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ui_contracts.py`<br>`tests/architecture/test_template_projection_boundary.py` |
 | `ui.projection_contracts` | UI action eligibility and confirmation contract | `policy` | UI projection contract vocabulary ← `ui.projection_contracts` | `not_applicable` | `complete` | platform UI | `docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ui_contracts.py`<br>`tests/architecture/test_template_projection_boundary.py` |
@@ -2161,8 +2169,8 @@ separate.
 
 1. `ui.action_form_contracts` owns the code-native interaction projection for
    an action: visibility, disabled reason, semantic tone, impact preview,
-   confirmation requirement, declared fields/options, submitted values, and
-   structured field/general errors.
+   confirmation requirement, declared fields/options, owner-produced hidden
+   action evidence, submitted values, and structured field/general errors.
 2. Domain command and transition services still own authorization, business
    eligibility, validation, locking, mutation, audit, and consequences. A form
    contract is a read projection, not an execution bypass. The command owner
@@ -2206,6 +2214,125 @@ Rule: UI action projections explain and collect a command; they do not decide or
 execute it. Routes pass submissions to the named owner, templates render only
 declared controls, and the owner rechecks permission and eligibility under the
 same lock or transaction that protects the mutation.
+
+### Payment-arrangement staff safe actions
+
+`financial.payment_arrangements` owns arrangement eligibility, lifecycle and
+installment facts. `financial.payment_arrangement_staff_actions` owns the
+staff-only approve, cancel and manual-installment confirmation workflow. It
+locks the arrangement and schedule, recomputes the owner preview, rejects a
+changed fingerprint, stages the owner transition, and stages audit evidence in
+one coordinator transaction.
+
+The admin projection renders only owner-available actions through
+`ui.action_form_contracts`. The exact installment and collection-shield
+consequence are visible before submission. A required labeled checkbox replaces
+browser confirmation dialogs. Manual installment recording is described as
+external evidence and does not claim to create a billing Payment or ledger
+entry.
+
+Migration record:
+
+- Old owners: payment-arrangement routes, web helpers and Jinja status branches
+  committed lifecycle changes, selected installment targets and wrote audit
+  after the state commit.
+- New owner: `financial.payment_arrangement_staff_actions`, consuming locked
+  preview and transition participants from `financial.payment_arrangements`.
+- Cutover gate: all three staff actions carry explicit confirmation and the
+  current deterministic preview fingerprint.
+- Fallback retirement: direct admin mutation helpers, raw action forms,
+  template-local action eligibility, money formatting and browser confirmation
+  JavaScript are removed.
+
+Rule: adapters may explain a typed failure, but may not retry an old
+payment-arrangement preview. A changed schedule or lifecycle requires a fresh
+owner projection and new operator confirmation.
+
+### Dunning staff safe actions
+
+`financial.dunning` owns case eligibility, lifecycle state, canonical
+collectible-receivable checks, action-log/event evidence, account projection,
+and every service-access consequence. `financial.dunning_staff_actions` owns
+the staff-only pause, resume, and close confirmation workflow.
+
+The staff preview binds one action to explicit selected case IDs and reports
+each row as eligible or skipped. Its fingerprint includes case existence,
+lifecycle version, current step, resulting state, and close-time collectible
+receivables by currency. Confirmation locks cases and accounts in stable order,
+recomputes the preview, applies the exact eligible subset, and stages audit in
+one transaction. Changed scope or eligibility returns a conflict; any staging
+failure rolls back the cohort.
+
+The list uses page-only `ui.bulk_action_contracts` selection and always opens a
+server preview before bulk pause/resume. Individual actions live on the detail
+page and use `ui.action_form_contracts`. Close remains disabled while canonical
+collectible receivables exist. Closing a case does not restore service or clear
+financial access locks.
+
+Migration record:
+
+- Old owners: dunning routes, web helpers and Jinja forms selected actions,
+  committed each case independently, swallowed bulk exceptions, and wrote
+  audit after state commits.
+- New owner: `financial.dunning_staff_actions`, consuming locked preview and
+  lifecycle participants from `financial.dunning`.
+- Cutover gate: every pause, resume, and close confirmation carries exact
+  membership, an owner fingerprint, and explicit operator confirmation.
+- Fallback retirement: direct row mutation forms/routes, browser dialogs,
+  per-case bulk commits, generic exception swallowing, post-commit audit, and
+  the web-only direct lifecycle helpers are removed.
+
+Rule: skipped rows are a previewed owner result, not a caught execution
+exception. A confirmed dunning cohort is atomic for every eligible row shown.
+
+### Invoice batch and reminder safe actions
+
+`financial.billing_automation` owns the durable billing-run workflow and
+postpaid invoice-cycle execution. `financial.prepaid_service_renewals` remains
+the independent owner for funded prepaid periods. A confirmed manual invoice
+batch disables prepaid renewal so its execution matches its stated and
+previewed scope.
+
+The batch review projects exact billable subscription IDs, accounts, periods,
+currencies and base charges. Its fingerprint binds that membership to the
+normalized cycle/date and optional failed source run. Confirmation recomputes
+the preview before launch. `BillingRun` persists `running/success/failed`,
+launch kind, staff principal, confirmed fingerprint and retry lineage. Only a
+failed run can start a reviewed retry; retry creates a new linked run.
+
+Invoice-list issue/send/mark-paid/PDF actions and AR-aging reminders submit
+explicit invoice IDs to `ui.invoice_bulk_action_projection`. The existing
+invoice bulk command owner returns eligible/skipped membership and a scope
+token; `ui.action_form_contracts` renders the required confirmation. Changed
+membership or eligibility fails closed.
+
+Billing execution is an owner-managed, resumable workflow rather than one
+database transaction. Per-subscription/period invoice-line keys repair partial
+work on retry. `BillingRun` is authoritative operational evidence; the
+post-status `AuditEvent` is a rebuildable projection and cannot reverse
+already-created invoices.
+
+Migration record:
+
+- Old owners: batch-page JavaScript and raw forms confirmed launches, retry was
+  offered for every run state, manual generation implicitly invoked prepaid
+  renewal, and AR aging bypassed the required invoice scope token.
+- New owners: billing automation supplies dry-run/execution facts and durable
+  run state; the batch and invoice bulk projections build exact shared review
+  forms.
+- Cutover gate: every manual/retry launch carries the current fingerprint,
+  actor and explicit confirmation; every invoice bulk action carries exact
+  membership evidence.
+- Fallback retirement: browser dialogs, direct batch execution, success/running
+  retry, JSON-only batch preview, direct issue/send/mark-paid/PDF routes, and
+  AR-aging send bypass are removed. The unused `BillingRunSchedule` table,
+  shadow `billing.billing_run_schedule_config`, save route, and form are also
+  retired because no scheduler consumed their values; `scheduler.registry`
+  remains the sole cadence and enablement owner.
+
+Rule: a retry is a new traceable run, never a mutation of history. Manual
+invoice generation does not silently invoke another financial workflow.
+
 ## UI Semantic Presentation
 
 1. Account, subscription, invoice, payment, outage-incident, support-ticket, and

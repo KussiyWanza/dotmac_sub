@@ -94,12 +94,16 @@ class ActionConfirmation:
 
 @dataclass(frozen=True, slots=True)
 class ActionHiddenValue:
+    """One owner-produced value carried back to a mutation adapter."""
+
     key: str
     value: str
 
     def __post_init__(self) -> None:
         if not self.key.strip():
             raise ValueError("Action hidden-value key is required")
+        if not self.value.strip():
+            raise ValueError(f"Action hidden value is required: {self.key}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,8 +198,13 @@ class ActionForm:
         hidden_keys = tuple(item.key for item in self.hidden_values)
         if len(set(hidden_keys)) != len(hidden_keys):
             raise ValueError(f"Duplicate hidden values in action form: {self.key}")
-        if set(field_keys) & set(hidden_keys):
-            raise ValueError(f"Action values overlap in action form: {self.key}")
+        reserved_keys = {"csrf_token", "confirmed"}
+        collisions = (set(field_keys) & set(hidden_keys)) | (
+            (set(field_keys) | set(hidden_keys)) & reserved_keys
+        )
+        if collisions:
+            keys = ", ".join(sorted(collisions))
+            raise ValueError(f"Reserved or duplicate action-form keys: {keys}")
         if (
             self.visible
             and not self.allowed

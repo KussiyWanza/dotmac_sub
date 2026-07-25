@@ -8,7 +8,6 @@ progression from billing payments, and customer cancel restrictions.
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -118,25 +117,6 @@ def _installments_for(db_session, arrangement):
         .filter(PaymentArrangementInstallment.arrangement_id == arrangement.id)
         .order_by(PaymentArrangementInstallment.installment_number)
         .all()
-    )
-
-
-def _fake_admin_request(user_id=None):
-    """Minimal request object accepted by get_current_user/log_audit_event."""
-    user = None
-    if user_id is not None:
-        user = SimpleNamespace(
-            id=user_id,
-            display_name="Test Admin",
-            first_name="Test",
-            last_name="Admin",
-            email="admin@example.com",
-            person_id=None,
-        )
-    return SimpleNamespace(
-        state=SimpleNamespace(user=user, auth={"principal_type": "system_user"}),
-        client=None,
-        headers={},
     )
 
 
@@ -866,61 +846,6 @@ class TestApplyPaymentToArrangement:
 
 
 class TestAdminArrangementWeb:
-    def test_record_installment_payment_action(self, db_session, subscriber):
-        arrangement = _create_arrangement_directly(db_session, subscriber)
-        payment_arrangements.approve(db_session, str(arrangement.id))
-
-        request = _fake_admin_request(user_id=uuid.uuid4())
-        installment = web_billing_arrangements.record_installment_payment(
-            db_session,
-            request,
-            arrangement_id=str(arrangement.id),
-            note="Cash at front desk",
-        )
-        assert installment.status == InstallmentStatus.paid
-        assert installment.installment_number == 1
-        assert "Cash at front desk" in installment.notes
-
-    def test_record_payment_no_unpaid_installments_raises(self, db_session, subscriber):
-        arrangement = _create_arrangement_directly(db_session, subscriber)
-        payment_arrangements.approve(db_session, str(arrangement.id))
-        request = _fake_admin_request(user_id=uuid.uuid4())
-        web_billing_arrangements.record_installment_payment(
-            db_session, request, arrangement_id=str(arrangement.id)
-        )
-        web_billing_arrangements.record_installment_payment(
-            db_session, request, arrangement_id=str(arrangement.id)
-        )
-        with pytest.raises(HTTPException) as exc_info:
-            web_billing_arrangements.record_installment_payment(
-                db_session, request, arrangement_id=str(arrangement.id)
-            )
-        assert exc_info.value.status_code == 400
-
-    def test_approve_arrangement_records_approver_and_audit(
-        self, db_session, subscriber
-    ):
-        arrangement = _create_arrangement_directly(db_session, subscriber)
-        admin_id = uuid.uuid4()
-        request = _fake_admin_request(user_id=admin_id)
-        approved = web_billing_arrangements.approve_arrangement(
-            db_session, request, arrangement_id=str(arrangement.id)
-        )
-        assert approved.status == ArrangementStatus.active
-        assert approved.approved_by_user_id == str(admin_id)
-
-        from app.models.audit import AuditEvent
-
-        audit = (
-            db_session.query(AuditEvent)
-            .filter(AuditEvent.entity_type == "payment_arrangement")
-            .filter(AuditEvent.entity_id == str(arrangement.id))
-            .filter(AuditEvent.action == "approve")
-            .first()
-        )
-        assert audit is not None
-        assert audit.actor_id == str(admin_id)
-
     def test_list_data_counts_without_fetching_all(self, db_session, subscriber):
         for _ in range(3):
             arrangement = _create_arrangement_directly(db_session, subscriber)
@@ -938,20 +863,37 @@ class TestAdminArrangementWeb:
         )
         assert state["total"] == 3
 
-    def test_detail_data_exposes_next_actionable(self, db_session, subscriber):
+    def test_detail_data_exposes_only_owner_projected_actions(
+        self, db_session, subscriber
+    ):
         arrangement = _create_arrangement_directly(db_session, subscriber)
         state = web_billing_arrangements.detail_data(
-            db_session, arrangement_id=str(arrangement.id)
+            db_session,
+            arrangement_id=str(arrangement.id),
+            can_write=True,
         )
-        # Pending arrangement: no record-payment action
-        assert state["next_actionable_installment_id"] is None
+        assert [form.key for form in state["arrangement_actions"]] == [
+            web_billing_arrangements.APPROVE_ACTION_KEY,
+            web_billing_arrangements.CANCEL_ACTION_KEY,
+        ]
 
         payment_arrangements.approve(db_session, str(arrangement.id))
         state = web_billing_arrangements.detail_data(
-            db_session, arrangement_id=str(arrangement.id)
+            db_session,
+            arrangement_id=str(arrangement.id),
+            can_write=True,
         )
-        first = _installments_for(db_session, arrangement)[0]
-        assert state["next_actionable_installment_id"] == str(first.id)
+        assert [form.key for form in state["arrangement_actions"]] == [
+            web_billing_arrangements.CANCEL_ACTION_KEY,
+            web_billing_arrangements.RECORD_PAYMENT_ACTION_KEY,
+        ]
+
+        state = web_billing_arrangements.detail_data(
+            db_session,
+            arrangement_id=str(arrangement.id),
+            can_write=False,
+        )
+        assert state["arrangement_actions"] == ()
 
     def test_next_actionable_prefers_overdue(self, db_session, subscriber):
         arrangement = _create_arrangement_directly(db_session, subscriber)

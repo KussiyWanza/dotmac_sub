@@ -32,7 +32,6 @@ from app.models.billing import (  # noqa: F401
     BillingAccountCreditAllocationItem,
     BillingAccountLedgerEntry,
     BillingRun,
-    BillingRunSchedule,
     BillingRunStatus,
     ConsolidatedCreditConsumptionReconciliationEvidence,
     ConsolidatedPaymentReturnDocumentReconstructionEvidence,

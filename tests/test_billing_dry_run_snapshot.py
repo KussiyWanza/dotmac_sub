@@ -1,11 +1,11 @@
-"""Regression: the dry-run billing snapshot leaves no committed changes.
+"""Regression: the dry-run billing snapshot leaves no changes at all.
 
-``run_invoice_cycle(dry_run=True)`` does NOT commit, but it DOES dirty ORM
-objects in the session before the dry-run branch — notably fast-forwarding
-``subscription.next_billing_at`` (billing_automation.py:855). The snapshot CLI's
-contract is to ``db.rollback()`` after the run so nothing persists. This test
-exercises that: a past-due subscription's ``next_billing_at`` is dirtied
-in-session by the dry run, and the rollback restores it.
+``run_invoice_cycle(dry_run=True)`` neither commits nor dirties ORM objects: the
+``next_billing_at`` fast-forward is now guarded behind ``if not dry_run``, so a
+dry run is fully side-effect-free in the session rather than relying on a
+follow-up ``db.rollback()`` to discard in-session dirt. This test asserts a
+past-due subscription's ``next_billing_at`` is untouched by the dry run, both
+in-session and after reloading from the database.
 """
 
 from __future__ import annotations
@@ -57,14 +57,12 @@ def test_dry_run_then_rollback_restores_next_billing_at(db_session, catalog_offe
     ):
         run_invoice_cycle(db_session, dry_run=True)
 
-    # The dry run fast-forwarded next_billing_at in-session (the risk the CLI's
-    # db.rollback() exists to discard).
-    assert sub.next_billing_at != original, (
-        "expected the dry run to dirty next_billing_at in the session"
+    # The dry run is side-effect-free: it does not even dirty next_billing_at in
+    # the session (the fast-forward is guarded behind `if not dry_run`).
+    assert sub.next_billing_at == original, (
+        "dry run must not mutate next_billing_at in the session"
     )
 
-    # Contract: the dry run leaves NO committed change. Dropping the in-session
-    # dirt and reloading from the DB must yield the original value — i.e. the
-    # fast-forward was never persisted.
+    # And nothing was committed either: reloading from the DB yields the original.
     db_session.expire(sub)
     assert sub.next_billing_at == original

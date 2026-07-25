@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from fastapi import HTTPException
 from sqlalchemy.orm import selectinload
 
 from app.models.collections import (
@@ -15,52 +13,54 @@ from app.models.collections import (
     FinancialAccessConsequence,
 )
 from app.services import collections as collections_service
+from app.services import display_format, dunning_staff_actions
 from app.services import web_billing_customers as web_billing_customers_service
-from app.services.audit_helpers import log_audit_event
+from app.services.action_forms import (
+    ActionConfirmation,
+    ActionForm,
+    ActionFormSubmission,
+    ActionHiddenValue,
+    ActionTone,
+)
+from app.services.bulk_actions import BulkActionDefinition, BulkResourceDefinition
+from app.services.collections import _core as dunning_owner
 
-logger = logging.getLogger(__name__)
+_DUNNING_BULK_RESOURCE = BulkResourceDefinition(
+    key="dunning_cases",
+    actions=(
+        BulkActionDefinition(
+            key=dunning_owner.DunningStaffAction.pause.value,
+            label="Pause selected",
+            description="Pause eligible open dunning cases.",
+            permission=dunning_staff_actions.ACTION_SCOPE,
+            tone="warning",
+        ),
+        BulkActionDefinition(
+            key=dunning_owner.DunningStaffAction.resume.value,
+            label="Resume selected",
+            description="Resume eligible paused dunning cases.",
+            permission=dunning_staff_actions.ACTION_SCOPE,
+            tone="positive",
+        ),
+    ),
+)
+
+_ACTION_KEYS = {
+    dunning_owner.DunningStaffAction.pause: "dunning.pause",
+    dunning_owner.DunningStaffAction.resume: "dunning.resume",
+    dunning_owner.DunningStaffAction.close: "dunning.close",
+}
 
 
-@dataclass(slots=True)
-class BulkDunningActionResult:
-    """Outcome for a bulk dunning action."""
-
-    selected_ids: list[str]
-    processed_ids: list[str] = field(default_factory=list)
-    failed_ids: list[str] = field(default_factory=list)
-
-    @property
-    def selected(self) -> int:
-        return len(self.selected_ids)
-
-    @property
-    def processed(self) -> int:
-        return len(self.processed_ids)
-
-    @property
-    def failed(self) -> int:
-        return len(self.failed_ids)
-
-    @property
-    def skipped(self) -> int:
-        return max(0, self.selected - self.processed - self.failed)
-
-    def message(self, action: str) -> str:
-        label = {
-            "pause": "Paused",
-            "resume": "Resumed",
-            "close": "Closed",
-        }.get(action, "Processed")
-        noun = "case" if self.selected == 1 else "cases"
-        message = f"{label} {self.processed} of {self.selected} selected dunning {noun}"
-        details = []
-        if self.skipped:
-            details.append(f"{self.skipped} skipped")
-        if self.failed:
-            details.append(f"{self.failed} failed")
-        if details:
-            message += f"; {', '.join(details)}"
-        return message
+@dataclass(frozen=True, slots=True)
+class DunningImpactRow:
+    case_id: str
+    account_id: str
+    current_status: str
+    resulting_status: str
+    eligible: bool
+    reason: str
+    receivables: str
 
 
 def build_listing_data(
@@ -70,6 +70,7 @@ def build_listing_data(
     per_page: int = 50,
     status: str | None,
     customer_ref: str | None,
+    can_write: bool,
 ) -> dict[str, object]:
     """Build paginated listing data and status counts for dunning page."""
     offset = (page - 1) * per_page
@@ -150,10 +151,149 @@ def build_listing_data(
         "status": status,
         "status_counts": status_counts,
         "customer_ref": customer_ref,
+        "dunning_bulk_action_contract": _DUNNING_BULK_RESOURCE.project(
+            authorized_permissions=(
+                {dunning_staff_actions.ACTION_SCOPE} if can_write else set()
+            )
+        ).as_dict(),
     }
 
 
-def build_detail_data(db, *, case_id: str) -> dict[str, object]:
+def _action_impact(
+    impact: dunning_owner.DunningStaffCaseImpact,
+    action: dunning_owner.DunningStaffAction,
+) -> str:
+    current = (
+        impact.current_status.value.title() if impact.current_status else "Missing"
+    )
+    resulting = (
+        impact.resulting_status.value.title()
+        if impact.resulting_status
+        else "No change"
+    )
+    if action is dunning_owner.DunningStaffAction.close:
+        if impact.eligible:
+            return (
+                f"{current} → {resulting}. Closing this case does not restore "
+                "service access; financial reconciliation remains authoritative."
+            )
+        receivables = display_format.format_currency_groups(
+            dict(impact.unpaid_receivables)
+        )
+        return (
+            f"No state change. {impact.reason or 'Case is ineligible'} "
+            f"Current collectible receivables: {receivables}."
+        )
+    verb = (
+        "automated collection progression stops"
+        if action.value == "pause"
+        else "automated collection progression resumes"
+    )
+    return f"{current} → {resulting}; {verb} for this case."
+
+
+def _single_action_form(
+    preview: dunning_owner.DunningStaffActionPreview,
+) -> ActionForm:
+    impact = preview.impacts[0]
+    action = preview.action
+    title = {
+        dunning_owner.DunningStaffAction.pause: "Pause dunning case",
+        dunning_owner.DunningStaffAction.resume: "Resume dunning case",
+        dunning_owner.DunningStaffAction.close: "Close dunning case",
+    }[action]
+    description = {
+        dunning_owner.DunningStaffAction.pause: (
+            "Stop automated collection progression without clearing debt or access locks."
+        ),
+        dunning_owner.DunningStaffAction.resume: (
+            "Return this case to active automated collection progression."
+        ),
+        dunning_owner.DunningStaffAction.close: (
+            "End collection workflow only after collectible receivables are clear."
+        ),
+    }[action]
+    tone = (
+        ActionTone.negative
+        if action is dunning_owner.DunningStaffAction.close
+        else ActionTone.neutral
+    )
+    return ActionForm(
+        key=_ACTION_KEYS[action],
+        title=title,
+        description=description,
+        action_url=(f"/admin/billing/dunning/{impact.case_id}/{action.value}/confirm"),
+        submit_label=title,
+        fields=(),
+        tone=tone,
+        impact=_action_impact(impact, action),
+        confirmation=ActionConfirmation(
+            title=f"Confirm {action.value}",
+            message=(
+                "I reviewed the current case state and consequence and authorize "
+                f"this {action.value} action."
+            ),
+        ),
+        hidden_values=(
+            ActionHiddenValue(
+                key="preview_fingerprint",
+                value=preview.fingerprint,
+            ),
+        ),
+        allowed=impact.eligible,
+        disabled_reason=impact.reason,
+    )
+
+
+def _detail_action_forms(
+    db,
+    *,
+    case_id: str,
+    status: DunningCaseStatus,
+    can_write: bool,
+    submission: ActionFormSubmission | None,
+) -> tuple[ActionForm, ...]:
+    if not can_write or status in {
+        DunningCaseStatus.resolved,
+        DunningCaseStatus.closed,
+    }:
+        return ()
+    actions = (
+        (
+            dunning_owner.DunningStaffAction.pause,
+            dunning_owner.DunningStaffAction.close,
+        )
+        if status is DunningCaseStatus.open
+        else (
+            dunning_owner.DunningStaffAction.resume,
+            dunning_owner.DunningStaffAction.close,
+        )
+    )
+    forms = tuple(
+        _single_action_form(
+            dunning_staff_actions.preview_staff_action(
+                db,
+                action=action,
+                case_ids=(case_id,),
+            )
+        )
+        for action in actions
+    )
+    if submission is None:
+        return forms
+    return tuple(
+        form.bind(submission) if form.key == submission.action_key else form
+        for form in forms
+    )
+
+
+def build_detail_data(
+    db,
+    *,
+    case_id: str,
+    can_write: bool,
+    submission: ActionFormSubmission | None = None,
+) -> dict[str, object]:
     case = collections_service.dunning_cases.get(db, case_id)
     actions = (
         db.query(DunningActionLog)
@@ -171,138 +311,115 @@ def build_detail_data(db, *, case_id: str) -> dict[str, object]:
         "case": case,
         "account": case.subscriber,
         "actions": actions,
+        "case_actions": _detail_action_forms(
+            db,
+            case_id=case_id,
+            status=case.status,
+            can_write=can_write,
+            submission=submission,
+        ),
     }
 
 
-def apply_case_action(db, *, case_id: str, action: str) -> None:
-    """Apply a single dunning-case action."""
-    if action == "pause":
-        collections_service.dunning_cases.pause(db=db, case_id=case_id)
-        return
-    if action == "resume":
-        collections_service.dunning_cases.resume(db=db, case_id=case_id)
-        return
-    if action == "close":
-        collections_service.dunning_cases.close(db=db, case_id=case_id)
-        return
-    raise ValueError("Unsupported action")
+def _impact_rows(
+    preview: dunning_owner.DunningStaffActionPreview,
+) -> tuple[DunningImpactRow, ...]:
+    return tuple(
+        DunningImpactRow(
+            case_id=str(impact.case_id),
+            account_id=str(impact.account_id or "—"),
+            current_status=(
+                impact.current_status.value.title()
+                if impact.current_status
+                else "Missing"
+            ),
+            resulting_status=(
+                impact.resulting_status.value.title()
+                if impact.resulting_status
+                else "No change"
+            ),
+            eligible=impact.eligible,
+            reason=impact.reason or "Eligible",
+            receivables=(
+                display_format.format_currency_groups(dict(impact.unpaid_receivables))
+                if impact.unpaid_receivables
+                else "—"
+            ),
+        )
+        for impact in preview.impacts
+    )
 
 
-def apply_bulk_action(db, *, case_ids_csv: str, action: str) -> list[str]:
-    """Apply dunning action for many IDs; return IDs successfully processed."""
-    processed: list[str] = []
-    for case_id in [item.strip() for item in case_ids_csv.split(",") if item.strip()]:
-        try:
-            apply_case_action(db, case_id=case_id, action=action)
-            processed.append(case_id)
-        except Exception:
-            logger.debug(
-                "Skipping dunning bulk action for case %s", case_id, exc_info=True
-            )
-            continue
-    return processed
-
-
-def apply_bulk_action_result(
-    db, *, case_ids_csv: str, action: str
-) -> BulkDunningActionResult:
-    """Apply a dunning action for many IDs and report per-item outcome counts."""
-    case_ids = [item.strip() for item in case_ids_csv.split(",") if item.strip()]
-    result = BulkDunningActionResult(selected_ids=case_ids)
-    for case_id in case_ids:
-        try:
-            apply_case_action(db, case_id=case_id, action=action)
-            result.processed_ids.append(case_id)
-        except HTTPException as exc:
-            if exc.status_code >= 500:
-                db.rollback()
-            logger.debug(
-                "Skipping dunning bulk action for case %s", case_id, exc_info=True
-            )
-            result.failed_ids.append(case_id)
-        except Exception:
-            db.rollback()
-            logger.debug(
-                "Skipping dunning bulk action for case %s", case_id, exc_info=True
-            )
-            result.failed_ids.append(case_id)
-    return result
-
-
-def execute_action(
+def build_bulk_preview_data(
     db,
     *,
-    action: str,
-    case_id: str | None = None,
-    case_ids_csv: str | None = None,
-) -> list[str]:
-    """Execute single/bulk dunning action and return processed IDs."""
-    if case_id:
-        apply_case_action(db, case_id=case_id, action=action)
-        return [case_id]
-    if case_ids_csv is not None:
-        return apply_bulk_action(db, case_ids_csv=case_ids_csv, action=action)
-    raise ValueError("case_id or case_ids_csv is required")
-
-
-def execute_bulk_action_result(
-    db,
-    *,
-    action: str,
+    action: dunning_owner.DunningStaffAction,
     case_ids_csv: str,
-) -> BulkDunningActionResult:
-    """Execute a bulk dunning action and return a full outcome."""
-    return apply_bulk_action_result(db, case_ids_csv=case_ids_csv, action=action)
+) -> dict[str, object]:
+    """Project an exact selected-scope preview and shared confirmation form."""
 
-
-def execute_action_with_audit(
-    db,
-    *,
-    request,
-    action: str,
-    actor_id: str | None,
-    case_id: str | None = None,
-    case_ids_csv: str | None = None,
-) -> list[str]:
-    processed_ids = execute_action(
+    preview = dunning_staff_actions.preview_staff_action(
         db,
         action=action,
-        case_id=case_id,
-        case_ids_csv=case_ids_csv,
+        case_ids=tuple(case_ids_csv.split(",")),
     )
-    for processed_id in processed_ids:
-        log_audit_event(
-            db=db,
-            request=request,
-            action=action,
-            entity_type="dunning_case",
-            entity_id=processed_id,
-            actor_id=actor_id,
-        )
-    return processed_ids
+    case_ids = ",".join(str(case_id) for case_id in preview.requested_case_ids)
+    action_label = action.value.title()
+    form = ActionForm(
+        key=f"dunning.bulk.{action.value}",
+        title=f"{action_label} selected dunning cases",
+        description=(
+            "Apply the action only to the eligible cases shown below. "
+            "Skipped cases will remain unchanged."
+        ),
+        action_url=f"/admin/billing/dunning/bulk/{action.value}/confirm",
+        submit_label=f"Confirm {action.value}",
+        fields=(),
+        tone=(
+            ActionTone.positive
+            if action is dunning_owner.DunningStaffAction.resume
+            else ActionTone.neutral
+        ),
+        impact=(
+            f"{preview.eligible_count} of {preview.selected_count} selected cases "
+            f"will be {action.value}d; {preview.skipped_count} will be skipped."
+        ),
+        confirmation=ActionConfirmation(
+            title=f"Confirm bulk {action.value}",
+            message=(
+                "I reviewed the exact eligible and skipped scope and authorize "
+                f"this {action.value} action."
+            ),
+        ),
+        hidden_values=(
+            ActionHiddenValue(key="case_ids", value=case_ids),
+            ActionHiddenValue(
+                key="preview_fingerprint",
+                value=preview.fingerprint,
+            ),
+        ),
+        allowed=preview.eligible_count > 0,
+        disabled_reason=(
+            None
+            if preview.eligible_count
+            else "None of the selected cases is eligible for this action."
+        ),
+    )
+    return {
+        "bulk_preview": preview,
+        "bulk_impact_rows": _impact_rows(preview),
+        "bulk_action_form": form,
+    }
 
 
-def execute_bulk_action_with_audit_result(
-    db,
+def action_error_submission(
     *,
-    request,
-    action: str,
-    actor_id: str | None,
-    case_ids_csv: str,
-) -> BulkDunningActionResult:
-    """Execute a bulk dunning action and audit successfully processed cases."""
-    result = execute_bulk_action_result(
-        db,
-        action=action,
-        case_ids_csv=case_ids_csv,
+    action: dunning_owner.DunningStaffAction,
+    error: Exception,
+) -> ActionFormSubmission:
+    message = getattr(error, "message", str(error))
+    return ActionFormSubmission.from_mapping(
+        _ACTION_KEYS[action],
+        {},
+        general_error=message,
     )
-    for processed_id in result.processed_ids:
-        log_audit_event(
-            db=db,
-            request=request,
-            action=action,
-            entity_type="dunning_case",
-            entity_id=processed_id,
-            actor_id=actor_id,
-        )
-    return result

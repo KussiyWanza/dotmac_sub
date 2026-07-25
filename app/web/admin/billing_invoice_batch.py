@@ -1,11 +1,11 @@
 """Admin billing invoice batch routes."""
 
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import (
     HTMLResponse,
-    JSONResponse,
     RedirectResponse,
     StreamingResponse,
 )
@@ -14,57 +14,50 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import web_billing_invoice_batch as web_billing_invoice_batch_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import has_permission, require_permission
+from app.services.domain_errors import DomainError
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/billing", tags=["web-admin-billing"])
+logger = logging.getLogger(__name__)
 
 
-@router.post(
-    "/invoices/generate-batch",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:batch:write"))],
-)
-def invoice_generate_batch(
+def _render_batch_page(
     request: Request,
-    billing_cycle: str | None = Form(None),
-    billing_date: str | None = Form(None),
-    confirmed: str | None = Form(None),
-    db: Session = Depends(get_db),
+    db: Session,
+    auth: dict,
+    *,
+    note: str | None = None,
+    error: str | None = None,
+    preview=None,
+    status_code: int = 200,
 ):
-    if confirmed:
-        note = web_billing_invoice_batch_service.run_batch_with_date(
-            db,
-            billing_cycle=billing_cycle,
-            billing_date=billing_date,
-        )
-    else:
-        note = (
-            "Batch run was not started. Review the preview and confirm before running."
-        )
-    query = urlencode({"note": note})
-    return RedirectResponse(
-        url=f"/admin/billing/invoices/batch?{query}", status_code=303
-    )
+    from app.web.admin import get_current_user, get_sidebar_stats
 
-
-@router.post(
-    "/invoices/batch/{run_id}/retry",
-    response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:batch:write"))],
-)
-def invoice_batch_retry(
-    request: Request,
-    run_id: str,
-    db: Session = Depends(get_db),
-):
-    note = web_billing_invoice_batch_service.retry_batch_run(
+    can_write = has_permission(auth, db, "billing:batch:write")
+    state = web_billing_invoice_batch_service.build_batch_page_state(
         db,
-        run_id=run_id,
+        note=note,
+        error=error,
+        preview=preview,
+        batch_action_form=(
+            web_billing_invoice_batch_service.build_batch_action_form(preview)
+            if preview is not None and can_write
+            else None
+        ),
+        can_write=can_write,
     )
-    query = urlencode({"note": note})
-    return RedirectResponse(
-        url=f"/admin/billing/invoices/batch?{query}", status_code=303
+    return templates.TemplateResponse(
+        "admin/billing/invoice_batch.html",
+        {
+            "request": request,
+            "active_page": "invoices",
+            "active_menu": "billing",
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+            **state,
+        },
+        status_code=status_code,
     )
 
 
@@ -76,50 +69,124 @@ def invoice_batch_retry(
 def invoice_batch(
     request: Request,
     note: str | None = Query(None),
+    auth: dict = Depends(require_permission("billing:batch:read")),
     db: Session = Depends(get_db),
 ):
-    from app.web.admin import get_current_user, get_sidebar_stats
-
-    state = web_billing_invoice_batch_service.build_batch_page_state(db, note=note)
-    return templates.TemplateResponse(
-        "admin/billing/invoice_batch.html",
-        {
-            "request": request,
-            "active_page": "invoices",
-            "active_menu": "billing",
-            "current_user": get_current_user(request),
-            "sidebar_stats": get_sidebar_stats(db),
-            **state,
-        },
-    )
+    return _render_batch_page(request, db, auth, note=note)
 
 
 @router.post(
-    "/invoices/batch/schedule",
+    "/invoices/generate-batch/preview",
     response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:batch:write"))],
 )
-def invoice_batch_schedule_update(
+def invoice_generate_batch_preview(
     request: Request,
-    schedule_enabled: str | None = Form(None),
-    run_day: str | None = Form(None),
-    run_time: str | None = Form(None),
-    timezone: str | None = Form(None),
     billing_cycle: str | None = Form(None),
-    partner_ids: list[str] = Form([]),
+    billing_date: str | None = Form(None),
+    auth: dict = Depends(require_permission("billing:batch:write")),
     db: Session = Depends(get_db),
 ):
-    web_billing_invoice_batch_service.save_billing_run_schedule(
-        db,
-        enabled=bool(schedule_enabled),
-        run_day=run_day,
-        run_time=run_time,
-        timezone=timezone,
-        billing_cycle=billing_cycle,
-        partner_ids=partner_ids,
-    )
+    try:
+        preview = web_billing_invoice_batch_service.preview_batch_action(
+            db,
+            billing_cycle=billing_cycle,
+            billing_date=billing_date,
+        )
+    except (ValueError, DomainError):
+        return _render_batch_page(
+            request,
+            db,
+            auth,
+            error=web_billing_invoice_batch_service.INVOICE_BATCH_PREVIEW_ERROR_MESSAGE,
+            status_code=400,
+        )
+    return _render_batch_page(request, db, auth, preview=preview)
+
+
+@router.post(
+    "/invoices/batch/{run_id}/retry/preview",
+    response_class=HTMLResponse,
+)
+def invoice_batch_retry_preview(
+    request: Request,
+    run_id: str,
+    auth: dict = Depends(require_permission("billing:batch:write")),
+    db: Session = Depends(get_db),
+):
+    try:
+        preview = web_billing_invoice_batch_service.preview_retry_batch(
+            db,
+            run_id=run_id,
+        )
+    except DomainError as exc:
+        return _render_batch_page(
+            request,
+            db,
+            auth,
+            error=exc.message,
+            status_code=400,
+        )
+    return _render_batch_page(request, db, auth, preview=preview)
+
+
+@router.post(
+    "/invoices/generate-batch/confirm",
+    response_class=HTMLResponse,
+)
+def invoice_generate_batch_confirm(
+    request: Request,
+    billing_cycle: str | None = Form(None),
+    billing_date: str | None = Form(None),
+    preview_fingerprint: str = Form(...),
+    source_run_id: str | None = Form(None),
+    confirmed: str | None = Form(None),
+    auth: dict = Depends(require_permission("billing:batch:write")),
+    db: Session = Depends(get_db),
+):
+    try:
+        note = web_billing_invoice_batch_service.confirm_batch_action(
+            db,
+            billing_cycle=billing_cycle,
+            billing_date=billing_date,
+            preview_fingerprint=preview_fingerprint,
+            source_run_id=source_run_id,
+            confirmed=confirmed == "yes",
+            actor=str(auth.get("principal_id") or ""),
+        )
+    except DomainError as exc:
+        try:
+            preview = web_billing_invoice_batch_service.preview_batch_action(
+                db,
+                billing_cycle=(
+                    None if billing_cycle in {None, "", "all"} else billing_cycle
+                ),
+                billing_date=billing_date,
+                source_run_id=(
+                    None if source_run_id in {None, "", "manual"} else source_run_id
+                ),
+            )
+        except Exception:
+            preview = None
+        return _render_batch_page(
+            request,
+            db,
+            auth,
+            error=exc.message,
+            preview=preview,
+            status_code=409 if exc.code.endswith("stale_preview") else 400,
+        )
+    except Exception:
+        logger.exception("Confirmed invoice batch failed")
+        return _render_batch_page(
+            request,
+            db,
+            auth,
+            error=web_billing_invoice_batch_service.INVOICE_BATCH_ERROR_MESSAGE,
+            status_code=500,
+        )
+    query = urlencode({"note": note})
     return RedirectResponse(
-        url="/admin/billing/invoices/batch?note=Billing+run+schedule+saved",
+        url=f"/admin/billing/invoices/batch?{query}",
         status_code=303,
     )
 
@@ -131,6 +198,7 @@ def invoice_batch_schedule_update(
 )
 def invoice_batch_history_panel(
     request: Request,
+    auth: dict = Depends(require_permission("billing:batch:read")),
     db: Session = Depends(get_db),
 ):
     recent_runs = web_billing_invoice_batch_service.list_recent_runs(db, limit=25)
@@ -139,6 +207,7 @@ def invoice_batch_history_panel(
         {
             "request": request,
             "recent_runs": recent_runs,
+            "can_write": has_permission(auth, db, "billing:batch:write"),
         },
     )
 
@@ -182,30 +251,3 @@ def invoice_batch_run_csv(
             "Content-Disposition": f'attachment; filename="billing_run_{run_id}.csv"'
         },
     )
-
-
-@router.post(
-    "/invoices/generate-batch/preview",
-    dependencies=[Depends(require_permission("billing:batch:read"))],
-)
-def invoice_generate_batch_preview(
-    request: Request,
-    billing_cycle: str | None = Form(None),
-    subscription_status: str | None = Form(None),
-    billing_date: str | None = Form(None),
-    separate_by_partner: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    try:
-        payload = web_billing_invoice_batch_service.preview_batch(
-            db=db,
-            billing_cycle=billing_cycle,
-            billing_date=billing_date,
-            separate_by_partner=bool(separate_by_partner),
-        )
-        return JSONResponse(payload)
-    except Exception as exc:
-        return JSONResponse(
-            web_billing_invoice_batch_service.preview_error_payload(exc),
-            status_code=400,
-        )

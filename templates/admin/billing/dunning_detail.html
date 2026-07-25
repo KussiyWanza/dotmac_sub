@@ -1,4 +1,5 @@
 {% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
 {% from "components/ui/macros.html" import page_header, status_badge %}
 
 {% block title %}Dunning Case - Admin{% endblock %}
@@ -15,6 +16,14 @@
     ) %}
         <a href="/admin/billing/dunning" class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Back to Dunning</a>
     {% endcall %}
+
+    {% if page_error %}
+    <div class="status-panel status-panel-negative status-foreground status-tone-negative rounded-lg border px-4 py-3 text-sm"
+         role="alert"
+         aria-live="assertive">
+        {{ page_error }}
+    </div>
+    {% endif %}
 
     <div class="grid gap-6 lg:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800 lg:col-span-2">
@@ -67,28 +76,23 @@
             </dl>
         </div>
 
-        <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <h2 class="text-base font-semibold text-slate-900 dark:text-white">Actions</h2>
-            <div class="mt-4 space-y-3">
-                {% if status_value == 'open' %}
-                <form method="post" action="/admin/billing/dunning/{{ case.id }}/pause" onsubmit="return confirm('Pause this dunning case?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="w-full rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">Pause Case</button>
-                </form>
-                {% elif status_value == 'paused' %}
-                <form method="post" action="/admin/billing/dunning/{{ case.id }}/resume" onsubmit="return confirm('Resume this dunning case?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="w-full rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300">Resume Case</button>
-                </form>
-                {% endif %}
-                {% if status_value in ['open', 'paused'] %}
-                <form method="post" action="/admin/billing/dunning/{{ case.id }}/close" onsubmit="return confirm('Close this dunning case?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="w-full rounded-lg border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">Close Case</button>
-                </form>
-                {% endif %}
+        <section class="space-y-4" aria-labelledby="dunning-actions-title">
+            <div>
+                <h2 id="dunning-actions-title" class="text-base font-semibold text-slate-900 dark:text-white">Safe actions</h2>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    Actions are bound to the current case and receivable evidence.
+                </p>
             </div>
-        </div>
+            {% if case_actions %}
+                {% for case_action in case_actions %}
+                    {{ action_form(case_action) }}
+                {% endfor %}
+            {% else %}
+            <div class="rounded-lg border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                No staff action is available for this case.
+            </div>
+            {% endif %}
+        </section>
     </div>
 
     <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">

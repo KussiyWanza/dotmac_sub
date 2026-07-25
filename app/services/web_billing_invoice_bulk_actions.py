@@ -8,6 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice
 from app.services import web_billing_invoice_bulk as invoice_bulk_service
+from app.services.action_forms import (
+    ActionConfirmation,
+    ActionForm,
+    ActionHiddenValue,
+    ActionTone,
+)
 from app.services.auth_dependencies import has_permission
 from app.services.bulk_actions import BulkActionDefinition, BulkResourceDefinition
 
@@ -71,6 +77,84 @@ INVOICE_BULK_ACTION_DEFINITION = BulkResourceDefinition(
         ),
     ),
 )
+
+_REVIEW_ACTIONS = {"issue", "send", "mark_paid", "generate_pdf"}
+
+
+def invoice_bulk_action_definition(action_key: str) -> BulkActionDefinition:
+    for action in INVOICE_BULK_ACTION_DEFINITION.actions:
+        if action.key == action_key:
+            return action
+    raise ValueError("Unsupported invoice bulk action")
+
+
+def invoice_bulk_review_action_definition(action_key: str) -> BulkActionDefinition:
+    if action_key not in _REVIEW_ACTIONS:
+        raise ValueError("Unsupported invoice bulk review action")
+    return invoice_bulk_action_definition(action_key)
+
+
+def build_invoice_bulk_review(
+    db: Session,
+    *,
+    action_key: str,
+    invoice_ids_csv: str,
+) -> dict[str, object]:
+    """Build one server-rendered exact-scope review and shared action form."""
+    definition = invoice_bulk_review_action_definition(action_key)
+    preview = invoice_bulk_service.preview_invoice_bulk_action(
+        db,
+        action=action_key,
+        invoice_ids_csv=invoice_ids_csv,
+    )
+    endpoint = action_key.replace("_", "-")
+    allowed = bool(preview.eligible_ids)
+    form = ActionForm(
+        key=f"invoice_bulk.{action_key}",
+        title=f"Confirm {definition.label.lower()}",
+        description=definition.description,
+        action_url=f"/admin/billing/invoices/bulk/confirm/{endpoint}",
+        submit_label=definition.label,
+        fields=(),
+        tone=(
+            ActionTone.positive
+            if definition.tone == "positive"
+            else ActionTone.negative
+            if definition.tone == "negative"
+            else ActionTone.neutral
+        ),
+        impact=(
+            f"{len(preview.eligible_ids)} of {len(preview.selected_ids)} selected "
+            f"invoice(s) are eligible; {len(preview.skipped)} will be skipped."
+        ),
+        confirmation=ActionConfirmation(
+            title=f"Confirm {definition.label.lower()}",
+            message=(
+                "The exact selected membership and eligibility are rechecked "
+                "before execution."
+            ),
+        ),
+        hidden_values=(
+            ActionHiddenValue(key="invoice_ids", value=",".join(preview.selected_ids)),
+            ActionHiddenValue(
+                key="expected_count",
+                value=str(len(preview.resolved_ids)),
+            ),
+            ActionHiddenValue(
+                key="expected_scope_token",
+                value=preview.scope_token,
+            ),
+        ),
+        allowed=allowed,
+        disabled_reason=(
+            None if allowed else "No selected invoices are eligible for this action."
+        ),
+    )
+    return {
+        "action_definition": definition,
+        "bulk_preview": preview,
+        "bulk_action_form": form,
+    }
 
 
 def build_invoice_bulk_action_contract(

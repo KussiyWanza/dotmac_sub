@@ -1,0 +1,81 @@
+{% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
+{% from "components/ui/macros.html" import page_header, status_badge %}
+
+{% block title %}Confirm Dunning Action - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    {% call page_header(
+        title="Review Dunning Impact",
+        subtitle="Confirm the exact eligible and skipped selected scope",
+        icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5-4a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+        color="amber",
+        color2="orange",
+        breadcrumbs=[{"label": "Billing", "href": "/admin/billing"}, {"label": "Dunning", "href": "/admin/billing/dunning"}, {"label": "Confirm"}]
+    ) %}
+        <a href="/admin/billing/dunning"
+           class="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
+            Cancel
+        </a>
+    {% endcall %}
+
+    {% if page_error %}
+    <div class="status-panel status-panel-negative status-foreground status-tone-negative rounded-lg border px-4 py-3 text-sm"
+         role="alert"
+         aria-live="assertive">
+        {{ page_error }}
+    </div>
+    {% endif %}
+
+    <div class="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"
+                 aria-labelledby="impact-table-title">
+            <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+                <h2 id="impact-table-title" class="font-semibold text-slate-900 dark:text-white">Exact selected scope</h2>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    {{ bulk_preview.eligible_count }} eligible · {{ bulk_preview.skipped_count }} skipped
+                </p>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+                    <thead class="bg-slate-50 dark:bg-slate-800/50">
+                        <tr>
+                            <th class="px-5 py-3 text-left text-xs font-semibold uppercase text-slate-500">Case</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold uppercase text-slate-500">Account</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold uppercase text-slate-500">Impact</th>
+                            <th class="px-5 py-3 text-left text-xs font-semibold uppercase text-slate-500">Result</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+                        {% for impact in bulk_impact_rows %}
+                        <tr>
+                            <td class="px-5 py-4 font-mono text-xs text-slate-700 dark:text-slate-300">{{ impact.case_id }}</td>
+                            <td class="px-5 py-4 text-sm text-slate-700 dark:text-slate-300">{{ impact.account_id }}</td>
+                            <td class="px-5 py-4 text-sm text-slate-700 dark:text-slate-300">
+                                {{ impact.current_status }} → {{ impact.resulting_status }}
+                                {% if impact.receivables != '—' %}
+                                <div class="mt-1 text-xs">Receivables: {{ impact.receivables }}</div>
+                                {% endif %}
+                            </td>
+                            <td class="px-5 py-4 text-sm">
+                                {% if impact.eligible %}
+                                    {{ status_badge("Eligible", variant="success") }}
+                                {% else %}
+                                    {{ status_badge("Skipped", variant="warning") }}
+                                    <p class="mt-1 max-w-sm text-xs text-slate-500 dark:text-slate-400">{{ impact.reason }}</p>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div>
+            {{ action_form(bulk_action_form) }}
+        </div>
+    </div>
+</div>
+{% endblock %}

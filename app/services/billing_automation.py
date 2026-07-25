@@ -5,6 +5,7 @@ from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError
@@ -870,6 +871,9 @@ def _log_billing_run_audit(
     )
     metadata = {
         "run_id": run_id,
+        "launch_kind": run.launch_kind if run else "scheduled",
+        "source_run_id": str(run.source_run_id) if run and run.source_run_id else None,
+        "preview_fingerprint": run.preview_fingerprint if run else None,
         "run_at": run_at_iso,
         "subscriptions_scanned": summary.get("subscriptions_scanned", 0),
         "subscriptions_billed": summary.get("subscriptions_billed", 0),
@@ -884,9 +888,26 @@ def _log_billing_run_audit(
     if error:
         metadata["error"] = error
 
+    existing = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.action == "billing_run")
+        .filter(AuditEvent.entity_type == "billing_run")
+        .filter(AuditEvent.entity_id == run_id)
+        .filter(AuditEvent.is_active.is_(True))
+        .first()
+        if run_id
+        else None
+    )
+    if existing is not None:
+        return
+
     audit_event = AuditEvent(
-        actor_type=AuditActorType.system,
-        actor_id="billing_automation",
+        actor_type=(
+            AuditActorType.user if run and run.requested_by else AuditActorType.system
+        ),
+        actor_id=(
+            run.requested_by if run and run.requested_by else "billing_automation"
+        ),
         action="billing_run",
         entity_type="billing_run",
         entity_id=run_id,
@@ -894,6 +915,42 @@ def _log_billing_run_audit(
         metadata_=metadata,
     )
     db.add(audit_event)
+
+
+def reconcile_billing_run_audit(db: Session, run_id: UUID) -> bool:
+    """Idempotently rebuild the secondary audit projection for one terminal run."""
+    run = db.get(BillingRun, run_id)
+    if run is None or run.status is BillingRunStatus.running:
+        return False
+    summary: dict[str, Any] = {
+        "run_at": run.run_at,
+        "subscriptions_scanned": run.subscriptions_scanned,
+        "subscriptions_billed": run.subscriptions_billed,
+        "invoices_created": run.invoices_created,
+        "lines_created": run.lines_created,
+        "skipped": run.skipped,
+    }
+    from app.models.audit import AuditEvent
+
+    existed = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.action == "billing_run")
+        .filter(AuditEvent.entity_type == "billing_run")
+        .filter(AuditEvent.entity_id == str(run.id))
+        .filter(AuditEvent.is_active.is_(True))
+        .first()
+        is not None
+    )
+    _log_billing_run_audit(
+        db,
+        run,
+        summary,
+        run.status.value,
+        run.error,
+    )
+    if not existed:
+        db.commit()
+    return not existed
 
 
 _ABANDONED_RUN_MAX_AGE_HOURS = 12
@@ -973,6 +1030,11 @@ def run_invoice_cycle(
     include_pending: bool = True,
     auto_activate_pending: bool = True,
     suppress_restore_notifications: bool = False,
+    run_prepaid_renewals: bool = True,
+    launch_kind: str = "scheduled",
+    requested_by: str | None = None,
+    preview_fingerprint: str | None = None,
+    source_run_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Run the billing cycle to generate invoices for subscriptions.
 
@@ -987,6 +1049,13 @@ def run_invoice_cycle(
             service restore triggered when credit settles a suspended account's debt.
             Off by default (steady-state restores are a legitimate "service resumed"
             notice); set True for a bulk catch-up run to avoid a notification burst.
+        run_prepaid_renewals: If True, run the independently owned prepaid renewal
+            pass before postpaid invoice generation. Manual invoice-only commands
+            disable this so their preview and execution have one stated scope.
+        launch_kind: Durable provenance for scheduled, manual, or retry launches.
+        requested_by: Staff principal for a confirmed manual or retry launch.
+        preview_fingerprint: Exact staff preview evidence confirmed before launch.
+        source_run_id: Failed run that a reviewed retry supersedes.
     """
     run_at = _as_utc(run_at) or datetime.now(UTC)
 
@@ -995,6 +1064,10 @@ def run_invoice_cycle(
     run = BillingRun(
         run_at=run_at,
         billing_cycle=billing_cycle.value if billing_cycle else None,
+        launch_kind=launch_kind,
+        requested_by=requested_by,
+        preview_fingerprint=preview_fingerprint,
+        source_run_id=source_run_id,
         status=BillingRunStatus.running,
         started_at=datetime.now(UTC),
     )
@@ -1021,11 +1094,13 @@ def run_invoice_cycle(
         run_due_prepaid_service_renewals,
     )
 
-    prepaid_renewal_summary: dict[str, int | str] = run_due_prepaid_service_renewals(
-        db,
-        run_at=run_at,
-        dry_run=dry_run,
-    )
+    prepaid_renewal_summary: dict[str, int | str] = {}
+    if run_prepaid_renewals:
+        prepaid_renewal_summary = run_due_prepaid_service_renewals(
+            db,
+            run_at=run_at,
+            dry_run=dry_run,
+        )
 
     # Query billable active subscriptions. Network/account enforcement states
     # like blocked/suspended must not suppress invoicing: those accounts still
@@ -1109,6 +1184,12 @@ def run_invoice_cycle(
         "prepaid_legacy_invoice_path_retired": True,
         **prepaid_renewal_summary,
     }
+    preview_subscriptions: list[dict[str, object]] = []
+    preview_invoice_currencies: dict[
+        tuple[str, datetime, datetime, BillingMode], str
+    ] = {}
+    preview_accounts: set[str] = set()
+    preview_totals: dict[str, Decimal] = {}
 
     for subscription in subscriptions:
         is_pending = subscription.status == SubscriptionStatus.pending
@@ -1144,7 +1225,7 @@ def run_invoice_cycle(
             )
             if paid_through and paid_through > period_start:
                 current_nb = _as_utc(subscription.next_billing_at)
-                if current_nb is None or current_nb < paid_through:
+                if not dry_run and (current_nb is None or current_nb < paid_through):
                     subscription.next_billing_at = paid_through
                 logger.info(
                     "billing_prepaid_paid_coverage_skip",
@@ -1175,7 +1256,8 @@ def run_invoice_cycle(
                 period_start = period_end
                 period_end = _period_end(period_start, effective_cycle)
                 skipped_periods += 1
-            subscription.next_billing_at = period_start
+            if not dry_run:
+                subscription.next_billing_at = period_start
             logger.info(
                 "billing_fast_forward",
                 extra={
@@ -1303,13 +1385,18 @@ def run_invoice_cycle(
                 and existing_invoice.status == InvoiceStatus.paid
                 and (existing_invoice.balance_due or Decimal("0.00")) <= Decimal("0.00")
             )
-            if can_advance_anchor and (
-                subscription.next_billing_at is None
-                or subscription.next_billing_at < period_end
+            if (
+                not dry_run
+                and can_advance_anchor
+                and (
+                    subscription.next_billing_at is None
+                    or subscription.next_billing_at < period_end
+                )
             ):
                 subscription.next_billing_at = period_end
             if (
-                subscription.billing_mode == BillingMode.prepaid
+                not dry_run
+                and subscription.billing_mode == BillingMode.prepaid
                 and existing_invoice is not None
                 and existing_invoice.status == InvoiceStatus.paid
             ):
@@ -1324,6 +1411,35 @@ def run_invoice_cycle(
             continue
 
         if dry_run:
+            normalized_currency = (currency or "NGN").upper()
+            preview_invoice_key = (
+                str(subscription.subscriber_id),
+                period_start,
+                period_end,
+                subscription.billing_mode,
+            )
+            invoice_currency = preview_invoice_currencies.get(preview_invoice_key)
+            if invoice_currency is not None and invoice_currency != normalized_currency:
+                summary["currency_skipped"] += 1
+                summary["skipped"] += 1
+                continue
+            preview_invoice_currencies[preview_invoice_key] = normalized_currency
+            preview_accounts.add(str(subscription.subscriber_id))
+            preview_totals[normalized_currency] = preview_totals.get(
+                normalized_currency, Decimal("0.00")
+            ) + round_money(line_amount)
+            preview_subscriptions.append(
+                {
+                    "id": str(subscription.id),
+                    "account_id": str(subscription.subscriber_id),
+                    "offer_name": offer_name,
+                    "amount": round_money(line_amount),
+                    "currency": normalized_currency,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "pending_activation": is_pending,
+                }
+            )
             summary["subscriptions_billed"] += 1
             summary["lines_created"] += 1
             if is_pending:
@@ -1457,6 +1573,14 @@ def run_invoice_cycle(
             subscription.next_billing_at = period_end
 
     if dry_run:
+        summary["invoices_created"] = len(preview_invoice_currencies)
+        summary["accounts_affected"] = len(preview_accounts)
+        summary["subscriptions"] = preview_subscriptions
+        summary["totals_by_currency"] = preview_totals
+        summary["total_amount"] = sum(
+            preview_totals.values(),
+            start=Decimal("0.00"),
+        )
         summary["run_id"] = None
         logger.info(
             "billing_run_dry_run_complete",

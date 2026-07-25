@@ -161,8 +161,6 @@ app/services/usage.py
 app/services/user_profile.py
 app/services/vendor_admin.py
 app/services/web_auth.py
-app/services/web_billing_arrangements.py
-app/services/web_billing_dunning.py
 app/services/web_billing_invoice_bulk.py
 app/services/web_billing_invoices.py
 app/services/web_billing_ledger.py

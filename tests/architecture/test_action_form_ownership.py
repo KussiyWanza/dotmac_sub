@@ -32,11 +32,16 @@ def test_shared_renderer_exposes_accessible_contract_semantics() -> None:
         "aria-invalid",
         'aria-live="assertive"',
         'role="alert"',
-        'data-confirm-message="{{ form.confirmation.message }}"',
+        'name="confirmed"',
+        'value="yes"',
+        'aria-required="true"',
+        "{% for hidden in form.hidden_values %}",
         "{% if not form.allowed %}disabled",
         'include "components/forms/csrf_input.html"',
     ):
         assert marker in template
+    assert "window.confirm" not in template
+    assert "data-confirm-message" not in template
     assert "form.tone.value" in template
     assert "bg-emerald" not in template
     assert "bg-rose" not in template
@@ -72,3 +77,57 @@ def test_checked_in_sources_name_action_form_owner_and_migration() -> None:
     assert "## UI Action Forms" in relationships
     assert "Old owner: payment-proof detail Jinja" in relationships
     assert "### Server-owned action forms" in frontend
+
+
+def test_payment_arrangement_template_only_renders_projected_safe_actions() -> None:
+    template = _read("templates/admin/billing/payment_arrangement_detail.html")
+    projection = _read("app/services/web_billing_arrangements.py")
+    command = _read("app/services/payment_arrangement_staff_actions.py")
+
+    assert "{{ action_form(arrangement_action) }}" in template
+    assert "arrangement.status" not in template
+    assert "onsubmit=" not in template
+    assert "onclick=" not in template
+    assert '"{:,.2f}".format' not in template
+    assert "available_staff_action_previews(" in projection
+    assert "confirm_staff_action(" in command
+
+
+def test_dunning_templates_only_render_projected_safe_actions() -> None:
+    listing = _read("templates/admin/billing/dunning.html")
+    detail = _read("templates/admin/billing/dunning_detail.html")
+    confirmation = _read("templates/admin/billing/dunning_bulk_confirm.html")
+    projection = _read("app/services/web_billing_dunning.py")
+    command = _read("app/services/dunning_staff_actions.py")
+
+    assert "/bulk/{{ bulk_action.key }}/preview" in listing
+    assert "{{ action_form(case_action) }}" in detail
+    assert "{{ action_form(bulk_action_form) }}" in confirmation
+    for template in (listing, detail, confirmation):
+        assert "onsubmit=" not in template
+        assert "window.confirm" not in template
+        assert "return confirm" not in template
+    assert "dunning_bulk_action_contract" in projection
+    assert "preview_staff_action(" in projection
+    assert "confirm_staff_action(" in command
+    assert "except Exception" not in projection
+
+
+def test_invoice_batch_and_bulk_actions_use_server_review_forms() -> None:
+    batch = _read("templates/admin/billing/invoice_batch.html")
+    history = _read("templates/admin/billing/_invoice_batch_history_table.html")
+    invoices = _read("templates/admin/billing/invoices.html")
+    bulk_review = _read("templates/admin/billing/invoice_bulk_review.html")
+    aging = _read("templates/admin/billing/ar_aging.html")
+    batch_projection = _read("app/services/web_billing_invoice_batch.py")
+
+    assert "{{ action_form(batch_action_form) }}" in batch
+    assert "{{ action_form(bulk_action_form) }}" in bulk_review
+    assert "submitSelectionReview(actionKey)" in invoices
+    assert "/bulk/review/send" in aging
+    for template in (batch, history, invoices, bulk_review, aging):
+        assert "window.confirm" not in template
+        assert "return confirm" not in template
+        assert "onsubmit=" not in template
+    assert "preview_batch_action(" in batch_projection
+    assert "confirm_batch_action(" in batch_projection

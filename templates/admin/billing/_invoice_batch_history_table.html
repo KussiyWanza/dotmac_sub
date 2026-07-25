@@ -21,7 +21,11 @@
             {% for run in recent_runs %}
             <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
                 <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-600 dark:text-slate-300">{{ run.run_at | app_datetime('%b %d, %Y %H:%M', 'N/A') }}</td>
-                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-600 dark:text-slate-300">{{ run.billing_cycle|upper }}</td>
+                <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
+                    <span>{{ run.billing_cycle|upper }}</span>
+                    <span class="ml-1 text-xs text-slate-400">{{ run.launch_kind | replace('_', ' ') | title }}</span>
+                    {% if run.source_run_id %}<span class="block text-xs text-slate-400">from {{ run.source_run_id }}</span>{% endif %}
+                </td>
                 <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold text-slate-900 dark:text-white">{{ run.subscriptions_scanned }}</td>
                 <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold text-slate-900 dark:text-white">{{ run.subscriptions_billed }}</td>
                 <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold text-slate-900 dark:text-white">{{ run.invoices_created }}</td>
@@ -46,12 +50,14 @@
                         <a href="/admin/billing/invoices/batch/{{ run.id }}/export.csv" class="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
                             Download
                         </a>
-                        <form method="post" action="/admin/billing/invoices/batch/{{ run.id }}/retry" onsubmit="return confirm('Retry this billing run?');">
+                        {% if can_write and run.retry_allowed %}
+                        <form method="post" action="/admin/billing/invoices/batch/{{ run.id }}/retry/preview">
                             {% include "components/forms/csrf_input.html" %}
                             <button type="submit" class="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
-                                Retry
+                                Review retry
                             </button>
                         </form>
+                        {% endif %}
                     </div>
                 </td>
             </tr>

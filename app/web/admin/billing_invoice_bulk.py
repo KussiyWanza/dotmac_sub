@@ -17,11 +17,29 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import web_billing_invoice_bulk as web_billing_invoice_bulk_service
+from app.services import (
+    web_billing_invoice_bulk_actions as web_billing_invoice_bulk_actions_service,
+)
 from app.services import web_billing_overview as web_billing_overview_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import has_permission, require_permission
 
 router = APIRouter(prefix="/billing", tags=["web-admin-billing"])
 templates = Jinja2Templates(directory="templates")
+
+
+def _require_action_permission(
+    db: Session,
+    *,
+    auth: dict,
+    action: str,
+) -> None:
+    definition = (
+        web_billing_invoice_bulk_actions_service.invoice_bulk_review_action_definition(
+            action
+        )
+    )
+    if not has_permission(auth, db, definition.permission):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 def _require_confirmed_invoice_scope(
@@ -50,81 +68,97 @@ def _require_confirmed_invoice_scope(
 
 
 @router.post(
-    "/invoices/bulk/preview",
-    dependencies=[Depends(require_permission("billing:invoice:read"))],
+    "/invoices/bulk/review/{action}",
+    response_class=HTMLResponse,
 )
-def invoice_bulk_preview(
-    action: str = Form(...),
+def invoice_bulk_review(
+    request: Request,
+    action: str,
     invoice_ids: str = Form(...),
+    auth: dict = Depends(require_permission("billing:invoice:read")),
     db: Session = Depends(get_db),
 ):
+    normalized_action = action.replace("-", "_")
     try:
-        preview = web_billing_invoice_bulk_service.preview_invoice_bulk_action(
+        _require_action_permission(db, auth=auth, action=normalized_action)
+        state = web_billing_invoice_bulk_actions_service.build_invoice_bulk_review(
             db,
-            action=action,
+            action_key=normalized_action,
             invoice_ids_csv=invoice_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse(preview.as_response())
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/billing/invoice_bulk_review.html",
+        {
+            "request": request,
+            **state,
+            "active_page": "invoices",
+            "active_menu": "billing",
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+        },
+    )
 
 
 @router.post(
-    "/invoices/bulk/issue",
-    dependencies=[Depends(require_permission("billing:invoice:update"))],
+    "/invoices/bulk/confirm/{action}",
+    response_class=HTMLResponse,
 )
-def invoice_bulk_issue(
+def invoice_bulk_confirm(
     request: Request,
+    action: str,
     invoice_ids: str = Form(...),
-    confirmed: bool = Form(False),
+    confirmed: str | None = Form(None),
     expected_count: int | None = Form(None),
     expected_scope_token: str | None = Form(None),
+    auth: dict = Depends(require_permission("billing:invoice:read")),
     db: Session = Depends(get_db),
 ):
+    normalized_action = action.replace("-", "_")
+    _require_action_permission(db, auth=auth, action=normalized_action)
     _require_confirmed_invoice_scope(
         db,
-        action="issue",
+        action=normalized_action,
         invoice_ids=invoice_ids,
-        confirmed=confirmed,
+        confirmed=confirmed == "yes",
         expected_count=expected_count,
         expected_scope_token=expected_scope_token,
     )
-    result = web_billing_invoice_bulk_service.execute_audited_bulk_action_result(
-        db,
-        request,
-        action="issue",
-        invoice_ids_csv=invoice_ids,
-    )
-    return JSONResponse(result.as_response("Issued"))
+    if normalized_action == "generate_pdf":
+        from app.web.admin import get_current_user
 
-
-@router.post(
-    "/invoices/bulk/send",
-    dependencies=[Depends(require_permission("billing:invoice:update"))],
-)
-def invoice_bulk_send(
-    request: Request,
-    invoice_ids: str = Form(...),
-    confirmed: bool = Form(False),
-    expected_count: int | None = Form(None),
-    expected_scope_token: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    _require_confirmed_invoice_scope(
-        db,
-        action="send",
-        invoice_ids=invoice_ids,
-        confirmed=confirmed,
-        expected_count=expected_count,
-        expected_scope_token=expected_scope_token,
+        current_user = get_current_user(request) or {}
+        actor_id = current_user.get("subscriber_id")
+        pdf_result = web_billing_invoice_bulk_service.bulk_queue_pdf_exports(
+            db,
+            invoice_ids,
+            requested_by_id=str(actor_id) if actor_id else None,
+        )
+        note = (
+            f"Queued {len(pdf_result['queued'])} PDF export(s); "
+            f"{len(pdf_result['ready'])} already ready; "
+            f"{len(pdf_result['missing'])} skipped."
+        )
+    else:
+        result = web_billing_invoice_bulk_service.execute_audited_bulk_action_result(
+            db,
+            request,
+            action=normalized_action,
+            invoice_ids_csv=invoice_ids,
+        )
+        verbs = {
+            "issue": "Issued",
+            "send": "Queued notifications for",
+            "mark_paid": "Marked paid",
+        }
+        note = result.message(verbs[normalized_action])
+    return RedirectResponse(
+        url=f"/admin/billing/invoices?notice={quote(note)}",
+        status_code=303,
     )
-    result = web_billing_invoice_bulk_service.execute_audited_bulk_action_result(
-        db,
-        request,
-        action="send",
-        invoice_ids_csv=invoice_ids,
-    )
-    return JSONResponse(result.as_response("Queued notifications for"))
 
 
 @router.post(
@@ -175,78 +209,6 @@ def invoice_bulk_void_confirm(
     return RedirectResponse(
         url=f"/admin/billing/invoices?notice={quote(result.message('Voided'))}",
         status_code=303,
-    )
-
-
-@router.post(
-    "/invoices/bulk/mark-paid",
-    dependencies=[Depends(require_permission("billing:invoice:update"))],
-)
-def invoice_bulk_mark_paid(
-    request: Request,
-    invoice_ids: str = Form(...),
-    confirmed: bool = Form(False),
-    expected_count: int | None = Form(None),
-    expected_scope_token: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    _require_confirmed_invoice_scope(
-        db,
-        action="mark_paid",
-        invoice_ids=invoice_ids,
-        confirmed=confirmed,
-        expected_count=expected_count,
-        expected_scope_token=expected_scope_token,
-    )
-    result = web_billing_invoice_bulk_service.execute_audited_bulk_action_result(
-        db,
-        request,
-        action="mark_paid",
-        invoice_ids_csv=invoice_ids,
-    )
-    return JSONResponse(result.as_response("Marked paid"))
-
-
-@router.post(
-    "/invoices/bulk/generate-pdf",
-    dependencies=[Depends(require_permission("billing:invoice:read"))],
-)
-def invoice_bulk_generate_pdf(
-    request: Request,
-    invoice_ids: str = Form(...),
-    confirmed: bool = Form(False),
-    expected_count: int | None = Form(None),
-    expected_scope_token: str | None = Form(None),
-    db: Session = Depends(get_db),
-):
-    _require_confirmed_invoice_scope(
-        db,
-        action="generate_pdf",
-        invoice_ids=invoice_ids,
-        confirmed=confirmed,
-        expected_count=expected_count,
-        expected_scope_token=expected_scope_token,
-    )
-    from app.web.admin import get_current_user
-
-    current_user = get_current_user(request) or {}
-    actor_id = current_user.get("subscriber_id")
-    result = web_billing_invoice_bulk_service.bulk_queue_pdf_exports(
-        db,
-        invoice_ids,
-        requested_by_id=str(actor_id) if actor_id else None,
-    )
-    queued = len(result["queued"])
-    ready = len(result["ready"])
-    missing = len(result["missing"])
-    return JSONResponse(
-        {
-            "message": f"Queued {queued} PDF export(s), {ready} already ready, {missing} skipped",
-            "count": queued,
-            "queued": queued,
-            "ready": ready,
-            "skipped": missing,
-        }
     )
 
 

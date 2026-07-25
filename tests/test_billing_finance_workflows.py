@@ -15,10 +15,6 @@ from app.models.billing import (
 )
 from app.schemas.audit import AuditEventCreate
 from app.services import audit as audit_service
-from app.services.web_billing_invoice_batch import (
-    get_billing_run_schedule,
-    save_billing_run_schedule,
-)
 from app.services.web_billing_invoices import (
     apply_proforma_form_values,
     convert_proforma_to_final,
@@ -68,24 +64,6 @@ def test_convert_proforma_to_final_updates_status_and_clears_marker(
     assert converted.status == InvoiceStatus.issued
     assert "[PROFORMA]" not in (converted.memo or "")
     assert not (converted.invoice_number or "").startswith("PF-")
-
-
-def test_billing_run_schedule_can_be_saved_and_loaded(db_session):
-    saved = save_billing_run_schedule(
-        db_session,
-        enabled=True,
-        run_day="5",
-        run_time="03:30",
-        timezone="Africa/Lagos",
-        billing_cycle="monthly",
-        partner_ids=[],
-    )
-    loaded = get_billing_run_schedule(db_session)
-
-    assert saved["enabled"] is True
-    assert loaded["run_day"] == 5
-    assert loaded["run_time"] == "03:30"
-    assert loaded["timezone"] == "Africa/Lagos"
 
 
 def test_reconciliation_builds_unmatched_and_duplicate_views(db_session, subscriber):

@@ -65,11 +65,12 @@
 
     {% if selected_bucket %}
     <div class="flex flex-wrap items-center justify-end gap-3">
-        {% if selected_bucket != 'current' and bucket_invoice_ids[selected_bucket] %}
-        <form method="post" action="/admin/billing/invoices/bulk/send" onsubmit="return confirm('Send reminders for all invoices in this aging bucket?');">
+        {% if can_send_reminders and selected_bucket != 'current' and bucket_invoice_ids[selected_bucket] %}
+        <form method="post" action="/admin/billing/invoices/bulk/review/send">
+            {% include "components/forms/csrf_input.html" %}
             <input type="hidden" name="invoice_ids" value="{{ bucket_invoice_ids[selected_bucket] }}" />
             <button type="submit" class="inline-flex items-center rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700">
-                Send Reminders ({{ counts[selected_bucket] }})
+                Review reminders ({{ counts[selected_bucket] }})
             </button>
         </form>
         {% endif %}

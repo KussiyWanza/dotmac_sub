@@ -1,102 +1,74 @@
 {% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
 {% from "components/ui/macros.html" import
-    ambient_background, detail_header, info_row, info_grid,
-    table_head, table_row, status_badge, card,
-    animation_styles
+    detail_header, info_row, info_grid, table_head, table_row, status_badge, card
 %}
 
 {% block title %}Payment Arrangement Detail - Admin{% endblock %}
 
 {% block content %}
-{{ ambient_background("emerald", "teal") }}
-
-<div class="relative space-y-8">
-
-    {# Header #}
-    {% set st = arrangement.status.value if arrangement.status else 'pending' %}
-    {% set arrangement_currency = arrangement.invoice.currency if arrangement.invoice and arrangement.invoice.currency else 'NGN' %}
-    {% if st == 'active' %}
-        {% set badge_variant = "active" %}
-    {% elif st == 'pending' %}
-        {% set badge_variant = "pending" %}
-    {% elif st == 'completed' %}
-        {% set badge_variant = "success" %}
-    {% elif st == 'defaulted' %}
-        {% set badge_variant = "error" %}
-    {% else %}
-        {% set badge_variant = "neutral" %}
-    {% endif %}
-
+<div class="space-y-6">
     {{ detail_header(
         back_url="/admin/billing/payment-arrangements",
         back_label="Payment Arrangements",
         icon='<svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>',
         title="Payment Arrangement",
-        status=st | replace('_', ' ') | title,
-        status_variant=badge_variant,
+        status=arrangement_detail.status_label,
+        status_variant=arrangement_detail.status_variant,
         color="emerald"
     ) }}
 
-    {# Summary Cards #}
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    {% if page_error %}
+    <div class="status-panel status-panel-negative status-foreground status-tone-negative rounded-lg border px-4 py-3 text-sm"
+         role="alert"
+         aria-live="assertive">
+        {{ page_error }}
+    </div>
+    {% endif %}
 
-        {# Arrangement Details #}
+    <div class="grid grid-cols-1 gap-6 xl:grid-cols-2">
         {% call card(title="Arrangement Details", icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>', color="emerald") %}
             {% call info_grid() %}
-                {{ info_row("Total Amount", arrangement_currency ~ " " ~ "{:,.2f}".format(arrangement.total_amount)) }}
-                {{ info_row("Installment Amount", arrangement_currency ~ " " ~ "{:,.2f}".format(arrangement.installment_amount)) }}
-                {{ info_row("Frequency", arrangement.frequency.value | replace('_', ' ') | title if arrangement.frequency else 'N/A') }}
-                {{ info_row("Progress", "{} / {} installments".format(arrangement.installments_paid, arrangement.installments_total)) }}
-                {{ info_row("Start Date", arrangement.start_date.strftime('%Y-%m-%d') if arrangement.start_date else 'N/A') }}
-                {{ info_row("End Date", arrangement.end_date.strftime('%Y-%m-%d') if arrangement.end_date else 'N/A') }}
-                {{ info_row("Next Due Date", arrangement.next_due_date.strftime('%Y-%m-%d') if arrangement.next_due_date else 'N/A') }}
-                {{ info_row("Created", arrangement.created_at | app_datetime('%Y-%m-%d %H:%M', 'N/A')) }}
+                {{ info_row("Total Amount", arrangement_detail.total_amount) }}
+                {{ info_row("Installment Amount", arrangement_detail.installment_amount) }}
+                {{ info_row("Frequency", arrangement_detail.frequency) }}
+                {{ info_row("Progress", arrangement_detail.progress) }}
+                {{ info_row("Start Date", arrangement_detail.start_date) }}
+                {{ info_row("End Date", arrangement_detail.end_date) }}
+                {{ info_row("Next Due Date", arrangement_detail.next_due_date) }}
+                {{ info_row("Created", arrangement_detail.created_at) }}
             {% endcall %}
-            {% if arrangement.notes %}
+            {% if arrangement_detail.notes %}
             <div class="mt-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-700/50">
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Notes</p>
-                <p class="text-sm text-slate-700 dark:text-slate-300">{{ arrangement.notes }}</p>
+                <p class="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Notes</p>
+                <p class="text-sm text-slate-700 dark:text-slate-300">{{ arrangement_detail.notes }}</p>
             </div>
             {% endif %}
         {% endcall %}
 
-        {# Actions #}
-        {% call card(title="Actions", icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>', color="emerald") %}
-            <div class="space-y-3">
-                {% if st == 'pending' %}
-                <form method="post" action="/admin/billing/payment-arrangements/{{ arrangement.id }}/approve" onsubmit="return confirm('Approve this payment arrangement?');">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit"
-                            class="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 transition-colors">
-                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        Approve Arrangement
-                    </button>
-                </form>
-                {% endif %}
-                {% if st in ['pending', 'active'] %}
-                <form method="post" action="/admin/billing/payment-arrangements/{{ arrangement.id }}/cancel">
-                    {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" onclick="return confirm('Cancel this payment arrangement?')"
-                            class="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-rose-300 bg-white px-4 py-2.5 text-sm font-medium text-rose-700 shadow-sm hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-800 dark:text-rose-400 dark:hover:bg-rose-900/20 transition-colors">
-                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                        Cancel Arrangement
-                    </button>
-                </form>
-                {% endif %}
-                {% if st == 'completed' or st == 'canceled' or st == 'defaulted' %}
-                <p class="text-center text-sm text-slate-500 dark:text-slate-400 py-4">
-                    No actions available for {{ st }} arrangements.
+        <section aria-labelledby="arrangement-actions-title" class="space-y-4">
+            <div>
+                <h2 id="arrangement-actions-title" class="text-lg font-semibold text-slate-900 dark:text-white">Safe actions</h2>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                    Each action is bound to the current arrangement and installment evidence.
                 </p>
-                {% endif %}
             </div>
-        {% endcall %}
-
+            {% if arrangement_actions %}
+                {% for arrangement_action in arrangement_actions %}
+                    {{ action_form(arrangement_action) }}
+                {% endfor %}
+            {% else %}
+            <div class="rounded-lg border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                No staff action is available for this arrangement.
+            </div>
+            {% endif %}
+        </section>
     </div>
 
-    {# Installments Table #}
-    <div class="animate-fade-in-up overflow-hidden rounded-2xl border border-slate-200/60 bg-white/80 shadow-sm backdrop-blur-sm dark:border-slate-700/60 dark:bg-slate-800/80" style="animation-delay: 100ms;">
-        <div class="border-b border-slate-200 bg-gradient-to-r from-emerald-50 to-teal-50 px-6 py-4 dark:border-slate-700 dark:from-emerald-900/20 dark:to-teal-900/20">
-            <h3 class="text-lg font-semibold text-slate-900 dark:text-white">Installments</h3>
+    <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"
+             aria-labelledby="installments-title">
+        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+            <h2 id="installments-title" class="text-lg font-semibold text-slate-900 dark:text-white">Installments</h2>
         </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
@@ -105,63 +77,32 @@
                     {"label": "Amount"},
                     {"label": "Due Date"},
                     {"label": "Status"},
-                    {"label": "Paid At"},
-                    {"label": "Actions"}
+                    {"label": "Paid At"}
                 ]) }}
                 <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                    {% if installments %}
-                    {% for inst in installments %}
+                    {% if arrangement_detail.installments %}
+                    {% for installment in arrangement_detail.installments %}
                     {% call table_row(color="emerald") %}
                         <td class="whitespace-nowrap px-6 py-4 text-sm font-medium text-slate-900 dark:text-white">
-                            {{ inst.installment_number }}
+                            {{ installment.number }}
                         </td>
-                        <td class="whitespace-nowrap px-6 py-4">
-                            <span class="text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-                                {{ arrangement_currency }} {{ "{:,.2f}".format(inst.amount) }}
-                            </span>
+                        <td class="whitespace-nowrap px-6 py-4 text-sm font-semibold tabular-nums text-slate-900 dark:text-white">
+                            {{ installment.amount }}
                         </td>
                         <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-600 dark:text-slate-300">
-                            {{ inst.due_date.strftime('%Y-%m-%d') if inst.due_date else 'N/A' }}
+                            {{ installment.due_date }}
                         </td>
                         <td class="whitespace-nowrap px-6 py-4">
-                            {% set ist = inst.status.value if inst.status else 'pending' %}
-                            {% if ist == 'paid' %}
-                                {{ status_badge("Paid", variant="active") }}
-                            {% elif ist == 'due' %}
-                                {{ status_badge("Due", variant="info") }}
-                            {% elif ist == 'overdue' %}
-                                {{ status_badge("Overdue", variant="error") }}
-                            {% elif ist == 'waived' %}
-                                {{ status_badge("Waived", variant="neutral") }}
-                            {% else %}
-                                {{ status_badge("Pending", variant="pending") }}
-                            {% endif %}
+                            {{ status_badge(installment.status_label, variant=installment.status_variant) }}
                         </td>
                         <td class="whitespace-nowrap px-6 py-4 text-sm text-slate-500 dark:text-slate-400">
-                            {{ inst.paid_at | app_datetime('%Y-%m-%d %H:%M', '—') }}
-                        </td>
-                        <td class="whitespace-nowrap px-6 py-4">
-                            {% if next_actionable_installment_id and (inst.id | string) == next_actionable_installment_id %}
-                            <form method="post" action="/admin/billing/payment-arrangements/{{ arrangement.id }}/record-payment"
-                                  class="flex items-center gap-2">
-                                {% include "components/forms/csrf_input.html" %}
-                                <input type="text" name="note" placeholder="Note (optional)" maxlength="255"
-                                       class="w-40 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 placeholder-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                                <button type="submit" onclick="return confirm('Record payment for installment #{{ inst.installment_number }} ({{ arrangement_currency }} {{ '{:,.2f}'.format(inst.amount) }})?')"
-                                        class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-700 transition-colors">
-                                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                    Record Payment
-                                </button>
-                            </form>
-                            {% else %}
-                            <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
-                            {% endif %}
+                            {{ installment.paid_at }}
                         </td>
                     {% endcall %}
                     {% endfor %}
                     {% else %}
                     <tr>
-                        <td colspan="6" class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+                        <td colspan="5" class="px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
                             No installments found.
                         </td>
                     </tr>
@@ -169,9 +110,6 @@
                 </tbody>
             </table>
         </div>
-    </div>
-
+    </section>
 </div>
-
-{{ animation_styles() }}
 {% endblock %}

@@ -1,13 +1,18 @@
 """Service for managing payment arrangements."""
 
+import json
 import logging
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
+from hashlib import sha256
 from typing import cast
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
@@ -20,6 +25,7 @@ from app.models.payment_arrangement import (
 )
 from app.services import settings_spec
 from app.services.common import apply_ordering, apply_pagination, coerce_uuid
+from app.services.domain_errors import DomainError
 from app.services.response import ListResponseMixin
 
 logger = logging.getLogger(__name__)
@@ -30,6 +36,50 @@ DEFAULT_OVERDUE_DEFAULT_THRESHOLD = 2
 MIN_ALLOWED_INSTALLMENTS = 2
 MAX_ALLOWED_INSTALLMENTS = 60
 MAX_ALLOWED_OVERDUE_DEFAULT_THRESHOLD = 5
+
+
+class PaymentArrangementStaffAction(StrEnum):
+    """Staff actions whose impact must be previewed before execution."""
+
+    approve = "approve"
+    cancel = "cancel"
+    record_payment = "record_payment"
+
+
+class PaymentArrangementStaffActionError(DomainError):
+    """Stable error contract for staff arrangement previews and transitions."""
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentArrangementStaffActionPreview:
+    """Owner-authored facts for one exact staff action."""
+
+    action: PaymentArrangementStaffAction
+    arrangement_id: UUID
+    account_id: UUID
+    current_status: ArrangementStatus
+    resulting_status: ArrangementStatus
+    currency: str
+    total_amount: Decimal
+    installments_paid: int
+    installments_total: int
+    installment_id: UUID | None
+    installment_number: int | None
+    installment_amount: Decimal | None
+    collection_shield_change: str
+    fingerprint: str
+
+
+def _staff_action_error(
+    suffix: str,
+    message: str,
+    **details: object,
+) -> PaymentArrangementStaffActionError:
+    return PaymentArrangementStaffActionError(
+        code=f"financial.payment_arrangements.{suffix}",
+        message=message,
+        details=details,
+    )
 
 
 def _resolve_int_setting(
@@ -167,6 +217,304 @@ def bulk_active_arrangement_shield_reasons(
     for account_id, arrangement_id in rows:
         reasons.setdefault(account_id, f"active payment arrangement {arrangement_id}")
     return reasons
+
+
+def _staff_action_state(
+    db: Session,
+    arrangement_id: object,
+    *,
+    lock: bool,
+) -> tuple[PaymentArrangement, list[PaymentArrangementInstallment]]:
+    arrangement_stmt = select(PaymentArrangement).where(
+        PaymentArrangement.id == coerce_uuid(arrangement_id),
+        PaymentArrangement.is_active.is_(True),
+    )
+    installment_stmt = (
+        select(PaymentArrangementInstallment)
+        .where(
+            PaymentArrangementInstallment.arrangement_id == coerce_uuid(arrangement_id),
+            PaymentArrangementInstallment.is_active.is_(True),
+        )
+        .order_by(PaymentArrangementInstallment.installment_number.asc())
+    )
+    if lock:
+        arrangement_stmt = arrangement_stmt.with_for_update()
+        installment_stmt = installment_stmt.with_for_update()
+    arrangement = db.scalar(arrangement_stmt)
+    if arrangement is None:
+        raise _staff_action_error(
+            "not_found",
+            "Payment arrangement not found.",
+            arrangement_id=str(arrangement_id),
+        )
+    installments = list(db.scalars(installment_stmt).all())
+    return arrangement, installments
+
+
+def _next_actionable_from(
+    installments: list[PaymentArrangementInstallment],
+) -> PaymentArrangementInstallment | None:
+    actionable_statuses = {
+        InstallmentStatus.overdue,
+        InstallmentStatus.due,
+        InstallmentStatus.pending,
+    }
+    return next(
+        (
+            installment
+            for installment in installments
+            if installment.status in actionable_statuses
+        ),
+        None,
+    )
+
+
+def _staff_action_fingerprint(
+    *,
+    arrangement: PaymentArrangement,
+    installments: list[PaymentArrangementInstallment],
+    action: PaymentArrangementStaffAction,
+    installment: PaymentArrangementInstallment | None,
+) -> str:
+    payload = {
+        "action": action.value,
+        "arrangement": {
+            "id": str(arrangement.id),
+            "status": arrangement.status.value,
+            "updated_at": arrangement.updated_at.isoformat(),
+            "installments_paid": arrangement.installments_paid,
+            "installments_total": arrangement.installments_total,
+            "next_due_date": (
+                arrangement.next_due_date.isoformat()
+                if arrangement.next_due_date
+                else None
+            ),
+        },
+        "installments": [
+            {
+                "id": str(item.id),
+                "number": item.installment_number,
+                "status": item.status.value,
+                "amount": str(item.amount),
+                "due_date": item.due_date.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in installments
+        ],
+        "target_installment_id": str(installment.id) if installment else None,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _build_staff_action_preview(
+    db: Session,
+    *,
+    arrangement: PaymentArrangement,
+    installments: list[PaymentArrangementInstallment],
+    action: PaymentArrangementStaffAction,
+) -> PaymentArrangementStaffActionPreview:
+    installment: PaymentArrangementInstallment | None = None
+    resulting_status = arrangement.status
+    shield_change = "No collection-shield change."
+
+    if action is PaymentArrangementStaffAction.approve:
+        if arrangement.status is not ArrangementStatus.pending:
+            raise _staff_action_error(
+                "action_not_available",
+                "Only a pending payment arrangement can be approved.",
+                action=action.value,
+                status=arrangement.status.value,
+            )
+        resulting_status = ArrangementStatus.active
+        shield_change = (
+            "The arrangement will begin shielding this account from collection."
+        )
+    elif action is PaymentArrangementStaffAction.cancel:
+        if arrangement.status not in {
+            ArrangementStatus.pending,
+            ArrangementStatus.active,
+        }:
+            raise _staff_action_error(
+                "action_not_available",
+                "Only a pending or active payment arrangement can be canceled.",
+                action=action.value,
+                status=arrangement.status.value,
+            )
+        resulting_status = ArrangementStatus.canceled
+        shield_change = (
+            "The active collection shield will be removed."
+            if arrangement.status is ArrangementStatus.active
+            else "The pending arrangement will never create a collection shield."
+        )
+    else:
+        if arrangement.status not in {
+            ArrangementStatus.active,
+            ArrangementStatus.defaulted,
+        }:
+            raise _staff_action_error(
+                "action_not_available",
+                "Installment payment can be recorded only on an active or defaulted arrangement.",
+                action=action.value,
+                status=arrangement.status.value,
+            )
+        installment = _next_actionable_from(installments)
+        if installment is None:
+            raise _staff_action_error(
+                "action_not_available",
+                "No unpaid installment is available to record.",
+                action=action.value,
+                status=arrangement.status.value,
+            )
+        if (
+            arrangement.status is ArrangementStatus.active
+            and arrangement.installments_paid + 1 >= arrangement.installments_total
+        ):
+            resulting_status = ArrangementStatus.completed
+            shield_change = (
+                "Completing the arrangement will remove its collection shield."
+            )
+        elif arrangement.status is ArrangementStatus.defaulted:
+            shield_change = (
+                "The installment will be recorded, but the defaulted arrangement "
+                "will not be reactivated."
+            )
+
+    from app.services import display_format
+
+    currency = (
+        arrangement.invoice.currency
+        if arrangement.invoice and arrangement.invoice.currency
+        else display_format.default_currency(db)
+    )
+    return PaymentArrangementStaffActionPreview(
+        action=action,
+        arrangement_id=arrangement.id,
+        account_id=arrangement.subscriber_id,
+        current_status=arrangement.status,
+        resulting_status=resulting_status,
+        currency=display_format.currency_code(currency),
+        total_amount=Decimal(str(arrangement.total_amount)),
+        installments_paid=arrangement.installments_paid,
+        installments_total=arrangement.installments_total,
+        installment_id=installment.id if installment else None,
+        installment_number=installment.installment_number if installment else None,
+        installment_amount=(
+            Decimal(str(installment.amount)) if installment is not None else None
+        ),
+        collection_shield_change=shield_change,
+        fingerprint=_staff_action_fingerprint(
+            arrangement=arrangement,
+            installments=installments,
+            action=action,
+            installment=installment,
+        ),
+    )
+
+
+def preview_staff_action(
+    db: Session,
+    *,
+    arrangement_id: object,
+    action: PaymentArrangementStaffAction,
+    lock: bool = False,
+) -> PaymentArrangementStaffActionPreview:
+    """Preview one action from canonical arrangement and installment state."""
+
+    arrangement, installments = _staff_action_state(
+        db,
+        arrangement_id,
+        lock=lock,
+    )
+    return _build_staff_action_preview(
+        db,
+        arrangement=arrangement,
+        installments=installments,
+        action=action,
+    )
+
+
+def available_staff_action_previews(
+    db: Session,
+    *,
+    arrangement_id: object,
+) -> tuple[PaymentArrangementStaffActionPreview, ...]:
+    """Return every action currently permitted by the arrangement owner."""
+
+    arrangement, installments = _staff_action_state(db, arrangement_id, lock=False)
+    previews: list[PaymentArrangementStaffActionPreview] = []
+    for action in PaymentArrangementStaffAction:
+        try:
+            previews.append(
+                _build_staff_action_preview(
+                    db,
+                    arrangement=arrangement,
+                    installments=installments,
+                    action=action,
+                )
+            )
+        except PaymentArrangementStaffActionError as exc:
+            if not exc.code.endswith(".action_not_available"):
+                raise
+    return tuple(previews)
+
+
+def stage_staff_action(
+    db: Session,
+    *,
+    preview: PaymentArrangementStaffActionPreview,
+    actor_id: str,
+    note: str | None,
+) -> tuple[PaymentArrangement, PaymentArrangementInstallment | None]:
+    """Apply a locked, freshly recomputed staff preview without committing."""
+
+    arrangement = db.get(PaymentArrangement, preview.arrangement_id)
+    if arrangement is None:
+        raise _staff_action_error(
+            "not_found",
+            "Payment arrangement not found.",
+            arrangement_id=str(preview.arrangement_id),
+        )
+    installment: PaymentArrangementInstallment | None = None
+    if preview.action is PaymentArrangementStaffAction.approve:
+        arrangement.status = ArrangementStatus.active
+        arrangement.approved_at = datetime.now(UTC)
+        arrangement.approved_by_user_id = actor_id
+        first_installment = next(
+            (
+                item
+                for item in arrangement.installments
+                if item.installment_number == 1 and item.is_active
+            ),
+            None,
+        )
+        if first_installment and first_installment.due_date <= date.today():
+            first_installment.status = InstallmentStatus.due
+    elif preview.action is PaymentArrangementStaffAction.cancel:
+        arrangement.status = ArrangementStatus.canceled
+    else:
+        if preview.installment_id is None:
+            raise _staff_action_error(
+                "incomplete_evidence",
+                "Installment payment preview has no target installment.",
+            )
+        installment = db.get(
+            PaymentArrangementInstallment,
+            preview.installment_id,
+        )
+        if installment is None:
+            raise _staff_action_error(
+                "incomplete_evidence",
+                "The previewed installment is no longer available.",
+                installment_id=str(preview.installment_id),
+            )
+        PaymentArrangements._mark_installment_paid(
+            db,
+            installment,
+            notes=note,
+        )
+    db.flush()
+    return arrangement, installment
 
 
 class PaymentArrangements(ListResponseMixin):

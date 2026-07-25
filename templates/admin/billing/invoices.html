@@ -144,26 +144,17 @@ function invoiceBulkActions(initialContract) {
             }
         },
 
-        csrfToken() {
-            return document.querySelector('meta[name="csrf-token"]')?.content ||
-                   document.querySelector('[name="_csrf_token"]')?.value || '';
-        },
-
         filteredExportUrl() {
             return `/admin/billing/invoices/export.csv${this.currentQuery}`;
         },
 
-        toast(message, type = 'info') {
-            window.dispatchEvent(new CustomEvent('show-toast', {
-                detail: { message, type },
-            }));
-        },
-
-        bulkVoid() {
+        submitSelectionReview(actionKey) {
             if (this.selectedIds.length === 0) return;
             const form = document.createElement('form');
             form.method = 'POST';
-            form.action = '/admin/billing/invoices/bulk/void';
+            form.action = actionKey === 'void'
+                ? '/admin/billing/invoices/bulk/void'
+                : `/admin/billing/invoices/bulk/review/${actionKey.replaceAll('_', '-')}`;
             const ids = document.createElement('input');
             ids.type = 'hidden';
             ids.name = 'invoice_ids';
@@ -182,87 +173,22 @@ function invoiceBulkActions(initialContract) {
             form.submit();
         },
 
-        async previewAction(actionKey) {
-            const body = new URLSearchParams({
-                action: actionKey,
-                invoice_ids: this.selectedIds.join(','),
-            });
-            const response = await fetch('/admin/billing/invoices/bulk/preview', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-CSRF-Token': this.csrfToken(),
-                },
-                body,
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(payload.detail || payload.message || 'Unable to preview invoice action');
-            }
-            return payload;
-        },
-
-        async executeAction(actionKey, preview) {
-            const endpoint = actionKey.replaceAll('_', '-');
-            const body = new URLSearchParams({
-                invoice_ids: this.selectedIds.join(','),
-                confirmed: 'true',
-                expected_count: String(preview.matched_count),
-                expected_scope_token: preview.scope_token,
-            });
-            const response = await fetch(`/admin/billing/invoices/bulk/${endpoint}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-CSRF-Token': this.csrfToken(),
-                },
-                body,
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(payload.detail || payload.message || 'Invoice action failed');
-            }
-            this.toast(payload.message || 'Invoice action completed', payload.count === 0 ? 'info' : 'success');
-            window.location.reload();
-        },
-
         exportSelection(actionKey) {
             const query = encodeURIComponent(this.selectedIds.join(','));
             const endpoint = actionKey === 'export_csv' ? 'export.csv' : 'export.zip';
             window.location.href = `/admin/billing/invoices/bulk/${endpoint}?invoice_ids=${query}`;
         },
 
-        async runBulkAction(actionKey) {
+        runBulkAction(actionKey) {
             const action = this.actionDefinition(actionKey);
             const state = this.actionState(actionKey);
             if (!action || !state.enabled || this.busyAction !== null) return;
-            if (actionKey === 'void') {
-                this.bulkVoid();
-                return;
-            }
             if (actionKey === 'export_csv' || actionKey === 'export_pdf') {
                 this.exportSelection(actionKey);
                 return;
             }
-
             this.busyAction = actionKey;
-            try {
-                const preview = await this.previewAction(actionKey);
-                if (preview.eligible_count === 0) {
-                    this.toast('No selected invoices are eligible for this action', 'info');
-                    return;
-                }
-                let prompt = `${action.label} ${preview.eligible_count} invoice(s)?`;
-                if (preview.skipped_count > 0) {
-                    prompt += ` ${preview.skipped_count} selected invoice(s) will be skipped.`;
-                }
-                if (action.requires_confirmation && !window.confirm(prompt)) return;
-                await this.executeAction(actionKey, preview);
-            } catch (error) {
-                this.toast(error.message || 'Invoice action failed', 'error');
-            } finally {
-                this.busyAction = null;
-            }
+            this.submitSelectionReview(actionKey);
         },
     };
 }

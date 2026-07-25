@@ -108,6 +108,14 @@ def test_payment_configuration_copy_preserves_checkout_owner_boundary():
     assert "connector-backed Payment Routing owns checkout" in owner
 
 
+def test_payment_configuration_review_requires_explicit_operator_confirmation():
+    projection = _read("app/services/web_payment_configuration.py")
+
+    assert "ActionConfirmation(" in projection
+    assert 'ActionHiddenValue("confirmed", "yes")' not in projection
+    assert 'ActionHiddenValue("preview_fingerprint", preview.fingerprint)' in projection
+
+
 def test_payment_configuration_templates_compile():
     environment = Jinja2Templates(directory=ROOT / "templates").env
     for template in (

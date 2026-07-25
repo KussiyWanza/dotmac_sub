@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.services import payment_configuration_staff_actions as staff_actions
 from app.services.action_forms import (
+    ActionConfirmation,
     ActionForm,
     ActionHiddenValue,
     ActionTone,
@@ -44,9 +45,13 @@ def build_action_form(
         ),
         submit_label=f"Confirm {action_label}",
         fields=(),
-        hidden_values=(
-            ActionHiddenValue("preview_fingerprint", preview.fingerprint),
-            ActionHiddenValue("confirmed", "yes"),
+        hidden_values=(ActionHiddenValue("preview_fingerprint", preview.fingerprint),),
+        confirmation=ActionConfirmation(
+            title=f"Confirm {action_label.lower()}",
+            message=(
+                "I reviewed the exact configuration impact above and want to "
+                "apply this lifecycle change."
+            ),
         ),
         tone=(
             ActionTone.negative

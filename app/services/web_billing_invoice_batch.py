@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import io
+import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from app.models.billing import BillingRunSchedule, BillingRunStatus
+from app.models.billing import BillingRun, BillingRunStatus
 from app.models.catalog import BillingCycle
-from app.models.domain_settings import SettingDomain
-from app.models.subscription_engine import SettingValueType
-from app.schemas.settings import DomainSettingUpdate
 from app.services import billing as billing_service
 from app.services import billing_automation as billing_automation_service
-from app.services import domain_settings as domain_settings_service
-from app.timezone import APP_TIMEZONE_NAME
+from app.services import display_format
+from app.services.action_forms import (
+    ActionConfirmation,
+    ActionForm,
+    ActionHiddenValue,
+    ActionTone,
+)
+from app.services.domain_errors import DomainError
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +36,67 @@ INVOICE_BATCH_ERROR_MESSAGE = (
 INVOICE_BATCH_PREVIEW_ERROR_MESSAGE = (
     "Invoice batch preview could not be prepared. Check the selected cycle and date."
 )
+INVOICE_BATCH_STALE_MESSAGE = (
+    "The billable subscription scope changed after preview. Review the updated "
+    "impact before confirming again."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceBatchSubscriptionImpact:
+    subscription_id: str
+    account_id: str
+    offer_name: str
+    amount: Decimal
+    currency: str
+    period_start: str
+    period_end: str
+    pending_activation: bool
+
+    @property
+    def amount_display(self) -> str:
+        return display_format.format_money(self.amount, currency=self.currency)
+
+
+@dataclass(frozen=True, slots=True)
+class InvoiceBatchPreview:
+    billing_cycle: str | None
+    billing_date: str
+    source_run_id: str | None
+    invoice_count: int
+    account_count: int
+    subscription_count: int
+    skipped_count: int
+    totals_by_currency: tuple[tuple[str, Decimal], ...]
+    subscriptions: tuple[InvoiceBatchSubscriptionImpact, ...]
+    fingerprint: str
+
+    @property
+    def total_display(self) -> str:
+        return display_format.format_currency_groups(dict(self.totals_by_currency))
+
+
+class InvoiceBatchActionError(DomainError):
+    """Safe staff batch action error."""
+
+
+def _get_billing_run(db, run_id: str) -> BillingRun:
+    try:
+        parsed_id = UUID(run_id)
+    except (TypeError, ValueError) as exc:
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.run_not_found",
+            message="Billing run not found.",
+            details={"run_id": run_id},
+        ) from exc
+    run = db.get(BillingRun, parsed_id)
+    if run is None:
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.run_not_found",
+            message="Billing run not found.",
+            details={"run_id": run_id},
+        )
+    return run
 
 
 def parse_billing_cycle(value: str | None) -> BillingCycle | None:
@@ -40,209 +108,268 @@ def parse_billing_cycle(value: str | None) -> BillingCycle | None:
         raise ValueError("Invalid billing cycle") from exc
 
 
-def run_batch(
-    db,
-    *,
-    billing_cycle: str | None,
-    parse_cycle_fn: Callable[[str | None], Any] = parse_billing_cycle,
-) -> str:
-    """Run invoice cycle and return user-facing note."""
-    try:
-        summary = billing_automation_service.run_invoice_cycle(
-            db=db,
-            billing_cycle=parse_cycle_fn(billing_cycle),
-            dry_run=False,
-        )
-        return (
-            "Batch run completed. "
-            f"Invoices created: {summary.get('invoices_created', 0)} · "
-            f"Subscriptions billed: {summary.get('subscriptions_billed', 0)} · "
-            f"Skipped: {summary.get('skipped', 0)}."
-        )
-    except Exception:
-        logger.exception("Invoice batch run failed")
-        return INVOICE_BATCH_ERROR_MESSAGE
-
-
-def retry_batch_run(
-    db,
-    *,
-    run_id: str,
-    parse_cycle_fn: Callable[[str | None], Any] = parse_billing_cycle,
-) -> str:
-    """Retry a previous billing run using its billing cycle."""
-    run = billing_service.billing_runs.get(db, run_id)
-    cycle_value = run.billing_cycle or None
-    return run_batch(
-        db,
-        billing_cycle=cycle_value,
-        parse_cycle_fn=parse_cycle_fn,
-    )
-
-
 def _parse_run_date(billing_date: str | None) -> datetime | None:
     if not billing_date:
         return None
     return datetime.strptime(billing_date, "%Y-%m-%d").replace(tzinfo=UTC)
 
 
-def preview_batch(
+def _preview_fingerprint(
+    *,
+    billing_cycle: str | None,
+    billing_date: str,
+    source_run_id: str | None,
+    invoice_count: int,
+    account_count: int,
+    skipped_count: int,
+    totals_by_currency: tuple[tuple[str, Decimal], ...],
+    subscriptions: tuple[InvoiceBatchSubscriptionImpact, ...],
+) -> str:
+    payload = {
+        "billing_cycle": billing_cycle,
+        "billing_date": billing_date,
+        "source_run_id": source_run_id,
+        "invoice_count": invoice_count,
+        "account_count": account_count,
+        "skipped_count": skipped_count,
+        "totals_by_currency": [
+            [currency, str(amount)] for currency, amount in totals_by_currency
+        ],
+        "subscriptions": [
+            {
+                "subscription_id": row.subscription_id,
+                "account_id": row.account_id,
+                "offer_name": row.offer_name,
+                "amount": str(row.amount),
+                "currency": row.currency,
+                "period_start": row.period_start,
+                "period_end": row.period_end,
+                "pending_activation": row.pending_activation,
+            }
+            for row in subscriptions
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def preview_batch_action(
     db,
     *,
     billing_cycle: str | None,
     billing_date: str | None,
-    separate_by_partner: bool = False,
+    source_run_id: str | None = None,
     parse_cycle_fn: Callable[[str | None], Any] = parse_billing_cycle,
-) -> dict[str, object]:
-    """Run dry-run invoice preview and return JSON payload."""
-    run_date = _parse_run_date(billing_date)
+) -> InvoiceBatchPreview:
+    """Build a deterministic, side-effect-free postpaid invoice batch preview."""
+    run_date = _parse_run_date(billing_date) or datetime.now(UTC)
+    normalized_date = run_date.date().isoformat()
+    parsed_cycle = parse_cycle_fn(billing_cycle)
+    normalized_cycle = (
+        parsed_cycle.value if hasattr(parsed_cycle, "value") else billing_cycle or None
+    )
 
     summary = billing_automation_service.run_invoice_cycle(
         db=db,
-        billing_cycle=parse_cycle_fn(billing_cycle),
+        billing_cycle=parsed_cycle,
         dry_run=True,
         run_at=run_date,
+        run_prepaid_renewals=False,
     )
-    total_amount = summary.get("total_amount", Decimal("0.00"))
-    subscriptions = summary.get("subscriptions", [])
-    partner_preview: list[dict[str, object]] = []
-    if separate_by_partner:
-        from app.models.subscriber import Reseller, Subscriber
-
-        account_ids = [
-            s.get("account_id") for s in subscriptions if s.get("account_id")
-        ]
-        subscribers = (
-            db.query(Subscriber).filter(Subscriber.id.in_(account_ids)).all()
-            if account_ids
-            else []
+    raw_subscriptions = summary.get("subscriptions", [])
+    subscriptions = tuple(
+        sorted(
+            (
+                InvoiceBatchSubscriptionImpact(
+                    subscription_id=str(row.get("id") or ""),
+                    account_id=str(row.get("account_id") or ""),
+                    offer_name=str(row.get("offer_name") or "Unknown"),
+                    amount=Decimal(str(row.get("amount") or "0.00")),
+                    currency=str(row.get("currency") or "NGN").upper(),
+                    period_start=str(row.get("period_start") or ""),
+                    period_end=str(row.get("period_end") or ""),
+                    pending_activation=bool(row.get("pending_activation")),
+                )
+                for row in raw_subscriptions
+                if isinstance(row, dict)
+            ),
+            key=lambda row: row.subscription_id,
         )
-        subscriber_by_id = {str(item.id): item for item in subscribers}
-        reseller_ids = {
-            str(item.reseller_id)
-            for item in subscribers
-            if getattr(item, "reseller_id", None)
-        }
-        reseller_by_id = (
-            {
-                str(item.id): item
-                for item in db.query(Reseller)
-                .filter(Reseller.id.in_(reseller_ids))
-                .all()
-            }
-            if reseller_ids
-            else {}
+    )
+    raw_totals = summary.get("totals_by_currency", {})
+    totals_by_currency = tuple(
+        sorted(
+            (
+                str(currency).upper(),
+                Decimal(str(amount)),
+            )
+            for currency, amount in (
+                raw_totals.items() if isinstance(raw_totals, dict) else ()
+            )
         )
-
-        grouped: dict[str, dict[str, object]] = {}
-        for sub in subscriptions:
-            account_id = str(sub.get("account_id") or "")
-            subscriber = subscriber_by_id.get(account_id)
-            reseller_id = str(getattr(subscriber, "reseller_id", "") or "")
-            partner_key = reseller_id or "direct"
-            partner_name = (
-                getattr(reseller_by_id.get(reseller_id), "name", None)
-                if reseller_id
-                else "Direct"
-            ) or "Direct"
-            if partner_key not in grouped:
-                grouped[partner_key] = {
-                    "partner_id": partner_key,
-                    "partner_name": partner_name,
-                    "subscription_count": 0,
-                    "invoice_count": 0,
-                    "total_amount": Decimal("0.00"),
-                }
-            amount = Decimal(str(sub.get("amount", 0) or 0))
-            grouped[partner_key]["subscription_count"] = (
-                int(grouped[partner_key]["subscription_count"]) + 1
-            )
-            grouped[partner_key]["invoice_count"] = (
-                int(grouped[partner_key]["invoice_count"]) + 1
-            )
-            grouped[partner_key]["total_amount"] = (
-                Decimal(str(grouped[partner_key]["total_amount"])) + amount
-            )
-
-        partner_preview = [
-            {
-                "partner_id": item["partner_id"],
-                "partner_name": item["partner_name"],
-                "subscription_count": item["subscription_count"],
-                "invoice_count": item["invoice_count"],
-                "total_amount": float(item["total_amount"]),
-                "total_amount_formatted": f"NGN {Decimal(str(item['total_amount'])):,.2f}",
-            }
-            for item in sorted(
-                grouped.values(),
-                key=lambda row: float(row["total_amount"]),
-                reverse=True,
-            )
-        ]
-
-    return {
-        "invoice_count": summary.get("invoices_created", 0),
-        "account_count": summary.get(
-            "accounts_affected",
-            len(set(s.get("account_id") for s in subscriptions)),
+    )
+    invoice_count = int(summary.get("invoices_created", 0) or 0)
+    account_count = int(summary.get("accounts_affected", 0) or 0)
+    skipped_count = int(summary.get("skipped", 0) or 0)
+    return InvoiceBatchPreview(
+        billing_cycle=normalized_cycle,
+        billing_date=normalized_date,
+        source_run_id=source_run_id,
+        invoice_count=invoice_count,
+        account_count=account_count,
+        subscription_count=len(subscriptions),
+        skipped_count=skipped_count,
+        totals_by_currency=totals_by_currency,
+        subscriptions=subscriptions,
+        fingerprint=_preview_fingerprint(
+            billing_cycle=normalized_cycle,
+            billing_date=normalized_date,
+            source_run_id=source_run_id,
+            invoice_count=invoice_count,
+            account_count=account_count,
+            skipped_count=skipped_count,
+            totals_by_currency=totals_by_currency,
+            subscriptions=subscriptions,
         ),
-        "total_amount": float(total_amount),
-        "total_amount_formatted": f"NGN {total_amount:,.2f}",
-        "subscriptions": [
-            {
-                "id": str(s.get("id", "")),
-                "offer_name": s.get("offer_name", "Unknown"),
-                "amount": float(s.get("amount", 0)),
-                "amount_formatted": f"NGN {s.get('amount', 0):,.2f}",
-            }
-            for s in subscriptions[:50]
-        ],
-        "partner_preview": partner_preview,
-    }
+    )
 
 
-def run_batch_with_date(
+def build_batch_action_form(preview: InvoiceBatchPreview) -> ActionForm:
+    """Project the shared confirmation form for one exact batch preview."""
+    allowed = preview.subscription_count > 0
+    source_note = (
+        f" This is a new run based on failed run {preview.source_run_id}."
+        if preview.source_run_id
+        else ""
+    )
+    return ActionForm(
+        key="invoice_batch.run",
+        title="Confirm invoice batch",
+        description=(
+            "Generate postpaid invoices for the exact billable scope shown above."
+            f"{source_note}"
+        ),
+        action_url="/admin/billing/invoices/generate-batch/confirm",
+        submit_label="Run invoice batch",
+        fields=(),
+        tone=ActionTone.positive,
+        impact=(
+            f"{preview.invoice_count} invoice(s) for "
+            f"{preview.subscription_count} subscription(s) across "
+            f"{preview.account_count} account(s), totaling {preview.total_display}."
+        ),
+        confirmation=ActionConfirmation(
+            title="Run this reviewed invoice batch",
+            message=(
+                "This creates customer-visible invoice and ledger documents. "
+                "The scope is rechecked before execution."
+            ),
+        ),
+        hidden_values=tuple(
+            ActionHiddenValue(key=key, value=value)
+            for key, value in (
+                ("billing_cycle", preview.billing_cycle or "all"),
+                ("billing_date", preview.billing_date),
+                ("preview_fingerprint", preview.fingerprint),
+                ("source_run_id", preview.source_run_id or "manual"),
+            )
+        ),
+        allowed=allowed,
+        disabled_reason=(
+            None
+            if allowed
+            else "No subscriptions are currently eligible for this invoice batch."
+        ),
+    )
+
+
+def preview_retry_batch(db, *, run_id: str) -> InvoiceBatchPreview:
+    """Preview a new run only from one failed historical run."""
+    run = _get_billing_run(db, run_id)
+    if run.status is not BillingRunStatus.failed:
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.retry_ineligible",
+            message="Only a failed billing run can be reviewed for retry.",
+            details={"run_id": run_id},
+        )
+    return preview_batch_action(
+        db,
+        billing_cycle=run.billing_cycle or None,
+        billing_date=datetime.now(UTC).date().isoformat(),
+        source_run_id=str(run.id),
+    )
+
+
+def confirm_batch_action(
     db,
     *,
     billing_cycle: str | None,
     billing_date: str | None,
+    preview_fingerprint: str,
+    source_run_id: str | None,
+    confirmed: bool,
+    actor: str,
     parse_cycle_fn: Callable[[str | None], Any] = parse_billing_cycle,
 ) -> str:
-    """Run invoice cycle honoring billing date when provided."""
-    try:
-        summary = billing_automation_service.run_invoice_cycle(
-            db=db,
-            billing_cycle=parse_cycle_fn(billing_cycle),
-            dry_run=False,
-            run_at=_parse_run_date(billing_date),
+    """Revalidate the preview and start the authoritative invoice cycle."""
+    if not confirmed:
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.confirmation_required",
+            message="Explicit confirmation is required.",
         )
-        run_at = summary.get("run_at")
-        run_at_text = (
-            run_at.strftime("%Y-%m-%d") if isinstance(run_at, datetime) else "today"
+    if not actor.strip():
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.invalid_actor",
+            message="Authorized staff identity is required.",
         )
-        return (
-            f"Batch run completed for {run_at_text}. "
-            f"Invoices created: {summary.get('invoices_created', 0)} · "
-            f"Subscriptions billed: {summary.get('subscriptions_billed', 0)} · "
-            f"Skipped: {summary.get('skipped', 0)}."
-        )
-    except Exception:
-        logger.exception("Invoice batch run failed")
-        return INVOICE_BATCH_ERROR_MESSAGE
-
-
-def preview_error_payload(exc: Exception) -> dict[str, object]:
-    logger.info(
-        "Invoice batch preview failed",
-        exc_info=(type(exc), exc, exc.__traceback__),
+    normalized_cycle = None if billing_cycle in {None, "", "all"} else billing_cycle
+    normalized_source = None if source_run_id in {None, "", "manual"} else source_run_id
+    if normalized_source:
+        source = _get_billing_run(db, normalized_source)
+        if source.status is not BillingRunStatus.failed:
+            raise InvoiceBatchActionError(
+                code="financial.invoice_batch_staff_actions.retry_ineligible",
+                message="The source billing run is no longer eligible for retry.",
+                details={"run_id": normalized_source},
+            )
+    current = preview_batch_action(
+        db,
+        billing_cycle=normalized_cycle,
+        billing_date=billing_date,
+        source_run_id=normalized_source,
+        parse_cycle_fn=parse_cycle_fn,
     )
-    return {
-        "error": INVOICE_BATCH_PREVIEW_ERROR_MESSAGE,
-        "invoice_count": 0,
-        "account_count": 0,
-        "total_amount_formatted": "NGN 0.00",
-        "subscriptions": [],
-    }
+    if not hmac.compare_digest(preview_fingerprint, current.fingerprint):
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.stale_preview",
+            message=INVOICE_BATCH_STALE_MESSAGE,
+        )
+    if current.subscription_count == 0:
+        raise InvoiceBatchActionError(
+            code="financial.invoice_batch_staff_actions.empty_scope",
+            message="No subscriptions are currently eligible for this invoice batch.",
+        )
+    summary = billing_automation_service.run_invoice_cycle(
+        db=db,
+        billing_cycle=parse_cycle_fn(normalized_cycle),
+        dry_run=False,
+        run_at=_parse_run_date(current.billing_date),
+        run_prepaid_renewals=False,
+        launch_kind="retry" if normalized_source else "manual",
+        requested_by=actor,
+        preview_fingerprint=current.fingerprint,
+        source_run_id=UUID(normalized_source) if normalized_source else None,
+    )
+    run_at = summary.get("run_at")
+    run_at_text = (
+        run_at.strftime("%Y-%m-%d") if isinstance(run_at, datetime) else "today"
+    )
+    return (
+        f"Batch run completed for {run_at_text}. "
+        f"Invoices created: {summary.get('invoices_created', 0)} · "
+        f"Subscriptions billed: {summary.get('subscriptions_billed', 0)} · "
+        f"Skipped: {summary.get('skipped', 0)}."
+    )
 
 
 def _status_badge(status: BillingRunStatus | str | None) -> str:
@@ -278,6 +405,9 @@ def list_recent_runs(db, *, limit: int = 20) -> list[dict[str, object]]:
             "run_at": run.run_at,
             "created_at": run.created_at,
             "billing_cycle": run.billing_cycle or "all",
+            "launch_kind": run.launch_kind or "scheduled",
+            "source_run_id": str(run.source_run_id) if run.source_run_id else None,
+            "requested_by": run.requested_by,
             "subscriptions_scanned": int(run.subscriptions_scanned or 0),
             "subscriptions_billed": int(run.subscriptions_billed or 0),
             "invoices_created": int(run.invoices_created or 0),
@@ -285,6 +415,12 @@ def list_recent_runs(db, *, limit: int = 20) -> list[dict[str, object]]:
             "skipped": int(run.skipped or 0),
             "status": _run_status_text(run.status),
             "status_badge": _status_badge(run.status),
+            "retry_allowed": run.status is BillingRunStatus.failed,
+            "retry_reason": (
+                None
+                if run.status is BillingRunStatus.failed
+                else "Only failed billing runs can be reviewed for retry."
+            ),
             "status_message": (
                 run.error
                 if run.error
@@ -319,6 +455,9 @@ def get_run_row(db, *, run_id: str) -> dict[str, object] | None:
         "run_at": run.run_at,
         "created_at": run.created_at,
         "billing_cycle": run.billing_cycle or "all",
+        "launch_kind": run.launch_kind or "scheduled",
+        "source_run_id": str(run.source_run_id) if run.source_run_id else None,
+        "requested_by": run.requested_by,
         "subscriptions_scanned": int(run.subscriptions_scanned or 0),
         "subscriptions_billed": int(run.subscriptions_billed or 0),
         "invoices_created": int(run.invoices_created or 0),
@@ -326,6 +465,12 @@ def get_run_row(db, *, run_id: str) -> dict[str, object] | None:
         "skipped": int(run.skipped or 0),
         "status": status_text,
         "status_badge": _status_badge(run.status),
+        "retry_allowed": run.status is BillingRunStatus.failed,
+        "retry_reason": (
+            None
+            if run.status is BillingRunStatus.failed
+            else "Only failed billing runs can be reviewed for retry."
+        ),
         "status_message": (
             run.error
             if run.error
@@ -355,6 +500,9 @@ def render_runs_csv(rows: list[dict[str, object]]) -> str:
             "run_at",
             "created_at",
             "billing_cycle",
+            "launch_kind",
+            "source_run_id",
+            "requested_by",
             "subscriptions_scanned",
             "subscriptions_billed",
             "invoices_created",
@@ -373,6 +521,9 @@ def render_runs_csv(rows: list[dict[str, object]]) -> str:
                 row.get("run_at").isoformat() if row.get("run_at") else "",
                 row.get("created_at").isoformat() if row.get("created_at") else "",
                 row.get("billing_cycle", ""),
+                row.get("launch_kind", ""),
+                row.get("source_run_id", ""),
+                row.get("requested_by", ""),
                 row.get("subscriptions_scanned", 0),
                 row.get("subscriptions_billed", 0),
                 row.get("invoices_created", 0),
@@ -391,155 +542,26 @@ def render_single_run_csv(row: dict[str, object]) -> str:
     return render_runs_csv([row])
 
 
-def build_batch_page_state(db, *, note: str | None = None) -> dict[str, object]:
+def build_batch_page_state(
+    db,
+    *,
+    note: str | None = None,
+    error: str | None = None,
+    preview: InvoiceBatchPreview | None = None,
+    batch_action_form: ActionForm | None = None,
+    can_write: bool = False,
+) -> dict[str, object]:
     """Build invoice batch page state."""
-    from app.services import subscriber as subscriber_service
     from app.services import (
         web_billing_invoice_actions as web_billing_invoice_actions_service,
     )
 
-    active_resellers = subscriber_service.resellers.list(
-        db=db,
-        is_active=True,
-        order_by="name",
-        order_dir="asc",
-        limit=500,
-        offset=0,
-    )
     return {
         "today": web_billing_invoice_actions_service.batch_today_str(),
         "recent_runs": list_recent_runs(db, limit=25),
         "note": note,
-        "schedule_config": get_billing_run_schedule(db),
-        "schedule_partner_options": [
-            {"id": str(item.id), "name": item.name} for item in active_resellers
-        ],
+        "error": error,
+        "batch_preview": preview,
+        "batch_action_form": batch_action_form,
+        "can_write": can_write,
     }
-
-
-def _default_schedule_config() -> dict[str, object]:
-    return {
-        "enabled": False,
-        "run_day": 1,
-        "run_time": "02:00",
-        "timezone": APP_TIMEZONE_NAME,
-        "billing_cycle": "monthly",
-        "partner_ids": [],
-    }
-
-
-def _coerce_schedule_config(raw: object) -> dict[str, object]:
-    default = _default_schedule_config()
-    if not isinstance(raw, dict):
-        return default
-    run_day = raw.get("run_day", default["run_day"])
-    try:
-        run_day_value = int(run_day)
-    except (TypeError, ValueError):
-        run_day_value = int(default["run_day"])
-    run_day_value = max(1, min(run_day_value, 28))
-    partner_ids_raw = raw.get("partner_ids", [])
-    if not isinstance(partner_ids_raw, list):
-        partner_ids_raw = []
-    partner_ids = [str(item).strip() for item in partner_ids_raw if str(item).strip()]
-    return {
-        "enabled": bool(raw.get("enabled", default["enabled"])),
-        "run_day": run_day_value,
-        "run_time": str(raw.get("run_time") or default["run_time"]),
-        "timezone": str(raw.get("timezone") or default["timezone"]),
-        "billing_cycle": str(raw.get("billing_cycle") or default["billing_cycle"]),
-        "partner_ids": partner_ids,
-    }
-
-
-def get_billing_run_schedule(db) -> dict[str, object]:
-    schedule = (
-        db.query(BillingRunSchedule)
-        .order_by(BillingRunSchedule.created_at.desc())
-        .first()
-    )
-    if schedule:
-        return _coerce_schedule_config(
-            {
-                "enabled": bool(schedule.enabled),
-                "run_day": int(schedule.run_day or 1),
-                "run_time": str(schedule.run_time or "02:00"),
-                "timezone": str(schedule.timezone or APP_TIMEZONE_NAME),
-                "billing_cycle": str(schedule.billing_cycle or "monthly"),
-                "partner_ids": list(schedule.partner_ids or []),
-            }
-        )
-    try:
-        setting = domain_settings_service.billing_settings.get_by_key(
-            db,
-            "billing_run_schedule_config",
-        )
-        return _coerce_schedule_config(setting.value_json)
-    except Exception:
-        return _default_schedule_config()
-
-
-def save_billing_run_schedule(
-    db,
-    *,
-    enabled: bool,
-    run_day: str | int | None,
-    run_time: str | None,
-    timezone: str | None,
-    billing_cycle: str | None,
-    partner_ids: list[str] | None,
-) -> dict[str, object]:
-    parsed_partner_ids: list[str] = []
-    for raw in partner_ids or []:
-        value = (raw or "").strip()
-        if not value:
-            continue
-        try:
-            parsed_partner_ids.append(str(UUID(value)))
-        except ValueError:
-            continue
-
-    try:
-        run_day_value = int(str(run_day or "1"))
-    except ValueError:
-        run_day_value = 1
-    run_day_value = max(1, min(run_day_value, 28))
-
-    config = _coerce_schedule_config(
-        {
-            "enabled": enabled,
-            "run_day": run_day_value,
-            "run_time": (run_time or "02:00").strip() or "02:00",
-            "timezone": (timezone or APP_TIMEZONE_NAME).strip() or APP_TIMEZONE_NAME,
-            "billing_cycle": (billing_cycle or "monthly").strip() or "monthly",
-            "partner_ids": parsed_partner_ids,
-        }
-    )
-    schedule = (
-        db.query(BillingRunSchedule)
-        .order_by(BillingRunSchedule.created_at.desc())
-        .first()
-    )
-    if not schedule:
-        schedule = BillingRunSchedule()
-        db.add(schedule)
-    schedule.enabled = bool(config["enabled"])
-    schedule.run_day = int(config["run_day"])
-    schedule.run_time = str(config["run_time"])
-    schedule.timezone = str(config["timezone"])
-    schedule.billing_cycle = str(config["billing_cycle"])
-    schedule.partner_ids = list(config["partner_ids"])  # type: ignore[assignment]
-    db.commit()
-
-    domain_settings_service.billing_settings.upsert_by_key(
-        db,
-        "billing_run_schedule_config",
-        DomainSettingUpdate(
-            domain=SettingDomain.billing,
-            key="billing_run_schedule_config",
-            value_type=SettingValueType.json,
-            value_json=config,
-            is_active=True,
-        ),
-    )
-    return config

@@ -1,257 +1,132 @@
 {% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
 
 {% block title %}Generate Invoice Batch - Admin{% endblock %}
 
 {% block content %}
-<div class="space-y-6" x-data="batchPage()">
+<div class="space-y-6">
     {% if note %}
-    <div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+    <div class="status-panel status-panel-positive status-foreground rounded-lg border px-4 py-3 text-sm" role="status">
         {{ note }}
     </div>
     {% endif %}
-    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    {% if error %}
+    <div class="status-panel status-panel-negative status-foreground rounded-lg border px-4 py-3 text-sm" role="alert">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    <header class="flex flex-col gap-4 border-b border-slate-200 pb-4 dark:border-slate-700 sm:flex-row sm:items-end sm:justify-between">
         <div>
             <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                 <a href="/admin/billing" class="hover:text-primary-600">Billing</a>
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <span>/</span>
                 <a href="/admin/billing/invoices" class="hover:text-primary-600">Invoices</a>
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                <span class="text-slate-900 dark:text-white">Generate Batch</span>
+                <span>/</span>
+                <span>Batch</span>
             </nav>
-            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Generate Invoice Batch</h1>
-            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Generate invoices for active subscriptions due for billing</p>
+            <h1 class="text-2xl font-semibold text-slate-950 dark:text-white">Generate invoice batch</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Preview the exact postpaid subscription scope before creating invoices.
+                Prepaid renewals run through their independent automation owner.
+            </p>
         </div>
-        <a href="/admin/billing/invoices" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
-            Back to Invoices
+        <a href="/admin/billing/invoices" class="inline-flex items-center justify-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">
+            Back to invoices
         </a>
-    </div>
+    </header>
 
-    <div class="grid gap-6 lg:grid-cols-3">
-        <div class="lg:col-span-2">
-            <form id="batch-form" method="post" action="/admin/billing/invoices/generate-batch" class="space-y-6"
-                  @submit="if (submitting || !$refs.confirmed?.checked || !confirm('Run invoice batch for the previewed scope? This can create invoices for affected accounts.')) { $event.preventDefault(); return; } submitting = true">
+    <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,0.7fr)]">
+        <section class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="batch-scope-title">
+            <h2 id="batch-scope-title" class="font-semibold text-slate-900 dark:text-white">Batch scope</h2>
+            {% if can_write %}
+            <form method="post" action="/admin/billing/invoices/generate-batch/preview" class="mt-5 space-y-5">
                 {% include "components/forms/csrf_input.html" %}
-                <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-                    <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-                        <h2 class="font-semibold text-slate-900 dark:text-white">Filters</h2>
-                    </div>
-                    <div class="space-y-5 p-6">
-                        <div class="grid gap-4 sm:grid-cols-2">
-                            <div>
-                                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Billing Cycle</label>
-                                <select name="billing_cycle" id="billing_cycle" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                                    <option value="">All Cycles</option>
-                                    <option value="daily">Daily</option>
-                                    <option value="weekly">Weekly</option>
-                                    <option value="monthly">Monthly</option>
-                                    <option value="annual">Annual</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Subscription Status</label>
-                                <select name="subscription_status" id="subscription_status" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                                    <option value="active" selected>Active Only</option>
-                                    <option value="">All Statuses</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div>
-                            <div>
-                                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Billing Date (Up To)</label>
-                                <input type="date" name="billing_date" id="billing_date" value="{{ today }}" class="block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                                <p class="mt-1 text-xs text-slate-500">Only bill subscriptions with next_billing_at before this date</p>
-                            </div>
-                        </div>
-                    </div>
+                <div>
+                    <label for="billing-cycle" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Billing cycle</label>
+                    <select id="billing-cycle" name="billing_cycle" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                        <option value="">All postpaid cycles</option>
+                        {% for cycle in ['daily', 'weekly', 'monthly', 'annual'] %}
+                        <option value="{{ cycle }}" {% if batch_preview and batch_preview.billing_cycle == cycle %}selected{% endif %}>{{ cycle | title }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
-
-                <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-                    <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-                        <h2 class="font-semibold text-slate-900 dark:text-white">Options</h2>
-                    </div>
-                    <div class="space-y-4 p-6">
-                        <label class="flex cursor-pointer items-start gap-3">
-                            <input type="checkbox" name="confirmed" value="1" id="confirmed" x-ref="confirmed" class="mt-0.5 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                            <div>
-                                <span class="text-sm font-medium text-slate-700 dark:text-slate-300">I have reviewed the preview</span>
-                                <p class="text-xs text-slate-500 dark:text-slate-400">Required before running batch generation</p>
-                            </div>
-                        </label>
-                        <label class="flex cursor-pointer items-start gap-3">
-                            <input type="checkbox" name="separate_by_partner" value="1" class="mt-0.5 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                            <div>
-                                <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Generate separate preview per partner</span>
-                                <p class="text-xs text-slate-500 dark:text-slate-400">Break preview totals down by reseller/partner.</p>
-                            </div>
-                        </label>
-                    </div>
+                <div>
+                    <label for="billing-date" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Billing date</label>
+                    <input id="billing-date" type="date" name="billing_date" value="{{ batch_preview.billing_date if batch_preview else today }}" required class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" />
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Subscriptions due on or before this date are resolved by billing automation.</p>
                 </div>
-
-                <div class="flex gap-3">
-                    <button type="button" @click="runPreview()" :disabled="loading" class="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-primary-300 bg-primary-50 px-4 py-2.5 text-sm font-medium text-primary-700 hover:bg-primary-100 disabled:opacity-60 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-400 dark:hover:bg-primary-900/50">
-                        <svg x-show="!loading" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                        <svg x-show="loading" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                        <span x-text="loading ? 'Loading...' : 'Preview'"></span>
-                    </button>
-                    <button type="submit" :disabled="!$refs.confirmed?.checked || submitting" class="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50">
-                        <svg x-show="!submitting" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                        <svg x-show="submitting" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                        <span x-text="submitting ? 'Running...' : 'Run Batch'"></span>
-                    </button>
-                </div>
+                <button type="submit" class="status-tone status-tone-info inline-flex w-full items-center justify-center rounded-lg px-4 py-2.5 text-sm font-semibold">
+                    Preview invoice batch
+                </button>
             </form>
-        </div>
+            {% else %}
+            <p class="mt-4 text-sm text-slate-500 dark:text-slate-400">You have read-only access to billing-run history.</p>
+            {% endif %}
+        </section>
 
-        <div class="lg:col-span-1">
-            <div class="sticky top-6 rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-                <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-                    <h2 class="font-semibold text-slate-900 dark:text-white">Preview Summary</h2>
-                </div>
-                <div class="p-6">
-                    <template x-if="error">
-                        <div class="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="error"></div>
-                    </template>
-                    <template x-if="!previewData && !loading">
-                        <div class="py-8 text-center">
-                            <svg class="mx-auto h-12 w-12 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                            <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Click "Preview" to see what will be generated</p>
-                        </div>
-                    </template>
-                    <template x-if="previewData">
-                        <div class="space-y-4">
-                            <div class="flex items-center justify-between rounded-lg bg-primary-50 p-4 dark:bg-primary-900/20">
-                                <span class="text-sm font-medium text-primary-700 dark:text-primary-300">Invoices to Generate</span>
-                                <span class="text-2xl font-bold text-primary-600 dark:text-primary-400" x-text="previewData.invoice_count"></span>
-                            </div>
-                            <div class="flex items-center justify-between rounded-lg bg-slate-50 p-4 dark:bg-slate-700/50">
-                                <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Total Amount</span>
-                                <span class="text-lg font-semibold text-slate-900 dark:text-white" x-text="previewData.total_amount_formatted"></span>
-                            </div>
-                            <div class="flex items-center justify-between rounded-lg bg-slate-50 p-4 dark:bg-slate-700/50">
-                                <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Accounts Affected</span>
-                                <span class="text-lg font-semibold text-slate-900 dark:text-white" x-text="previewData.account_count"></span>
-                            </div>
-                            <template x-if="previewData.partner_preview && previewData.partner_preview.length > 0">
-                                <div class="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-                                    <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Per Partner</h4>
-                                    <div class="space-y-2 text-xs">
-                                        <template x-for="partner in previewData.partner_preview" :key="partner.partner_id">
-                                            <div class="flex items-center justify-between gap-3">
-                                                <span class="truncate text-slate-600 dark:text-slate-300" x-text="partner.partner_name"></span>
-                                                <span class="font-semibold text-slate-900 dark:text-slate-100" x-text="partner.total_amount_formatted"></span>
-                                            </div>
-                                        </template>
-                                    </div>
-                                </div>
-                            </template>
-                        </div>
-                    </template>
-                </div>
+        {% if batch_preview %}
+        <section class="space-y-4" aria-labelledby="batch-preview-title">
+            <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+                <h2 id="batch-preview-title" class="font-semibold text-slate-900 dark:text-white">Reviewed impact</h2>
+                <dl class="mt-4 grid grid-cols-2 gap-4 text-sm">
+                    <div><dt class="text-slate-500">Invoices</dt><dd class="mt-1 text-xl font-semibold text-slate-950 dark:text-white">{{ batch_preview.invoice_count }}</dd></div>
+                    <div><dt class="text-slate-500">Subscriptions</dt><dd class="mt-1 text-xl font-semibold text-slate-950 dark:text-white">{{ batch_preview.subscription_count }}</dd></div>
+                    <div><dt class="text-slate-500">Accounts</dt><dd class="mt-1 text-xl font-semibold text-slate-950 dark:text-white">{{ batch_preview.account_count }}</dd></div>
+                    <div><dt class="text-slate-500">Base charges</dt><dd class="mt-1 font-semibold text-slate-950 dark:text-white">{{ batch_preview.total_display }}</dd></div>
+                </dl>
+                {% if batch_preview.skipped_count %}
+                <p class="mt-4 text-xs text-slate-500 dark:text-slate-400">{{ batch_preview.skipped_count }} subscription(s) were scanned but skipped by canonical billing rules.</p>
+                {% endif %}
             </div>
-        </div>
+            {% if batch_action_form %}
+            {{ action_form(batch_action_form) }}
+            {% endif %}
+        </section>
+        {% else %}
+        <aside class="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">
+            Submit the scope to see current invoice, subscription, account, and currency-grouped charge impact.
+        </aside>
+        {% endif %}
     </div>
 
-    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <div class="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-            <h2 class="font-semibold text-slate-900 dark:text-white">History</h2>
-            <div class="flex items-center gap-3">
-                <a href="/admin/billing/invoices/batch/history.csv" class="inline-flex items-center rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
-                    Export CSV
-                </a>
-                <span class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Last {{ recent_runs|length }} runs</span>
-            </div>
+    {% if batch_preview and batch_preview.subscriptions %}
+    <section class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="batch-members-title">
+        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+            <h2 id="batch-members-title" class="font-semibold text-slate-900 dark:text-white">Exact subscription scope</h2>
         </div>
-        <div
-            id="batch-history-panel"
-            hx-get="/admin/billing/invoices/batch/history-panel"
-            hx-trigger="every 30s"
-            hx-swap="innerHTML"
-        >
+        <div class="max-h-96 overflow-auto">
+            <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-700">
+                <thead class="sticky top-0 bg-slate-50 dark:bg-slate-800"><tr>
+                    <th class="px-4 py-3 text-left">Subscription</th>
+                    <th class="px-4 py-3 text-left">Offer</th>
+                    <th class="px-4 py-3 text-left">Period</th>
+                    <th class="px-4 py-3 text-right">Base charge</th>
+                </tr></thead>
+                <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+                    {% for row in batch_preview.subscriptions %}
+                    <tr>
+                        <td class="px-4 py-3 font-mono text-xs">{{ row.subscription_id }}</td>
+                        <td class="px-4 py-3">{{ row.offer_name }}</td>
+                        <td class="px-4 py-3">{{ row.period_start[:10] }} → {{ row.period_end[:10] }}</td>
+                        <td class="px-4 py-3 text-right">{{ row.amount_display }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="batch-history-title">
+        <div class="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+            <h2 id="batch-history-title" class="font-semibold text-slate-900 dark:text-white">Billing-run history</h2>
+            <a href="/admin/billing/invoices/batch/history.csv" class="text-sm font-medium text-primary-600 hover:text-primary-700">Export CSV</a>
+        </div>
+        <div id="batch-history-panel" hx-get="/admin/billing/invoices/batch/history-panel" hx-trigger="every 30s" hx-swap="innerHTML">
             {% include "admin/billing/_invoice_batch_history_table.html" %}
         </div>
-    </div>
+    </section>
 
-    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
-            <h2 class="font-semibold text-slate-900 dark:text-white">Scheduled Billing Run Configuration</h2>
-        </div>
-        <form method="post" action="/admin/billing/invoices/batch/schedule" class="grid gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3">
-            {% include "components/forms/csrf_input.html" %}
-            <label class="flex items-center gap-2 sm:col-span-2 lg:col-span-3">
-                <input type="checkbox" name="schedule_enabled" value="1" {% if schedule_config.enabled %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                <span class="text-sm text-slate-700 dark:text-slate-300">Enable automatic billing run</span>
-            </label>
-            <div>
-                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Run Day (1-28)</label>
-                <input type="number" min="1" max="28" name="run_day" value="{{ schedule_config.run_day }}" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-            </div>
-            <div>
-                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Run Time (Africa/Lagos)</label>
-                <input type="time" name="run_time" value="{{ schedule_config.run_time }}" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-            </div>
-            <div>
-                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Billing Cycle</label>
-                <select name="billing_cycle" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    {% for cycle in ['monthly', 'weekly', 'daily', 'annual'] %}
-                    <option value="{{ cycle }}" {% if schedule_config.billing_cycle == cycle %}selected{% endif %}>{{ cycle|title }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="sm:col-span-2 lg:col-span-3">
-                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Partners (optional)</label>
-                <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {% for partner in schedule_partner_options %}
-                    <label class="flex items-center gap-2 rounded border border-slate-200 px-2 py-1.5 dark:border-slate-700">
-                        <input type="checkbox" name="partner_ids" value="{{ partner.id }}" {% if partner.id in schedule_config.partner_ids %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
-                        <span class="text-sm text-slate-700 dark:text-slate-300">{{ partner.name }}</span>
-                    </label>
-                    {% endfor %}
-                </div>
-            </div>
-            <div>
-                <label class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Timezone</label>
-                <input type="text" name="timezone" value="{{ schedule_config.timezone }}" class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-            </div>
-            <div class="sm:col-span-2 lg:col-span-3">
-                <button type="submit" class="inline-flex items-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700">Save Schedule</button>
-            </div>
-        </form>
-    </div>
 </div>
-
-<script>
-function batchPage() {
-    return {
-        loading: false,
-        submitting: false,
-        previewData: null,
-        error: null,
-        async runPreview() {
-            const form = document.getElementById('batch-form');
-            const formData = new FormData(form);
-            this.loading = true;
-            this.error = null;
-            try {
-                const response = await fetch('/admin/billing/invoices/generate-batch/preview', {
-                    method: 'POST',
-                    body: formData,
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    this.error = data.error || 'Preview failed.';
-                    this.previewData = null;
-                    return;
-                }
-                this.previewData = data;
-            } catch (_error) {
-                this.error = 'Preview failed. Please try again.';
-                this.previewData = null;
-            } finally {
-                this.loading = false;
-            }
-        },
-    };
-}
-</script>
 {% endblock %}

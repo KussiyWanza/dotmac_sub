@@ -26,11 +26,7 @@
 
     <form method="{{ form.method.value }}"
           action="{{ form.action_url }}"
-          class="mt-4 space-y-4"
-          {% if form.confirmation %}
-          data-confirm-message="{{ form.confirmation.message }}"
-          onsubmit="return window.confirm(this.dataset.confirmMessage)"
-          {% endif %}>
+          class="mt-4 space-y-4">
         {% include "components/forms/csrf_input.html" %}
         {% for hidden in form.hidden_values %}
         <input type="hidden" name="{{ hidden.key }}" value="{{ hidden.value }}">
@@ -105,10 +101,26 @@
         {% endfor %}
 
         {% if form.confirmation %}
-        <p class="text-xs text-slate-500 dark:text-slate-400">
-            <span class="font-semibold">{{ form.confirmation.title }}:</span>
-            {{ form.confirmation.message }}
-        </p>
+        {% set confirmation_id = form_id ~ '-confirmation' %}
+        <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-600 dark:bg-slate-700/50">
+            <label for="{{ confirmation_id }}" class="flex items-start gap-3 text-sm text-slate-700 dark:text-slate-200">
+                <input id="{{ confirmation_id }}"
+                       type="checkbox"
+                       name="confirmed"
+                       value="yes"
+                       class="mt-0.5 h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                       required
+                       aria-required="true"
+                       aria-describedby="{{ confirmation_id }}-message"
+                       {% if not form.allowed %}disabled{% endif %} />
+                <span>
+                    <span class="block font-semibold">{{ form.confirmation.title }}</span>
+                    <span id="{{ confirmation_id }}-message" class="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                        {{ form.confirmation.message }}
+                    </span>
+                </span>
+            </label>
+        </div>
         {% endif %}
 
         <button type="submit"
