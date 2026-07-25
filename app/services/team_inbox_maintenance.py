@@ -101,3 +101,41 @@ def auto_resolve_stale(
             )
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseScheduledRepliesCommand:
+    context: CommandContext
+    limit: int = 50
+
+
+def release_scheduled_replies(
+    db: Session, command: ReleaseScheduledRepliesCommand
+) -> MaintenanceOutcome:
+    """Send scheduled replies whose time has come.
+
+    Each send is independent: one failure marks that message failed and the
+    batch continues, so a single bad recipient cannot hold up everyone else's
+    scheduled mail.
+    """
+
+    def operation() -> MaintenanceOutcome:
+        from app.services import team_inbox_outbound
+
+        due = team_inbox_outbound.due_scheduled_replies(db, limit=max(1, command.limit))
+        sent = 0
+        skipped = 0
+        for message in due:
+            result = team_inbox_outbound.send_scheduled_reply(db, message=message)
+            if result.kind in {"sent", "queued"}:
+                sent += 1
+            else:
+                skipped += 1
+        return MaintenanceOutcome(changed=sent, skipped=skipped)
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=operation,
+    )

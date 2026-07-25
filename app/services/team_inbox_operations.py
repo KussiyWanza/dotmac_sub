@@ -1111,3 +1111,128 @@ def auto_resolve_stale_conversations(
         resolved += 1
     db.flush()
     return resolved
+
+
+SNOOZE_UNTIL_REPLY_KEY = "snooze_until_reply"
+
+
+def snooze_until_reply(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    actor_person_id: str | UUID | None = None,
+) -> InboxConversation:
+    """Snooze a conversation with no wake time — the customer's reply wakes it.
+
+    Stored as a metadata flag rather than a far-future ``snoozed_until``, so the
+    queue's snoozed filter still means "asleep" while nothing invents a wake
+    date the operator never chose. ``wake_on_inbound`` clears it.
+    """
+    metadata = dict(conversation.metadata_ or {})
+    metadata[SNOOZE_UNTIL_REPLY_KEY] = True
+    history = metadata.get("workflow_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "at": _now_iso(),
+            "actor_id": str(coerce_uuid(actor_person_id))
+            if coerce_uuid(actor_person_id)
+            else None,
+            "source": "team_inbox_workflow",
+            "snooze_until_reply": True,
+        }
+    )
+    metadata["workflow_history"] = history[-50:]
+    conversation.metadata_ = metadata
+    conversation.snoozed_until = None
+    conversation.status = "snoozed"
+    db.flush()
+    return conversation
+
+
+def wake_on_inbound(db: Session, *, conversation: InboxConversation) -> bool:
+    """Wake a conversation that was snoozed until the customer replied.
+
+    Called from every inbound path. Returns whether it woke anything, so a
+    caller can tell the difference between "nothing to do" and a state change.
+
+    Deliberately narrow: it only acts on the until-reply flag. A conversation
+    snoozed to a *time* keeps sleeping, because the operator picked that time
+    knowing the customer might write again; and a resolved conversation is left
+    alone so an inbound message does not silently reopen closed work.
+    """
+    metadata = dict(conversation.metadata_ or {})
+    if not metadata.pop(SNOOZE_UNTIL_REPLY_KEY, False):
+        return False
+
+    history = metadata.get("workflow_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "at": _now_iso(),
+            "actor_id": None,
+            "source": "team_inbox_inbound",
+            "woke_on_reply": True,
+        }
+    )
+    metadata["workflow_history"] = history[-50:]
+    conversation.metadata_ = metadata
+    conversation.snoozed_until = None
+    if conversation.status == "snoozed":
+        conversation.status = "open"
+    db.flush()
+    return True
+
+
+def render_conversation_transcript(
+    db: Session, *, conversation: InboxConversation
+) -> tuple[str, str]:
+    """Render a conversation as (subject, html) for emailing.
+
+    Internal notes and comments are deliberately excluded: a transcript is
+    often forwarded to the customer or a third party, and internal
+    collaboration is not theirs to read. Only the messages that were actually
+    exchanged appear.
+    """
+    from html import escape as _escape
+
+    messages = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .filter(InboxMessage.direction.in_(["inbound", "outbound"]))
+        .order_by(InboxMessage.created_at.asc())
+        .all()
+    )
+
+    subject = (
+        f"Transcript: {conversation.subject}"
+        if conversation.subject
+        else f"Transcript: conversation with {conversation.contact_address or 'customer'}"
+    )
+
+    rows = []
+    for message in messages:
+        metadata = message.metadata_ or {}
+        if metadata.get("delivery_status") == SCHEDULED_DELIVERY_STATUS_FOR_TRANSCRIPT:
+            # Not sent yet — it is not part of what was exchanged.
+            continue
+        who = "Us" if message.direction == "outbound" else "Customer"
+        when = (message.sent_at or message.created_at).strftime("%Y-%m-%d %H:%M UTC")
+        body = _escape(str(message.body or "")).replace("\n", "<br>")
+        rows.append(
+            f"<p style='margin:0 0 12px'><strong>{who}</strong> "
+            f"<span style='color:#64748b'>{when}</span><br>{body}</p>"
+        )
+
+    if not rows:
+        rows.append("<p><em>No messages were exchanged.</em></p>")
+
+    html = f"<h2 style='margin:0 0 16px'>{_escape(subject)}</h2>" + "".join(rows)
+    return subject, html
+
+
+# Kept as a module constant so the transcript filter cannot drift from the
+# outbound owner's scheduled marker.
+SCHEDULED_DELIVERY_STATUS_FOR_TRANSCRIPT = "scheduled"

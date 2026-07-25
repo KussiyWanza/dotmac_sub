@@ -556,6 +556,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Retries failed native inbox outbound messages up to a retry cap; "
         "already-sent and over-cap rows are skipped on re-run.",
     ),
+    "app.tasks.team_inbox.release_scheduled_replies": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Sends inbox replies whose scheduled time has passed; each released "
+        "row is stamped sent_at so a re-run never sends it twice, and one "
+        "failed recipient does not hold up the rest of the batch.",
+    ),
     "app.tasks.team_inbox.promote_message_media_assets": _c(
         "support",
         SWEEP,

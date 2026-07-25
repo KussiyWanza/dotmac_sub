@@ -16,7 +16,11 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxTeamSource,
 )
-from app.services import team_inbox_assignment, team_inbox_routing
+from app.services import (
+    team_inbox_assignment,
+    team_inbox_operations,
+    team_inbox_routing,
+)
 
 _MESSAGE_ID_RE = re.compile(r"<[^<>]+>")
 _AUTO_ASSIGN_METADATA_KEYS = (
@@ -263,6 +267,8 @@ def receive_inbound_email(
     db.flush()
 
     conversation.last_message_at = received_at
+    # Same wake rule as the channel path: an inbound email is the reply.
+    team_inbox_operations.wake_on_inbound(db, conversation=conversation)
     if conversation.first_message_at is None:
         conversation.first_message_at = received_at
     return InboundEmailReceiveResult(

@@ -30,6 +30,16 @@ router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
 
 
+def _form_flag(value: object) -> bool:
+    """Read a checkbox flag, treating anything that is not a real boolean as off.
+
+    FastAPI resolves `Form(default=False)` before the handler runs, but a direct
+    call leaves the `FieldInfo` sentinel in place — and that object is truthy,
+    which would turn an ordinary workflow submit into an until-reply snooze.
+    """
+    return value is True
+
+
 def _parse_datetime_field(value: object) -> datetime | None:
     """Parse a browser `datetime-local` value (snooze time, activity range).
 
@@ -396,6 +406,7 @@ def team_inbox_reply(
     macro_id: str | None = Form(default=None),
     template_id: str | None = Form(default=None),
     attachment_ids: str | None = Form(default=None),
+    send_after: str | None = Form(default=None),
     idempotency_key: str | None = Form(default=None),
     reply_to_message_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
@@ -413,6 +424,7 @@ def team_inbox_reply(
                 for item in (_query_text(attachment_ids) or "").split(",")
                 if item.strip()
             ],
+            send_after=_parse_datetime_field(send_after),
             idempotency_key=_query_text(idempotency_key),
             reply_to_message_id=_query_text(reply_to_message_id),
             actor_person_id=_actor_id_from_request(request),
@@ -437,6 +449,8 @@ def team_inbox_reply(
         message=(
             "Reply already submitted."
             if outcome.replayed
+            else "Reply scheduled."
+            if outcome.kind == "scheduled"
             else f"Reply queued from {outcome.sender}."
             if outcome.kind == "queued"
             else f"Reply sent from {outcome.sender}."
@@ -672,6 +686,7 @@ def team_inbox_workflow_action(
     is_muted: bool | None = Form(default=None),
     snooze_minutes: int | None = Form(default=None),
     snooze_until: str | None = Form(default=None),
+    snooze_until_reply: bool = Form(default=False),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -683,6 +698,7 @@ def team_inbox_workflow_action(
             is_muted=is_muted,
             snooze_minutes=snooze_minutes,
             snooze_until=_parse_datetime_field(snooze_until),
+            snooze_until_reply=_form_flag(snooze_until_reply),
             actor_person_id=_actor_id_from_request(request),
         )
     except team_inbox_commands.ConversationNotFoundError:
@@ -1373,3 +1389,37 @@ def team_inbox_start_conversation(
         # Say so rather than leave an anonymous thread looking resolved.
         message += " Contact is unmatched — link it from the contact panel."
     return _detail_redirect(outcome.conversation_id, status="success", message=message)
+
+
+@router.post(
+    "/{conversation_id}/transcript",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_email_transcript(
+    conversation_id: UUID,
+    request: Request,
+    recipient: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Email a transcript of this conversation."""
+    _prepare_mutation(db)
+    try:
+        sent_to = team_inbox_commands.email_transcript(
+            db,
+            conversation_id=conversation_id,
+            recipient=recipient,
+            actor_person_id=_actor_id_from_request(request),
+        )
+    except team_inbox_commands.ConversationNotFoundError:
+        return RedirectResponse(
+            url="/admin/inbox?status=error&message=Conversation%20not%20found",
+            status_code=303,
+        )
+    except (
+        team_inbox_commands.InboxCommandError,
+        team_inbox_operations.InboxOperationError,
+    ) as exc:
+        return _detail_redirect(conversation_id, status="error", message=str(exc))
+    return _detail_redirect(
+        conversation_id, status="success", message=f"Transcript sent to {sent_to}."
+    )

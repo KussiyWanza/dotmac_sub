@@ -872,7 +872,9 @@
       },
       toggleSchedule() {
         this.scheduled = !this.scheduled;
-        if (this.scheduled) this.workspace()?.showDemoNotice?.("Scheduled send");
+        // Clearing the value matters: an empty send_after means "send now", so
+        // toggling off must not leave a stale time on the form.
+        if (!this.scheduled) this.scheduledAt = "";
       },
       clearReply() {
         this.replyTo = null;
@@ -902,16 +904,11 @@
           );
           return;
         }
-        if (this.files.length) {
+        // Attachments and scheduling both submit for real now: staged uploads
+        // ride along as attachment_ids, and a chosen time rides as send_after.
+        if (this.scheduled && !this.scheduledAt) {
           event.preventDefault();
-          this.workspace()?.showDemoNotice?.(
-            "Attachment sending is staged, but the upload API is not mapped",
-          );
-          return;
-        }
-        if (this.scheduled) {
-          event.preventDefault();
-          this.workspace()?.showDemoNotice?.("Scheduled send");
+          this.workspace()?.showToast?.("Choose when to send, or turn off Schedule.");
           return;
         }
         this.idempotencyKey =

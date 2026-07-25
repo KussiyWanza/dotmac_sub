@@ -89,3 +89,26 @@ def auto_resolve_stale_conversations(
             extra={"event": "team_inbox_auto_resolve", **payload},
         )
         return payload
+
+
+@celery_app.task(name="app.tasks.team_inbox.release_scheduled_replies")
+def release_scheduled_replies(*, limit: int = 50) -> dict[str, int]:
+    """Send inbox replies whose scheduled time has passed."""
+    with db_session_adapter.session() as session:
+        result = team_inbox_maintenance.release_scheduled_replies(
+            session,
+            team_inbox_maintenance.ReleaseScheduledRepliesCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-scheduled-send",
+                    scope="team-inbox:maintenance",
+                    reason="release due scheduled Inbox replies",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {"sent": result.changed, "skipped": result.skipped}
+        logger.info(
+            "team inbox scheduled reply release complete",
+            extra={"event": "team_inbox_scheduled_release", **payload},
+        )
+        return payload

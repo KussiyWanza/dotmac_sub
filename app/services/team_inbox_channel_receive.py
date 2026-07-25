@@ -18,7 +18,12 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxObservationKind,
 )
-from app.services import team_inbox_media, team_inbox_realtime, team_inbox_routing
+from app.services import (
+    team_inbox_media,
+    team_inbox_operations,
+    team_inbox_realtime,
+    team_inbox_routing,
+)
 from app.services.common import coerce_uuid
 from app.services.customer_identity_normalization import (
     default_country_code,
@@ -423,6 +428,9 @@ def receive_inbound_channel(
         provider=str(metadata.get("provider") or "") or None,
     )
     conversation.last_message_at = received_at
+    # A conversation snoozed "until the customer replies" wakes here — this is
+    # the reply.
+    team_inbox_operations.wake_on_inbound(db, conversation=conversation)
     team_inbox_realtime.publish_conversation_event(
         db,
         str(conversation.id),
