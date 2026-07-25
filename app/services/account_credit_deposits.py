@@ -52,6 +52,7 @@ from app.services.owner_commands import (
     execute_owner_command,
 )
 from app.services.topup_intents import (
+    DIRECT_TRANSFER_PROVIDER,
     CompleteTopupIntentCommand,
     TopupIntentChannel,
     TopupIntentCompletionSource,
@@ -105,6 +106,38 @@ class DepositEligibilityError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class ActiveDepositPhase(str, Enum):
+    """Customer-facing meaning of one active blocking deposit request."""
+
+    awaiting_receipt = "awaiting_receipt"
+    awaiting_provider_confirmation = "awaiting_provider_confirmation"
+    under_review = "under_review"
+
+
+class ActiveDepositNextAction(str, Enum):
+    """Closed action vocabulary supplied to customer-facing adapters."""
+
+    upload_receipt = "upload_receipt"
+    wait_for_provider = "wait_for_provider"
+    wait_for_review = "wait_for_review"
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveDepositRequest:
+    """Typed read model for the active Deposit Account Credit request."""
+
+    intent_id: uuid.UUID
+    phase: ActiveDepositPhase
+    next_action: ActiveDepositNextAction
+    provider_type: str
+    reference: str
+    amount: Decimal
+    currency: str
+    created_at: datetime
+    expires_at: datetime | None
+    observed_at: datetime
 
 
 @dataclass(frozen=True)
@@ -279,7 +312,10 @@ def _account(db: Session, account_id: uuid.UUID) -> Subscriber:
 
 
 def _pending_incompatible_intent(
-    db: Session, account_id: uuid.UUID
+    db: Session,
+    account_id: uuid.UUID,
+    *,
+    observed_at: datetime | None = None,
 ) -> TopupIntent | None:
     candidates = db.scalars(
         select(TopupIntent)
@@ -291,7 +327,7 @@ def _pending_incompatible_intent(
         )
         .order_by(TopupIntent.created_at.desc())
     ).all()
-    now = datetime.now(UTC)
+    now = observed_at or datetime.now(UTC)
     for intent in candidates:
         expires_at = intent.expires_at
         if expires_at is not None:
@@ -342,6 +378,45 @@ def _existing_preview(db: Session, intent: TopupIntent) -> DepositPreview:
 
 class AccountCreditDeposits:
     """Own deposit eligibility, intent evidence, and atomic settlement."""
+
+    @staticmethod
+    def active_request(
+        db: Session,
+        *,
+        account_id: uuid.UUID,
+        observed_at: datetime | None = None,
+    ) -> ActiveDepositRequest | None:
+        """Resolve the blocking request phase and next valid customer action."""
+
+        observed = observed_at or datetime.now(UTC)
+        intent = _pending_incompatible_intent(
+            db,
+            account_id,
+            observed_at=observed,
+        )
+        if intent is None:
+            return None
+        if intent.status == TopupIntentStatus.submitted.value:
+            phase = ActiveDepositPhase.under_review
+            next_action = ActiveDepositNextAction.wait_for_review
+        elif intent.provider_type == DIRECT_TRANSFER_PROVIDER:
+            phase = ActiveDepositPhase.awaiting_receipt
+            next_action = ActiveDepositNextAction.upload_receipt
+        else:
+            phase = ActiveDepositPhase.awaiting_provider_confirmation
+            next_action = ActiveDepositNextAction.wait_for_provider
+        return ActiveDepositRequest(
+            intent_id=intent.id,
+            phase=phase,
+            next_action=next_action,
+            provider_type=intent.provider_type,
+            reference=intent.reference,
+            amount=round_money(intent.requested_amount),
+            currency=intent.currency,
+            created_at=intent.created_at,
+            expires_at=intent.expires_at,
+            observed_at=observed,
+        )
 
     @staticmethod
     def preview(

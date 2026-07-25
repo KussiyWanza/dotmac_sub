@@ -2701,6 +2701,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "A deposit preview may include current eligible invoices and "
                     "the exact oldest-debt application before any checkout starts. "
+                    "The same policy owner supplies the customer-facing active-request "
+                    "phase, observation/expiry facts, and closed next-action hint so "
+                    "portal adapters do not reinterpret pending intent state. "
                     "The deposit first records the whole confirmed receipt as "
                     "unallocated account credit, grants no service duration, and "
                     "then asks the canonical applicator to settle eligible debt. "
@@ -2797,7 +2800,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "typed purpose, allocation/application policy, version, "
                                 "supported currency, amount bounds, reviewed-preview rule, "
-                                "and pending-intent rule"
+                                "pending-intent rule, and typed customer next-action read model"
                             ),
                         ),
                         AuthorityInput(

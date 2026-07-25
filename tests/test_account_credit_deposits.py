@@ -38,6 +38,8 @@ from app.services.account_credit_deposits import (
     SETTLEMENT_SCOPE,
     AccountCreditDeposits,
     AccountCreditDepositSettlementSource,
+    ActiveDepositNextAction,
+    ActiveDepositPhase,
     DepositEligibilityError,
     SettleAccountCreditDepositCommand,
 )
@@ -46,7 +48,11 @@ from app.services.billing.account_credit import AccountCreditApplications
 from app.services.billing.invoices import Invoices
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
-from app.services.topup_intents import TopupIntentChannel
+from app.services.topup_intents import (
+    DIRECT_TRANSFER_PROVIDER,
+    TopupIntentChannel,
+    TopupIntentStatus,
+)
 
 
 def _provider(db_session) -> PaymentProvider:
@@ -152,6 +158,95 @@ def test_intent_persists_typed_server_owned_contract(db_session, subscriber):
     assert intent.preview_fingerprint and len(intent.preview_fingerprint) == 64
     assert intent.provider_id == provider.id
     assert intent.channel == TopupIntentChannel.customer_selfcare.value
+
+
+def test_active_request_resolves_gateway_confirmation(
+    db_session,
+    subscriber,
+):
+    intent = _intent(db_session, subscriber, _provider(db_session))
+    observed_at = datetime.now(UTC)
+
+    active = AccountCreditDeposits.active_request(
+        db_session,
+        account_id=subscriber.id,
+        observed_at=observed_at,
+    )
+
+    assert active is not None
+    assert active.intent_id == intent.id
+    assert active.phase is ActiveDepositPhase.awaiting_provider_confirmation
+    assert active.next_action is ActiveDepositNextAction.wait_for_provider
+    assert active.observed_at == observed_at
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_phase", "expected_action"),
+    [
+        (
+            TopupIntentStatus.pending,
+            ActiveDepositPhase.awaiting_receipt,
+            ActiveDepositNextAction.upload_receipt,
+        ),
+        (
+            TopupIntentStatus.submitted,
+            ActiveDepositPhase.under_review,
+            ActiveDepositNextAction.wait_for_review,
+        ),
+    ],
+)
+def test_active_request_resolves_direct_transfer_customer_action(
+    db_session,
+    subscriber,
+    status,
+    expected_phase,
+    expected_action,
+):
+    intent = _intent(db_session, subscriber, _provider(db_session))
+    intent.provider_type = DIRECT_TRANSFER_PROVIDER
+    intent.status = status.value
+    db_session.add(intent)
+    db_session.commit()
+
+    active = AccountCreditDeposits.active_request(
+        db_session,
+        account_id=subscriber.id,
+    )
+
+    assert active is not None
+    assert active.phase is expected_phase
+    assert active.next_action is expected_action
+
+
+def test_active_request_ignores_expired_or_terminal_intents(
+    db_session,
+    subscriber,
+):
+    intent = _intent(db_session, subscriber, _provider(db_session))
+    intent.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db_session.add(intent)
+    db_session.commit()
+
+    assert (
+        AccountCreditDeposits.active_request(
+            db_session,
+            account_id=subscriber.id,
+        )
+        is None
+    )
+
+    intent.expires_at = datetime.now(UTC) + timedelta(minutes=30)
+    intent.status = TopupIntentStatus.completed.value
+    db_session.add(intent)
+    db_session.commit()
+
+    assert (
+        AccountCreditDeposits.active_request(
+            db_session,
+            account_id=subscriber.id,
+        )
+        is None
+    )
 
 
 def test_preview_applies_partial_deposit_to_existing_invoice(db_session, subscriber):

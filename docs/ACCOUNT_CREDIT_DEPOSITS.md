@@ -63,6 +63,19 @@ subscriber account, in NGN, inside configured limits, with no pending
 account-credit deposit. Blocked or suspended billing accounts may deposit, but
 the deposit alone does not restore access.
 
+`financial.account_credit_deposits.active_request` is the customer-action read
+owner for that pending-intent rule. It returns one typed active request with
+observation and expiry times plus a closed phase/action pair:
+
+- a pending direct transfer is `awaiting_receipt` / `upload_receipt`;
+- another pending provider request is
+  `awaiting_provider_confirmation` / `wait_for_provider`; and
+- a submitted direct-transfer receipt is `under_review` / `wait_for_review`.
+
+Expired and terminal requests are not active blockers. Customer adapters render
+this result and disable a replacement deposit while it is active; they do not
+filter `TopupIntent.status` or infer the next action independently.
+
 The owner-generated preview is mandatory before checkout starts. For the exact
 requested amount it reports:
 

@@ -1,4 +1,5 @@
 import importlib
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -202,6 +203,37 @@ def _preview_fingerprint(db_session, subscriber, amount: str) -> str:
     )["preview_fingerprint"]
 
 
+def _active_direct_transfer_deposit(
+    db_session,
+    subscriber,
+    *,
+    status: str,
+    expires_at,
+) -> TopupIntent:
+    intent = TopupIntent(
+        account_id=subscriber.id,
+        purpose="account_credit_deposit",
+        allocation_policy="credit_only",
+        credit_application_policy="pay_eligible_invoices",
+        policy_version=1,
+        preview_fingerprint="a" * 64,
+        idempotency_key=f"portal-active-deposit-{status}-{subscriber.id}",
+        channel="customer_selfcare",
+        created_by="pytest",
+        reference=f"TRF-ACTIVE-{status.upper()}",
+        provider_type="direct_bank_transfer",
+        currency="NGN",
+        requested_amount=Decimal("20000.00"),
+        status=status,
+        expires_at=expires_at,
+        metadata_={"payment_flow": "account_credit_deposit"},
+    )
+    db_session.add(intent)
+    db_session.commit()
+    db_session.refresh(intent)
+    return intent
+
+
 def test_get_topup_page_includes_limits_and_public_key(
     monkeypatch, db_session, subscriber
 ):
@@ -227,6 +259,71 @@ def test_get_topup_page_includes_limits_and_public_key(
     assert page["payment_options"] == [
         {"provider_type": "paystack", "label": "Pay with Paystack"},
     ]
+
+
+@pytest.mark.parametrize(
+    ("status", "phase", "next_action"),
+    [
+        ("pending", "awaiting_receipt", "upload_receipt"),
+        ("submitted", "under_review", "wait_for_review"),
+    ],
+)
+def test_get_topup_page_uses_owner_active_deposit_state(
+    monkeypatch,
+    db_session,
+    subscriber,
+    status,
+    phase,
+    next_action,
+):
+    _patch_topup_settings(monkeypatch)
+    intent = _active_direct_transfer_deposit(
+        db_session,
+        subscriber,
+        status=status,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+
+    page = get_topup_page(
+        db_session,
+        {"account_id": str(subscriber.id), "username": "customer@example.com"},
+    )
+
+    assert page["deposit_allowed"] is False
+    assert page["active_deposit_request"] == {
+        "intent_id": str(intent.id),
+        "phase": phase,
+        "next_action": next_action,
+        "provider_type": "direct_bank_transfer",
+        "reference": intent.reference,
+        "amount": Decimal("20000.00"),
+        "currency": "NGN",
+        "created_at": intent.created_at,
+        "expires_at": intent.expires_at,
+        "observed_at": page["active_deposit_request"]["observed_at"],
+    }
+
+
+def test_get_topup_page_ignores_expired_deposit_request(
+    monkeypatch,
+    db_session,
+    subscriber,
+):
+    _patch_topup_settings(monkeypatch)
+    _active_direct_transfer_deposit(
+        db_session,
+        subscriber,
+        status="submitted",
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    page = get_topup_page(
+        db_session,
+        {"account_id": str(subscriber.id), "username": "customer@example.com"},
+    )
+
+    assert page["deposit_allowed"] is True
+    assert "active_deposit_request" not in page
 
 
 def test_get_topup_page_degrades_runtime_failure_to_direct_transfer(

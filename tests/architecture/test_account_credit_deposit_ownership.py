@@ -34,6 +34,14 @@ def _names(node: ast.AST) -> set[str]:
     return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
 
 
+def _named_calls(node: ast.AST) -> set[str]:
+    return {
+        child.func.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+    }
+
+
 def test_account_credit_deposit_owner_has_complete_contract() -> None:
     service = sot_relationships.service_relationship(
         "financial.account_credit_deposits"
@@ -120,3 +128,19 @@ def test_settlement_event_and_source_vocabulary_are_versioned() -> None:
     assert "command_id" in source
     assert "correlation_id" in source
     assert "EventType.account_credit_deposited" in source
+
+
+def test_customer_topup_page_uses_owner_active_request_state() -> None:
+    page = _function(
+        "app/services/customer_portal_flow_payments.py",
+        "get_topup_page",
+    )
+    template = (ROOT / "templates/customer/billing/topup.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "active_request" in _calls(page)
+    assert "_latest_pending_direct_transfer_intent" not in _named_calls(page)
+    assert "active_deposit_request.phase" in template
+    assert 'active_deposit_request.next_action == "upload_receipt"' in template
+    assert "Your transfer receipt is under review." in template

@@ -30,6 +30,7 @@ from app.services.account_credit_deposits import (
     SETTLEMENT_SCOPE,
     AccountCreditDeposits,
     AccountCreditDepositSettlementSource,
+    ActiveDepositRequest,
     SettleAccountCreditDepositCommand,
 )
 from app.services.billing import collection_account_directory
@@ -114,6 +115,23 @@ def _serialize_deposit_preview(preview) -> dict[str, object]:
         "credit_application_policy": preview.credit_application_policy,
         "policy_version": preview.policy_version,
         "preview_fingerprint": preview.fingerprint,
+    }
+
+
+def _serialize_active_deposit_request(
+    request: ActiveDepositRequest,
+) -> dict[str, object]:
+    return {
+        "intent_id": str(request.intent_id),
+        "phase": request.phase.value,
+        "next_action": request.next_action.value,
+        "provider_type": request.provider_type,
+        "reference": request.reference,
+        "amount": request.amount,
+        "currency": request.currency,
+        "created_at": request.created_at,
+        "expires_at": request.expires_at,
+        "observed_at": request.observed_at,
     }
 
 
@@ -1352,6 +1370,14 @@ def get_topup_page(
             )
 
     payable_invoices = eligible_invoices(db, str(account_id)) if account_id else []
+    active_deposit_request = (
+        AccountCreditDeposits.active_request(
+            db,
+            account_id=uuid.UUID(str(account_id)),
+        )
+        if account_id
+        else None
+    )
     context = {
         "provider_type": provider_type,
         "payment_options": _payment_options_for_runtime_ready_routes(
@@ -1376,7 +1402,7 @@ def get_topup_page(
                 Decimal("0.00"),
             )
         ),
-        "deposit_allowed": True,
+        "deposit_allowed": active_deposit_request is None,
         "min_amount": min_amount_value,
         "max_amount": max_amount_value,
         "preset_amounts": _resolve_topup_presets(
@@ -1386,17 +1412,10 @@ def get_topup_page(
         ),
         "payment_methods": payment_methods,
     }
-    try:
-        account_uuid = _customer_account_uuid(db, customer)
-        pending_direct = _latest_pending_direct_transfer_intent(db, account_uuid)
-    except Exception:
-        pending_direct = None
-    if pending_direct:
-        context["pending_direct_transfer"] = {
-            "reference": pending_direct.reference,
-            "amount": pending_direct.requested_amount,
-            "currency": pending_direct.currency,
-        }
+    if active_deposit_request:
+        context["active_deposit_request"] = _serialize_active_deposit_request(
+            active_deposit_request
+        )
 
     if gateway_context:
         context["provider_public_key"] = gateway_context.public_key
