@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from uuid import UUID
 
@@ -37,6 +38,50 @@ _SERVICE_PREFIXES = (
 )
 _ACCOUNT_PREFIXES = ("subscriber_", "profile_")
 _USAGE_PREFIXES = ("usage_",)
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNotificationPolicyCandidate:
+    subscriber_id: UUID
+    recipient: str
+
+    @property
+    def key(self) -> tuple[UUID, str]:
+        return self.subscriber_id, self.recipient
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNotificationPolicyDecision:
+    candidate: CustomerNotificationPolicyCandidate
+    allowed: bool
+    reason_code: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNotificationPolicyCohortQuery:
+    candidates: tuple[CustomerNotificationPolicyCandidate, ...]
+    channel: NotificationChannel
+    category: NotificationCategory
+    event_type: str | None
+    evaluated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNotificationPolicyCohortResult:
+    decisions: tuple[CustomerNotificationPolicyDecision, ...]
+
+    def decision_for(
+        self,
+        *,
+        subscriber_id: UUID,
+        recipient: str,
+    ) -> CustomerNotificationPolicyDecision:
+        key = (subscriber_id, recipient)
+        for decision in self.decisions:
+            if decision.candidate.key == key:
+                return decision
+        raise KeyError(key)
 
 
 def _metadata_flag(value: object, default: bool) -> bool:
@@ -137,6 +182,52 @@ def _contact_preference_rows(
     ]
 
 
+def _notification_preferences_allow(
+    subscriber: Subscriber,
+    *,
+    contacts: Iterable[SubscriberContact],
+    channel: NotificationChannel | str,
+    category: NotificationCategory,
+    recipient: str | None,
+) -> bool:
+    normalized_channel = (
+        (channel.value if isinstance(channel, NotificationChannel) else str(channel))
+        .strip()
+        .lower()
+    )
+    preferences = get_subscriber_notification_preferences(subscriber)
+    category_key = f"{str(category or 'general').strip().lower()}_notifications"
+    if category_key in preferences and not preferences[category_key]:
+        return False
+    if category == "billing" and not preferences["billing_notifications"]:
+        return False
+    if normalized_channel in {"sms", "whatsapp"} and not preferences["sms_updates"]:
+        return False
+    if normalized_channel == "push" and not preferences["push_notifications"]:
+        return False
+
+    normalized_email = normalize_email_identifier(recipient)
+    normalized_phone = normalize_phone_identifier(recipient)
+    matching_contacts = [
+        contact
+        for contact in contacts
+        if (
+            normalized_email
+            and normalize_email_identifier(contact.email) == normalized_email
+        )
+        or (
+            normalized_phone
+            and (
+                normalize_phone_identifier(contact.phone) == normalized_phone
+                or normalize_phone_identifier(contact.whatsapp) == normalized_phone
+            )
+        )
+    ]
+    return not matching_contacts or any(
+        contact.receives_notifications for contact in matching_contacts
+    )
+
+
 def is_notification_enabled_for_subscriber(
     db: Session,
     *,
@@ -152,34 +243,137 @@ def is_notification_enabled_for_subscriber(
     if not subscriber:
         return True
 
-    normalized_channel = (
-        (channel.value if isinstance(channel, NotificationChannel) else str(channel))
-        .strip()
-        .lower()
-    )
-    preferences = get_subscriber_notification_preferences(subscriber)
-
-    category_key = f"{str(category or 'general').strip().lower()}_notifications"
-    if category_key in preferences and not preferences[category_key]:
-        return False
-    if category == "billing" and not preferences["billing_notifications"]:
-        return False
-    if normalized_channel in {"sms", "whatsapp"} and not preferences["sms_updates"]:
-        return False
-    if normalized_channel == "push" and not preferences["push_notifications"]:
-        return False
-
-    matching_contacts = _contact_preference_rows(
-        db,
-        subscriber_id=subscriber.id,
+    return _notification_preferences_allow(
+        subscriber,
+        contacts=_contact_preference_rows(
+            db,
+            subscriber_id=subscriber.id,
+            recipient=recipient,
+        ),
+        channel=channel,
+        category=category,
         recipient=recipient,
     )
-    if matching_contacts and not any(
-        contact.receives_notifications for contact in matching_contacts
-    ):
-        return False
 
-    return True
+
+def evaluate_bulk_customer_notification_policy(
+    db: Session,
+    query: CustomerNotificationPolicyCohortQuery,
+) -> CustomerNotificationPolicyCohortResult:
+    """Evaluate customer queue policy for a cohort with bounded query count."""
+
+    items = tuple(dict.fromkeys(candidate.key for candidate in query.candidates))
+    if not items:
+        return CustomerNotificationPolicyCohortResult(decisions=())
+    normalized_channel = query.channel
+    candidate_rows = tuple(
+        CustomerNotificationPolicyCandidate(
+            subscriber_id=subscriber_id,
+            recipient=recipient,
+        )
+        for subscriber_id, recipient in items
+    )
+    subscriber_ids = {candidate.subscriber_id for candidate in candidate_rows}
+    subscribers = {
+        subscriber.id: subscriber
+        for subscriber in db.scalars(
+            select(Subscriber).where(Subscriber.id.in_(subscriber_ids))
+        ).all()
+    }
+    contacts_by_subscriber: dict[UUID, list[SubscriberContact]] = {
+        subscriber_id: [] for subscriber_id in subscriber_ids
+    }
+    for contact in db.scalars(
+        select(SubscriberContact).where(
+            SubscriberContact.subscriber_id.in_(subscriber_ids)
+        )
+    ).all():
+        contacts_by_subscriber.setdefault(contact.subscriber_id, []).append(contact)
+
+    from app.services.communication_eligibility import (
+        normalize_address,
+        suppression_reasons_for_addresses,
+    )
+    from app.services.notification_status_policy import status_allows_notification
+
+    durable_suppressions = suppression_reasons_for_addresses(
+        db,
+        channel=normalized_channel,
+        addresses=(candidate.recipient for candidate in candidate_rows),
+        category=query.category,
+    )
+    recent_keys: set[tuple[UUID, str]] = set()
+    window_minutes = _setting_int(db, "notification_dedupe_window_minutes", 0)
+    if window_minutes > 0:
+        cutoff = query.evaluated_at - timedelta(minutes=window_minutes)
+        recent_query = (
+            select(Notification.subscriber_id, Notification.recipient)
+            .where(Notification.subscriber_id.in_(subscriber_ids))
+            .where(Notification.channel == normalized_channel)
+            .where(Notification.created_at >= cutoff)
+            .where(Notification.status != NotificationStatus.canceled)
+            .where(
+                Notification.recipient.in_(
+                    {candidate.recipient for candidate in candidate_rows}
+                )
+            )
+        )
+        if query.event_type:
+            recent_query = recent_query.where(
+                Notification.event_type == query.event_type
+            )
+        if query.category:
+            recent_query = recent_query.where(Notification.category == query.category)
+        recent_keys = {
+            (subscriber_id, recipient)
+            for subscriber_id, recipient in db.execute(recent_query).all()
+            if subscriber_id is not None
+        }
+
+    channel_disabled = channel_disabled_in_config(db, normalized_channel)
+    decisions: dict[tuple[UUID, str], CustomerNotificationPolicyDecision] = {}
+    for candidate in candidate_rows:
+        subscriber = subscribers.get(candidate.subscriber_id)
+        reason_code: str | None = None
+        reason: str | None = None
+        if channel_disabled:
+            reason_code = "channel_configuration"
+            reason = "Suppressed by notification channel configuration"
+        elif subscriber and not status_allows_notification(
+            subscriber.status,
+            query.category,
+        ):
+            reason_code = "account_status"
+            reason = "Suppressed by account notification status policy"
+        elif subscriber and not _notification_preferences_allow(
+            subscriber,
+            contacts=contacts_by_subscriber.get(candidate.subscriber_id, ()),
+            channel=normalized_channel,
+            category=query.category,
+            recipient=candidate.recipient,
+        ):
+            reason_code = "preferences"
+            reason = "Suppressed by customer notification preferences"
+        else:
+            normalized_recipient = normalize_address(
+                normalized_channel,
+                candidate.recipient,
+            )
+            durable_reason = durable_suppressions.get(normalized_recipient)
+            if durable_reason:
+                reason_code = "communication_suppression"
+                reason = "Suppressed by communication ledger: " + durable_reason
+            elif candidate.key in recent_keys:
+                reason_code = "dedupe"
+                reason = "Suppressed by notification dedupe window"
+
+        decisions[candidate.key] = CustomerNotificationPolicyDecision(
+            candidate=candidate,
+            allowed=reason_code is None,
+            reason_code=reason_code,
+            reason=reason,
+        )
+    return CustomerNotificationPolicyCohortResult(decisions=tuple(decisions.values()))
 
 
 def status_allows_notification_for_subscriber(

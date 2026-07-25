@@ -3126,14 +3126,19 @@ function customerDetail(config = {}) {
                     `Send ${selectedChannelMeta().label} template "${template.label || template.name}" to this customer?`,
                     `Queue ${preview.queued_count || 0} message(s).`
                 ];
+                const previewRecipient = (preview.recipient_summary || [])[0];
+                if (previewRecipient) {
+                    previewMessageParts.push(`Recipient: ${previewRecipient.name}${previewRecipient.account_number ? ` (${previewRecipient.account_number})` : ''}${previewRecipient.recipient ? ` at ${previewRecipient.recipient}` : ''}.`);
+                }
                 if (previewOpenTicketExcluded.length) {
                     previewMessageParts.push(`Exclude ${previewOpenTicketExcluded.length} customer(s) with open tickets.`);
                 }
                 if (previewOtherSuppressed) {
                     previewMessageParts.push(`Suppress ${previewOtherSuppressed} other customer(s).`);
                 }
-                if ((preview.skipped || []).length) {
-                    previewMessageParts.push(`Skip ${(preview.skipped || []).length} customer(s) with missing contact details.`);
+                const previewSkippedCount = preview.skipped_count ?? (preview.skipped || []).length;
+                if (previewSkippedCount) {
+                    previewMessageParts.push(`Skip ${previewSkippedCount} customer(s) with missing contact details.`);
                 }
                 if (!confirm(previewMessageParts.join(' '))) return;
 
@@ -3151,6 +3156,7 @@ function customerDetail(config = {}) {
                             expected_count: preview.matched_count || 0,
                             expected_scope_token: preview.scope_token
                         },
+                        expected_impact_token: preview.impact_token,
                         confirmed: true
                     })
                 });
@@ -3164,10 +3170,12 @@ function customerDetail(config = {}) {
                     this.closeSendMessageModal();
                     const suppressed = result.suppressed || [];
                     const openTicketExcluded = suppressed.filter((item) => item.reason_code === 'open_ticket');
-                    const otherSuppressed = Math.max((result.suppressed_count || 0) - openTicketExcluded.length, 0);
+                    const openTicketExcludedCount = result.suppression_counts?.open_ticket ?? openTicketExcluded.length;
+                    const otherSuppressed = Math.max((result.suppressed_count || 0) - openTicketExcludedCount, 0);
                     const openTicketNames = openTicketExcluded.slice(0, 10).map((item) => item.name).join(', ');
-                    const openTicketMore = openTicketExcluded.length > 10 ? `, and ${openTicketExcluded.length - 10} more` : '';
-                    alert(`Queued ${result.queued_count || 0} notification(s).${deliveryMessage}${openTicketExcluded.length ? ` ${openTicketExcluded.length} excluded because they have open tickets: ${openTicketNames}${openTicketMore}.` : ''}${otherSuppressed ? ` ${otherSuppressed} suppressed by preferences, dedupe, or other template conditions.` : ''}${result.skipped?.length ? ` ${result.skipped.length} customer(s) were skipped due to missing contact details.` : ''}`);
+                    const openTicketMore = openTicketExcludedCount > openTicketExcluded.length ? `, and ${openTicketExcludedCount - openTicketExcluded.length} more` : '';
+                    const skippedCount = result.skipped_count ?? result.skipped?.length ?? 0;
+                    alert(`Queued ${result.queued_count || 0} notification(s).${deliveryMessage}${openTicketExcludedCount ? ` ${openTicketExcludedCount} excluded because they have open tickets: ${openTicketNames}${openTicketMore}.` : ''}${otherSuppressed ? ` ${otherSuppressed} suppressed by preferences, dedupe, or other template conditions.` : ''}${skippedCount ? ` ${skippedCount} customer(s) were skipped due to missing contact details.` : ''}`);
                 } else {
                     const error = await response.json().catch(() => ({}));
                     alert(error.detail || 'Failed to queue the message. Please try again.');

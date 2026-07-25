@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.services.customer_support_links import ticket_customer_link_filter
@@ -124,6 +125,156 @@ def conditions_match(
     if any_conditions and not any(evaluator.evaluate(item) for item in any_conditions):
         return False
     return True
+
+
+def conditions_match_for_subscribers(
+    db: Session,
+    *,
+    subscriber_ids: tuple[UUID, ...],
+    conditions: Any,
+) -> dict[UUID, bool]:
+    """Evaluate one normalized condition set for a cohort in bounded queries."""
+
+    normalized = normalize_conditions(conditions)
+    unique_ids = tuple(dict.fromkeys(subscriber_ids))
+    if not unique_ids:
+        return {}
+    if not normalized:
+        return dict.fromkeys(unique_ids, True)
+
+    fields = {
+        str(condition["field"]) for group in normalized.values() for condition in group
+    }
+    facts: dict[UUID, dict[str, object]] = {
+        subscriber_id: {} for subscriber_id in unique_ids
+    }
+
+    if fields & {"customer_has_open_ticket", "open_ticket_count"}:
+        from app.models.support import Ticket
+
+        counts = dict.fromkeys(unique_ids, 0)
+        rows = db.execute(
+            select(
+                Ticket.subscriber_id,
+                Ticket.customer_account_id,
+                Ticket.customer_person_id,
+            )
+            .where(Ticket.is_active.is_(True))
+            .where(Ticket.status.in_(_OPEN_TICKET_STATUSES))
+            .where(
+                Ticket.subscriber_id.in_(unique_ids)
+                | Ticket.customer_account_id.in_(unique_ids)
+                | Ticket.customer_person_id.in_(unique_ids)
+            )
+        ).all()
+        for row in rows:
+            for linked_id in set(row):
+                if linked_id in counts:
+                    counts[linked_id] += 1
+        for subscriber_id, count in counts.items():
+            facts[subscriber_id]["open_ticket_count"] = count
+            facts[subscriber_id]["customer_has_open_ticket"] = count > 0
+
+    if "account_status" in fields:
+        from app.models.subscriber import Subscriber
+
+        statuses: dict[UUID, object] = {
+            subscriber_id: status
+            for subscriber_id, status in db.execute(
+                select(Subscriber.id, Subscriber.status).where(
+                    Subscriber.id.in_(unique_ids)
+                )
+            ).tuples()
+        }
+        for subscriber_id in unique_ids:
+            status = statuses.get(subscriber_id)
+            facts[subscriber_id]["account_status"] = str(
+                getattr(status, "value", status) or ""
+            )
+
+    if fields & {"has_overdue_invoice", "overdue_invoice_count"}:
+        from app.models.billing import Invoice
+        from app.services.invoice_collectibility import overdue_status_filters
+
+        invoice_counts: dict[UUID, int] = {
+            account_id: int(count)
+            for account_id, count in db.execute(
+                select(Invoice.account_id, func.count(Invoice.id))
+                .where(Invoice.account_id.in_(unique_ids))
+                .where(*overdue_status_filters())
+                .group_by(Invoice.account_id)
+            ).tuples()
+            if account_id is not None
+        }
+        for subscriber_id in unique_ids:
+            count = int(invoice_counts.get(subscriber_id, 0))
+            facts[subscriber_id]["overdue_invoice_count"] = count
+            facts[subscriber_id]["has_overdue_invoice"] = count > 0
+
+    if "has_active_dunning_case" in fields:
+        from app.models.collections import DunningCase
+
+        dunning_counts: dict[UUID, int] = {
+            account_id: int(count)
+            for account_id, count in db.execute(
+                select(DunningCase.account_id, func.count(DunningCase.id))
+                .where(DunningCase.account_id.in_(unique_ids))
+                .where(DunningCase.status.in_(_DUNNING_ACTIVE_STATUSES))
+                .group_by(DunningCase.account_id)
+            ).tuples()
+            if account_id is not None
+        }
+        for subscriber_id in unique_ids:
+            facts[subscriber_id]["has_active_dunning_case"] = (
+                int(dunning_counts.get(subscriber_id, 0)) > 0
+            )
+
+    if fields & {"active_subscription_count", "has_active_subscription"}:
+        from app.models.catalog import Subscription, SubscriptionStatus
+
+        subscription_counts: dict[UUID, int] = {
+            subscriber_id: int(count)
+            for subscriber_id, count in db.execute(
+                select(Subscription.subscriber_id, func.count(Subscription.id))
+                .where(Subscription.subscriber_id.in_(unique_ids))
+                .where(Subscription.status == SubscriptionStatus.active)
+                .group_by(Subscription.subscriber_id)
+            ).tuples()
+            if subscriber_id is not None
+        }
+        for subscriber_id in unique_ids:
+            count = int(subscription_counts.get(subscriber_id, 0))
+            facts[subscriber_id]["active_subscription_count"] = count
+            facts[subscriber_id]["has_active_subscription"] = count > 0
+
+    return {
+        subscriber_id: _conditions_match_facts(
+            facts[subscriber_id],
+            normalized,
+        )
+        for subscriber_id in unique_ids
+    }
+
+
+def _conditions_match_facts(
+    facts: dict[str, object],
+    normalized: dict[str, list[dict[str, Any]]],
+) -> bool:
+    def _matches(condition: dict[str, Any]) -> bool:
+        field = str(condition["field"])
+        expected = _coerce_expected(
+            field,
+            condition.get("value"),
+            str(condition["operator"]),
+        )
+        return _compare(facts.get(field), str(condition["operator"]), expected)
+
+    if any(not _matches(condition) for condition in normalized.get("all", [])):
+        return False
+    any_conditions = normalized.get("any", [])
+    return not any_conditions or any(
+        _matches(condition) for condition in any_conditions
+    )
 
 
 def _normalize_groups(conditions: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

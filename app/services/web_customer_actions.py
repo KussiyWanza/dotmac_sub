@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -73,8 +74,9 @@ from app.services.customer_identity_normalization import (
     normalize_phone_identifier,
 )
 from app.services.customer_notification_policy import (
-    has_recent_notification,
-    is_notification_enabled_for_subscriber,
+    CustomerNotificationPolicyCandidate,
+    CustomerNotificationPolicyCohortQuery,
+    evaluate_bulk_customer_notification_policy,
     quiet_hours_send_at,
     resolve_notification_category,
 )
@@ -82,7 +84,7 @@ from app.services.db_session_adapter import db_session_adapter
 from app.services.integrations import whatsapp_capability
 from app.services.notification_template_conditions import (
     NotificationTemplateConditionError,
-    conditions_match,
+    conditions_match_for_subscribers,
     normalize_conditions,
 )
 from app.services.notification_template_renderer import render_template_text
@@ -109,6 +111,47 @@ WHATSAPP_VARIABLE_CUSTOMER_FIELDS = {
 
 _DOUBLE_BRACE_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _SINGLE_BRACE_PLACEHOLDER_RE = re.compile(r"(?<!\{)\{\s*([a-zA-Z0-9_]+)\s*\}(?!\})")
+_SUBSCRIPTION_TEMPLATE_VARIABLE_NAMES = frozenset(
+    {
+        "offer_name",
+        "plan_name",
+        "pppoe_login",
+        "ipv4_address",
+        "nas_name",
+        "location",
+    }
+)
+_BILLING_TEMPLATE_VARIABLE_NAMES = frozenset(
+    {
+        "amount",
+        "total_amount",
+        "balance_due",
+        "days_overdue",
+        "invoice_number",
+        "due_date",
+        "payment_link",
+        "portal_url",
+        "website",
+    }
+)
+_MANUAL_TEMPLATE_VARIABLE_NAMES = frozenset(
+    {
+        "first_name",
+        "last_name",
+        "full_name",
+        "customer_name",
+        "subscriber_name",
+        "account_number",
+        "subscriber_number",
+        "email",
+        "phone",
+        "status",
+        "company_name",
+        "support_email",
+        *_SUBSCRIPTION_TEMPLATE_VARIABLE_NAMES,
+        *_BILLING_TEMPLATE_VARIABLE_NAMES,
+    }
+)
 
 
 def _apply_billing_approval_command(
@@ -1044,9 +1087,21 @@ def _billing_template_variables(db: Session, subscriber: Subscriber) -> dict[str
 
 
 def _notification_template_variables(
-    db: Session, subscriber: Subscriber
+    db: Session,
+    subscriber: Subscriber,
+    *,
+    required_variables: set[str] | frozenset[str] | None = None,
 ) -> dict[str, str]:
-    primary_subscription = _primary_subscription_for_notification(subscriber)
+    required = (
+        _MANUAL_TEMPLATE_VARIABLE_NAMES
+        if required_variables is None
+        else required_variables
+    )
+    primary_subscription = (
+        _primary_subscription_for_notification(subscriber)
+        if required & _SUBSCRIPTION_TEMPLATE_VARIABLE_NAMES
+        else None
+    )
     nas_name = ""
     pop_site_name = ""
     pppoe_login = ""
@@ -1073,7 +1128,6 @@ def _notification_template_variables(
         or subscriber.full_name
         or "Valued Customer"
     ).strip()
-    brand = get_brand()
     variables = {
         "first_name": str(subscriber.first_name or ""),
         "last_name": str(subscriber.last_name or ""),
@@ -1091,10 +1145,15 @@ def _notification_template_variables(
         "ipv4_address": ipv4_address,
         "nas_name": nas_name,
         "location": pop_site_name,
-        "company_name": brand["legal_name"],
-        "support_email": brand["support_email"],
+        "company_name": "",
+        "support_email": "",
     }
-    variables.update(_billing_template_variables(db, subscriber))
+    if required & {"company_name", "support_email"}:
+        brand = get_brand()
+        variables["company_name"] = brand["legal_name"]
+        variables["support_email"] = brand["support_email"]
+    if required & _BILLING_TEMPLATE_VARIABLE_NAMES:
+        variables.update(_billing_template_variables(db, subscriber))
     return variables
 
 
@@ -1200,6 +1259,121 @@ def _resolve_whatsapp_variable(
     return str(customer_values.get(source) or "")
 
 
+_BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT = 10
+_BULK_MESSAGE_RENDER_SAMPLE_LIMIT = 3
+
+
+def _mask_notification_recipient(
+    recipient: str,
+    channel: NotificationChannel,
+) -> str:
+    value = recipient.strip()
+    if channel == NotificationChannel.email and "@" in value:
+        local, domain = value.split("@", 1)
+        return f"{local[:1] or '*'}***@{domain}"
+    digits = "".join(character for character in value if character.isdigit())
+    if digits:
+        return f"***{digits[-4:]}"
+    return "***"
+
+
+def _bulk_message_recipient_item(
+    subscriber: Subscriber,
+    *,
+    channel: NotificationChannel,
+    recipient: str | None,
+    disposition: str,
+    reason_code: str | None = None,
+    reason: str | None = None,
+) -> dict[str, str]:
+    item = {
+        "id": str(subscriber.id),
+        "name": _subscriber_display_name(subscriber),
+        "account_number": str(
+            subscriber.account_number or subscriber.subscriber_number or ""
+        ),
+        "recipient": (
+            _mask_notification_recipient(recipient, channel) if recipient else ""
+        ),
+        "disposition": disposition,
+    }
+    if reason_code:
+        item["reason_code"] = reason_code
+    if reason:
+        item["reason"] = reason
+    return item
+
+
+def _render_bulk_customer_message(
+    db: Session,
+    *,
+    subscriber: Subscriber,
+    template: NotificationTemplate,
+    provider_template: dict[str, object] | None,
+    payload_variables: dict[object, object],
+    required_variables: set[str],
+) -> tuple[str | None, str]:
+    variables = _notification_template_variables(
+        db,
+        subscriber,
+        required_variables=required_variables,
+    )
+    if provider_template:
+        resolved_variables = {
+            str(key): _resolve_whatsapp_variable(value, variables)
+            for key, value in payload_variables.items()
+        }
+        return None, build_provider_template_body(
+            name=str(provider_template["name"]),
+            language=str(provider_template.get("language") or "en"),
+            variables=resolved_variables,
+        )
+    return (
+        _render_manual_template_text(
+            template.subject or "Service Update",
+            variables,
+        ),
+        _render_manual_template_text(template.body, variables),
+    )
+
+
+def _bulk_message_impact_token(
+    *,
+    scope_token: str,
+    template: NotificationTemplate,
+    channel: NotificationChannel,
+    template_variables: dict[object, object],
+    impact_rows: list[dict[str, object]],
+) -> str:
+    payload = {
+        "scope_token": scope_token,
+        "template": {
+            "id": str(template.id),
+            "updated_at": str(template.updated_at or ""),
+            "subject": template.subject or "",
+            "body": template.body or "",
+            "conditions": template.conditions or {},
+        },
+        "channel": channel.value,
+        "template_variables": template_variables,
+        "recipients": sorted(
+            impact_rows,
+            key=lambda row: (
+                str(row.get("subscriber_id") or ""),
+                str(row.get("recipient") or ""),
+                str(row.get("disposition") or ""),
+            ),
+        ),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def queue_bulk_message_from_payload(
     db: Session, payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -1235,6 +1409,7 @@ def queue_bulk_message_from_payload(
     customers = resolved.customers
     if not customers:
         raise HTTPException(status_code=400, detail="No customers matched this scope")
+    resolved_scope_token = resolved.scope_token
 
     preview_only = bool(payload.get("preview_only"))
     if not preview_only:
@@ -1243,185 +1418,330 @@ def queue_bulk_message_from_payload(
             resolved=resolved,
             action_label="Bulk message",
         )
+    provider_template = provider_template_from_template(template)
+    payload_variables = payload.get("template_variables") or {}
+    if not isinstance(payload_variables, dict):
+        raise HTTPException(
+            status_code=400, detail="template_variables must be an object"
+        )
+    required_variables: set[str] = set()
+    if provider_template:
+        for value in payload_variables.values():
+            if isinstance(value, dict):
+                source = str(value.get("source") or "").strip()
+                if source in WHATSAPP_VARIABLE_CUSTOMER_FIELDS:
+                    required_variables.add(source)
+    else:
+        required_variables = {
+            *_unresolved_template_variables(template.subject or "Service Update"),
+            *_unresolved_template_variables(template.body),
+        }
+        unsupported = sorted(required_variables - _MANUAL_TEMPLATE_VARIABLE_NAMES)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{channel.value.upper()} template has unsupported or "
+                    "unavailable variable(s): "
+                    + ", ".join("{" + name + "}" for name in unsupported)
+                ),
+            )
+    try:
+        normalized_conditions = normalize_conditions(template.conditions)
+    except NotificationTemplateConditionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Template conditions are invalid: {exc}",
+        ) from exc
+
     created_count = 0
     notification_ids: list[str] = []
     skipped: list[dict[str, str]] = []
-    skipped.extend(
-        {
+    recipient_summary: list[dict[str, str]] = []
+    impact_rows: list[dict[str, object]] = []
+    for customer_id in resolved.missing_ids:
+        item = {
             "id": customer_id,
             "name": customer_id,
             "reason": "Customer not found",
         }
-        for customer_id in resolved.missing_ids
-    )
+        if len(skipped) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
+            skipped.append(item)
+        impact_rows.append(
+            {
+                "subscriber_id": customer_id,
+                "recipient": None,
+                "disposition": "skipped",
+                "reason_code": "customer_not_found",
+            }
+        )
     suppressed: list[dict[str, str]] = []
+    suppression_counts: dict[str, int] = {}
     queued_count = 0
     suppressed_count = 0
+    skipped_count = len(resolved.missing_ids)
     category = resolve_notification_category("service_bulk_message")
     quiet_send_at = quiet_hours_send_at(db)
-
+    addressed_customers: list[tuple[Subscriber, str]] = []
     for subscriber in customers:
         recipient = _resolve_notification_recipient(subscriber, channel)
         if not recipient:
-            skipped.append(
+            if len(skipped) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
+                skipped.append(
+                    {
+                        "id": str(subscriber.id),
+                        "name": subscriber.company_name
+                        or subscriber.display_name
+                        or subscriber.full_name,
+                        "reason": f"Missing {channel.value} recipient",
+                    }
+                )
+            skipped_count += 1
+            if len(recipient_summary) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
+                recipient_summary.append(
+                    _bulk_message_recipient_item(
+                        subscriber,
+                        channel=channel,
+                        recipient=None,
+                        disposition="skipped",
+                        reason_code="missing_recipient",
+                        reason=f"Missing {channel.value} recipient",
+                    )
+                )
+            impact_rows.append(
                 {
-                    "id": str(subscriber.id),
-                    "name": subscriber.company_name
-                    or subscriber.display_name
-                    or subscriber.full_name,
-                    "reason": f"Missing {channel.value} recipient",
+                    "subscriber_id": str(subscriber.id),
+                    "recipient": None,
+                    "disposition": "skipped",
+                    "reason_code": "missing_recipient",
                 }
             )
             continue
+        addressed_customers.append((subscriber, recipient))
 
-        variables = _notification_template_variables(db, subscriber)
-        provider_template = provider_template_from_template(template)
-        if provider_template:
-            subject = None
-            payload_variables = payload.get("template_variables") or {}
-            if not isinstance(payload_variables, dict):
-                raise HTTPException(
-                    status_code=400, detail="template_variables must be an object"
-                )
-            resolved_variables: dict[str, str] = {}
-            for key, value in payload_variables.items():
-                resolved_variables[str(key)] = _resolve_whatsapp_variable(
-                    value,
-                    variables,
-                )
-            body = build_provider_template_body(
-                name=str(provider_template["name"]),
-                language=str(provider_template.get("language") or "en"),
-                variables=resolved_variables,
-            )
-        else:
-            subject = _render_manual_template_text(
-                template.subject or "Service Update", variables
-            )
-            body = _render_manual_template_text(template.body, variables)
-            unresolved = sorted(
-                {
-                    *_unresolved_template_variables(subject),
-                    *_unresolved_template_variables(body),
-                }
-            )
-            if unresolved:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"{channel.value.upper()} template has unsupported or "
-                        "unavailable variable(s): "
-                        + ", ".join("{" + name + "}" for name in unresolved)
-                    ),
-                )
-        status = NotificationStatus.queued
-        last_error = None
-        if not is_notification_enabled_for_subscriber(
-            db,
-            subscriber_id=subscriber.id,
-            channel=channel,
-            category=category,
-            recipient=recipient,
-        ):
-            status = NotificationStatus.canceled
-            last_error = "Suppressed by customer notification preferences"
-            suppressed.append(
-                _bulk_message_suppression_item(
-                    subscriber,
-                    reason_code="preferences",
-                    reason="Suppressed by customer notification preferences",
-                )
-            )
-            suppressed_count += 1
-        elif has_recent_notification(
-            db,
-            subscriber_id=subscriber.id,
-            channel=channel,
-            event_type="service_bulk_message",
-            category=category,
-            recipient=recipient,
-        ):
-            status = NotificationStatus.canceled
-            last_error = "Suppressed by notification dedupe window"
-            suppressed.append(
-                _bulk_message_suppression_item(
-                    subscriber,
-                    reason_code="dedupe",
-                    reason="Suppressed by notification dedupe window",
-                )
-            )
-            suppressed_count += 1
-        else:
-            try:
-                condition_matched = conditions_match(
-                    db,
+    policy_decisions = evaluate_bulk_customer_notification_policy(
+        db,
+        CustomerNotificationPolicyCohortQuery(
+            candidates=tuple(
+                CustomerNotificationPolicyCandidate(
                     subscriber_id=subscriber.id,
-                    conditions=template.conditions,
+                    recipient=recipient,
                 )
-            except NotificationTemplateConditionError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Template conditions are invalid: {exc}",
-                ) from exc
-            if not condition_matched:
-                status = NotificationStatus.canceled
-                if _template_has_open_ticket_exclusion(template.conditions):
-                    reason_code = "open_ticket"
-                    last_error = "Suppressed by open ticket template condition"
-                    reason = "Customer has an open ticket"
-                else:
-                    reason_code = "template_conditions"
-                    last_error = "Suppressed by template conditions"
-                    reason = "Suppressed by template conditions"
+                for subscriber, recipient in addressed_customers
+            ),
+            channel=channel,
+            category=category,
+            event_type="service_bulk_message",
+            evaluated_at=datetime.now(UTC),
+        ),
+    )
+    condition_matches = conditions_match_for_subscribers(
+        db,
+        subscriber_ids=tuple(
+            subscriber.id for subscriber, _recipient in addressed_customers
+        ),
+        conditions=normalized_conditions,
+    )
+    planned: list[tuple[Subscriber, str, bool, str | None, str | None, str | None]] = []
+    for subscriber, recipient in addressed_customers:
+        decision = policy_decisions.decision_for(
+            subscriber_id=subscriber.id,
+            recipient=recipient,
+        )
+        condition_matched = condition_matches.get(subscriber.id, True)
+        condition_reason_code: str | None = None
+        condition_reason: str | None = None
+        condition_last_error: str | None = None
+        if not condition_matched:
+            if _template_has_open_ticket_exclusion(normalized_conditions):
+                condition_reason_code = "open_ticket"
+                condition_reason = "Customer has an open ticket"
+                condition_last_error = "Suppressed by open ticket template condition"
+            else:
+                condition_reason_code = "template_conditions"
+                condition_reason = "Suppressed by template conditions"
+                condition_last_error = condition_reason
+
+        created_count += 1
+        reason_code = decision.reason_code
+        reason = decision.reason
+        if decision.allowed and not condition_matched:
+            reason_code = condition_reason_code
+            reason = condition_reason
+        disposition = "suppressed" if reason_code else "queued"
+        if reason_code:
+            suppression_counts[reason_code] = suppression_counts.get(reason_code, 0) + 1
+            if len(suppressed) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
                 suppressed.append(
                     _bulk_message_suppression_item(
                         subscriber,
                         reason_code=reason_code,
-                        reason=reason,
+                        reason=reason or "Suppressed by notification policy",
                     )
                 )
-                suppressed_count += 1
-            else:
-                queued_count += 1
-
-        notification_payload = NotificationCreate(
-            template_id=template.id,
-            subscriber_id=subscriber.id,
-            channel=channel,
-            event_type="service_bulk_message",
-            category=category,
-            recipient=recipient,
-            subject=subject if channel == NotificationChannel.email else None,
-            body=body,
-            status=status,
-            send_at=quiet_send_at if status == NotificationStatus.queued else None,
-            last_error=last_error,
-        )
-        created_count += 1
-        if not preview_only:
-            notification = (
-                notification_service.notifications.queue_customer_notification(
-                    db, notification_payload
+            suppressed_count += 1
+        else:
+            queued_count += 1
+        if len(recipient_summary) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
+            recipient_summary.append(
+                _bulk_message_recipient_item(
+                    subscriber,
+                    channel=channel,
+                    recipient=recipient,
+                    disposition=disposition,
+                    reason_code=reason_code,
+                    reason=reason,
                 )
             )
-            if notification.id:
-                notification_ids.append(str(notification.id))
+        impact_rows.append(
+            {
+                "subscriber_id": str(subscriber.id),
+                "recipient": recipient,
+                "disposition": disposition,
+                "reason_code": reason_code,
+            }
+        )
+        planned.append(
+            (
+                subscriber,
+                recipient,
+                not bool(reason_code),
+                reason_code,
+                reason,
+                condition_last_error,
+            )
+        )
 
-    if not preview_only:
-        db.commit()
+    impact_token = _bulk_message_impact_token(
+        scope_token=resolved_scope_token,
+        template=template,
+        channel=channel,
+        template_variables=payload_variables,
+        impact_rows=impact_rows,
+    )
+
+    if preview_only:
+        render_sample_count = 0
+        for subscriber, _recipient, allowed, *_rest in planned:
+            if not allowed:
+                continue
+            _render_bulk_customer_message(
+                db,
+                subscriber=subscriber,
+                template=template,
+                provider_template=provider_template,
+                payload_variables=payload_variables,
+                required_variables=required_variables,
+            )
+            render_sample_count += 1
+            if render_sample_count >= _BULK_MESSAGE_RENDER_SAMPLE_LIMIT:
+                break
+        return {
+            "success": True,
+            "preview": True,
+            "scope": resolved.scope,
+            "matched_count": len(customers),
+            "scope_token": resolved_scope_token,
+            "impact_token": impact_token,
+            "missing_ids": list(resolved.missing_ids),
+            "created_count": created_count,
+            "queued_count": queued_count,
+            "suppressed_count": suppressed_count,
+            "suppression_counts": suppression_counts,
+            "skipped_count": skipped_count,
+            "suppressed": suppressed,
+            "skipped": skipped,
+            "recipient_summary": recipient_summary,
+            "recipient_summary_limit": _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT,
+            "render_sample_count": render_sample_count,
+            "notification_ids": [],
+        }
+
+    expected_impact_token = str(payload.get("expected_impact_token") or "")
+    if not expected_impact_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Preview the bulk message impact before confirming",
+        )
+    if not hmac.compare_digest(expected_impact_token, impact_token):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The recipients, template, or suppression impact changed after "
+                "preview. Review the updated impact before confirming again."
+            ),
+        )
+
+    queued_count = 0
+    suppressed_count = 0
+    suppressed = []
+    suppression_counts = {}
+    for subscriber, recipient, allowed, reason_code, reason, condition_error in planned:
+        subject, body = _render_bulk_customer_message(
+            db,
+            subscriber=subscriber,
+            template=template,
+            provider_template=provider_template,
+            payload_variables=payload_variables,
+            required_variables=required_variables,
+        )
+        notification = notification_service.notifications.queue_customer_notification(
+            db,
+            NotificationCreate(
+                template_id=template.id,
+                subscriber_id=subscriber.id,
+                channel=channel,
+                event_type="service_bulk_message",
+                category=category,
+                recipient=recipient,
+                subject=subject if channel == NotificationChannel.email else None,
+                body=body,
+                status=(
+                    NotificationStatus.queued
+                    if allowed
+                    else NotificationStatus.canceled
+                ),
+                send_at=quiet_send_at if allowed else None,
+                last_error=condition_error or reason,
+            ),
+        )
+        if notification.id:
+            notification_ids.append(str(notification.id))
+        if notification.status == NotificationStatus.queued:
+            queued_count += 1
+        else:
+            suppressed_count += 1
+            resolved_reason_code = reason_code or "notification_policy"
+            suppression_counts[resolved_reason_code] = (
+                suppression_counts.get(resolved_reason_code, 0) + 1
+            )
+            if len(suppressed) < _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT:
+                suppressed.append(
+                    _bulk_message_suppression_item(
+                        subscriber,
+                        reason_code=resolved_reason_code,
+                        reason=reason or "Suppressed by notification policy",
+                    )
+                )
+    db.commit()
 
     return {
         "success": True,
         "preview": preview_only,
         "scope": resolved.scope,
         "matched_count": len(customers),
-        "scope_token": resolved.scope_token,
+        "scope_token": resolved_scope_token,
+        "impact_token": impact_token,
         "missing_ids": list(resolved.missing_ids),
         "created_count": created_count,
         "queued_count": queued_count,
         "suppressed_count": suppressed_count,
+        "suppression_counts": suppression_counts,
+        "skipped_count": skipped_count,
         "suppressed": suppressed,
         "skipped": skipped,
+        "recipient_summary": recipient_summary,
+        "recipient_summary_limit": _BULK_MESSAGE_PREVIEW_SAMPLE_LIMIT,
         "notification_ids": notification_ids,
     }
 

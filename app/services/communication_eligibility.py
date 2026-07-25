@@ -163,18 +163,45 @@ def filter_eligible(
     if not wanted:
         return []
 
+    blocked = suppression_reasons_for_addresses(
+        db,
+        channel=resolved,
+        addresses=wanted.values(),
+        category=category,
+    )
+    return [original for norm, original in wanted.items() if norm not in blocked]
+
+
+def suppression_reasons_for_addresses(
+    db: Session,
+    *,
+    channel: NotificationChannel | str,
+    addresses: Iterable[str],
+    category: str | None,
+) -> dict[str, str]:
+    """Return canonical-address suppression reasons with one database query."""
+
+    resolved = _coerce_channel(channel)
+    normalized = {
+        normalize_address(resolved, address)
+        for address in addresses
+        if normalize_address(resolved, address)
+    }
+    if not normalized:
+        return {}
+
     rows = db.scalars(
         select(CommunicationSuppression).where(
             CommunicationSuppression.channel == resolved,
-            CommunicationSuppression.address.in_(list(wanted)),
+            CommunicationSuppression.address.in_(normalized),
         )
     ).all()
-
     marketing = is_marketing(category)
-    blocked = {
-        row.address for row in rows if row.scope is SuppressionScope.all or marketing
+    return {
+        row.address: row.reason.value
+        for row in rows
+        if row.scope is SuppressionScope.all or marketing
     }
-    return [original for norm, original in wanted.items() if norm not in blocked]
 
 
 def suppress(

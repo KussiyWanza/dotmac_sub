@@ -17,7 +17,6 @@ auth.token_signing
 communications.campaigns
 communications.channel_policy
 communications.customer_experience_intents
-communications.customer_policy
 communications.customer_read_state
 communications.eligibility
 communications.ephemeral_actions

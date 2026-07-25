@@ -10331,8 +10331,127 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="communications.customer_policy",
                 module="app.services.customer_notification_policy",
-                owns=("customer notification eligibility",),
-                depends_on=("customer.identity_scope",),
+                owns=(
+                    "customer notification eligibility",
+                    "cohort-batched customer notification eligibility",
+                ),
+                depends_on=(
+                    "communications.channel_policy",
+                    "communications.eligibility",
+                    "customer.accounts",
+                    "customer.identity_scope",
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer notification eligibility",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "customer notification identity and preferences",
+                                "account notification status",
+                                "channel configuration",
+                                "recipient suppression ledger",
+                                "recent notification history",
+                                "evaluation time",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="cohort-batched customer notification eligibility",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "customer notification identity and preferences",
+                                "account notification status",
+                                "channel configuration",
+                                "recipient suppression ledger",
+                                "recent notification history",
+                                "evaluation time",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="customer notification identity and preferences",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Subscriber and SubscriberContact identity, recipient, "
+                                "and notification-preference fields"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="account notification status",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Subscriber lifecycle status",
+                        ),
+                        AuthorityInput(
+                            name="channel configuration",
+                            owner="communications.channel_policy",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="canonical channel enablement configuration",
+                        ),
+                        AuthorityInput(
+                            name="recipient suppression ledger",
+                            owner="communications.eligibility",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="normalized active communication suppression entries",
+                        ),
+                        AuthorityInput(
+                            name="recent notification history",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "persisted recipient, event, category, status, and "
+                                "creation time used by the dedupe window"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="evaluation time",
+                            owner="external:system_clock",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source="explicit UTC cohort evaluation time",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "The caller owns the session. Individual and cohort policy "
+                            "queries read canonical inputs and never write or complete "
+                            "a transaction."
+                        ),
+                        locking=(
+                            "No row locks are acquired. The notification intent owner "
+                            "rechecks policy when materializing a delivery."
+                        ),
+                        idempotency=(
+                            "The same typed candidates, evaluation time, and visible "
+                            "canonical evidence produce the same ordered decisions."
+                        ),
+                        retries=(
+                            "Transient reads may be retried; malformed typed inputs fail "
+                            "before policy evaluation."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="calling notification adapter or intent owner",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="communications.customer_policy",
+                    ),
+                    steward="customer communications",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/CODING_STANDARD.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_customer_bulk_actions.py",
+                        "tests/test_communication_eligibility.py",
+                        "tests/architecture/test_customer_notification_policy_boundary.py",
+                    ),
+                ),
             ),
             SOTService(
                 name="communications.eligibility",
