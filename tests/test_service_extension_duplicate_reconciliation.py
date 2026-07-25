@@ -41,9 +41,23 @@ def _legacy_engine() -> sa.Engine:
                     status TEXT NOT NULL,
                     affected_count INTEGER NOT NULL,
                     skipped_count INTEGER NOT NULL,
+                    resumed_count INTEGER NOT NULL DEFAULT 0,
+                    still_suspended_count INTEGER NOT NULL DEFAULT 0,
                     created_by TEXT,
                     applied_by TEXT,
                     applied_at DATETIME,
+                    canceled_by TEXT,
+                    canceled_at DATETIME,
+                    create_idempotency_key_sha256 TEXT,
+                    create_fingerprint_sha256 TEXT,
+                    create_command_id TEXT,
+                    create_correlation_id TEXT,
+                    apply_idempotency_key_sha256 TEXT,
+                    apply_command_id TEXT,
+                    apply_correlation_id TEXT,
+                    cancel_idempotency_key_sha256 TEXT,
+                    cancel_command_id TEXT,
+                    cancel_correlation_id TEXT,
                     created_at DATETIME NOT NULL
                 )
                 """
@@ -58,7 +72,11 @@ def _legacy_engine() -> sa.Engine:
                     subscription_id TEXT NOT NULL,
                     subscriber_id TEXT NOT NULL,
                     previous_next_billing_at DATETIME,
+                    grant_starts_at DATETIME,
+                    grant_ends_at DATETIME,
+                    anchor_basis TEXT,
                     new_next_billing_at DATETIME,
+                    policy_version INTEGER,
                     created_at DATETIME NOT NULL
                 )
                 """

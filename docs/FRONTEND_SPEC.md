@@ -344,7 +344,7 @@ Import what you need:
 | `info_row` | `label, value, icon` | Key-value detail row |
 | `metric_row` | `label, value, color, mono` | Label-value with colored dot |
 | `progress_bar` | `value, max, label, show_text, size, color` | Horizontal bar with auto-coloring |
-| `timeline_item` | `title, description, time, color, is_last` | Vertical timeline entry |
+| `timeline_item` | `title, description, time, color, tone, is_last` | Vertical timeline entry; prefer the branding-owned semantic `tone` for status activity |
 | `connection_status` | `status, label, last_seen` | Online/offline dot indicator |
 | `alert_count_badge` | `count, color` | Count pill, hidden when 0 |
 | `icon_badge` | `icon, color, color2, size` | Compact orientation icon; semantic state remains separate |
@@ -1049,6 +1049,48 @@ transition.
     "invoices": list[Invoice],                  # open invoices only
 }
 ```
+
+### Billing — Service extension detail
+
+#### `GET /admin/billing/service-extensions/{extension_id}`
+**Template:** `admin/billing/service_extension_detail.html`
+
+Page contract:
+
+- Screen: admin service-extension detail.
+- Audience: billing and operations staff.
+- Job: verify scope, ownership, lifecycle history, impact, and the available
+  transition.
+- Read owner: `ui.service_extension_detail_projection`.
+- Command owner: `financial.service_extensions`.
+- Primary entity: service-extension UUID.
+- Activity depth: L3 investigation. Raw audit evidence and metadata remain L4
+  and require `audit:read`.
+
+The route supplies one typed `ServiceExtensionDetailProjection`. Its summary
+includes server-owned `status_presentation`, created actor and application-
+timezone timestamp, scope, days, outage window, and UUID. The decision area
+receives owner-computed impact and permission-aware `can_apply`/`can_cancel`.
+Users with only `billing:extension:read` can see summarized activity but no
+action controls.
+
+“Recent activity” appears below the decision/action area and before affected-
+subscription evidence. It uses typed `ServiceExtensionActivityItem` values and
+the shared `timeline_item` macro. Each item retains its action, safe actor label,
+application-timezone timestamp, concise result, semantic tone, and explicit
+legacy provenance when reconstructed. Newest-first order is deterministic.
+
+The projection queries only exact `entity_type=service_extension` and exact
+entity UUID audit evidence. It may reconstruct historical creation and apply
+items from reliable legacy fields, de-duplicates them when canonical events
+exist, and never invents a cancellation timestamp. There is no “View all” link
+until the audit UI supports an exact entity-ID filter.
+
+The responsive timeline keeps action, actor, and timestamp visible without a
+horizontal table dependency. Status always includes text/icon semantics and is
+never communicated by color alone. The template must not contain a local status
+map, permission check, lifecycle transition rule, actor lookup, or timestamp
+conversion.
 
 #### `GET /admin/reports/tax`
 **Template:** `admin/reports/tax.html`

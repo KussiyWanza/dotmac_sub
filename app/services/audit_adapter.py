@@ -19,6 +19,7 @@ class AuditRecord:
     entity_id: str | None = None
     actor_type: AuditActorType = AuditActorType.system
     actor_id: str | None = None
+    actor_label: str | None = None
     status_code: int | None = None
     is_success: bool = True
     ip_address: str | None = None
@@ -43,6 +44,7 @@ class AuditAdapter:
         return AuditEventCreate(
             actor_type=record.actor_type,
             actor_id=record.actor_id,
+            actor_label=record.actor_label,
             action=record.action,
             entity_type=record.entity_type,
             entity_id=record.entity_id,
@@ -74,7 +76,10 @@ class AuditAdapter:
         """Stage an audit event in the caller-owned transaction."""
         from app.services import audit as audit_service
 
-        return audit_service.audit_events.stage(db, self.build_payload(record))
+        return audit_service.audit_events.stage(
+            db,
+            self.build_payload(record),
+        )
 
     def list_events(self, db: Session, **filters):
         from app.services import audit as audit_service
@@ -125,10 +130,12 @@ def stage_audit_event(
     entity_id: str | None = None,
     actor_type: AuditActorType = AuditActorType.system,
     actor_id: str | None = None,
+    actor_label: str | None = None,
     metadata: dict[str, object] | None = None,
     status_code: int | None = None,
     is_success: bool = True,
     request_id: str | None = None,
+    occurred_at: datetime | None = None,
 ):
     return audit_adapter.stage(
         db,
@@ -138,9 +145,11 @@ def stage_audit_event(
             entity_id=entity_id,
             actor_type=actor_type,
             actor_id=actor_id,
+            actor_label=actor_label,
             metadata=dict(metadata or {}),
             status_code=status_code,
             is_success=is_success,
             request_id=request_id,
+            occurred_at=occurred_at,
         ),
     )

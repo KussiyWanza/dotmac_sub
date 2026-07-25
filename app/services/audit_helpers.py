@@ -626,6 +626,16 @@ def _resolve_actor_label_from_db(db, actor_id, actor_type) -> str | None:
     return None
 
 
+def resolve_actor_label_from_db(
+    db: Session,
+    actor_id: str,
+    actor_type: AuditActorType,
+) -> str | None:
+    """Resolve the canonical write-time label snapshot for an audit actor."""
+
+    return _resolve_actor_label_from_db(db, actor_id, actor_type)
+
+
 def _resolve_actor_name(event, subscribers: dict[str, object]) -> str:
     # Prefer the label stored at write time — it is authoritative and survives
     # deletion of the actor. Live resolution below only backfills older rows.

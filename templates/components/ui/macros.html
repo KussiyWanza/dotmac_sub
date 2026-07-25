@@ -1198,13 +1198,13 @@
    TIMELINE ITEM
    Vertical timeline entry with connector
    ============================================ #}
-{% macro timeline_item(title, description="", time="", color="slate", is_last=False) %}
+{% macro timeline_item(title, description="", time="", color="slate", tone="", is_last=False) %}
 <div class="relative flex gap-4 pb-6 {% if is_last %}pb-0{% endif %}">
     {% if not is_last %}
     <div class="absolute left-[11px] top-6 bottom-0 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true"></div>
     {% endif %}
     <div class="relative flex h-6 w-6 flex-none items-center justify-center">
-        <div class="h-3 w-3 rounded-full border-2 border-{{ color }}-500 bg-white dark:bg-slate-800 ring-4 ring-white dark:ring-slate-800"></div>
+        <div class="{% if tone %}status-tone-dot status-tone-dot-{{ tone }}{% else %}border-{{ color }}-500{% endif %} h-3 w-3 rounded-full border-2 bg-white dark:bg-slate-800 ring-4 ring-white dark:ring-slate-800"></div>
     </div>
     <div class="flex-1 min-w-0">
         <p class="text-sm font-medium text-slate-900 dark:text-white">{{ title }}</p>

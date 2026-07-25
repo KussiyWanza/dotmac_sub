@@ -14,7 +14,13 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["420_billing_run_launch_evidence"]
+    # Single linear head: the service-extension-activity migration (421) chains
+    # onto billing-run evidence (420), which chains onto customer WHT (419).
+    assert script.get_heads() == ["421_service_extension_activity_sot"]
+    assert (
+        script.get_revision("421_service_extension_activity_sot").down_revision
+        == "420_billing_run_launch_evidence"
+    )
     assert (
         script.get_revision("420_billing_run_launch_evidence").down_revision
         == "419_customer_wht_policy_and_direct_targets"

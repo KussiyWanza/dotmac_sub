@@ -385,7 +385,7 @@ def _service_extension_payload(
     entries: list[ServiceExtensionEntry] | None = None,
 ) -> dict[str, Any]:
     actor_lookup = actors or {}
-    payload = {
+    payload: dict[str, Any] = {
         "id": str(extension.id),
         "reason": extension.reason,
         "window_start": utc_iso(extension.window_start),
