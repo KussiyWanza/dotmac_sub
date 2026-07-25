@@ -1,6 +1,6 @@
 """Admin dispatch work-order routes."""
 
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import web_dispatch_work_orders as work_orders_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 from app.web.request_parsing import parse_form_data_sync
 
 templates = Jinja2Templates(directory="templates")
@@ -39,6 +39,7 @@ def dispatch_work_orders(
     status: str | None = None,
     q: str | None = None,
     active: bool | None = None,
+    project_task_id: str | None = None,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=10, le=100),
     notice: str | None = None,
@@ -50,6 +51,8 @@ def dispatch_work_orders(
         status=status,
         q=q,
         active=active,
+        project_task_id=project_task_id,
+        can_create=can(request, "operations:dispatch:write"),
         page=page,
         per_page=per_page,
     )
@@ -79,7 +82,10 @@ def create_dispatch_work_order(
     except (HTTPException, ValidationError, ValueError) as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         return _redirect(error=detail)
-    return _redirect(notice=f"Work order {row.public_id} created")
+    return _redirect(
+        notice=f"Work order {row.public_id} created",
+        q=row.public_id,
+    )
 
 
 @router.post(
@@ -139,11 +145,19 @@ def queue_dispatch_work_order(
 
 
 def _redirect(
-    *, notice: str | None = None, error: str | None = None
+    *,
+    notice: str | None = None,
+    error: str | None = None,
+    q: str | None = None,
 ) -> RedirectResponse:
     url = "/admin/dispatch/work-orders"
+    params: dict[str, str] = {}
     if notice:
-        url += f"?notice={quote(str(notice))}"
+        params["notice"] = str(notice)
     elif error:
-        url += f"?error={quote(str(error))}"
+        params["error"] = str(error)
+    if q:
+        params["q"] = q
+    if params:
+        url += f"?{urlencode(params)}"
     return RedirectResponse(url=url, status_code=303)

@@ -57,7 +57,11 @@ from app.schemas.project import (
     ProjectTemplateUpdate,
     ProjectUpdate,
 )
-from app.services import customer_experience_lifecycle, project_filters
+from app.services import (
+    customer_experience_lifecycle,
+    project_filters,
+    work_order_views,
+)
 from app.services import projects as projects_service
 from app.services import support as support_service
 from app.services import support_ticket_settings as support_ticket_settings_service
@@ -66,6 +70,7 @@ from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.dynamic_filters import FilterValidationError
 from app.services.list_query import ListDefinition, ListFieldDefinition, ListQuery
+from app.services.ui_contracts import Action
 
 logger = logging.getLogger(__name__)
 
@@ -384,6 +389,80 @@ def project_url(project: Project) -> str:
 
 def task_url(task: ProjectTask) -> str:
     return f"/admin/projects/tasks/{task.number or task.id}"
+
+
+def _task_work_order_create_url(task: ProjectTask) -> str:
+    return "/admin/dispatch/work-orders?" + urlencode({"project_task_id": str(task.id)})
+
+
+def _work_order_url(public_id: str) -> str:
+    return "/admin/dispatch/work-orders?" + urlencode({"q": public_id})
+
+
+def _task_work_order_create_action(
+    task: ProjectTask, project: Project
+) -> tuple[Action, str | None]:
+    if not task.is_active:
+        allowed, reason = False, "Archived tasks cannot create field work"
+    elif not project.is_active:
+        allowed, reason = False, "Archived projects cannot create field work"
+    elif project.subscriber_id is None:
+        allowed = False
+        reason = "Link a subscriber to the project before creating field work"
+    else:
+        allowed, reason = True, None
+    action = Action(
+        key="create_work_order",
+        label="Create Work Order",
+        allowed=allowed,
+        reason=reason,
+        permission="operations:dispatch:write",
+    )
+    return action, _task_work_order_create_url(task) if allowed else None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTaskWorkOrderProjection:
+    """Typed zero/one/many field-work projection for one project task."""
+
+    task_id: UUID
+    work_orders: tuple[work_order_views.LinkedWorkOrderSummary, ...]
+    action: Action
+    action_url: str | None
+
+
+def _task_work_order_projection(
+    task: ProjectTask,
+    project: Project,
+    work_orders: tuple[work_order_views.LinkedWorkOrderSummary, ...],
+) -> ProjectTaskWorkOrderProjection:
+    count = len(work_orders)
+    if count == 0:
+        action, action_url = _task_work_order_create_action(task, project)
+    elif count == 1:
+        action = Action(
+            key="open_work_order",
+            label="Open Work Order",
+            allowed=True,
+            permission="operations:dispatch:read",
+            affected=1,
+        )
+        action_url = _work_order_url(work_orders[0].public_id)
+    else:
+        action = Action(
+            key="view_work_orders",
+            label=f"View {count} Work Orders",
+            allowed=True,
+            permission="operations:dispatch:read",
+            affected=count,
+        )
+        action_url = _task_work_order_create_url(task)
+    return ProjectTaskWorkOrderProjection(
+        task_id=task.id,
+        work_orders=work_orders,
+        action=action,
+        action_url=action_url,
+    )
 
 
 # ── shared option helpers ────────────────────────────────────────────────────
@@ -966,7 +1045,12 @@ def delete_project(
 # ── project detail ───────────────────────────────────────────────────────────
 
 
-def build_project_detail_context(db: Session, *, project: Project) -> dict:
+def build_project_detail_context(
+    db: Session,
+    *,
+    project: Project,
+    can_read_work_orders: bool = False,
+) -> dict:
     tasks = projects_service.project_tasks.list(
         db,
         project_id=str(project.id),
@@ -1013,6 +1097,12 @@ def build_project_detail_context(db: Session, *, project: Project) -> dict:
         "project": project,
         "project_url": project_url(project),
         "tasks": tasks,
+        "show_field_work": can_read_work_orders,
+        "project_work_orders": (
+            work_order_views.list_project_work_order_summaries(db, project.id)
+            if can_read_work_orders
+            else ()
+        ),
         "comments": comments,
         "activities": build_audit_activities(db, "project", str(project.id), limit=20),
         "fiber_stages": build_fiber_stage_rows(tasks),
@@ -1094,6 +1184,7 @@ def build_tasks_list_context(
     filters: str | None,
     page: int,
     per_page: int,
+    can_read_work_orders: bool = False,
 ) -> dict:
     filter_clause = _build_task_filter_clause(filters)
     assigned_to_person_id = None
@@ -1129,6 +1220,23 @@ def build_tasks_list_context(
         if project_ids
         else []
     )
+    project_map = {project.id: project for project in project_rows}
+    linked_work_orders = (
+        work_order_views.list_task_work_order_summaries_bulk(
+            db, [task.id for task in rows]
+        )
+        if can_read_work_orders
+        else {}
+    )
+    task_work_order_projections = {
+        str(task.id): _task_work_order_projection(
+            task,
+            project_map[task.project_id],
+            linked_work_orders.get(task.id, ()),
+        )
+        for task in rows
+        if can_read_work_orders and task.project_id in project_map
+    }
     assignment_ids: list[object | None] = []
     for task in rows:
         assignment_ids.append(task.assigned_to_person_id)
@@ -1140,6 +1248,8 @@ def build_tasks_list_context(
         "tasks": rows,
         "projects": projects,
         "project_map": {str(project.id): project for project in project_rows},
+        "show_field_work": can_read_work_orders,
+        "task_work_order_projections": task_work_order_projections,
         "project_id": project_id or "",
         "status": status or "",
         "priority": priority or "",
@@ -1343,7 +1453,12 @@ def _task_dependency_rows(db: Session, task: ProjectTask) -> dict[str, list[dict
     }
 
 
-def build_task_detail_context(db: Session, *, task: ProjectTask) -> dict:
+def build_task_detail_context(
+    db: Session,
+    *,
+    task: ProjectTask,
+    can_read_work_orders: bool = False,
+) -> dict:
     project = projects_service.projects.get(db, str(task.project_id))
     comments = projects_service.project_task_comments.list(
         db,
@@ -1361,11 +1476,22 @@ def build_task_detail_context(db: Session, *, task: ProjectTask) -> dict:
     ]
     staff = staff_options(db, include_ids=_non_empty_ids(assignment_ids))
     metadata = task.metadata_ if isinstance(task.metadata_, dict) else {}
+    create_work_order_action, work_order_create_url = _task_work_order_create_action(
+        task, project
+    )
     return {
         "task": task,
         "task_url": task_url(task),
         "project": project,
         "project_href": project_url(project),
+        "show_field_work": can_read_work_orders,
+        "task_work_orders": (
+            work_order_views.list_task_work_order_summaries(db, task.id)
+            if can_read_work_orders
+            else ()
+        ),
+        "create_work_order_action": create_work_order_action,
+        "work_order_create_url": work_order_create_url,
         "comments": comments,
         "activities": build_audit_activities(
             db, "project_task", str(task.id), limit=20

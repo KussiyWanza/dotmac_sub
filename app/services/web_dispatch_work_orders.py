@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
 from typing import Any
 from urllib.parse import urlencode
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -16,7 +18,7 @@ from app.models.dispatch import (
     TechnicianProfile,
     WorkOrderAssignmentQueue,
 )
-from app.models.project import Project
+from app.models.project import Project, ProjectTask
 from app.models.subscriber import Subscriber
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
@@ -59,6 +61,22 @@ QUEUE_STATUS_OPTIONS = (
     DispatchQueueStatus.assigned,
     DispatchQueueStatus.skipped,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkOrderCreatePrefill:
+    """Validated task-originated defaults for the dispatch create form."""
+
+    subscriber_id: UUID
+    subscriber_label: str
+    project_id: UUID
+    project_label: str
+    project_task_id: UUID
+    project_task_label: str
+    title: str
+    description: str | None
+    priority: str
+    work_type: str
 
 
 def _subscriber_label(subscriber: Subscriber | None) -> str:
@@ -256,6 +274,60 @@ def _project_options(db: Session, *, limit: int = 200) -> list[dict[str, str]]:
     ]
 
 
+def _task_create_prefill(db: Session, project_task_id: str) -> WorkOrderCreatePrefill:
+    """Resolve a task deep-link without trusting duplicated URL scope."""
+
+    try:
+        task_uuid = coerce_uuid(project_task_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Project task not found") from exc
+    task = db.get(ProjectTask, task_uuid)
+    if task is None or not task.is_active:
+        raise HTTPException(status_code=404, detail="Project task not found")
+    project = db.get(Project, task.project_id)
+    if project is None or not project.is_active:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.subscriber_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Link a subscriber to the project before creating field work",
+        )
+    subscriber = db.get(Subscriber, project.subscriber_id)
+    if subscriber is None:
+        raise HTTPException(status_code=404, detail="Project subscriber not found")
+    return WorkOrderCreatePrefill(
+        subscriber_id=subscriber.id,
+        subscriber_label=_subscriber_label(subscriber),
+        project_id=project.id,
+        project_label=project.name or project.code or project.number or str(project.id),
+        project_task_id=task.id,
+        project_task_label=task.number or task.title,
+        title=task.title,
+        description=task.description,
+        priority=task.priority if task.priority in PRIORITY_OPTIONS else "normal",
+        work_type="install",
+    )
+
+
+def _project_task_filter_id(project_task_id: str | None) -> UUID | None:
+    if not project_task_id:
+        return None
+    try:
+        return coerce_uuid(project_task_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Project task not found") from exc
+
+
+def _create_action(*, error: str | None = None) -> Action:
+    return Action(
+        key="create_work_order",
+        label="Create Work Order",
+        allowed=error is None,
+        reason=error,
+        permission="operations:dispatch:write",
+    )
+
+
 WORK_ORDER_LIST_DEFINITION = ListDefinition(
     key="work_orders",
     fields=(
@@ -304,17 +376,21 @@ def list_page(
     status: str | None = None,
     q: str | None = None,
     active: bool | None = None,
+    project_task_id: str | None = None,
+    can_create: bool = False,
     page: int = 1,
     per_page: int = 25,
 ) -> dict[str, Any]:
+    task_filter_id = _project_task_filter_id(project_task_id)
     list_query = build_work_order_list_query(
         search=q, status=status, page=page, per_page=per_page
     )
     filters = WorkOrderListFilters(
         status=list_query.filter_value("status"),
         q=list_query.search,
-        is_active=None,
+        is_active=True if task_filter_id else None,
         active=active,
+        project_task_id=str(task_filter_id) if task_filter_id else None,
         limit=list_query.per_page,
         offset=list_query.offset,
     )
@@ -355,12 +431,21 @@ def list_page(
         for row, subscriber in rows
     ]
     counts = _work_order_counts(db)
+    create_prefill = None
+    create_prefill_error = None
+    if task_filter_id and can_create:
+        try:
+            create_prefill = _task_create_prefill(db, str(task_filter_id))
+        except HTTPException as exc:
+            create_prefill_error = str(exc.detail)
+    create_work_order_action = _create_action(error=create_prefill_error)
     return {
         "items": items,
         "counts": counts,
         "kpis": _work_order_kpis(counts),
         "status_filter": list_query.filter_value("status"),
         "active_filter": bool(active),
+        "project_task_filter": str(task_filter_id) if task_filter_id else "",
         "q": list_query.search or "",
         "page": list_query.page,
         "per_page": list_query.per_page,
@@ -373,6 +458,9 @@ def list_page(
         "subscriber_options": _subscriber_options(db),
         "project_options": project_options,
         "technician_options": _technician_options(db),
+        "create_prefill": create_prefill,
+        "create_prefill_error": create_prefill_error,
+        "create_work_order_action": create_work_order_action,
     }
 
 
@@ -389,6 +477,11 @@ def create_from_form(
         project_id=(
             coerce_uuid(str(form["project_id"]))
             if str(form.get("project_id") or "").strip()
+            else None
+        ),
+        project_task_id=(
+            coerce_uuid(str(form["project_task_id"]))
+            if str(form.get("project_task_id") or "").strip()
             else None
         ),
         requires_as_built_evidence=(

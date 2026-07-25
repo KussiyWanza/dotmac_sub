@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import web_projects as projects_web_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 from app.services.domain_errors import DomainError
 
 
@@ -253,6 +253,7 @@ def project_tasks_list(
             filters=filters,
             page=page,
             per_page=per_page,
+            can_read_work_orders=can(request, "operations:dispatch:read"),
         )
     )
     context["assigned"] = assigned or ""
@@ -322,7 +323,13 @@ def project_task_detail(request: Request, task_ref: str, db: Session = Depends(g
             url=f"/admin/projects/tasks/{task.number}", status_code=302
         )
     context = _ctx(request, db, active_page="project-tasks")
-    context.update(projects_web_service.build_task_detail_context(db, task=task))
+    context.update(
+        projects_web_service.build_task_detail_context(
+            db,
+            task=task,
+            can_read_work_orders=can(request, "operations:dispatch:read"),
+        )
+    )
     return templates.TemplateResponse(
         "admin/projects/project_task_detail.html", context
     )
@@ -805,7 +812,11 @@ def project_detail(request: Request, project_ref: str, db: Session = Depends(get
         )
     context = _ctx(request, db)
     context.update(
-        projects_web_service.build_project_detail_context(db, project=project)
+        projects_web_service.build_project_detail_context(
+            db,
+            project=project,
+            can_read_work_orders=can(request, "operations:dispatch:read"),
+        )
     )
     return templates.TemplateResponse("admin/projects/project_detail.html", context)
 

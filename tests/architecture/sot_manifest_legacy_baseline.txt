@@ -190,7 +190,6 @@ ui.payments_list_projection
 ui.reseller_list_projection
 ui.status_presentation
 ui.subscriber_list_projection
-ui.work_order_list_projection
 vpn.key_material
 vpn.routing_readiness
 vpn.system_interface

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from app.services import web_dispatch_work_orders as service
 from app.services.ui_contracts import Action, Kpi, StateValue
+from app.web.admin.dispatch_work_orders import _redirect
 
 _COUNTS = {
     "total": 12,
@@ -131,3 +133,19 @@ def test_template_consumes_the_kpi_and_action_contracts():
     # The shared helper combines owner eligibility with the cached RBAC keys.
     assert "item.actions.queue" in source
     assert "action_permitted(request, queue_action)" in source
+    # Task-originated creation locks the validated subscriber/project/task scope.
+    assert 'name="project_task_id"' in source
+    assert "create_prefill.project_task_id" in source
+
+
+def test_post_create_redirect_identifies_the_new_work_order():
+    response = _redirect(
+        notice="Work order sub-new-work created",
+        q="sub-new-work",
+    )
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+
+    assert query == {
+        "notice": ["Work order sub-new-work created"],
+        "q": ["sub-new-work"],
+    }

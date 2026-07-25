@@ -129,6 +129,29 @@ def test_work_order_rejects_cross_subscriber_project_binding(db_session):
     assert exc.value.kind == "invalid"
 
 
+def test_project_task_binding_rejects_project_without_subscriber(db_session):
+    subscriber = _subscriber(db_session)
+    project = Project(name="Unscoped native project")
+    db_session.add(project)
+    db_session.flush()
+    task = ProjectTask(project_id=project.id, title="Unscoped field task")
+    db_session.add(task)
+    db_session.flush()
+
+    with pytest.raises(WorkOrderCommandError) as exc:
+        work_order_commands.create(
+            db_session,
+            WorkOrderHeaderCreate(
+                subscriber_id=subscriber.id,
+                project_task_id=task.id,
+                title="Must fail closed",
+            ),
+        )
+
+    assert exc.value.code == "project_subscriber_missing"
+    assert exc.value.kind == "invalid"
+
+
 def test_project_task_binding_infers_project_and_is_immutable(db_session):
     subscriber = _subscriber(db_session)
     project = Project(name="Native install", subscriber_id=subscriber.id)

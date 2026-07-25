@@ -25,6 +25,52 @@ scope, search fields, filters, status vocabulary, stable sorting, pagination,
 freshness, and action eligibility. Routes serialize inputs and templates render
 the returned model without redefining these rules.
 
+The project and task detail pages compose field work through
+`operations.work_orders`. A project detail shows every native work order whose
+authoritative `project_id` matches the project. A task detail shows zero or many
+work orders whose authoritative `project_task_id` matches the task and offers a
+task-originated create deep-link only when the project has a native subscriber.
+The dispatch web adapter resolves the task deep-link back to the authoritative
+task, project, and subscriber rows, locks those identifiers into the create
+form, and delegates creation to `operations.work_order_commands`; URL-supplied
+duplicate scope is never trusted. The command owner revalidates subscriber,
+project, and task consistency at execution time and fails closed when the
+project has no subscriber.
+
+The project-task list bulk-loads active linked-work-order summaries for every
+task on the current page through one `operations.work_orders` query. Its typed
+projection renders Create Work Order for zero visits, Open Work Order for one
+visit, and View N Work Orders for multiple visits. Dispatch-read permission
+controls summaries and links; dispatch-write permission controls creation.
+Project-task write permission alone grants neither capability. Detail pages use
+the same read boundary and never reveal linked work-order identity without
+dispatch-read permission.
+
+The dispatch `project_task_id` query parameter is an authoritative native UUID
+filter as well as an optional creation-prefill input. Filtering remains active
+for read-only dispatch users and composes with search, status, lifecycle,
+sorting, and pagination. Invalid identifiers fail closed and never fall back to
+CRM identifiers. Dispatch KPI cards intentionally remain global queue context;
+their labels, values, and cohort links all describe the same global cohorts and
+therefore clear the task filter when opened.
+
+Task-originated prefill carries the authoritative subscriber, project, and task
+identifiers and labels, plus task title, description, safely mapped priority,
+and Sub's explicit `install` work-type default. Operational fields remain
+editable. Work-order creation and technician assignment are separate decisions:
+creation never derives a technician from task assignees, and the existing
+assignment/queue owner remains the next visible dispatch action.
+
+Page contract: service-delivery and field-operations staff use the project/task
+detail screens to determine whether field work has been issued and to open or
+issue the next visit. `app.services.web_projects` owns the detail projection;
+`operations.work_orders` owns linked work-order facts; and
+`operations.work_order_commands` owns creation eligibility enforcement and the
+write. The task panel is a secondary work surface, preserves one-to-many visits,
+hides unauthorized creation, explains missing subscriber scope, renders an
+empty state, and stacks without losing the task identity or next action on
+mobile.
+
 Project SLA clocks and normalized task-assignee rows are synchronous derived
 projections. Drift is a missing, duplicate, or mismatched derived row. The
 project lifecycle reconciler locks the native aggregate, reports drift, and

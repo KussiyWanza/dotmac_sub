@@ -282,10 +282,13 @@ class WorkOrderCommands:
                 "project_not_found", "Project not found", kind="not_found"
             )
         subscriber_uuid = coerce_uuid(subscriber_id)
-        if (
-            project.subscriber_id is not None
-            and project.subscriber_id != subscriber_uuid
-        ):
+        if project.subscriber_id is None:
+            raise WorkOrderCommandError(
+                "project_subscriber_missing",
+                "Link a subscriber to the project before creating field work",
+                kind="invalid",
+            )
+        if project.subscriber_id != subscriber_uuid:
             raise WorkOrderCommandError(
                 "project_subscriber_mismatch",
                 "Work order and project must belong to the same subscriber",

@@ -28,6 +28,42 @@
             <p class="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{{ task.description or 'No description provided.' }}</p>
             {% endcall %}
 
+            {% if show_field_work %}
+            {% set field_work_action %}
+                {% if action_permitted(request, create_work_order_action) %}
+                <a href="{{ work_order_create_url }}" class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-300">Create Work Order</a>
+                {% endif %}
+            {% endset %}
+            {% call project_card(
+                title='Field Work (' ~ task_work_orders|length ~ ')',
+                subtitle='Native work orders linked to this project task.',
+                actions=field_work_action
+            ) %}
+            <div class="space-y-2">
+                {% for work_order in task_work_orders %}
+                <a href="/admin/dispatch/work-orders?q={{ work_order.public_id | urlencode }}" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 hover:border-blue-300 dark:border-slate-600 dark:bg-slate-700/30 dark:hover:border-blue-700">
+                    <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-blue-700 dark:text-blue-300">{{ work_order.title }}</span>
+                        <span class="mt-0.5 block font-mono text-xs text-slate-500 dark:text-slate-400">{{ work_order.public_id }}</span>
+                    </span>
+                    <span class="text-xs font-semibold text-slate-700 dark:text-slate-200">{{ work_order.status | replace('_', ' ') | title }}</span>
+                </a>
+                {% else %}
+                <p class="text-sm text-slate-500 dark:text-slate-400">
+                    {% if create_work_order_action.allowed %}
+                    No field work has been issued for this task.
+                    {% else %}
+                    {{ create_work_order_action.reason }}
+                    {% endif %}
+                </p>
+                {% endfor %}
+            </div>
+            {% if can(request, create_work_order_action.permission) and not create_work_order_action.allowed and task_work_orders %}
+            <p class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ create_work_order_action.reason }}</p>
+            {% endif %}
+            {% endcall %}
+            {% endif %}
+
             {% if dependencies.blocked_by or dependencies.blocks %}
             {% call project_card(title='Dependencies', subtitle='Sequencing from the project template (edit on the template).', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 010 5.656l-4 4a4 4 0 01-5.656-5.656l1.102-1.101m12.905-3.032l1.101-1.102a4 4 0 10-5.656-5.656l-4 4a4 4 0 000 5.656"/></svg>') %}
             <div class="grid gap-4 sm:grid-cols-2">
@@ -144,14 +180,6 @@
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Effort</dt><dd class="text-right text-slate-800 dark:text-slate-100">{{ task.effort_hours ~ 'h' if task.effort_hours is not none else '-' }}</dd></div>
                 {% if task.ticket_id %}
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Ticket</dt><dd class="text-right"><a href="/admin/support/tickets/{{ task.ticket_id }}" class="text-emerald-700 hover:underline dark:text-emerald-400">{{ task.ticket_id }}</a></dd></div>
-                {% endif %}
-                {% if task.work_orders %}
-                <div class="flex justify-between gap-4">
-                    <dt class="text-slate-500 dark:text-slate-400">Field visits</dt>
-                    <dd class="text-right text-slate-800 dark:text-slate-100">
-                        {% for work_order in task.work_orders %}<a class="block font-medium text-blue-600 hover:underline dark:text-blue-400" href="/admin/dispatch/work-orders?q={{ work_order.public_id }}">{{ work_order.public_id }} · {{ work_order.status | replace('_', ' ') | title }}</a>{% endfor %}
-                    </dd>
-                </div>
                 {% endif %}
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Created</dt><dd class="text-right text-slate-800 dark:text-slate-100">{{ task.created_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Updated</dt><dd class="text-right text-slate-800 dark:text-slate-100">{{ task.updated_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</dd></div>

@@ -21328,21 +21328,211 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.web_dispatch_work_orders",
                 owns=(
                     "admin work-order searchable fields",
-                    "admin work-order status filter and stable sort semantics",
+                    "admin work-order status and native project-task filter semantics",
+                    "admin work-order stable sort semantics",
                     "admin work-order list pagination normalization",
+                    "admin work-order global KPI and exact-cohort link projection",
+                    "admin task-originated work-order creation prefill",
                 ),
                 depends_on=(
                     "ui.list_contracts",
+                    "ui.projection_contracts",
+                    "customer.accounts",
+                    "operations.project_lifecycle",
+                    "operations.work_order_commands",
                     "operations.work_orders",
                 ),
                 notes=(
                     "work_order_views.query_work_orders owns the canonical filtered "
                     "and sorted work-order query; this projection declares list "
-                    "capabilities, normalizes request state, and delegates the read "
-                    "(it issues no SQL of its own). Native form mutations delegate to "
-                    "operations.work_order_commands; no bulk command is declared. "
-                    "Each dispatch route is granularly gated "
+                    "capabilities, normalizes native project-task UUID scope, and "
+                    "delegates the read. Task filtering is independent of creation "
+                    "permission and composes with search, status, lifecycle, sort, "
+                    "and pagination. KPI cards remain documented global queue "
+                    "cohorts with exact global links. Task-originated prefill reloads "
+                    "the authoritative task, project, and subscriber and never trusts "
+                    "duplicated URL scope. Native form mutations delegate to "
+                    "operations.work_order_commands; creation and assignment remain "
+                    "separate decisions. Each dispatch route is granularly gated "
                     "(operations:dispatch:read/write/assign)."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="admin work-order searchable fields",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "shared list contract",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "admin work-order status and native project-task "
+                                "filter semantics"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "canonical project-task scope",
+                                "shared list contract",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin work-order stable sort semantics",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "shared list contract",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin work-order list pagination normalization",
+                            role=OwnerRole.POLICY,
+                            input_names=("shared list contract",),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "admin work-order global KPI and exact-cohort link "
+                                "projection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "UI projection vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin task-originated work-order creation prefill",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical project-task scope",
+                                "canonical subscriber scope",
+                                "work-order creation protocol",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical work-order list facts",
+                            owner="operations.work_orders",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "native active WorkOrder identity, lifecycle, "
+                                "subscriber, project, and project_task_id bindings"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical project-task scope",
+                            owner="operations.project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "native ProjectTask and Project UUID relationship, "
+                                "active state, labels, description, priority, and "
+                                "subscriber binding"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical subscriber scope",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="the exact native Subscriber row bound to the project",
+                        ),
+                        AuthorityInput(
+                            name="shared list contract",
+                            owner="ui.list_contracts",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed search, status, native task filter, stable "
+                                "sort, pagination, and permission scope"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="UI projection vocabulary",
+                            owner="ui.projection_contracts",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="typed StateValue, Kpi, and Action semantics",
+                        ),
+                        AuthorityInput(
+                            name="work-order creation protocol",
+                            owner="operations.work_order_commands",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "authoritative subscriber/project/task consistency, "
+                                "initial status, work type, assignment separation, "
+                                "and operations:dispatch:write requirements"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "List, KPI, and creation-prefill projection execute "
+                            "without ORM mutation or transaction completion."
+                        ),
+                        locking=(
+                            "No locks; the canonical work-order query uses stable "
+                            "native UUID tie-breakers."
+                        ),
+                        idempotency=(
+                            "Equivalent filters and permission scope return the same "
+                            "projection for the same authoritative snapshot."
+                        ),
+                        retries=(
+                            "Read availability failures may be retried. Invalid UUID, "
+                            "missing scope, and authorization failures are not retryable."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "ui.work_order_list_projection.invalid_filter",
+                            "ui.work_order_list_projection.invalid_page",
+                            "ui.work_order_list_projection.task_not_found",
+                            "ui.work_order_list_projection.project_not_found",
+                            "ui.work_order_list_projection.subscriber_not_found",
+                            "ui.work_order_list_projection.incomplete_scope",
+                            "ui.work_order_list_projection.unauthorized",
+                        ),
+                        mapping_owner="admin dispatch web adapter",
+                        fail_closed_on=(
+                            "invalid native project-task identifier",
+                            "inactive or missing task or project creation scope",
+                            "missing project subscriber",
+                            "missing permission scope",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "dispatch template and route-local task prefill, filtering, "
+                            "KPI, and pagination decisions"
+                        ),
+                        new_owner="ui.work_order_list_projection",
+                        verification=(
+                            "dispatch filtering, KPI cohort, prefill, permission, CSRF, "
+                            "rendering, and architecture tests"
+                        ),
+                        cutover_gate=(
+                            "The route delegates typed task scope and list inputs; "
+                            "templates render owner-provided KPIs, Actions, and prefill."
+                        ),
+                        fallback_retirement=(
+                            "CRM join keys, route-local query decisions, unvalidated "
+                            "duplicate scope, and create-with-technician shortcuts are absent."
+                        ),
+                    ),
+                    steward="field operations UI",
+                    design_refs=(
+                        "docs/designs/PROJECTS_SOT_COMPLETION.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_web_dispatch_work_orders.py",
+                        "tests/test_dispatch_work_orders_contracts.py",
+                        "tests/test_dispatch_work_orders_csrf.py",
+                        "tests/test_work_order_views.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -21352,17 +21542,31 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin project searchable fields",
                     "admin project filter and stable sort semantics",
                     "admin project list pagination normalization",
+                    "admin project-task list field-work action projection",
+                    "admin project and task detail field-work composition",
+                    "admin project-task work-order creation action projection",
                 ),
                 depends_on=(
                     "ui.list_contracts",
                     "operations.project_lifecycle",
+                    "operations.work_order_commands",
+                    "operations.work_orders",
                 ),
                 notes=(
                     "projects_service.projects.list (operations.project_lifecycle) "
                     "owns the canonical filtered/sorted project query; this "
                     "projection declares the list capabilities and normalizes "
                     "request state, then delegates the read. It issues no query of "
-                    "its own. Gated by the existing granular project:read."
+                    "its own. The task-list projection bulk-loads one page of native "
+                    "linked-work summaries and returns typed zero/one/many Actions "
+                    "without lazy loading. Detail projections compose the native "
+                    "project/task scope with operations.work_orders and expose a "
+                    "secondary work-order creation action; "
+                    "operations.work_order_commands revalidates the exact "
+                    "subscriber/project/task scope. Gated by project:read or "
+                    "project:task:read; work-order details require "
+                    "operations:dispatch:read and creation separately requires "
+                    "operations:dispatch:write."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -21387,6 +21591,33 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             role=OwnerRole.POLICY,
                             input_names=("shared list contract",),
                         ),
+                        ConcernContract(
+                            name=(
+                                "admin project-task list field-work action projection"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical project detail facts",
+                                "native linked field-work facts",
+                                "work-order creation protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin project and task detail field-work composition",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical project detail facts",
+                                "native linked field-work facts",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin project-task work-order creation action projection",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical project detail facts",
+                                "work-order creation protocol",
+                            ),
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -21401,10 +21632,41 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.CONTROL_INPUT,
                             source="typed search, filters, stable sort, pagination, permission scope, and action eligibility request",
                         ),
+                        AuthorityInput(
+                            name="canonical project detail facts",
+                            owner="operations.project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "native active Project and ProjectTask identity, "
+                                "relationship, lifecycle, and subscriber scope"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="native linked field-work facts",
+                            owner="operations.work_orders",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "native WorkOrder rows selected by authoritative "
+                                "project_id or project_task_id"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="work-order creation protocol",
+                            owner="operations.work_order_commands",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "subscriber/project/task consistency requirements and "
+                                "operations:dispatch:write permission"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.READ_ONLY,
-                        boundary="Typed ProjectListQuery executes without committing or mutating ORM state.",
+                        boundary=(
+                            "Typed project lists, bulk task field-work composition, "
+                            "and detail projections execute without committing or "
+                            "mutating ORM state."
+                        ),
                         locking="No locks; stable ordering includes native Project UUID as the final tie-breaker.",
                         idempotency="Equivalent query and visibility scope return the same page for the same authoritative snapshot.",
                         retries="Read availability errors may be retried; invalid filters and unauthorized scopes are not retryable.",
@@ -21427,7 +21689,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         state=AuthorityMigrationState.COMPLETE,
                         new_owner="ui.project_list_projection",
                         old_owner="route/template-local project list decisions",
-                        verification="typed query contract, API/admin parity, and template projection architecture tests",
+                        verification=(
+                            "typed query contract, API/admin parity, bulk task "
+                            "work-order projection, permission rendering, and template "
+                            "projection architecture tests"
+                        ),
                         cutover_gate="all list routes delegate typed filter, sort, pagination, status, permission, and eligibility inputs",
                         fallback_retirement="route and template list-policy inference removed",
                     ),
@@ -21438,6 +21704,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_web_projects_service.py",
+                        "tests/test_web_admin_projects_render.py",
+                        "tests/test_web_dispatch_work_orders.py",
                         "tests/test_projects_api.py",
                         "tests/architecture/test_projects_sot_boundary.py",
                     ),

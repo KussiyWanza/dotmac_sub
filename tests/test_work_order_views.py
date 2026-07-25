@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from app.models.project import Project, ProjectTask
 from app.models.subscriber import Subscriber
 from app.models.work_order import WorkOrder
 from app.services import work_order_views
@@ -86,6 +87,101 @@ def test_list_work_orders_filters_and_formats_internal_fields(db_session):
     assert item["access_notes"] == "Call on arrival"
     assert item["metadata"] == {"source": "crm"}
     assert mine.id is not None
+
+
+def test_native_project_and_task_filters_use_authoritative_bindings(db_session):
+    subscriber = _subscriber(db_session)
+    selected_project = Project(name="Selected build", subscriber_id=subscriber.id)
+    other_project = Project(name="Other build", subscriber_id=subscriber.id)
+    db_session.add_all([selected_project, other_project])
+    db_session.flush()
+    selected_task = ProjectTask(
+        project_id=selected_project.id,
+        title="Selected task",
+    )
+    other_task = ProjectTask(project_id=other_project.id, title="Other task")
+    db_session.add_all([selected_task, other_task])
+    db_session.flush()
+    selected = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-native-selected",
+        project_id=selected_project.id,
+        project_task_id=selected_task.id,
+    )
+    _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-native-other",
+        project_id=other_project.id,
+        project_task_id=other_task.id,
+    )
+    db_session.commit()
+
+    project_result = work_order_views.list_work_orders(
+        db_session,
+        work_order_views.WorkOrderListFilters(
+            project_id=str(selected_project.id),
+        ),
+    )
+    task_result = work_order_views.list_work_orders(
+        db_session,
+        work_order_views.WorkOrderListFilters(
+            project_task_id=str(selected_task.id),
+        ),
+    )
+
+    assert [row["public_id"] for row in project_result["work_orders"]] == [
+        selected.public_id
+    ]
+    assert [row["public_id"] for row in task_result["work_orders"]] == [
+        selected.public_id
+    ]
+
+
+def test_bulk_task_summaries_preserve_zero_one_and_many_native_links(db_session):
+    subscriber = _subscriber(db_session)
+    project = Project(name="Bulk summary project", subscriber_id=subscriber.id)
+    db_session.add(project)
+    db_session.flush()
+    zero = ProjectTask(project_id=project.id, title="Zero")
+    one = ProjectTask(project_id=project.id, title="One")
+    many = ProjectTask(project_id=project.id, title="Many")
+    db_session.add_all([zero, one, many])
+    db_session.flush()
+    only = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-bulk-one",
+        project_id=project.id,
+        project_task_id=one.id,
+    )
+    first = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-bulk-many-1",
+        project_id=project.id,
+        project_task_id=many.id,
+    )
+    second = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-bulk-many-2",
+        project_id=project.id,
+        project_task_id=many.id,
+    )
+    db_session.commit()
+
+    grouped = work_order_views.list_task_work_order_summaries_bulk(
+        db_session, (zero.id, one.id, many.id)
+    )
+
+    assert grouped[zero.id] == ()
+    assert [item.public_id for item in grouped[one.id]] == [only.public_id]
+    assert {item.public_id for item in grouped[many.id]} == {
+        first.public_id,
+        second.public_id,
+    }
 
 
 def test_summary_counts_terminal_and_overdue(db_session):
