@@ -528,7 +528,10 @@ services:
     cpus: 1.0
     pids_limit: 64
     ports:
-    - 127.0.0.1:8428:8428
+    # Default localhost-only; prod sets VM_BIND=0.0.0.0: to expose 8428 for the
+    # central observability host to federate/scrape (source-restricted by the
+    # host firewall to the observe IP). See .env.example.
+    - ${VM_BIND:-127.0.0.1:}8428:8428
     volumes:
     - victoriametrics_data:/victoria-metrics-data
     command:
