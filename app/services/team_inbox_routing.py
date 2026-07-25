@@ -212,3 +212,151 @@ def _outbound_metadata(metadata: dict) -> dict:
         *team_outbound.LEGACY_EMAIL_SENDER_METADATA_KEYS,
     }
     return {key: value for key, value in metadata.items() if key in allowed and value}
+
+
+class EmailRouteError(ValueError):
+    """Rejected email-route change, safe for an admin adapter to render."""
+
+
+@dataclass(frozen=True)
+class EmailRouteRow:
+    id: str
+    service_team_id: str
+    service_team_name: str | None
+    email_address: str
+    is_primary: bool
+    priority: int
+    is_active: bool
+
+
+def list_email_routes(
+    db: Session, *, include_inactive: bool = True
+) -> list[EmailRouteRow]:
+    """Every configured inbound mailbox, newest team grouping first.
+
+    This table decides which service team owns an inbound email. It had a model
+    and a consumer (``build_email_team_routing_plan``) but no API, so the only
+    way to populate it was a direct INSERT — which is why production carried no
+    rows against live mailboxes.
+    """
+    from app.models.service_team import ServiceTeam
+
+    query = (
+        db.query(TeamInboxEmailRoute, ServiceTeam)
+        .outerjoin(ServiceTeam, ServiceTeam.id == TeamInboxEmailRoute.service_team_id)
+        .order_by(
+            TeamInboxEmailRoute.priority.asc(),
+            TeamInboxEmailRoute.email_address.asc(),
+        )
+    )
+    if not include_inactive:
+        query = query.filter(TeamInboxEmailRoute.is_active.is_(True))
+    return [
+        EmailRouteRow(
+            id=str(route.id),
+            service_team_id=str(route.service_team_id),
+            service_team_name=team.name if team is not None else None,
+            email_address=route.email_address,
+            is_primary=bool(route.is_primary),
+            priority=int(route.priority),
+            is_active=bool(route.is_active),
+        )
+        for route, team in query.all()
+    ]
+
+
+def _demote_other_primaries(
+    db: Session, *, service_team_id: UUID, keep_id: UUID | None = None
+) -> None:
+    """One primary per team: a second primary would make routing ambiguous."""
+    query = (
+        db.query(TeamInboxEmailRoute)
+        .filter(TeamInboxEmailRoute.service_team_id == service_team_id)
+        .filter(TeamInboxEmailRoute.is_primary.is_(True))
+    )
+    if keep_id is not None:
+        query = query.filter(TeamInboxEmailRoute.id != keep_id)
+    for row in query.all():
+        row.is_primary = False
+
+
+def create_email_route(
+    db: Session,
+    *,
+    service_team_id: str | UUID,
+    email_address: str,
+    is_primary: bool = False,
+    priority: int = 100,
+) -> TeamInboxEmailRoute:
+    from app.models.service_team import ServiceTeam
+
+    team_uuid = _coerce_uuid(service_team_id)
+    if team_uuid is None:
+        raise EmailRouteError("Choose a service team for this mailbox.")
+    normalized = normalize_email_address(email_address)
+    if not normalized:
+        raise EmailRouteError("Enter a valid mailbox address.")
+
+    team = db.get(ServiceTeam, UUID(team_uuid))
+    if team is None or not team.is_active:
+        raise EmailRouteError("Service team not found.")
+
+    existing = (
+        db.query(TeamInboxEmailRoute)
+        .filter(TeamInboxEmailRoute.service_team_id == UUID(team_uuid))
+        .filter(TeamInboxEmailRoute.email_address == normalized)
+        .one_or_none()
+    )
+    if existing is not None:
+        raise EmailRouteError(f"{normalized} is already routed to this team.")
+
+    if is_primary:
+        _demote_other_primaries(db, service_team_id=UUID(team_uuid))
+
+    route = TeamInboxEmailRoute(
+        service_team_id=UUID(team_uuid),
+        email_address=normalized,
+        is_primary=bool(is_primary),
+        priority=int(priority),
+        is_active=True,
+    )
+    db.add(route)
+    db.flush()
+    return route
+
+
+def update_email_route(
+    db: Session,
+    route_id: str | UUID,
+    *,
+    is_primary: bool | None = None,
+    priority: int | None = None,
+    is_active: bool | None = None,
+) -> TeamInboxEmailRoute:
+    route_uuid = _coerce_uuid(route_id)
+    route = db.get(TeamInboxEmailRoute, UUID(route_uuid)) if route_uuid else None
+    if route is None:
+        raise EmailRouteError("Email route not found.")
+
+    if priority is not None:
+        route.priority = int(priority)
+    if is_active is not None:
+        route.is_active = bool(is_active)
+        # A deactivated mailbox cannot remain the team's primary route.
+        if not route.is_active:
+            route.is_primary = False
+    if is_primary is not None and is_primary and route.is_active:
+        _demote_other_primaries(
+            db, service_team_id=route.service_team_id, keep_id=route.id
+        )
+        route.is_primary = True
+    elif is_primary is not None and not is_primary:
+        route.is_primary = False
+    db.flush()
+    return route
+
+
+def delete_email_route(db: Session, route_id: str | UUID) -> None:
+    """Deactivate rather than drop: an inactive route keeps the audit trail of
+    which mailbox once belonged to which team."""
+    update_email_route(db, route_id, is_active=False, is_primary=False)

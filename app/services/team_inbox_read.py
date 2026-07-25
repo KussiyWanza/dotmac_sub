@@ -265,6 +265,10 @@ def list_conversations(
     unassigned: bool = False,
     operator_person_id: UUID | None = None,
     unread_only: bool = False,
+    ai_handling: bool | None = None,
+    has_ticket: bool | None = None,
+    activity_from: datetime | None = None,
+    activity_to: datetime | None = None,
     order_by: str | None = None,
     order_dir: str = "desc",
     limit: int = 50,
@@ -352,6 +356,35 @@ def list_conversations(
             InboxConversationTeam.service_team_id.in_(team_uuids),
             InboxConversationTeam.is_active.is_(True),
         )
+
+    # Conversations an AI agent is handling, so a human can either stay out of
+    # the way or take over deliberately.
+    if ai_handling is not None:
+        flag = InboxConversation.metadata_["ai_handling"].as_boolean()
+        query = query.filter(flag.is_(True) if ai_handling else flag.isnot(True))
+
+    # Whether a ticket was ever issued from the thread. The provenance link is
+    # owned by communications.conversation_ticket_handoff.
+    if has_ticket is not None:
+        from app.models.support import Ticket
+
+        issued = (
+            select(Ticket.origin_conversation_id)
+            .where(Ticket.origin_conversation_id.isnot(None))
+            .where(Ticket.is_active.is_(True))
+        )
+        query = (
+            query.filter(InboxConversation.id.in_(issued))
+            if has_ticket
+            else query.filter(~InboxConversation.id.in_(issued))
+        )
+
+    # Activity window, on last_message_at so the range means "was this thread
+    # live in that period" rather than when it happened to be created.
+    if activity_from is not None:
+        query = query.filter(InboxConversation.last_message_at >= activity_from)
+    if activity_to is not None:
+        query = query.filter(InboxConversation.last_message_at <= activity_to)
 
     team_uuid = _optional_uuid(service_team_id)
     if team_uuid is not None:

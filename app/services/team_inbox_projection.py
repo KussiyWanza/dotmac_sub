@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -55,6 +56,10 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("assigned_person_id", "Assignee", filterable=True),
         ListFieldDefinition("contact_resolution_status", "Contact", filterable=True),
         ListFieldDefinition("needs_response", "Needs response", filterable=True),
+        ListFieldDefinition("ai_handling", "AI handling", filterable=True),
+        ListFieldDefinition("has_ticket", "Sent to ticket", filterable=True),
+        ListFieldDefinition("activity_from", "Active from", filterable=True),
+        ListFieldDefinition("activity_to", "Active to", filterable=True),
         ListFieldDefinition("muted", "Muted", filterable=True),
         ListFieldDefinition("snoozed", "Snoozed", filterable=True),
         ListFieldDefinition("open_only", "Open only", filterable=True),
@@ -90,6 +95,10 @@ class InboxQueueRequest:
     open_only: bool = False
     unassigned: bool = False
     unread: bool = False
+    ai_handling: bool | None = None
+    has_ticket: bool | None = None
+    activity_from: datetime | None = None
+    activity_to: datetime | None = None
     sort_by: str | None = None
     sort_dir: str | None = None
     page: int = 1
@@ -198,6 +207,10 @@ class InboxQueueProjection:
     open_only: bool
     unassigned: bool
     unread: bool
+    ai_handling: bool | None
+    has_ticket: bool | None
+    activity_from: str | None
+    activity_to: str | None
     service_team_options: tuple[InboxServiceTeamOption, ...]
     agent_options: tuple[InboxAgentOption, ...]
     assignment_counts: InboxAssignmentCounts
@@ -491,6 +504,10 @@ def build_queue_projection(
             channel_type=channel,
             service_team_id=team_id,
             service_team_ids=request.service_team_ids,
+            ai_handling=request.ai_handling,
+            has_ticket=request.has_ticket,
+            activity_from=request.activity_from,
+            activity_to=request.activity_to,
             assigned_person_id=assignee_id,
             needs_response=needs_response,
             contact_resolution_status=contact_status,
@@ -578,6 +595,14 @@ def build_queue_projection(
         open_only=open_only,
         unassigned=unassigned,
         unread=unread,
+        ai_handling=request.ai_handling,
+        has_ticket=request.has_ticket,
+        activity_from=request.activity_from.strftime("%Y-%m-%dT%H:%M")
+        if request.activity_from
+        else None,
+        activity_to=request.activity_to.strftime("%Y-%m-%dT%H:%M")
+        if request.activity_to
+        else None,
         service_team_options=tuple(
             InboxServiceTeamOption(id=team.id, name=team.name) for team in service_teams
         ),

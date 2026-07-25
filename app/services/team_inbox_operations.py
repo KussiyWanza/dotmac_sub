@@ -693,6 +693,7 @@ def update_conversation_workflow(
     priority: int | None = None,
     is_muted: bool | None = None,
     snooze_minutes: int | None = None,
+    snooze_until: datetime | None = None,
     actor_person_id: str | UUID | None = None,
 ) -> InboxConversation:
     metadata = dict(conversation.metadata_ or {})
@@ -713,11 +714,21 @@ def update_conversation_workflow(
     if is_muted is not None:
         event["is_muted"] = {"from": conversation.is_muted, "to": bool(is_muted)}
         conversation.is_muted = bool(is_muted)
-    if snooze_minutes is not None:
-        if int(snooze_minutes) <= 0:
+    # An explicit wake time wins over a duration: the operator picked a moment,
+    # not an interval, and a past moment is the same as "do not snooze".
+    if snooze_until is not None or snooze_minutes is not None:
+        if snooze_until is not None:
+            target = (
+                snooze_until
+                if snooze_until.tzinfo
+                else snooze_until.replace(tzinfo=UTC)
+            )
+            if target <= datetime.now(UTC):
+                raise InboxOperationError("Choose a snooze time in the future.")
+        elif int(snooze_minutes or 0) <= 0:
             target = None
         else:
-            target = datetime.now(UTC) + timedelta(minutes=int(snooze_minutes))
+            target = datetime.now(UTC) + timedelta(minutes=int(snooze_minutes or 0))
         event["snoozed_until"] = {
             "from": conversation.snoozed_until.isoformat()
             if conversation.snoozed_until

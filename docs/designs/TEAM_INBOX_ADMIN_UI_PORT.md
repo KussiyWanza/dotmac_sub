@@ -291,14 +291,34 @@ edge (conversation → work order, with its own provenance column and owner)
 rather than routing all field work through a ticket. Decide that before adding
 more escalation targets, not after.
 
-### Slice 4 — Remaining demo-to-real workflows
+### Slice 4 — Remaining demo-to-real workflows  *(partly delivered)*
 
-Attachments (`team_inbox_media.promote_message_attachments` exists; the upload path
-does not) · conversation initiation · advanced snooze (until-next-reply, custom
-date; `workflow` currently takes fixed durations) · email transcript · scheduled
-send · justified AI features (today: one hard-coded canned response) · direct
-teammate escalation (`team_inbox_assignment` already has the service) · agent
-date-range, AI-handling and sent-to-ticket filters · the combined my-team filter.
+**Delivered:** direct teammate escalation, macro execution, the combined
+my-team filter (#1604); custom-date snooze and the AI-handling, sent-to-ticket
+and activity-window filters.
+
+**Still open, each needing new domain work rather than an adapter:**
+
+- **Until-next-reply snooze.** Needs the ingestion path to clear the snooze on
+  the next inbound message. That is a change to `team_inbox_channel_receive`
+  affecting *every* inbound message, so it wants its own change and its own
+  regression cover — not a rider on a UI slice.
+- **Attachment upload.** `team_inbox_media.promote_message_attachments` promotes
+  *inbound* provider media; there is no operator upload path.
+  `app/services/file_upload.py` supplies validation and storage primitives, so
+  the work is a media-owner entry point plus an outbound attachment contract.
+- **Conversation initiation.** `team_inbox_outbound` can only reply to an
+  existing conversation; starting one needs a create-and-send command, and a
+  decision about contact resolution for an address with no thread.
+- **Scheduled send.** Needs a queued-send model and a scheduler entry; the
+  composer's `scheduledAt` is currently local state only.
+- **Email transcript.** Render the thread and deliver through the canonical
+  notification point.
+- **Real AI draft — blocked.** Sub has **no LLM client**. `ai_operations` stores
+  insights with provider/model/token provenance fields for a caller to populate,
+  but nothing generates. Making this real means introducing an external AI
+  dependency, with its own config, secrets, cost and data-handling decisions.
+  That is a product decision, not a UI gap.
 
 ### Slice 5 — Migration readiness gate
 
@@ -306,11 +326,18 @@ Browser workflow verification, RBAC, audit coverage, responsive states, and test
 at representative volume. This is the gate before any traffic moves — not a
 formality, given production has never exercised operator workflows at scale.
 
-### Slice 6 — History migration and staged channel cutover
+### Slice 6 — History migration and staged channel cutover  *(code delivered)*
 
-Email-route CRUD (§3), then forward one low-volume mailbox, confirm probe and
-conversation materialization, then move the rest. WhatsApp needs no new ingestion
-code. Production: 84 conversations, all `chat_widget`, against CRM's ~37,539.
+**Delivered:** mailbox routing CRUD and an admin page at
+`/admin/inbox/settings/email-routes`. `TeamInboxEmailRoute` previously had a
+model and a consumer but no writer outside direct SQL, which is why production
+ran six live mailboxes against zero rows.
+
+**Still open, and not code:** forward one low-volume mailbox to the inbound
+listener, confirm the probe and conversation materialization, then move the
+rest. That is an MX or per-mailbox forwarding change on the mail side, and a
+decision about which mailbox goes first. WhatsApp needs no new ingestion code.
+Production: 84 conversations, all `chat_widget`, against CRM's ~37,539.
 
 ### Slice 7 — Explicit field-chat decision
 

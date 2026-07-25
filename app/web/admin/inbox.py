@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from urllib.parse import quote_plus
 from uuid import UUID
 
@@ -15,15 +16,34 @@ from app.services import (
     conversation_ticket_handoff,
     team_inbox_commands,
     team_inbox_contact_links,
+    team_inbox_metrics,
     team_inbox_operations,
     team_inbox_projection,
     team_inbox_read_state,
+    team_inbox_routing,
 )
 from app.services.auth_dependencies import can, require_permission
 from app.services.owner_commands import CommandContext
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
+
+
+def _parse_datetime_field(value: object) -> datetime | None:
+    """Parse a browser `datetime-local` value (snooze time, activity range).
+
+    The browser sends local wall-clock without a zone; it is read as UTC so the
+    stored wake time is unambiguous, and an unparsable value is treated as
+    absent rather than silently snoozing to the wrong moment.
+    """
+    text = _query_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _prepare_mutation(db: Session) -> None:
@@ -82,6 +102,10 @@ def team_inbox_queue(
     open_only: bool = Query(default=False),
     unassigned: bool = Query(default=False),
     unread: bool = Query(default=False),
+    ai_handling: str | None = Query(default=None),
+    has_ticket: str | None = Query(default=None),
+    activity_from: str | None = Query(default=None),
+    activity_to: str | None = Query(default=None),
     sort_by: str | None = Query(default=None, alias="sort"),
     sort_dir: str | None = Query(default=None, alias="dir"),
     page: int = Query(default=1),
@@ -116,6 +140,10 @@ def team_inbox_queue(
             open_only=_query_bool(open_only),
             unassigned=_query_bool(unassigned),
             unread=_query_bool(unread),
+            ai_handling=_query_optional_bool(ai_handling),
+            has_ticket=_query_optional_bool(has_ticket),
+            activity_from=_parse_datetime_field(activity_from),
+            activity_to=_parse_datetime_field(activity_to),
             sort_by=_query_text(sort_by),
             sort_dir=_query_text(sort_dir),
             page=_query_int(page, default=1) or 1,
@@ -152,6 +180,10 @@ def team_inbox_queue(
             "open_only": projection.open_only,
             "unassigned": projection.unassigned,
             "unread": projection.unread,
+            "ai_handling": projection.ai_handling,
+            "has_ticket": projection.has_ticket,
+            "activity_from": projection.activity_from,
+            "activity_to": projection.activity_to,
             "service_team_options": projection.service_team_options,
             "agent_options": projection.agent_options,
             "assignment_counts": projection.assignment_counts,
@@ -632,6 +664,7 @@ def team_inbox_workflow_action(
     priority: int | None = Form(default=None),
     is_muted: bool | None = Form(default=None),
     snooze_minutes: int | None = Form(default=None),
+    snooze_until: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -642,6 +675,7 @@ def team_inbox_workflow_action(
             priority=priority,
             is_muted=is_muted,
             snooze_minutes=snooze_minutes,
+            snooze_until=_parse_datetime_field(snooze_until),
             actor_person_id=_actor_id_from_request(request),
         )
     except team_inbox_commands.ConversationNotFoundError:
@@ -1152,3 +1186,108 @@ def team_inbox_run_macro(
         status="success",
         message=f"Macro applied ({executed} action{'' if executed == 1 else 's'}).",
     )
+
+
+@router.get(
+    "/settings/email-routes",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_email_routes(
+    request: Request,
+    status: str | None = Query(default=None),
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Which mailbox belongs to which team.
+
+    This table decides where inbound email lands. It is the gate on channel
+    cutover: the SMTP listener only receives what is forwarded to it, and this
+    is where an operator says which team owns each address.
+    """
+    context = _ctx(request, db)
+    context.update(
+        {
+            "email_routes": team_inbox_routing.list_email_routes(db),
+            "service_team_options": team_inbox_metrics.active_service_team_options(db),
+            "notice_status": _query_text(status),
+            "notice_message": _query_text(message),
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/email_routes.html", context)
+
+
+def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=(
+            "/admin/inbox/settings/email-routes"
+            f"?status={quote_plus(status)}&message={quote_plus(message)}"
+        ),
+        status_code=303,
+    )
+
+
+@router.post(
+    "/settings/email-routes",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_email_route_create(
+    service_team_id: str = Form(...),
+    email_address: str = Form(...),
+    priority: int = Form(default=100),
+    is_primary: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.create_email_route(
+            db,
+            service_team_id=service_team_id,
+            email_address=email_address,
+            is_primary=is_primary,
+            priority=priority,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Mailbox routed.")
+
+
+@router.post(
+    "/settings/email-routes/{route_id}",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_email_route_update(
+    route_id: UUID,
+    priority: int | None = Form(default=None),
+    is_primary: bool | None = Form(default=None),
+    is_active: bool | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.update_email_route(
+            db,
+            route_id=route_id,
+            is_primary=is_primary,
+            priority=priority,
+            is_active=is_active,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Mailbox route updated.")
+
+
+@router.post(
+    "/settings/email-routes/{route_id}/delete",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_email_route_delete(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.delete_email_route(db, route_id=route_id)
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Mailbox route deactivated.")

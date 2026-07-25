@@ -66,7 +66,13 @@
                         {% include "components/forms/csrf_input.html" %}<input type="hidden" name="snooze_minutes" value="{{ item[1] }}"><button type="submit" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800">{{ item[0] }}</button></form>
                     {% endfor %}
                     <button type="button" @click="showDemoNotice('Until-next-reply snooze')" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800">Until next reply <span class="text-slate-400">· API pending</span></button>
-                    <button type="button" @click="showDemoNotice('Custom snooze date')" class="min-h-10 w-full rounded-md px-3 text-left text-xs hover:bg-amber-50 dark:hover:bg-slate-800">Custom date/time <span class="text-slate-400">· API pending</span></button>
+                    <form method="post" action="/admin/inbox/{{ timeline.id }}/workflow" class="border-t border-slate-100 p-2 dark:border-slate-800">
+                        {% include "components/forms/csrf_input.html" %}
+                        <label class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Until a specific time
+                            <input type="datetime-local" name="snooze_until" required class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                        </label>
+                        <button type="submit" class="mt-1.5 min-h-9 w-full rounded-lg border border-slate-300 px-2 text-[11px] font-semibold dark:border-slate-700">Snooze until</button>
+                    </form>
                 </div>
             </div>
 
