@@ -715,3 +715,35 @@ def test_web_refresh_issues_session_cookie_via_module_helper(monkeypatch, db_ses
     ]
     assert any("session_token=web-session-token" in header for header in cookie_headers)
     assert any("rotated-refresh-token" in header for header in cookie_headers)
+
+
+def test_user_credentials_duplicate_username_is_409_not_500(db_session, person):
+    """A taken username is a client error, not a server error.
+
+    The unique constraint on local-provider usernames used to escape as an
+    unhandled IntegrityError, so POST /api/v1/user-credentials answered 500 and
+    leaked a database constraint name instead of naming the bad input.
+    """
+    payload = UserCredentialCreate(
+        person_id=person.id,
+        username="taken@example.com",
+        password_hash=hash_password("secret"),
+    )
+    auth_service.user_credentials.create(db_session, payload)
+
+    duplicate = UserCredentialCreate(
+        person_id=person.id,
+        username="taken@example.com",
+        password_hash=hash_password("other"),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        auth_service.user_credentials.create(db_session, duplicate)
+
+    assert excinfo.value.status_code == 409
+    assert "username" in str(excinfo.value.detail).lower()
+
+    # The session must still be usable: an un-rolled-back failed flush poisons
+    # every later query on it with PendingRollbackError. Deliberately not a
+    # query about `person` -- the rollback discarded the transaction the
+    # fixture created that row in.
+    assert db_session.query(UserCredential).count() >= 0

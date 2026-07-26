@@ -186,7 +186,18 @@ class UserCredentials(ListResponseMixin):
                 )
         credential = UserCredential(**data)
         db.add(credential)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            # `username` is unique per local provider. Without this the
+            # constraint escaped as an unhandled 500, so a caller supplying an
+            # already-taken username got a server error instead of being told
+            # which input was the problem.
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="That username is already in use",
+            ) from exc
         db.refresh(credential)
         return credential
 
