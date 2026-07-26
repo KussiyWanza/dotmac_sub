@@ -170,3 +170,50 @@ def test_gap_adjudication_cannot_write_money_or_override_replay() -> None:
     assert "financial.payments" in script
     assert "blocked_pending_owner_actions_and_independent_replay" in script
     assert "amount/date coincidence is insufficient" in script
+
+
+def test_audit_restore_is_isolated_and_cannot_reach_the_live_database() -> None:
+    """The audit restore holds a full copy of production. Keep it fenced.
+
+    The exporter's ``_require_ephemeral_postgres`` guard is only as good as the
+    thing that provisions the database it runs against. This asserts the
+    provisioner cannot be quietly repointed at the live stack, cannot expose
+    the copy, and cannot itself write a baseline.
+    """
+    script = _read("scripts/one_off/prepaid_funding_audit_restore.sh")
+
+    # Refuses any database name the exporter would refuse, and refuses to
+    # adopt the live database container under any of its fleet names.
+    assert '"${AUDIT_DB}" == *_audit' in script
+    for reserved in ("dotmac_pg_local", "dotmac_sub_db", "postgres-local"):
+        assert reserved in script, f"{reserved} must be in the refused-name list"
+    assert "must not be the live database container" in script
+
+    # The restored copy is unreachable: internal network, no published ports.
+    # Trust auth is only defensible alongside both, so they are asserted
+    # together -- weakening either one must fail this test.
+    assert "--internal" in script
+    assert "--publish" not in script
+    assert "POSTGRES_HOST_AUTH_METHOD=trust" in script
+
+    # Teardown destroys the copy rather than merely stopping it.
+    assert "docker volume rm" in script
+
+    # Provisioning is not a write path for funding authority.
+    assert "apply_prepaid_funding_reconstruction" not in script
+    assert "materialize_prepaid_funding_reconstruction" not in script
+    assert "--confirm-final-cutover" not in script
+
+
+def test_audit_restore_runbook_documents_the_exit_two_survey_path() -> None:
+    runbook = _read("docs/runbooks/PREPAID_FUNDING_AUDIT_RESTORE.md")
+
+    # Exit 2 is the expected outcome of a survey run; a reader who treats it as
+    # a failure will assume the tooling is broken and stop.
+    assert "Exit 2 is the expected outcome" in runbook
+    assert "BILLING_AUDIT_EPHEMERAL" in runbook
+    assert "_audit" in runbook
+    # The two constraints that most often derail a first attempt.
+    assert "cohort-complete" in runbook
+    assert "reconstruction_position_not_newer" in runbook
+    assert "Do not leave the audit stack running" in runbook
