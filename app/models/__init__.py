@@ -902,6 +902,8 @@ from app.models.vendor_routes import (  # noqa: F401
     ProjectQuoteLineItem,
     ProjectQuoteStatus,
     ProposedRouteRevision,
+    ProposedRouteRevisionReviewEvent,
+    ProposedRouteRevisionReviewEventImmutableError,
     ProposedRouteRevisionStatus,
     VariationType,
     Vendor,

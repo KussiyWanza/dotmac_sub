@@ -32,6 +32,10 @@
         </div>
     </div>
 
+    {% if message %}
+    <div class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ message }}</div>
+    {% endif %}
+
     <div class="flex flex-wrap items-center gap-4 text-sm">
         <div class="flex items-center gap-2"><span class="h-1 w-6 rounded-full" style="background:#7c3aed"></span><span class="text-slate-600 dark:text-slate-300">Proposed route</span></div>
         <div class="flex items-center gap-2"><span class="h-1 w-6 rounded-full" style="background:#10b981"></span><span class="text-slate-600 dark:text-slate-300">As-built route</span></div>
@@ -42,6 +46,57 @@
         <div id="route-map"></div>
     </div>
     <p id="route-empty" class="hidden text-sm text-amber-600 dark:text-amber-400">No route geometry saved for this project yet.</p>
+
+    <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+            <h2 class="font-bold">Proposed route revisions</h2>
+            <p class="mt-1 text-xs text-slate-500">Select a revision to highlight it on the map. Submitted revisions can be accepted or rejected.</p>
+        </header>
+        {% for revision in route_revisions %}
+        <article id="revision-{{ revision.id }}" class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)] {% if revision_id == revision.id|string %}bg-teal-50/50 dark:bg-teal-950/20{% endif %}">
+            <div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <strong>Revision {{ revision.revision_number }}</strong>
+                    <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-200">{{ revision.status | replace('_', ' ') }}</span>
+                </div>
+                <p class="mt-1 text-sm text-slate-500">{{ revision.vendor_name or revision.vendor_id }} · submitted {{ revision.submitted_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+                <dl class="mt-3 grid grid-cols-2 gap-3 text-sm">
+                    <div><dt class="text-xs text-slate-500">Route</dt><dd class="font-semibold">{{ 'Provided' if revision.has_geometry else 'None' }}</dd></div>
+                    <div><dt class="text-xs text-slate-500">Estimated length</dt><dd class="font-semibold">{{ (revision.length_meters|string ~ ' m') if revision.length_meters is not none else 'Not provided' }}</dd></div>
+                </dl>
+                {% if revision.review_notes %}<p class="mt-3 text-sm"><span class="font-semibold">Review note:</span> {{ revision.review_notes }}</p>{% endif %}
+                <button type="button" data-focus-revision="{{ revision.id }}" class="mt-3 text-sm font-semibold text-violet-700 dark:text-violet-300">Show this revision on map</button>
+            </div>
+            {% if action_permitted(request, revision.accept_action) %}
+            <div class="grid gap-3 sm:grid-cols-2">
+                <form method="post" action="{{ revision.accept_action.preview_url }}" class="space-y-2">
+                    {% include "components/forms/csrf_input.html" %}
+                    <label class="block text-xs text-slate-500">Acceptance note<textarea name="reason" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+                    <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ revision.accept_action.label }}</button>
+                </form>
+                <form method="post" action="{{ revision.reject_action.preview_url }}" class="space-y-2">
+                    {% include "components/forms/csrf_input.html" %}
+                    <label class="block text-xs text-slate-500">Rejection reason<textarea name="reason" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+                    <button class="w-full rounded-md border border-amber-500 px-3 py-2 text-sm font-semibold text-amber-700">{{ revision.reject_action.label }}</button>
+                </form>
+            </div>
+            {% else %}
+            <div>
+                <p class="text-sm text-slate-500">{{ revision.accept_action.reason or 'No review action is available.' }}</p>
+                {% if revision.review_events %}
+                <ol class="mt-3 space-y-2">
+                    {% for event in revision.review_events %}
+                    <li class="border-l-2 border-teal-500 pl-3 text-xs"><strong>{{ event.to_status | replace('_', ' ') | title }}</strong> · {{ event.occurred_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}{% if event.reason %}<p class="mt-1 text-slate-500">{{ event.reason }}</p>{% endif %}</li>
+                    {% endfor %}
+                </ol>
+                {% endif %}
+            </div>
+            {% endif %}
+        </article>
+        {% else %}
+        <p class="p-8 text-center text-sm text-slate-500">No proposed route revisions exist for this project.</p>
+        {% endfor %}
+    </section>
 </div>
 {% endblock %}
 
@@ -52,6 +107,7 @@
 (function() {
     const networkGeojson = {{ network_geojson | tojson | safe }};
     const ROUTE_URL = '/api/v1/vendor-routes/projects/{{ project_id }}/geojson';
+    const selectedRevisionId = {{ revision_id | tojson }};
 
     const map = L.map('route-map').setView([9.0820, 8.6753], 6);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -78,13 +134,38 @@
         .then(function(fc) {
             const features = (fc && fc.features) || [];
             if (!features.length) { document.getElementById('route-empty').classList.remove('hidden'); return; }
+            const featureLayers = {};
             const routeLayer = L.geoJSON(fc, {
                 style: function(feature) {
                     const kind = feature.properties && feature.properties.kind;
-                    return { color: kind === 'as_built' ? '#10b981' : '#7c3aed', weight: 4, opacity: 0.9 };
+                    const id = feature.properties && feature.properties.id;
+                    const selected = selectedRevisionId && id === selectedRevisionId;
+                    return {
+                        color: kind === 'as_built' ? '#10b981' : '#7c3aed',
+                        weight: selected ? 7 : 4,
+                        opacity: selected ? 1 : 0.75
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    const properties = feature.properties || {};
+                    if (properties.id) featureLayers[properties.id] = layer;
+                    const label = properties.kind === 'as_built'
+                        ? 'As-built version ' + (properties.version || '—')
+                        : 'Proposed revision ' + (properties.revision_number || '—');
+                    layer.bindPopup('<strong>' + label + '</strong><br>Status: ' + (properties.status || 'unknown').replaceAll('_', ' '));
                 }
             }).addTo(map);
             try { map.fitBounds(routeLayer.getBounds(), { padding: [40, 40], maxZoom: 17 }); } catch (e) { /* empty bounds */ }
+            function focusRevision(id) {
+                const layer = featureLayers[id];
+                if (!layer) return;
+                try { map.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 18 }); } catch (e) { /* point-free layer */ }
+                layer.openPopup();
+            }
+            document.querySelectorAll('[data-focus-revision]').forEach(function(button) {
+                button.addEventListener('click', function() { focusRevision(button.dataset.focusRevision); });
+            });
+            if (selectedRevisionId) focusRevision(selectedRevisionId);
         })
         .catch(function() { document.getElementById('route-empty').classList.remove('hidden'); });
 })();

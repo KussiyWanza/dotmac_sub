@@ -332,6 +332,9 @@ def test_review_routes_templates_and_sot_are_thin_and_explicit():
     queue = (root / "templates/admin/vendors/operations.html").read_text(
         encoding="utf-8"
     )
+    detail = (root / "templates/admin/vendors/as_built_review_detail.html").read_text(
+        encoding="utf-8"
+    )
     vendor = (root / "templates/vendor/project_detail.html").read_text(encoding="utf-8")
     sot = (root / "docs/SOT_RELATIONSHIP_MAP.md").read_text(encoding="utf-8")
     migration = (root / "alembic/versions/374_as_built_review_evidence.py").read_text(
@@ -341,7 +344,9 @@ def test_review_routes_templates_and_sot_are_thin_and_explicit():
     assert "vendor_as_built_review_proposals.issue_review(" in routes
     assert "vendor_as_built_review_proposals.confirm_review(" in routes
     assert "transition_as_built_review(" not in routes
-    assert "action_permitted(request, as_built.accept_action)" in queue
+    assert "/admin/vendors/operations/as-built/{{ as_built.id }}" in queue
+    assert "action_permitted(request, as_built.accept_action)" in detail
+    assert "route_geojson" in detail
     assert "show_field_reviews" in queue
     assert "project.as_built_submissions" in vendor
     assert "operations.vendor_as_built_review_confirmation" in sot

@@ -630,6 +630,90 @@ class ProposedRouteRevision(Base):
 
     quote = relationship("ProjectQuote", back_populates="route_revisions")
     fiber_segment = relationship("FiberSegment")
+    review_events = relationship(
+        "ProposedRouteRevisionReviewEvent",
+        back_populates="revision",
+        order_by="ProposedRouteRevisionReviewEvent.occurred_at",
+    )
+
+
+class ProposedRouteRevisionReviewEvent(Base):
+    """Append-only official evidence for staff proposed-route decisions."""
+
+    __tablename__ = "proposed_route_revision_review_events"
+    __table_args__ = (
+        CheckConstraint(
+            "from_status <> to_status",
+            name="ck_proposed_route_review_event_status_change",
+        ),
+        Index(
+            "ix_proposed_route_review_event_revision_occurred",
+            "revision_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True, index=True
+    )
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("proposed_route_revisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("project_quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("installation_projects.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vendors.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    from_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    revision = relationship("ProposedRouteRevision", back_populates="review_events")
+    quote = relationship("ProjectQuote")
+    project = relationship("InstallationProject")
+    vendor = relationship("Vendor")
+
+
+class ProposedRouteRevisionReviewEventImmutableError(RuntimeError):
+    pass
+
+
+@event.listens_for(ProposedRouteRevisionReviewEvent, "before_update")
+def _reject_proposed_route_review_event_update(*_args: object) -> None:
+    raise ProposedRouteRevisionReviewEventImmutableError(
+        "Proposed-route review evidence is append-only"
+    )
+
+
+@event.listens_for(ProposedRouteRevisionReviewEvent, "before_delete")
+def _reject_proposed_route_review_event_delete(*_args: object) -> None:
+    raise ProposedRouteRevisionReviewEventImmutableError(
+        "Proposed-route review evidence is append-only"
+    )
 
 
 class AsBuiltRoute(Base):

@@ -15246,6 +15246,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "quote submission eligibility and impact snapshot",
                     "as-built submission eligibility and impact snapshot",
                     "staff project-review eligibility and impact snapshot",
+                    "staff proposed-route review eligibility and impact snapshot",
                     "staff as-built-review eligibility and impact snapshot",
                 ),
                 depends_on=(
@@ -15310,6 +15311,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical installation-project lifecycle state",
                                 "canonical vendor project records",
                                 "work-order as-built evidence policy",
+                                "vendor workspace mutation protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "staff proposed-route review eligibility and "
+                                "impact snapshot"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical installation-project lifecycle state",
+                                "canonical vendor project records",
                                 "vendor workspace mutation protocol",
                             ),
                         ),
@@ -15415,6 +15428,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "operations.vendor_project_workspace.quote_not_reviewable",
                             "operations.vendor_project_workspace.quote_line_required",
                             "operations.vendor_project_workspace.route_revision_not_draft",
+                            "operations.vendor_project_workspace.route_revision_not_reviewable",
                             "operations.vendor_project_workspace.as_built_evidence_required",
                             "operations.vendor_project_workspace.as_built_submission_not_allowed",
                             "operations.vendor_project_workspace.as_built_not_reviewable",
@@ -15466,6 +15480,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     steward="vendor operations",
                     design_refs=(
+                        "docs/designs/VENDOR_PROJECT_REVIEW_UI.md",
                         "docs/designs/UI_PROJECTION_CONTRACTS.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                         "docs/adr/0002-owner-command-transaction-boundary.md",
@@ -15486,6 +15501,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "vendor installation-project quote lifecycle",
                     "proposed vendor route-revision lifecycle",
+                    "staff proposed-route review state and immutable evidence",
                     "vendor as-built route and line-item lifecycle",
                     "staff as-built review state and immutable evidence",
                 ),
@@ -15511,6 +15527,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ConcernContract(
                             name="proposed vendor route-revision lifecycle",
                             role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "validated vendor project record transition",
+                                "canonical installation-project lifecycle state",
+                            ),
+                            canonical_writer="operations.vendor_project_records",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "staff proposed-route review state and immutable evidence"
+                            ),
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
                             input_names=(
                                 "validated vendor project record transition",
                                 "canonical installation-project lifecycle state",
@@ -15588,6 +15615,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "operations.vendor_project_workspace.quote_not_reviewable",
                             "operations.vendor_project_workspace.quote_line_required",
                             "operations.vendor_project_workspace.route_revision_not_draft",
+                            "operations.vendor_project_workspace.route_revision_not_reviewable",
                             "operations.vendor_project_workspace.as_built_evidence_required",
                             "operations.vendor_project_workspace.as_built_submission_not_allowed",
                             "operations.vendor_project_workspace.as_built_not_reviewable",
@@ -15612,6 +15640,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         event_types=(
                             "vendor_quote.changed",
                             "vendor_route_revision.changed",
+                            "vendor_route_revision.accepted",
+                            "vendor_route_revision.rejected",
                             "vendor_as_built.submitted",
                             "vendor_as_built.accepted",
                             "vendor_as_built.rejected",
@@ -15649,12 +15679,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     steward="vendor operations",
                     design_refs=(
+                        "docs/designs/VENDOR_PROJECT_REVIEW_UI.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                         "docs/adr/0002-owner-command-transaction-boundary.md",
                     ),
                     test_refs=(
                         "tests/test_vendor_project_workspace.py",
                         "tests/test_vendor_submission_proposals.py",
+                        "tests/test_vendor_route_review.py",
                         "tests/test_vendor_as_built_review.py",
                         "tests/architecture/test_vendor_project_workspace_boundary.py",
                     ),
@@ -16442,6 +16474,198 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_vendor_project_review.py",
                         "tests/architecture/test_vendor_project_lifecycle_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="operations.vendor_route_review_confirmation",
+                module="app.services.vendor_route_review_proposals",
+                owns=(
+                    "short-lived signed staff proposed-route review proposal",
+                    "staff proposed-route review stale-preview verification",
+                    "staff proposed-route review idempotency and replay result",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "auth.token_signing",
+                    "operations.vendor_project_records",
+                    "operations.vendor_project_workspace",
+                ),
+                notes=(
+                    "This supporting service carries no quote or project decision "
+                    "policy. It binds staff to the vendor operations owner's "
+                    "proposed-route preview and invokes that owner after revalidation."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "short-lived signed staff proposed-route "
+                                "review proposal"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "authenticated staff proposed-route review context",
+                                "canonical staff proposed-route review preview",
+                                "capability signing envelope",
+                                "staff proposed-route review confirmation protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "staff proposed-route review stale-preview verification"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "authenticated staff proposed-route review context",
+                                "canonical staff proposed-route review preview",
+                                "capability signing envelope",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "staff proposed-route review idempotency "
+                                "and replay result"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated staff proposed-route review context",
+                                "canonical staff proposed-route review preview",
+                                "capability signing envelope",
+                                "canonical staff proposed-route review replay record",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated staff proposed-route review context",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "authenticated staff actor, action, reason, command, "
+                                "and correlation identifiers"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff proposed-route review preview",
+                            owner="operations.vendor_project_workspace",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "locked proposed-route state, immutable evidence impact, "
+                                "geometry identity, and state fingerprint"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="capability signing envelope",
+                            owner="auth.token_signing",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="configured context-signing key and algorithm",
+                        ),
+                        AuthorityInput(
+                            name="staff proposed-route review confirmation protocol",
+                            owner="operations.vendor_route_review_confirmation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "versioned purpose, issuer, claim allowlist, ten-minute "
+                                "lifetime, and accept/reject scopes"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff proposed-route review replay record",
+                            owner="operations.vendor_route_review_confirmation",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "IdempotencyKey row keyed by signed proposal jti and "
+                                "staff proposed-route review scope"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "A typed confirmation command owns locked stale "
+                            "verification, replay reservation, record participant "
+                            "mutation, result evidence, and one root commit."
+                        ),
+                        locking=(
+                            "The ProposedRouteRevision aggregate is locked before "
+                            "replay reservation and fingerprint comparison."
+                        ),
+                        idempotency=(
+                            "Signed jti plus accept/reject scope identifies one "
+                            "immutable review-event result."
+                        ),
+                        retries=(
+                            "Invalid or stale proposals are terminal; concurrency "
+                            "failures retry the complete typed command."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "operations.vendor_route_review_confirmation.invalid_proposal",
+                            "operations.vendor_route_review_confirmation.expired_proposal",
+                            "operations.vendor_route_review_confirmation.proposal_context_mismatch",
+                            "operations.vendor_route_review_confirmation.confirmation_in_progress",
+                            "operations.vendor_route_review_confirmation.stale_proposal",
+                            "operations.vendor_route_review_confirmation.missing_result_evidence",
+                            "operations.vendor_route_review_confirmation.invalid_command_context",
+                            "operations.vendor_route_review_confirmation.command_contract_violation",
+                            "operations.vendor_route_review_confirmation.nested_owner_command",
+                            "operations.vendor_route_review_confirmation.active_caller_transaction",
+                            "operations.vendor_route_review_confirmation.nested_transaction_completion",
+                        ),
+                        mapping_owner="app.web.admin.vendor_operations",
+                        fail_closed_on=(
+                            "invalid, expired, or context-mismatched proposal",
+                            "proposed-route state, geometry, or evidence drift",
+                            "ambiguous concurrent confirmation",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "vendor_route_revision.accepted",
+                            "vendor_route_revision.rejected",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries revision, quote, project, vendor, "
+                            "transition, actor, and reason fields additively."
+                        ),
+                        replay=(
+                            "ProposedRouteRevisionReviewEvent and the idempotency "
+                            "row rebuild the decision and stable replay result."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "read-only staff route page with no proposed-route "
+                            "decision owner"
+                        ),
+                        new_owner="operations.vendor_route_review_confirmation",
+                        verification=(
+                            "Proposal, stale-state, replay, rollback, "
+                            "immutable-evidence, event, and adapter-mapping tests."
+                        ),
+                        cutover_gate=(
+                            "Staff confirmation routes pass a typed command on a "
+                            "clean session and route writes remain participant-only."
+                        ),
+                        fallback_retirement=(
+                            "Direct route-page status mutation and unsigned "
+                            "accept/reject paths are absent."
+                        ),
+                    ),
+                    steward="vendor operations",
+                    design_refs=(
+                        "docs/designs/VENDOR_PROJECT_REVIEW_UI.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/adr/0002-owner-command-transaction-boundary.md",
+                    ),
+                    test_refs=(
+                        "tests/test_vendor_route_review.py",
+                        "tests/architecture/test_vendor_project_workspace_boundary.py",
                     ),
                 ),
             ),

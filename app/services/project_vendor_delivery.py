@@ -186,7 +186,7 @@ def _quote_glance(
         vendor_name=vendor_name,
         total=quote.total if include_amount else None,
         currency=quote.currency if include_amount else None,
-        url=VENDOR_OPERATIONS_URL,
+        url=f"{VENDOR_OPERATIONS_URL}/quotes/{quote.id}",
     )
 
 
@@ -206,7 +206,7 @@ def _route_glance(
         detail=f"Latest proposed route revision {route.revision_number}.",
         revision_number=route.revision_number,
         length_meters=route.length_meters,
-        url=url,
+        url=f"{url}?revision_id={route.id}",
     )
 
 
@@ -222,7 +222,7 @@ def _as_built_glance(as_built: AsBuiltRoute | None) -> VendorAsBuiltGlance:
         detail=f"Latest as-built record, version {as_built.version}.",
         version=as_built.version,
         actual_length_meters=as_built.actual_length_meters,
-        url=VENDOR_OPERATIONS_URL,
+        url=f"{VENDOR_OPERATIONS_URL}/as-built/{as_built.id}",
     )
 
 
@@ -249,7 +249,7 @@ def _invoice_glance(
         total=invoice.total,
         currency=invoice.currency,
         payment=project_vendor_payment_status(invoice),
-        url=VENDOR_OPERATIONS_URL,
+        url=f"{VENDOR_OPERATIONS_URL}/invoices/{invoice.id}",
     )
 
 

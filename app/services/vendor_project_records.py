@@ -19,6 +19,7 @@ from app.models.vendor_routes import (
     ProjectQuoteLineItem,
     ProjectQuoteStatus,
     ProposedRouteRevision,
+    ProposedRouteRevisionReviewEvent,
     ProposedRouteRevisionStatus,
     VendorAssignmentType,
 )
@@ -52,6 +53,14 @@ from app.services.vendor_portal_operations import (
 @dataclass(frozen=True, slots=True)
 class StageVendorAsBuiltReview:
     as_built_id: str
+    action: str
+    actor_id: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StageVendorRouteRevisionReview:
+    revision_id: str
     action: str
     actor_id: str
     reason: str | None = None
@@ -390,6 +399,96 @@ def stage_submit_route_revision(
         vendor_id=revision.quote.vendor_id,
     )
     return {"id": revision.id, "status": revision.status}
+
+
+def stage_route_revision_review(
+    db: Session,
+    command: StageVendorRouteRevisionReview,
+) -> dict:
+    """Stage one locked staff proposed-route decision and immutable event."""
+
+    normalized_actor = command.actor_id.strip()
+    if not normalized_actor:
+        raise VendorPortalOperationError(
+            "actor_required",
+            "Review actor is required",
+            kind="invalid",
+        )
+    preview = VendorPortalOperations.preview_route_revision_review(
+        db,
+        command.revision_id,
+        action=command.action,
+        reason=command.reason,
+        for_update=True,
+    )
+    revision = (
+        db.query(ProposedRouteRevision)
+        .filter(ProposedRouteRevision.id == coerce_uuid(command.revision_id))
+        .with_for_update(of=ProposedRouteRevision)
+        .one()
+    )
+    previous = str(preview["state"]["from_status"])
+    target = str(preview["state"]["to_status"])
+    normalized_reason = preview["state"]["reason"]
+    event_type = (
+        EventType.vendor_route_revision_accepted
+        if command.action == "accept"
+        else EventType.vendor_route_revision_rejected
+    )
+    revision.status = target
+    revision.reviewed_at = _now()
+    revision.reviewed_by_person_id = coerce_uuid(normalized_actor)
+    revision.review_notes = normalized_reason
+    quote = revision.quote
+    project = quote.project
+    domain_event = emit_event(
+        db,
+        event_type,
+        {
+            "schema_version": 1,
+            "revision_id": str(revision.id),
+            "quote_id": str(revision.quote_id),
+            "project_id": str(quote.project_id),
+            "native_project_id": str(project.project_id),
+            "vendor_id": str(quote.vendor_id),
+            "revision_number": revision.revision_number,
+            "from_status": previous,
+            "to_status": target,
+            "actor_type": "staff_user",
+            "actor_id": normalized_actor,
+            "reason": normalized_reason,
+        },
+        actor=normalized_actor,
+        subscriber_id=project.subscriber_id,
+        account_id=project.subscriber_id,
+    )
+    evidence = ProposedRouteRevisionReviewEvent(
+        event_id=domain_event.event_id,
+        revision_id=revision.id,
+        quote_id=revision.quote_id,
+        project_id=quote.project_id,
+        vendor_id=quote.vendor_id,
+        event_type=domain_event.event_type.value,
+        from_status=previous,
+        to_status=target,
+        actor_type="staff_user",
+        actor_id=normalized_actor,
+        reason=normalized_reason,
+        occurred_at=domain_event.occurred_at,
+    )
+    db.add(evidence)
+    db.flush()
+    result = {
+        "id": revision.id,
+        "quote_id": revision.quote_id,
+        "project_id": quote.project_id,
+        "status": revision.status,
+        "review_notes": revision.review_notes,
+        "reviewed_at": domain_event.occurred_at,
+        "review_event_id": str(evidence.id),
+        "domain_event_id": str(domain_event.event_id),
+    }
+    return result
 
 
 def stage_as_built_submission(

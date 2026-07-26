@@ -2,9 +2,52 @@
 {% block title %}Vendor operations{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <div><p class="text-sm font-semibold text-teal-700 dark:text-teal-400">FIELD SERVICES</p><h1 class="text-2xl font-bold">Vendor review queue</h1></div>
+  <div>
+    <p class="text-sm font-semibold text-teal-700 dark:text-teal-400">FIELD SERVICES</p>
+    <h1 class="text-2xl font-bold">Vendor review queue</h1>
+    <p class="mt-1 text-sm text-slate-500">Open a record to review its full route, line items, attachment, and history before deciding.</p>
+  </div>
   {% if message %}<div class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ message }}</div>{% endif %}
+
   {% if show_field_reviews %}
+  {% if show_route_reviews %}
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Proposed routes awaiting review</h2></header>
+    {% for revision in route_revisions %}
+    <article class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800">
+      <div>
+        <div class="flex flex-wrap items-center gap-2"><strong>{{ revision.project_name or revision.project_code or revision.project_id }}</strong><span class="rounded-full bg-violet-50 px-2 py-0.5 text-xs font-bold uppercase text-violet-700">Revision {{ revision.revision_number }}</span></div>
+        <p class="mt-1 text-sm text-slate-500">{{ revision.vendor_name or revision.vendor_id }} · {{ (revision.length_meters|string ~ ' m') if revision.length_meters is not none else 'Length not provided' }} · submitted {{ revision.submitted_at | app_datetime('%d %b %Y', 'time unavailable') }}</p>
+      </div>
+      <a href="{{ revision.detail_url }}" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Review route</a>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No proposed routes waiting.</p>{% endfor %}
+  </section>
+  {% endif %}
+
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">As-built evidence awaiting review</h2></header>
+    {% for as_built in as_builts %}
+    <article class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800">
+      <div>
+        <div class="flex flex-wrap items-center gap-2"><strong>{{ as_built.project_name or as_built.project_code or as_built.project_id }}</strong><span class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold uppercase text-blue-700">Version {{ as_built.version }}</span></div>
+        <p class="mt-1 text-sm text-slate-500">{{ as_built.vendor_name or as_built.vendor_id }} · {{ "Route supplied" if as_built.has_geometry else "No route geometry" }} · {{ as_built.line_items|length }} line item{{ '' if as_built.line_items|length == 1 else 's' }}</p>
+      </div>
+      <a href="/admin/vendors/operations/as-built/{{ as_built.id }}" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Review evidence</a>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No as-built evidence waiting.</p>{% endfor %}
+  </section>
+
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Quotes awaiting review</h2></header>
+    {% for quote in quotes %}
+    <article class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800">
+      <div><strong>{{ quote.vendor.name }}</strong><p class="mt-1 text-sm text-slate-500">{{ quote.project.project.name if quote.project and quote.project.project else quote.project_id }} · {{ quote.line_items|length }} line item{{ '' if quote.line_items|length == 1 else 's' }} · {{ quote.currency }} {{ "{:,.2f}".format(quote.total) }}</p></div>
+      <a href="/admin/vendors/operations/quotes/{{ quote.id }}" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Review quote</a>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No quotes waiting.</p>{% endfor %}
+  </section>
+
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Completed projects awaiting verification</h2></header>
     {% for project in projects %}
@@ -12,10 +55,6 @@
       <div>
         <strong>{{ project.project_name or project.project_code or project.id }}</strong>
         <p class="text-sm text-slate-500">{{ project.vendor_name or project.assigned_vendor_id }} · completed</p>
-        {% if project.lifecycle_events %}
-        {% set latest = project.lifecycle_events[-1] %}
-        <p class="mt-2 text-xs text-slate-500">Latest evidence: {{ latest.event_type|replace('_', ' ') }} at {{ latest.occurred_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
-        {% endif %}
         <p class="mt-2 text-xs text-slate-500">As-built evidence: {% if project.verification_evidence.required %}required{% else %}optional{% endif %}{% if project.verification_evidence.source == 'default_enabled' %} (default; no active linked work order){% endif %}.</p>
       </div>
       <div class="grid gap-3 sm:grid-cols-2">
@@ -26,7 +65,7 @@
           <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ project.verify_action.label }}</button>
         </form>
         {% elif can(request, project.verify_action.permission) %}
-        <p class="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{{ project.verify_action.reason }}</p>
+        <p class="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{{ project.verify_action.reason }}</p>
         {% endif %}
         {% if action_permitted(request, project.rework_action) %}
         <form method="post" action="{{ project.rework_action.preview_url }}" class="space-y-2">
@@ -39,50 +78,18 @@
     </article>
     {% else %}<p class="p-8 text-center text-sm text-slate-500">No completed projects waiting.</p>{% endfor %}
   </section>
+  {% endif %}
+
+  {% if show_financial_reviews %}
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">As-built evidence awaiting review</h2></header>
-    {% for as_built in as_builts %}
-    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)]">
-      <div>
-        <div class="flex flex-wrap items-center gap-2"><strong>{{ as_built.project_name or as_built.project_code or as_built.project_id }}</strong><span class="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold uppercase text-blue-700">{{ as_built.status|replace('_', ' ') }}</span></div>
-        <p class="text-sm text-slate-500">{{ as_built.vendor_name or as_built.vendor_id }} · version {{ as_built.version }}</p>
-        <dl class="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-600 dark:text-slate-300 sm:grid-cols-4">
-          <div><dt class="text-slate-500">Route</dt><dd class="font-semibold">{{ "Provided" if as_built.has_geometry else "None" }}</dd></div>
-          <div><dt class="text-slate-500">Length</dt><dd class="font-semibold">{{ (as_built.actual_length_meters|string ~ " m") if as_built.actual_length_meters is not none else "—" }}</dd></div>
-          <div><dt class="text-slate-500">Line items</dt><dd class="font-semibold">{{ as_built.line_items|length }}</dd></div>
-          <div><dt class="text-slate-500">Submitted</dt><dd class="font-semibold">{{ as_built.submitted_at | app_datetime('%d %b %Y', '—') }}</dd></div>
-        </dl>
-        {% if as_built.variation_reason %}<p class="mt-2 text-xs text-slate-500">Variation: {{ as_built.variation_reason }}</p>{% endif %}
-      </div>
-      {% if action_permitted(request, as_built.accept_action) %}
-      <div class="grid gap-3 sm:grid-cols-2">
-        <form method="post" action="{{ as_built.accept_action.preview_url }}" class="space-y-2">
-          {% include "components/forms/csrf_input.html" %}
-          <label class="block text-xs text-slate-500">Acceptance note (optional)<textarea name="reason" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
-          <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ as_built.accept_action.label }}</button>
-        </form>
-        <form method="post" action="{{ as_built.reject_action.preview_url }}" class="space-y-2">
-          {% include "components/forms/csrf_input.html" %}
-          <label class="block text-xs text-slate-500">Rejection reason<textarea name="reason" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
-          <button class="w-full rounded-md border border-amber-500 px-3 py-2 text-sm font-semibold text-amber-700">{{ as_built.reject_action.label }}</button>
-        </form>
-      </div>
-      {% elif not as_built.accept_action.allowed %}
-      <p class="text-sm text-slate-500">{{ as_built.accept_action.reason }}</p>
-      {% endif %}
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Purchase invoices awaiting review</h2></header>
+    {% for invoice in invoices %}
+    <article class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800">
+      <div><strong>{{ invoice.invoice_number or 'Invoice number not supplied' }}</strong><p class="mt-1 text-sm text-slate-500">{{ invoice.vendor_name or invoice.vendor_id }} · {{ invoice.project_name or invoice.project_code or invoice.project_id }} · {{ invoice.currency }} {{ "{:,.2f}".format(invoice.total) }}</p></div>
+      <a href="/admin/vendors/operations/invoices/{{ invoice.id }}" class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Review invoice</a>
     </article>
-    {% else %}<p class="p-8 text-center text-sm text-slate-500">No as-built evidence waiting.</p>{% endfor %}
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No purchase invoices waiting.</p>{% endfor %}
   </section>
   {% endif %}
-  <div class="grid gap-6 xl:grid-cols-2">
-    <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-      <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Quotes awaiting review</h2></header>
-      {% for quote in quotes %}<article class="border-b border-slate-100 p-5 last:border-0 dark:border-slate-800"><div class="mb-3 flex justify-between gap-3"><div><strong>{{ quote.vendor.name }}</strong><p class="text-sm text-slate-500">{{ quote.project.project.name if quote.project and quote.project.project else quote.project_id }}</p></div><strong>{{ quote.currency }} {{ quote.total }}</strong></div><form class="space-y-3" method="post"><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><textarea name="review_notes" rows="2" placeholder="Review notes" class="w-full rounded-md border-slate-300 text-sm"></textarea><div class="flex justify-end gap-2"><button formaction="/admin/vendors/operations/quotes/{{ quote.id }}/request-revision" class="rounded-md border border-amber-500 px-3 py-2 text-sm font-semibold text-amber-700">Request revision</button><button formaction="/admin/vendors/operations/quotes/{{ quote.id }}/approve" class="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">Approve</button></div></form></article>{% else %}<p class="p-8 text-center text-sm text-slate-500">No quotes waiting.</p>{% endfor %}
-    </section>
-    <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-      <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Invoices awaiting review</h2></header>
-      {% for invoice in invoices %}<article class="border-b border-slate-100 p-5 last:border-0 dark:border-slate-800"><div class="mb-3 flex justify-between gap-3"><div><strong>{{ invoice.invoice_number }}</strong><p class="text-sm text-slate-500">{{ invoice.vendor_id }} · {{ invoice.project_id }}</p></div><strong>{{ invoice.currency }} {{ invoice.total }}</strong></div><form class="space-y-3" method="post"><input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}"><textarea name="review_notes" rows="2" placeholder="Review notes" class="w-full rounded-md border-slate-300 text-sm"></textarea><div class="flex justify-end gap-2"><button formaction="/admin/vendors/operations/invoices/{{ invoice.id }}/request-revision" class="rounded-md border border-amber-500 px-3 py-2 text-sm font-semibold text-amber-700">Request revision</button><button formaction="/admin/vendors/operations/invoices/{{ invoice.id }}/approve" class="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">Approve</button></div></form></article>{% else %}<p class="p-8 text-center text-sm text-slate-500">No invoices waiting.</p>{% endfor %}
-    </section>
-  </div>
 </div>
 {% endblock %}

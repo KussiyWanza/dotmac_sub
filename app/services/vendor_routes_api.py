@@ -117,6 +117,34 @@ def build_project_route_geojson(db: Session, project_id: str) -> dict:
     return {"type": "FeatureCollection", "features": features}
 
 
+def build_as_built_route_geojson(db: Session, as_built_id: str) -> dict:
+    """One as-built submission as a permission-scoped review map."""
+
+    row = db.query(AsBuiltRoute).filter(AsBuiltRoute.id == as_built_id).one_or_none()
+    if row is None:
+        return {"type": "FeatureCollection", "features": []}
+    geometry = _geom_to_geojson(db, row.route_geom)
+    if geometry is None:
+        return {"type": "FeatureCollection", "features": []}
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "id": str(row.id),
+                    "kind": "as_built",
+                    "status": row.status,
+                    "version": row.version,
+                    "length_meters": row.actual_length_meters,
+                    "variation_type": row.variation_type,
+                },
+            }
+        ],
+    }
+
+
 def get_route_project(db: Session, project_id: str) -> dict | None:
     """Summary of a single installation project for the route-view page header."""
     project = (

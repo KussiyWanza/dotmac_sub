@@ -106,17 +106,25 @@ def test_projection_composes_current_owner_facts_without_writing(db_session):
     assert projection.quote.status is not None
     assert projection.quote.status.value == "approved"
     assert projection.quote.total == Decimal("425000.00")
+    assert projection.quote.url is not None
+    assert "/admin/vendors/operations/quotes/" in projection.quote.url
     assert projection.route is not None
     assert projection.route.status is not None
     assert projection.route.status.value == "accepted"
     assert projection.route.revision_number == 2
+    assert projection.route.url is not None
+    assert "?revision_id=" in projection.route.url
     assert projection.as_built is not None
     assert projection.as_built.status is not None
     assert projection.as_built.status.value == "under_review"
     assert projection.as_built.version == 3
+    assert projection.as_built.url is not None
+    assert "/vendors/operations/as-built/" in projection.as_built.url
     assert projection.invoice is not None
     assert projection.invoice.status is not None
     assert projection.invoice.status.value == "approved"
+    assert projection.invoice.url is not None
+    assert "/vendors/operations/invoices/" in projection.invoice.url
     assert projection.invoice.payment is not None
     assert projection.invoice.payment.status.kind is StateKind.present
     assert projection.invoice.payment.status.value.value == "partially_paid"

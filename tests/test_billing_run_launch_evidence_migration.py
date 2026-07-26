@@ -14,9 +14,13 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: prepaid opening-funding reconciliation (423) chains
-    # onto conversation ticket handoff (422).
-    assert script.get_heads() == ["423_prepaid_opening_funding_reconciliation"]
+    # Single linear head: proposed-route review evidence (424) chains onto
+    # prepaid opening-funding reconciliation (423).
+    assert script.get_heads() == ["424_proposed_route_review_evidence"]
+    assert (
+        script.get_revision("424_proposed_route_review_evidence").down_revision
+        == "423_prepaid_opening_funding_reconciliation"
+    )
     assert (
         script.get_revision("422_conversation_ticket_handoff").down_revision
         == "421_service_extension_activity_sot"

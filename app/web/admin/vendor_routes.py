@@ -9,7 +9,7 @@ GeoJSON endpoint; the fiber overlay reuses ``fiber_plant_api``. Guarded by
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.services import fiber_plant_api, vendor_routes_api
 from app.services.auth_dependencies import require_permission
+from app.services.vendor_portal_operations import vendor_portal_operations
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/vendors", tags=["web-admin-vendor-routes"])
@@ -50,12 +51,29 @@ def vendor_routes_list(request: Request, db: Session = Depends(get_db)):
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("network:fiber:read"))],
 )
-def vendor_route_view(request: Request, project_id: str, db: Session = Depends(get_db)):
+def vendor_route_view(
+    request: Request,
+    project_id: str,
+    revision_id: str | None = None,
+    message: str | None = None,
+    db: Session = Depends(get_db),
+):
+    project = vendor_routes_api.get_route_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Installation project not found")
     context = _ctx(request, db, "vendor-routes")
     context.update(
         {
-            "project": vendor_routes_api.get_route_project(db, project_id),
+            "project": project,
             "project_id": project_id,
+            "revision_id": revision_id,
+            "message": message,
+            "route_revisions": (
+                vendor_portal_operations.list_route_revisions_for_project(
+                    db,
+                    project_id,
+                )
+            ),
             "network_geojson": fiber_plant_api.build_fiber_plant_geojson(
                 db,
                 include_fdh=True,

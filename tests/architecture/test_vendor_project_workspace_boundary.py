@@ -57,6 +57,10 @@ def test_workspace_and_record_owners_have_complete_contracts() -> None:
         record_concerns["vendor installation-project quote lifecycle"].role
         is OwnerRole.COMMAND_WRITER
     )
+    assert (
+        record_concerns["staff proposed-route review state and immutable evidence"].role
+        is OwnerRole.AUTHORITATIVE_RECORD
+    )
 
 
 def test_workspace_owner_has_one_transport_neutral_transaction_boundary() -> None:
@@ -143,6 +147,27 @@ def test_submission_record_participants_have_only_the_named_coordinator() -> Non
         "stage_quote_submission": {"app/services/vendor_submission_proposals.py"},
         "stage_as_built_submission": {"app/services/vendor_submission_proposals.py"},
     }
+
+
+def test_route_review_record_participant_has_only_the_workspace_caller() -> None:
+    callers: set[str] = set()
+    for path in APP_ROOT.rglob("*.py"):
+        if path == RECORDS:
+            continue
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if name == "stage_route_revision_review":
+                callers.add(path.relative_to(PROJECT_ROOT).as_posix())
+
+    assert callers == {"app/services/vendor_portal_operations.py"}
 
 
 def test_public_adapters_construct_typed_workspace_commands_on_clean_sessions() -> None:

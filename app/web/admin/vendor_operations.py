@@ -3,7 +3,7 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,7 @@ from app.db import get_db
 from app.services import (
     vendor_as_built_review_proposals,
     vendor_project_review_proposals,
+    vendor_route_review_proposals,
 )
 from app.services.auth_dependencies import (
     can,
@@ -19,6 +20,7 @@ from app.services.auth_dependencies import (
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
 from app.services.vendor_as_built_review_proposals import (
     ConfirmVendorAsBuiltReviewCommand,
@@ -33,6 +35,9 @@ from app.services.vendor_project_review_proposals import (
 from app.services.vendor_purchase_invoices import (
     ReviewVendorPurchaseInvoiceCommand,
     vendor_purchase_invoices,
+)
+from app.services.vendor_route_review_proposals import (
+    ConfirmVendorRouteReviewCommand,
 )
 
 templates = Jinja2Templates(directory="templates")
@@ -112,13 +117,25 @@ def vendor_operations_queue(
 ):
     context = _ctx(request, db)
     show_field_reviews = can(request, "inventory:read")
+    show_route_reviews = show_field_reviews and can(request, "network:fiber:read")
+    show_financial_reviews = can(request, "inventory:read") or can(
+        request,
+        "finance:ap:read",
+    )
     context.update(
         {
             "message": message,
             "show_field_reviews": show_field_reviews,
+            "show_route_reviews": show_route_reviews,
+            "show_financial_reviews": show_financial_reviews,
             "projects": (
                 vendor_portal_operations.list_reviewable_projects(db)
                 if show_field_reviews
+                else []
+            ),
+            "route_revisions": (
+                vendor_portal_operations.list_reviewable_route_revisions(db)
+                if show_route_reviews
                 else []
             ),
             "as_builts": (
@@ -126,13 +143,133 @@ def vendor_operations_queue(
                 if show_field_reviews
                 else []
             ),
-            "quotes": vendor_portal_operations.list_reviewable_quotes(db),
-            "invoices": vendor_purchase_invoices.list(
-                db, status="submitted", limit=200, offset=0
+            "quotes": (
+                vendor_portal_operations.list_reviewable_quotes(db)
+                if show_field_reviews
+                else []
+            ),
+            "invoices": (
+                vendor_purchase_invoices.list(
+                    db,
+                    status="submitted",
+                    limit=200,
+                    offset=0,
+                )
+                if show_financial_reviews
+                else []
             ),
         }
     )
     return templates.TemplateResponse("admin/vendors/operations.html", context)
+
+
+@router.get("/quotes/{quote_id}", response_class=HTMLResponse)
+def vendor_quote_review_detail(
+    request: Request,
+    quote_id: str,
+    message: str | None = None,
+    _auth: dict = Depends(_read),
+    db: Session = Depends(get_db),
+):
+    try:
+        quote = vendor_portal_operations.get_quote_for_review(db, quote_id)
+    except DomainError as exc:
+        raise _quote_error(exc) from exc
+    context = _ctx(request, db)
+    context.update(
+        {
+            "quote": quote,
+            "message": message,
+            "can_review_operations": can(request, "inventory:write")
+            or can(request, "finance:ap:write"),
+        }
+    )
+    return templates.TemplateResponse(
+        "admin/vendors/quote_review_detail.html",
+        context,
+    )
+
+
+@router.get("/as-built/{as_built_id}", response_class=HTMLResponse)
+def vendor_as_built_review_detail(
+    request: Request,
+    as_built_id: str,
+    message: str | None = None,
+    _auth: dict = Depends(require_permission("inventory:read")),
+    db: Session = Depends(get_db),
+):
+    try:
+        as_built = vendor_portal_operations.get_as_built_review(db, as_built_id)
+    except DomainError as exc:
+        raise _quote_error(exc) from exc
+    from app.services import vendor_routes_api
+
+    context = _ctx(request, db)
+    context.update(
+        {
+            "as_built": as_built,
+            "message": message,
+            "route_geojson": vendor_routes_api.build_as_built_route_geojson(
+                db,
+                as_built_id,
+            ),
+        }
+    )
+    return templates.TemplateResponse(
+        "admin/vendors/as_built_review_detail.html",
+        context,
+    )
+
+
+@router.get("/invoices/{invoice_id}", response_class=HTMLResponse)
+def vendor_invoice_review_detail(
+    request: Request,
+    invoice_id: str,
+    message: str | None = None,
+    _auth: dict = Depends(_read),
+    db: Session = Depends(get_db),
+):
+    try:
+        invoice = vendor_purchase_invoices.get(db, invoice_id)
+    except DomainError as exc:
+        raise _quote_error(exc) from exc
+    context = _ctx(request, db)
+    context.update(
+        {
+            "invoice": invoice,
+            "message": message,
+            "can_review_operations": can(request, "inventory:write")
+            or can(request, "finance:ap:write"),
+            "show_payment_details": can(request, "finance:ap:read"),
+        }
+    )
+    return templates.TemplateResponse(
+        "admin/vendors/invoice_review_detail.html",
+        context,
+    )
+
+
+@router.get("/invoices/{invoice_id}/attachment")
+def download_vendor_invoice_attachment(
+    invoice_id: str,
+    _auth: dict = Depends(_read),
+    db: Session = Depends(get_db),
+):
+    try:
+        file, stream = vendor_purchase_invoices.attachment_file(
+            db,
+            invoice_id,
+            vendor_id=None,
+        )
+    except DomainError as exc:
+        raise _quote_error(exc) from exc
+    return StreamingResponse(
+        stream.chunks,
+        media_type=stream.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": build_content_disposition(file.original_filename)
+        },
+    )
 
 
 @router.post("/quotes/{quote_id}/approve")
@@ -158,7 +295,10 @@ def approve_vendor_quote(
         )
     except DomainError as exc:
         raise _quote_error(exc) from exc
-    return RedirectResponse("/admin/vendors/operations", status_code=303)
+    return RedirectResponse(
+        f"/admin/vendors/operations/quotes/{quote_id}?message=Quote+approved",
+        status_code=303,
+    )
 
 
 @router.post("/projects/{project_id}/{action}/preview", response_class=HTMLResponse)
@@ -267,7 +407,66 @@ def confirm_vendor_as_built_review(
     )
     label = "accepted" if result.action == "accept" else "rejected"
     return RedirectResponse(
-        f"/admin/vendors/operations?message=As-built+evidence+{label}",
+        f"/admin/vendors/operations/as-built/{as_built_id}"
+        f"?message=As-built+evidence+{label}",
+        status_code=303,
+    )
+
+
+@router.post("/routes/{revision_id}/{action}/preview", response_class=HTMLResponse)
+def preview_vendor_route_review(
+    request: Request,
+    revision_id: str,
+    action: str,
+    reason: str | None = Form(default=None),
+    _auth: dict = Depends(_project_write),
+    db: Session = Depends(get_db),
+):
+    proposal = vendor_route_review_proposals.issue_review(
+        db,
+        revision_id=revision_id,
+        action=action,
+        actor_id=_actor(request),
+        reason=reason,
+    )
+    context = _ctx(request, db)
+    context["proposal"] = proposal
+    return templates.TemplateResponse(
+        "admin/vendors/route_review_confirm.html",
+        context,
+    )
+
+
+@router.post("/routes/{revision_id}/{action}/confirm")
+def confirm_vendor_route_review(
+    request: Request,
+    revision_id: str,
+    action: str,
+    confirmation_token: str = Form(...),
+    _auth: dict = Depends(_project_write),
+    db: Session = Depends(get_db),
+):
+    actor_id = _actor(request)
+    context = _staff_confirmation_context(
+        request,
+        scope=revision_id,
+        reason="vendor_route_review_confirmation",
+    )
+    db_session_adapter.release_read_transaction(db)
+    result = vendor_route_review_proposals.confirm_review(
+        db,
+        ConfirmVendorRouteReviewCommand(
+            context=context,
+            confirmation_token=confirmation_token,
+            revision_id=revision_id,
+            action=action,
+            actor_id=actor_id,
+        ),
+    )
+    label = "accepted" if result.action == "accept" else "rejected"
+    return RedirectResponse(
+        f"/admin/vendors/routes/{result.project_id}"
+        f"?revision_id={revision_id}&message=Proposed+route+{label}",
         status_code=303,
     )
 
@@ -295,7 +494,10 @@ def request_vendor_quote_revision(
         )
     except DomainError as exc:
         raise _quote_error(exc) from exc
-    return RedirectResponse("/admin/vendors/operations", status_code=303)
+    return RedirectResponse(
+        f"/admin/vendors/operations/quotes/{quote_id}?message=Quote+revision+requested",
+        status_code=303,
+    )
 
 
 @router.post("/invoices/{invoice_id}/approve")
@@ -321,7 +523,10 @@ def approve_vendor_invoice(
         )
     except DomainError as exc:
         raise _quote_error(exc) from exc
-    return RedirectResponse("/admin/vendors/operations", status_code=303)
+    return RedirectResponse(
+        f"/admin/vendors/operations/invoices/{invoice_id}?message=Invoice+approved",
+        status_code=303,
+    )
 
 
 @router.post("/invoices/{invoice_id}/request-revision")
@@ -347,4 +552,8 @@ def request_vendor_invoice_revision(
         )
     except DomainError as exc:
         raise _quote_error(exc) from exc
-    return RedirectResponse("/admin/vendors/operations", status_code=303)
+    return RedirectResponse(
+        f"/admin/vendors/operations/invoices/{invoice_id}"
+        "?message=Invoice+revision+requested",
+        status_code=303,
+    )

@@ -256,10 +256,17 @@ def _recalculate(invoice: VendorPurchaseInvoice) -> None:
 def serialize(invoice: VendorPurchaseInvoice) -> dict:
     attachment = invoice.attachment
     editable = invoice.status in _EDITABLE
+    reviewable = invoice.status in _REVIEWABLE
+    project = getattr(invoice, "project", None)
+    native_project = getattr(project, "project", None)
+    vendor = getattr(invoice, "vendor", None)
     return {
         "id": invoice.id,
         "project_id": invoice.project_id,
+        "project_name": getattr(native_project, "name", None),
+        "project_code": getattr(native_project, "code", None),
         "vendor_id": invoice.vendor_id,
+        "vendor_name": getattr(vendor, "name", None),
         "invoice_number": invoice.invoice_number,
         "status": invoice.status,
         "edit_action": Action(
@@ -271,6 +278,32 @@ def serialize(invoice: VendorPurchaseInvoice) -> dict:
                 if editable
                 else f"A {invoice.status.replace('_', ' ')} invoice cannot be edited"
             ),
+        ),
+        "approve_action": Action(
+            key="approve_purchase_invoice",
+            label="Approve invoice",
+            allowed=reviewable,
+            reason=(
+                None
+                if reviewable
+                else (f"A {invoice.status.replace('_', ' ')} invoice is not reviewable")
+            ),
+            affected=1,
+        ),
+        "revision_action": Action(
+            key="request_purchase_invoice_revision",
+            label="Request revision",
+            allowed=reviewable,
+            reason=(
+                None
+                if reviewable
+                else (f"A {invoice.status.replace('_', ' ')} invoice is not reviewable")
+            ),
+            affected=1,
+        ),
+        "approve_url": (f"/admin/vendors/operations/invoices/{invoice.id}/approve"),
+        "revision_url": (
+            f"/admin/vendors/operations/invoices/{invoice.id}/request-revision"
         ),
         "currency": invoice.currency,
         "tax_rate_percent": invoice.tax_rate_percent,
