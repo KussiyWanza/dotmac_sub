@@ -10,11 +10,14 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-DB_CONTAINER="${DB_CONTAINER:-dotmac_pg_local}"
-BACKUP_DIR="${DB_BACKUP_DIR:-/var/backups/dotmac_sub}"
-BACKUP_BASENAME="${DB_BACKUP_BASENAME:-dotmac_sub}"
-BACKUP_RETENTION_COUNT="${DB_BACKUP_RETENTION_COUNT:-3}"
-BACKUP_DB_USER="${DB_BACKUP_DB_USER:-postgres}"
+
+# Capture explicit shell-env overrides BEFORE sourcing .env, so the precedence
+# is: shell env > .env > default. These used to be resolved here with their
+# defaults already baked in, which made a DB_CONTAINER=... line in .env dead
+# config: the default had won before .env was ever read, and the deploy aborted
+# at the backup step on any host whose DB container is not `dotmac_pg_local`.
+_ENV_DB_CONTAINER="${DB_CONTAINER:-}"
+_ENV_DB_BACKUP_DIR="${DB_BACKUP_DIR:-}"
 
 if [[ ! -f "${ROOT_DIR}/.env" ]]; then
   echo "Missing ${ROOT_DIR}/.env" >&2
@@ -25,6 +28,12 @@ set -a
 # shellcheck disable=SC1090
 . "${ROOT_DIR}/.env"
 set +a
+
+DB_CONTAINER="${_ENV_DB_CONTAINER:-${DB_CONTAINER:-dotmac_pg_local}}"
+BACKUP_DIR="${_ENV_DB_BACKUP_DIR:-${DB_BACKUP_DIR:-/var/backups/dotmac_sub}}"
+BACKUP_BASENAME="${DB_BACKUP_BASENAME:-dotmac_sub}"
+BACKUP_RETENTION_COUNT="${DB_BACKUP_RETENTION_COUNT:-3}"
+BACKUP_DB_USER="${DB_BACKUP_DB_USER:-postgres}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "DATABASE_URL not set in ${ROOT_DIR}/.env" >&2
