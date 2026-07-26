@@ -261,7 +261,15 @@ def test_capture_replay_has_one_pii_free_audit_and_event(db_session):
     serialized = f"{events[0].payload} {audits[0].metadata_}".lower()
     assert email.lower() not in serialized
     assert "private prospect" not in serialized
-    assert "0812" not in serialized
+    # Match the whole number, never a prefix. "0812" is four hex characters and
+    # the payload carries UUIDs, so a subscriber_id such as
+    # 3162c802-8173-4688-992f-dd0812c6f7bf fails this guard on its own fixture
+    # a few runs in a thousand. A PII guard that fails randomly gets re-run
+    # past, and eventually someone re-runs past a real leak. The E.164 form
+    # cannot collide at all: '+' never appears in a UUID.
+    assert "0812 345 6701" not in serialized
+    assert "+2348123456701" not in serialized
+    assert "8123456701" not in serialized
     assert events[0].payload["schema_version"] == 1
 
 
