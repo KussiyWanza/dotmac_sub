@@ -19,6 +19,7 @@ from app.models.subscription_change import (
 from app.schemas.portal_account_health import PortalAccountHealthRead
 from app.services import portal_account_health
 from app.services.portal_account_health import build_portal_account_health
+from app.web.customer.branding import get_customer_templates
 
 
 def _invoice(db_session, account_id, *, currency: str, balance: str) -> Invoice:
@@ -126,6 +127,16 @@ def test_portal_account_health_does_not_treat_plan_family_as_network_migration(
     wire = PortalAccountHealthRead.model_validate(health)
     assert wire.services[0].pending_change is not None
     assert wire.services[0].pending_change.delivery_mode == "commercial_only"
+    service_health_strip = (
+        get_customer_templates()
+        .env.get_template("components/portal/account_health.html")
+        .module.service_health_strip
+    )
+    rendered = service_health_strip(health, "/portal/services/", True)
+    assert (
+        f"Target: Wireless 100 · Effective "
+        f"{change.effective_date.strftime('%b %d, %Y')}"
+    ) in rendered
 
 
 def test_portal_account_health_has_an_explicit_single_service_query_budget(
@@ -172,6 +183,7 @@ def test_portal_account_health_templates_compile():
     env = Jinja2Templates(directory="templates").env
     env.filters["money"] = str
     env.filters["portal_datetime"] = str
+    assert env.filters.get("portal_date") is not None
     env.get_template("components/portal/account_health.html")
     env.get_template("customer/dashboard/index.html")
     env.get_template("customer/services/change_plan.html")

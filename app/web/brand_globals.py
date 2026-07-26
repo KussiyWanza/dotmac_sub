@@ -87,7 +87,10 @@ def _attach_globals(templates: Jinja2Templates) -> None:
         ticket_status_presentation,
         work_order_status_presentation,
     )
-    from app.web.customer.branding import _format_portal_datetime
+    from app.web.customer.branding import (
+        _format_portal_date,
+        _format_portal_datetime,
+    )
 
     # UI action gating: templates hide actions the principal cannot perform.
     # Reads the permission set require_permission cached on the request (no DB);
@@ -157,6 +160,7 @@ def _attach_globals(templates: Jinja2Templates) -> None:
     templates.env.globals.setdefault("currency_symbol", currency_symbol)
     templates.env.filters.setdefault("money", _money_filter)
     templates.env.filters.setdefault("app_datetime", _app_datetime_filter)
+    templates.env.filters.setdefault("portal_date", _format_portal_date)
     templates.env.filters.setdefault("portal_datetime", _format_portal_datetime)
 
 
