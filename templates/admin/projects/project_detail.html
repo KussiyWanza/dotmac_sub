@@ -1,5 +1,5 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import ambient_background, action_button, detail_header, icon_clipboard, icon_edit %}
+{% from "components/ui/macros.html" import ambient_background, action_button, detail_header, icon_clipboard, icon_edit, status_presentation_badge %}
 {% from "admin/projects/_components.html" import project_card, project_status_badge, project_priority_badge, task_status_badge, stage_dot, staff_name %}
 {% block title %}Project {{ project.number or project.id }}{% endblock %}
 
@@ -107,6 +107,88 @@
                 {% else %}
                 <p class="text-sm text-slate-500 dark:text-slate-400">No work orders are linked to this project yet. Open a task to issue field work.</p>
                 {% endfor %}
+            </div>
+            {% endcall %}
+            {% endif %}
+
+            {% if vendor_delivery %}
+            {% call project_card(
+                title='Vendor Delivery',
+                subtitle='Current vendor, route, evidence, and finance state from their owning services.',
+                icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h11v10H3V7zm11 3h3l4 4v3h-7v-7zM7 19a2 2 0 100-4 2 2 0 000 4zm10 0a2 2 0 100-4 2 2 0 000 4z"/></svg>',
+                actions=('<a href="' ~ vendor_delivery.operations_url ~ '" class="text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">Open vendor operations</a>') if vendor_delivery.operations_url else none
+            ) %}
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-600 dark:bg-slate-700/30">
+                <div>
+                    <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Assigned vendor</p>
+                    <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ vendor_delivery.vendor_name }}</p>
+                </div>
+                {{ status_presentation_badge(vendor_delivery.installation_status, size='sm') }}
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+                {% if vendor_delivery.quote %}
+                <div class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-700/30">
+                    <div class="flex items-start justify-between gap-2">
+                        <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">Vendor quote</p>
+                        {% if vendor_delivery.quote.status %}{{ status_presentation_badge(vendor_delivery.quote.status, size='sm') }}{% endif %}
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.quote.detail }}</p>
+                    {% if vendor_delivery.quote.total is not none %}
+                    <p class="mt-2 text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ vendor_delivery.quote.total | money(vendor_delivery.quote.currency) }}</p>
+                    {% endif %}
+                    {% if vendor_delivery.quote.url %}<a href="{{ vendor_delivery.quote.url }}" class="mt-2 inline-block text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">Review quotes</a>{% endif %}
+                </div>
+                {% endif %}
+
+                {% if vendor_delivery.route %}
+                <div class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-700/30">
+                    <div class="flex items-start justify-between gap-2">
+                        <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">Proposed route</p>
+                        {% if vendor_delivery.route.status %}{{ status_presentation_badge(vendor_delivery.route.status, size='sm') }}{% endif %}
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.route.detail }}</p>
+                    {% if vendor_delivery.route.length_meters is not none %}<p class="mt-1 text-xs text-slate-600 dark:text-slate-300">{{ "{:,.0f}".format(vendor_delivery.route.length_meters) }} m</p>{% endif %}
+                    {% if vendor_delivery.route.url %}<a href="{{ vendor_delivery.route.url }}" class="mt-2 inline-block text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">Open route workspace</a>{% endif %}
+                </div>
+                {% endif %}
+
+                {% if vendor_delivery.as_built %}
+                <div class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-700/30">
+                    <div class="flex items-start justify-between gap-2">
+                        <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">As-built record</p>
+                        {% if vendor_delivery.as_built.status %}{{ status_presentation_badge(vendor_delivery.as_built.status, size='sm') }}{% endif %}
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.as_built.detail }}</p>
+                    {% if vendor_delivery.as_built.actual_length_meters is not none %}<p class="mt-1 text-xs text-slate-600 dark:text-slate-300">{{ "{:,.0f}".format(vendor_delivery.as_built.actual_length_meters) }} m actual</p>{% endif %}
+                    {% if vendor_delivery.as_built.url %}<a href="{{ vendor_delivery.as_built.url }}" class="mt-2 inline-block text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">Review as-built records</a>{% endif %}
+                </div>
+                {% endif %}
+
+                {% if vendor_delivery.invoice %}
+                <div class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-700/30">
+                    <div class="flex items-start justify-between gap-2">
+                        <p class="text-xs font-semibold text-slate-800 dark:text-slate-100">Purchase invoice</p>
+                        {% if vendor_delivery.invoice.status %}{{ status_presentation_badge(vendor_delivery.invoice.status, size='sm') }}{% endif %}
+                    </div>
+                    <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.invoice.detail }}</p>
+                    {% if vendor_delivery.invoice.invoice_number %}<p class="mt-1 font-mono text-xs text-slate-600 dark:text-slate-300">{{ vendor_delivery.invoice.invoice_number }}</p>{% endif %}
+                    {% if vendor_delivery.invoice.total is not none %}
+                    <p class="mt-2 text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ vendor_delivery.invoice.total | money(vendor_delivery.invoice.currency) }}</p>
+                    {% endif %}
+                    {% if vendor_delivery.invoice.payment %}
+                    <div class="mt-2 flex flex-wrap items-center gap-2">
+                        <span class="text-xs text-slate-500 dark:text-slate-400">Payment</span>
+                        {% if vendor_delivery.invoice.payment.status.value %}
+                        {{ status_presentation_badge(vendor_delivery.invoice.payment.status.value, size='sm') }}
+                        {% else %}
+                        <span class="text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.invoice.payment.detail }}</span>
+                        {% endif %}
+                    </div>
+                    {% if vendor_delivery.invoice.payment.status.value %}<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ vendor_delivery.invoice.payment.detail }}</p>{% endif %}
+                    {% endif %}
+                    {% if vendor_delivery.invoice.url %}<a href="{{ vendor_delivery.invoice.url }}" class="mt-2 inline-block text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">Review purchase invoices</a>{% endif %}
+                </div>
+                {% endif %}
             </div>
             {% endcall %}
             {% endif %}

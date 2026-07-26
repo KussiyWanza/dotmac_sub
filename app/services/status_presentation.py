@@ -25,7 +25,13 @@ from app.models.provisioning import (
 from app.models.sales import QuoteStatus, SalesOrderStatus
 from app.models.subscriber import SubscriberStatus
 from app.models.support import TicketStatus
-from app.models.vendor_routes import VendorPurchaseInvoiceStatus
+from app.models.vendor_routes import (
+    AsBuiltRouteStatus,
+    InstallationProjectStatus,
+    ProjectQuoteStatus,
+    ProposedRouteRevisionStatus,
+    VendorPurchaseInvoiceStatus,
+)
 from app.schemas.status_presentation import (
     StatusIcon,
     StatusPresentation,
@@ -739,6 +745,159 @@ _VENDOR_PURCHASE_INVOICE_PRESENTATIONS: dict[
         StatusIcon.alert,
     ),
 }
+
+
+_INSTALLATION_PROJECT_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    InstallationProjectStatus.draft.value: (
+        "Draft",
+        StatusTone.neutral,
+        StatusIcon.archive,
+    ),
+    InstallationProjectStatus.open_for_bidding.value: (
+        "Open for bidding",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    InstallationProjectStatus.quoted.value: (
+        "Quoted",
+        StatusTone.info,
+        StatusIcon.info,
+    ),
+    InstallationProjectStatus.approved.value: (
+        "Approved",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    InstallationProjectStatus.assigned.value: (
+        "Assigned",
+        StatusTone.info,
+        StatusIcon.check,
+    ),
+    InstallationProjectStatus.in_progress.value: (
+        "In progress",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    InstallationProjectStatus.completed.value: (
+        "Completed",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    InstallationProjectStatus.verified.value: (
+        "Verified",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+}
+
+_VENDOR_QUOTE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    ProjectQuoteStatus.draft.value: (
+        "Draft",
+        StatusTone.neutral,
+        StatusIcon.archive,
+    ),
+    ProjectQuoteStatus.submitted.value: (
+        "Submitted",
+        StatusTone.info,
+        StatusIcon.info,
+    ),
+    ProjectQuoteStatus.under_review.value: (
+        "Under review",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    ProjectQuoteStatus.approved.value: (
+        "Approved",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    ProjectQuoteStatus.rejected.value: (
+        "Rejected",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+    ProjectQuoteStatus.revision_requested.value: (
+        "Revision requested",
+        StatusTone.warning,
+        StatusIcon.alert,
+    ),
+}
+
+_PROPOSED_ROUTE_REVISION_PRESENTATIONS: dict[
+    str, tuple[str, StatusTone, StatusIcon]
+] = {
+    ProposedRouteRevisionStatus.draft.value: (
+        "Draft",
+        StatusTone.neutral,
+        StatusIcon.archive,
+    ),
+    ProposedRouteRevisionStatus.submitted.value: (
+        "Submitted",
+        StatusTone.info,
+        StatusIcon.info,
+    ),
+    ProposedRouteRevisionStatus.accepted.value: (
+        "Accepted",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    ProposedRouteRevisionStatus.rejected.value: (
+        "Rejected",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+}
+
+_AS_BUILT_ROUTE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    AsBuiltRouteStatus.submitted.value: (
+        "Submitted",
+        StatusTone.info,
+        StatusIcon.info,
+    ),
+    AsBuiltRouteStatus.under_review.value: (
+        "Under review",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    AsBuiltRouteStatus.accepted.value: (
+        "Accepted",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    AsBuiltRouteStatus.rejected.value: (
+        "Rejected",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+}
+
+
+def installation_project_status_presentation(
+    status: InstallationProjectStatus | str | None,
+) -> StatusPresentation:
+    """Project vendor-installation lifecycle status without changing it."""
+    return _presentation(_status_value(status), _INSTALLATION_PROJECT_PRESENTATIONS)
+
+
+def vendor_quote_status_presentation(
+    status: ProjectQuoteStatus | str | None,
+) -> StatusPresentation:
+    """Project vendor-quote approval status without changing it."""
+    return _presentation(_status_value(status), _VENDOR_QUOTE_PRESENTATIONS)
+
+
+def proposed_route_revision_status_presentation(
+    status: ProposedRouteRevisionStatus | str | None,
+) -> StatusPresentation:
+    """Project a proposed route revision status without changing it."""
+    return _presentation(_status_value(status), _PROPOSED_ROUTE_REVISION_PRESENTATIONS)
+
+
+def as_built_route_status_presentation(
+    status: AsBuiltRouteStatus | str | None,
+) -> StatusPresentation:
+    """Project an as-built review status without changing it."""
+    return _presentation(_status_value(status), _AS_BUILT_ROUTE_PRESENTATIONS)
 
 
 def vendor_purchase_invoice_status_presentation(

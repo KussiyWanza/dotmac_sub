@@ -5,10 +5,20 @@ use, with contexts produced by the real builders — catches template/context
 drift that a compile-only check misses.
 """
 
+from decimal import Decimal
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
+from app.models.vendor_routes import (
+    InstallationProject,
+    ProjectQuote,
+    ProjectQuoteStatus,
+    Vendor,
+    VendorPurchaseInvoice,
+    VendorPurchaseInvoiceStatus,
+)
 from app.schemas.project import ProjectCreate, ProjectTaskCreate
 from app.services import web_dispatch_work_orders, web_projects
 from app.services.projects import project_tasks, projects
@@ -112,6 +122,71 @@ def test_render_project_detail_with_stages(db_session, base_context, fiber_proje
     assert "Fiber Installation Stages" in html
     assert "Project Plan" in html
     assert work_order.public_id in html
+
+
+def test_render_project_detail_vendor_delivery_respects_finance_scope(
+    db_session, base_context, fiber_project
+):
+    vendor = Vendor(name="Render Delivery Vendor", code=f"RDV-{uuid4().hex[:8]}")
+    db_session.add(vendor)
+    db_session.flush()
+    installation = InstallationProject(
+        project_id=fiber_project.id,
+        assigned_vendor_id=vendor.id,
+        status="in_progress",
+    )
+    db_session.add(installation)
+    db_session.flush()
+    db_session.add(
+        ProjectQuote(
+            project_id=installation.id,
+            vendor_id=vendor.id,
+            status=ProjectQuoteStatus.approved.value,
+            currency="NGN",
+            total=Decimal("750000.00"),
+        )
+    )
+    db_session.add(
+        VendorPurchaseInvoice(
+            project_id=installation.id,
+            vendor_id=vendor.id,
+            invoice_number="RENDER-INV-01",
+            status=VendorPurchaseInvoiceStatus.approved.value,
+            currency="NGN",
+            total=Decimal("750000.00"),
+        )
+    )
+    db_session.commit()
+
+    operations_context = web_projects.build_project_detail_context(
+        db_session,
+        project=fiber_project,
+        can_read_vendor_operations=True,
+    )
+    operations_html = _render(
+        "admin/projects/project_detail.html",
+        base_context,
+        operations_context,
+    )
+    assert "Vendor Delivery" in operations_html
+    assert "Render Delivery Vendor" in operations_html
+    assert "Purchase invoice" not in operations_html
+    assert "750,000" not in operations_html
+
+    finance_context = web_projects.build_project_detail_context(
+        db_session,
+        project=fiber_project,
+        can_read_vendor_operations=True,
+        can_read_vendor_financials=True,
+    )
+    finance_html = _render(
+        "admin/projects/project_detail.html",
+        base_context,
+        finance_context,
+    )
+    assert "Purchase invoice" in finance_html
+    assert "RENDER-INV-01" in finance_html
+    assert "750,000" in finance_html
 
 
 def test_render_project_forms(db_session, base_context, fiber_project):

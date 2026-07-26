@@ -10,6 +10,7 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
     lifecycle = service_relationship("operations.project_lifecycle")
     assignment = service_relationship("operations.project_assignment_policy")
     projection = service_relationship("ui.project_list_projection")
+    vendor_delivery = service_relationship("ui.project_vendor_delivery_projection")
     work_order_projection = service_relationship("ui.work_order_list_projection")
 
     assert lifecycle.contract is not None
@@ -18,6 +19,8 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
     assert assignment.contract.transaction.mode is TransactionMode.READ_ONLY
     assert projection.contract is not None
     assert projection.contract.transaction.mode is TransactionMode.READ_ONLY
+    assert vendor_delivery.contract is not None
+    assert vendor_delivery.contract.transaction.mode is TransactionMode.READ_ONLY
     assert work_order_projection.contract is not None
     assert work_order_projection.contract.transaction.mode is TransactionMode.READ_ONLY
 
@@ -59,3 +62,21 @@ def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:
     assert "crm_project_id" not in projection
     assert "crm_work_order_id" not in templates
     assert "list_task_work_order_summaries_bulk" in projection
+
+
+def test_project_vendor_delivery_projection_is_read_only_and_permission_scoped() -> (
+    None
+):
+    projection = (ROOT / "app/services/project_vendor_delivery.py").read_text()
+    route = (ROOT / "app/web/admin/projects.py").read_text()
+    template = (ROOT / "templates/admin/projects/project_detail.html").read_text()
+
+    assert ".commit(" not in projection
+    assert ".flush(" not in projection
+    assert "InstallationProject(" not in projection
+    assert "ProjectQuote(" not in projection
+    assert 'can_read_vendor_operations=can(request, "inventory:read")' in route
+    assert 'can_read_vendor_routes=can(request, "network:fiber:read")' in route
+    assert 'can_read_vendor_financials=can(request, "finance:ap:read")' in route
+    assert "vendor_delivery.invoice" in template
+    assert "project_vendor_payment_status" in projection

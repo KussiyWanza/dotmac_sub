@@ -816,6 +816,9 @@ def project_detail(request: Request, project_ref: str, db: Session = Depends(get
             db,
             project=project,
             can_read_work_orders=can(request, "operations:dispatch:read"),
+            can_read_vendor_operations=can(request, "inventory:read"),
+            can_read_vendor_routes=can(request, "network:fiber:read"),
+            can_read_vendor_financials=can(request, "finance:ap:read"),
         )
     )
     return templates.TemplateResponse("admin/projects/project_detail.html", context)

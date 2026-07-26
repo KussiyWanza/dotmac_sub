@@ -60,6 +60,7 @@ from app.schemas.project import (
 from app.services import (
     customer_experience_lifecycle,
     project_filters,
+    project_vendor_delivery,
     work_order_views,
 )
 from app.services import projects as projects_service
@@ -1050,6 +1051,9 @@ def build_project_detail_context(
     *,
     project: Project,
     can_read_work_orders: bool = False,
+    can_read_vendor_operations: bool = False,
+    can_read_vendor_routes: bool = False,
+    can_read_vendor_financials: bool = False,
 ) -> dict:
     tasks = projects_service.project_tasks.list(
         db,
@@ -1102,6 +1106,15 @@ def build_project_detail_context(
             work_order_views.list_project_work_order_summaries(db, project.id)
             if can_read_work_orders
             else ()
+        ),
+        "vendor_delivery": project_vendor_delivery.get_project_vendor_delivery(
+            db,
+            project_vendor_delivery.ProjectVendorDeliveryQuery(
+                project_id=project.id,
+                can_read_operations=can_read_vendor_operations,
+                can_read_routes=can_read_vendor_routes,
+                can_read_financials=can_read_vendor_financials,
+            ),
         ),
         "comments": comments,
         "activities": build_audit_activities(db, "project", str(project.id), limit=20),

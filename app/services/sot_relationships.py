@@ -21907,6 +21907,163 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.project_vendor_delivery_projection",
+                module="app.services.project_vendor_delivery",
+                owns=(
+                    "admin project vendor-delivery composition",
+                    "admin project vendor-delivery current-record selection",
+                    "admin project vendor-delivery field visibility",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "integration.dotmac_erp_payables_adapter",
+                    "operations.vendor_project_lifecycle",
+                    "operations.vendor_project_records",
+                    "operations.vendor_purchase_invoices",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "Read-only, permission-scoped composition for the native project "
+                    "detail page. It selects the approved or current active quote, "
+                    "that quote's latest route revision, the latest as-built record, "
+                    "and the assigned vendor's active purchase invoice. It delegates "
+                    "ERP payment availability and freshness to the existing payment "
+                    "projection and never creates or updates installation scope."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="admin project vendor-delivery composition",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical installation-project lifecycle facts",
+                                "canonical vendor project records",
+                                "canonical vendor purchase-invoice projection",
+                                "timestamped ERP accounts-payable observation",
+                                "canonical vendor status presentation",
+                                "project-detail read capabilities",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "admin project vendor-delivery current-record selection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical vendor project records",
+                                "canonical vendor purchase-invoice projection",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin project vendor-delivery field visibility",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "project-detail read capabilities",
+                                "canonical installation-project lifecycle facts",
+                                "canonical vendor project records",
+                                "canonical vendor purchase-invoice projection",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical installation-project lifecycle facts",
+                            owner="operations.vendor_project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active InstallationProject status, assignment, and "
+                                "native Project UUID"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor project records",
+                            owner="operations.vendor_project_records",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active quote, proposed route revision, and as-built "
+                                "records linked to the InstallationProject"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor purchase-invoice projection",
+                            owner="operations.vendor_purchase_invoices",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "active purchase invoice for the installation project "
+                                "and currently assigned vendor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="timestamped ERP accounts-payable observation",
+                            owner="integration.dotmac_erp_payables_adapter",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "validated payment status, total, paid, balance, source "
+                                "timestamp, observation timestamp, and refresh error"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor status presentation",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "server-owned labels, semantic tones, and icon keys for "
+                                "vendor delivery lifecycle values"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="project-detail read capabilities",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "inventory:read, network:fiber:read, and "
+                                "finance:ap:read results supplied by the admin adapter"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Loads and composes vendor-delivery records without "
+                            "committing, flushing, mutating ORM state, or calling a "
+                            "business command."
+                        ),
+                        locking=(
+                            "No locks; the projection reads one committed snapshot and "
+                            "uses stable native UUID tie-breakers."
+                        ),
+                        idempotency=(
+                            "The same project facts, observation time, and capability "
+                            "scope produce the same projection."
+                        ),
+                        retries=(
+                            "Read availability failures may be retried; missing "
+                            "installation scope is a successful empty result."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="admin project web adapter",
+                        fail_closed_on=("missing project-detail read capability",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ui.project_vendor_delivery_projection",
+                    ),
+                    steward="service delivery UI",
+                    design_refs=(
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_project_vendor_delivery_projection.py",
+                        "tests/test_web_admin_projects_render.py",
+                        "tests/architecture/test_projects_sot_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.audit_events_list_projection",
                 module="app.services.web_system_audit",
                 owns=(
@@ -23310,6 +23467,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "service access availability labels, semantic tones, and icon keys",
                     "support-ticket status labels, semantic tones, and icon keys",
                     "field work-order status labels, semantic tones, and icon keys",
+                    "vendor installation-project status labels, semantic tones, and icon keys",
+                    "vendor quote status labels, semantic tones, and icon keys",
+                    "vendor proposed-route status labels, semantic tones, and icon keys",
+                    "vendor as-built status labels, semantic tones, and icon keys",
                     "supplier-invoice status labels, semantic tones, and icon keys",
                     "status presentation fallback semantics",
                 ),
@@ -23322,6 +23483,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "network.outage_lifecycle",
                     "support.ticket_lifecycle",
                     "operations.work_order_status",
+                    "operations.vendor_project_lifecycle",
+                    "operations.vendor_project_workspace",
                     "integration.dotmac_erp_payables_adapter",
                 ),
                 notes=(
