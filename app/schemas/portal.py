@@ -112,6 +112,7 @@ class CustomerActionKey(StrEnum):
     view_project = "view_project"
     view_work_order = "view_work_order"
     track_technician = "track_technician"
+    chat_technician = "chat_technician"
     rate_technician = "rate_technician"
     view_ticket = "view_ticket"
     confirm_resolution = "confirm_resolution"
@@ -336,6 +337,37 @@ class QuoteDepositVerifyResponse(BaseModel):
 
 
 # ── Technician live map + rating ─────────────────────────────────────────────
+
+
+class CustomerFieldJobChatMessage(BaseModel):
+    """One message in the customer's chat with their technician."""
+
+    id: str
+    body: str
+    from_customer: bool
+    author_name: str | None = None
+    created_at: datetime
+
+
+class CustomerFieldJobChatMessageCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class CustomerFieldJobChatThread(BaseModel):
+    """The job chat, which exists only once the technician has departed.
+
+    ``available`` is False with a ``reason`` before departure or when the visit
+    is not the customer's; ``can_send`` closes with the visit while the history
+    stays readable.
+    """
+
+    available: bool = False
+    reason: str | None = None
+    can_send: bool = False
+    work_order_id: str | None = None
+    conversation_id: str | None = None
+    technician_name: str | None = None
+    messages: list[CustomerFieldJobChatMessage] = Field(default_factory=list)
 
 
 class TechnicianLocation(BaseModel):

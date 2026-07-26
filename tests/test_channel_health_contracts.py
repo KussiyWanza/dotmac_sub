@@ -26,12 +26,18 @@ def _contract(channel: str):
     return next(item for item in _contracts() if item.channel == channel)
 
 
+#: Channels with no provider behind them, so nothing to be healthy or
+#: unhealthy about: an internal note, and a job chat delivered in-app over the
+#: conversation socket.
+_NON_EXTERNAL_CHANNELS = {InboxChannelType.note, InboxChannelType.field_job}
+
+
 def test_default_registry_covers_every_external_inbox_channel_once():
     actual = {contract.channel for contract in _contracts()}
     expected = {
         channel.value
         for channel in InboxChannelType
-        if channel != InboxChannelType.note
+        if channel not in _NON_EXTERNAL_CHANNELS
     }
 
     assert actual == expected

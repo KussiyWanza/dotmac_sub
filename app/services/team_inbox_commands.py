@@ -26,6 +26,7 @@ from app.models.team_inbox import (
 from app.services import (
     team_inbox_assignment,
     team_inbox_contact_links,
+    team_inbox_field_job,
     team_inbox_media,
     team_inbox_operations,
     team_inbox_outbound,
@@ -1062,5 +1063,40 @@ def email_transcript(
                 conversation_id=conversation.id,
             )
         return clean_recipient
+
+    return _commit(db, action)
+
+
+def record_field_job_customer_message(
+    db: Session,
+    *,
+    work_order_public_id: str,
+    body: str,
+    author_name: str | None = None,
+) -> dict:
+    """Commit one customer message on a job chat.
+
+    The portal adapter has already established that the caller owns the visit;
+    this is the family's commit boundary for that write, so the inbox owner
+    itself stays transaction-free.
+    """
+
+    def action() -> dict:
+        conversation = (
+            db.query(InboxConversation)
+            .filter(
+                InboxConversation.channel_type == team_inbox_field_job.FIELD_JOB_CHANNEL
+            )
+            .filter(InboxConversation.external_thread_id == work_order_public_id)
+            .one_or_none()
+        )
+        if conversation is None:
+            raise ConversationNotFoundError()
+        return team_inbox_field_job.record_customer_message(
+            db,
+            conversation=conversation,
+            body=body,
+            author_name=author_name,
+        )
 
     return _commit(db, action)

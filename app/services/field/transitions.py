@@ -237,6 +237,21 @@ class FieldTransitions:
                 event=event_value,
                 field_event_id=event_row.id,
             )
+        if event_value in {"en_route", "complete", "unable_to_complete"}:
+            # The customer's chat opens when their technician sets off and
+            # closes when the visit ends, so it shares this transaction: a job
+            # that departed must not be missing the chat that departure grants.
+            from app.services import team_inbox_field_job
+
+            db.flush()
+            if event_value == "en_route":
+                team_inbox_field_job.open_for_departure(
+                    db, work_order=row, profile=profile, now=occurred
+                )
+            else:
+                team_inbox_field_job.close_for_work_order(
+                    db, work_order=row, reason=event_value, now=occurred
+                )
         try:
             db.commit()
         except IntegrityError:

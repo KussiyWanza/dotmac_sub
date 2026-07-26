@@ -109,8 +109,25 @@ def ticket_reference(ticket: Ticket) -> CustomerTicketReference:
     )
 
 
+#: A visit whose technician may already be travelling. ``dispatched`` is the
+#: status an ``en_route`` departure sets, and the chat is opened by that same
+#: departure; the later statuses keep it reachable until the visit ends.
+_CHATTABLE_STATUSES = frozenset({"dispatched", "in_progress", "paused"})
+
+
 def _technician_rating(row: WorkOrder) -> int | None:
     return row.technician_rating
+
+
+def _has_job_chat(row: WorkOrder) -> bool:
+    """Whether this visit has a chat to open.
+
+    The chat starts at departure rather than at ``in_progress``, because a
+    wrong address is worth correcting while the technician is still driving.
+    Tracking stays narrower — the map only means something once the visit has
+    actually started.
+    """
+    return row.status in _CHATTABLE_STATUSES
 
 
 def _work_order_actions(row: WorkOrder) -> list[CustomerSelfCareAction]:
@@ -127,6 +144,14 @@ def _work_order_actions(row: WorkOrder) -> list[CustomerSelfCareAction]:
                 key=CustomerActionKey.track_technician,
                 label="Track technician",
                 api_path=f"/me/work-orders/{row.public_id}/technician-location",
+            )
+        )
+    if _has_job_chat(row):
+        actions.append(
+            CustomerSelfCareAction(
+                key=CustomerActionKey.chat_technician,
+                label="Message technician",
+                api_path=f"/me/work-orders/{row.public_id}/chat",
             )
         )
     if row.status == "completed" and _technician_rating(row) is None:

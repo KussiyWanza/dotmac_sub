@@ -23,6 +23,7 @@ from fastapi import (
     Query,
     Request,
     UploadFile,
+    status,
 )
 from sqlalchemy.orm import Session
 
@@ -79,6 +80,9 @@ from app.schemas.notification import (
     PushTokenRegister,
 )
 from app.schemas.portal import (
+    CustomerFieldJobChatMessage,
+    CustomerFieldJobChatMessageCreate,
+    CustomerFieldJobChatThread,
     MyProjectsResponse,
     MyQuotesResponse,
     MyReferralsResponse,
@@ -131,6 +135,7 @@ from app.services import catalog as catalog_service
 from app.services import chat_session as chat_session_service
 from app.services import (
     customer_experience_lifecycle,
+    customer_field_job_chat,
     customer_work_order_selfcare,
     quote_deposits,
     quotes_mirror,
@@ -1008,6 +1013,50 @@ def my_work_order_technician_location(
     return customer_work_order_selfcare.technician_location(
         db, subscriber_id, work_order_id
     )
+
+
+@router.get(
+    "/work-orders/{work_order_id}/chat",
+    response_model=CustomerFieldJobChatThread,
+)
+def my_work_order_chat(
+    work_order_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+):
+    """The chat with the technician on their way to this visit.
+
+    ``available=False`` with ``reason="not_departed"`` until the technician
+    sets off — a technician holds several assigned jobs at once, and the chat
+    belongs to the one they are actually travelling to.
+    """
+    subscriber_id = _subscriber_id(principal)
+    return customer_field_job_chat.get_thread(
+        db, subscriber_id, work_order_id, limit=limit
+    )
+
+
+@router.post(
+    "/work-orders/{work_order_id}/chat/messages",
+    response_model=CustomerFieldJobChatMessage,
+    status_code=status.HTTP_201_CREATED,
+)
+def send_my_work_order_chat_message(
+    work_order_id: str,
+    payload: CustomerFieldJobChatMessageCreate,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(require_user_auth),
+):
+    """Send a message to the technician travelling to this visit."""
+    subscriber_id = _subscriber_id(principal)
+    try:
+        return customer_field_job_chat.send_message(
+            db, subscriber_id, work_order_id, body=payload.body
+        )
+    except customer_field_job_chat.FieldJobChatError as exc:
+        status_code = 404 if exc.code == "not_found" else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.post(

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
+    InboxChannelType,
     InboxComment,
     InboxConversation,
     InboxConversationAssignment,
@@ -20,7 +21,11 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
-from app.services import team_inbox_media, team_inbox_read_state
+from app.services import (
+    team_inbox_field_job,
+    team_inbox_media,
+    team_inbox_read_state,
+)
 
 
 @dataclass(frozen=True)
@@ -281,6 +286,20 @@ def list_conversations(
         )
         .filter(InboxConversation.is_active.is_(True))
     )
+    if channel_type != InboxChannelType.field_job.value:
+        # A job chat is held directly by the technician who is en route, so it
+        # is not triage work and must not land in the queue. The one exception
+        # is a visit that ended with the customer unanswered: nothing else is
+        # watching a job chat, so that message would otherwise be lost.
+        followup = InboxConversation.metadata_[
+            team_inbox_field_job.QUEUE_FOLLOWUP_KEY
+        ].as_boolean()
+        query = query.filter(
+            or_(
+                InboxConversation.channel_type != InboxChannelType.field_job.value,
+                followup.is_(True),
+            )
+        )
     clean_search = (search or "").strip()
     if clean_search:
         like = f"%{clean_search}%"

@@ -4502,6 +4502,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/manager/technicians/satisfaction": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:window_days"
+   ],
+   "request": null,
+   "responses": {
+    "200": "a6cc66baea41",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/manager/vendor-purchase-invoices": {
    "params": [
     "header:authorization",
@@ -5829,6 +5841,19 @@
    "request": null,
    "responses": {
     "200": "1e41106262ae",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/me/work-orders/{work_order_id}/chat": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:work_order_id!",
+    "query:limit"
+   ],
+   "request": null,
+   "responses": {
+    "200": "3d55fc7df3ac",
     "422": "a11c9d9b2af8"
    }
   },
@@ -15163,6 +15188,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/me/work-orders/{work_order_id}/chat/messages": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:work_order_id!"
+   ],
+   "request": "81e95ec57736",
+   "responses": {
+    "201": "897f9da920b1",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/me/work-orders/{work_order_id}/rate-technician": {
    "params": [
     "header:authorization",
@@ -18465,7 +18502,7 @@
   "CreditNoteVoidPreviewRead": "d5406fcd111e",
   "CreditNoteVoidRequest": "7591fdab7cef",
   "CurrencySettingsResponse": "914ef6200eb8",
-  "CustomerActionKey": "173053403c88",
+  "CustomerActionKey": "cfaea899bd65",
   "CustomerDefaultsResponse": "c0892eba5f8c",
   "CustomerDeviceCommandKind": "cb81f2ec8d71",
   "CustomerDeviceCommandOutcomeRead": "010e7587a7ae",
@@ -18474,6 +18511,9 @@
   "CustomerExperienceAttentionRequest": "870e7a93b7e7",
   "CustomerExperienceHandoffRead": "ad4250a7fc1d",
   "CustomerExperienceState": "10146f9b7d77",
+  "CustomerFieldJobChatMessage": "cc5856b9cfdf",
+  "CustomerFieldJobChatMessageCreate": "17b944829df4",
+  "CustomerFieldJobChatThread": "11b10ad07d26",
   "CustomerInboxNotificationRead": "0e5649997c2b",
   "CustomerNotificationCreate": "21bc85ef2bf2",
   "CustomerNotificationRead": "786d04007df7",
@@ -19467,6 +19507,8 @@
   "TechnicianProfileUpdate": "9705b512ba1e",
   "TechnicianRatingRequest": "5760bb1fa67b",
   "TechnicianRatingResponse": "6041cfcc5958",
+  "TechnicianSatisfactionResponse": "c4a3984f173b",
+  "TechnicianSatisfactionScorecard": "e4b65b912509",
   "TechnicianSkillCreate": "faeb4784d110",
   "TechnicianSkillRead": "251874c88447",
   "TechnicianSkillUpdate": "ac4bdc9323d0",

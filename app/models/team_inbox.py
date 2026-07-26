@@ -29,6 +29,9 @@ class InboxChannelType(enum.Enum):
     instagram_dm = "instagram_dm"
     chat_widget = "chat_widget"
     note = "note"
+    # A customer talking to the technician on their way, in the portal. It has
+    # no external transport: delivery is the shared conversation websocket.
+    field_job = "field_job"
 
 
 class InboxConversationStatus(enum.Enum):

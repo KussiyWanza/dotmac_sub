@@ -281,6 +281,75 @@ def _send_whatsapp_reply(
     )
 
 
+def _send_field_job_reply(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    payload: InboxReplyPayload,
+    now: datetime | None,
+    existing_message: InboxMessage | None = None,
+) -> InboxReplyResult:
+    """Deliver a job-chat message in the app, over the conversation socket.
+
+    There is no external transport and therefore no recipient address, no
+    notification and no delivery receipt to wait for: both parties are
+    authenticated in Sub and subscribed to this conversation's topic. The
+    message is sent the moment it is persisted and published.
+    """
+    body_text = _plain_text_reply(payload)
+    if not body_text:
+        return InboxReplyResult(
+            kind="empty_body",
+            conversation_id=str(conversation.id),
+            reason="Reply body is required",
+        )
+
+    sent_at = now or datetime.now(UTC)
+    message = existing_message or InboxMessage(conversation_id=conversation.id)
+    message.channel_type = InboxChannelType.field_job.value
+    message.direction = InboxMessageDirection.outbound.value
+    message.subject = None
+    message.body = body_text
+    message.external_thread_id = conversation.external_thread_id
+    message.to_addresses = []
+    message.cc_addresses = []
+    message.sent_at = sent_at
+    author_name = str((payload.metadata or {}).get("author_name") or "Technician")
+    message.metadata_ = {
+        **(payload.metadata or {}),
+        "channel_type": InboxChannelType.field_job.value,
+        "delivery_status": "delivered",
+    }
+    if existing_message is None:
+        db.add(message)
+    conversation.last_message_at = sent_at
+    db.flush()
+    team_inbox_realtime.publish_conversation_event(
+        db,
+        str(conversation.id),
+        event_type=team_inbox_realtime.EventType.MESSAGE_NEW,
+        payload=team_inbox_realtime.message_event_payload(
+            conversation_id=str(conversation.id),
+            message_id=str(message.id),
+            body=message.body,
+            direction=message.direction,
+            channel_type=message.channel_type,
+            created_at=message.created_at,
+            author_name=author_name,
+            extra={
+                "sender_type": "agent",
+                "from_customer": False,
+                "delivery_status": "delivered",
+            },
+        ),
+    )
+    return InboxReplyResult(
+        kind="queued",
+        conversation_id=str(conversation.id),
+        message_id=str(message.id),
+    )
+
+
 def send_inbox_reply(
     db: Session,
     *,
@@ -310,6 +379,15 @@ def send_inbox_reply(
             payload=payload,
             now=now,
             record_failure=record_failure,
+            existing_message=existing_message,
+        )
+
+    if conversation.channel_type == InboxChannelType.field_job.value:
+        return _send_field_job_reply(
+            db,
+            conversation=conversation,
+            payload=payload,
+            now=now,
             existing_message=existing_message,
         )
 

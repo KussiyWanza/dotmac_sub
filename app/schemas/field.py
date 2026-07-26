@@ -918,6 +918,27 @@ class FieldManagerTechniciansResponse(BaseModel):
     offset: int
 
 
+class TechnicianSatisfactionScorecard(BaseModel):
+    """One technician's customer satisfaction over the reporting window.
+
+    ``average`` is null when nobody has rated them yet, which is deliberately
+    distinct from a low score.
+    """
+
+    technician_id: str
+    technician_name: str | None = None
+    rated_visits: int
+    average: float | None = None
+    distribution: dict[int, int] = Field(default_factory=dict)
+    latest_rated_at: datetime | None = None
+
+
+class TechnicianSatisfactionResponse(BaseModel):
+    items: list[TechnicianSatisfactionScorecard] = Field(default_factory=list)
+    count: int
+    window_days: int | None = None
+
+
 class FieldManagerJob(BaseModel):
     id: str
     work_order_mirror_id: UUID

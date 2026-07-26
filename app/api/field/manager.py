@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -18,12 +19,14 @@ from app.schemas.field import (
     FieldManagerSummary,
     FieldManagerTechniciansResponse,
     FieldMaterialRequestRead,
+    TechnicianSatisfactionResponse,
 )
 from app.schemas.vendor_portal import VendorReview
 from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceRead,
     VendorPurchaseInvoiceReview,
 )
+from app.services import technician_satisfaction
 from app.services.auth_dependencies import require_any_permission, require_permission
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -142,6 +145,25 @@ def field_manager_technicians(
         "sharing_count": sum(1 for item in items if item["location_sharing_enabled"]),
         "limit": limit,
         "offset": 0,
+    }
+
+
+@router.get("/technicians/satisfaction", response_model=TechnicianSatisfactionResponse)
+def field_manager_technician_satisfaction(
+    window_days: int = Query(default=90, ge=1, le=365),
+    auth: dict = Depends(_ops_read),
+    db: Session = Depends(get_db),
+):
+    """Customer satisfaction per technician, best-rated first.
+
+    The ratings have always been collected on completed visits; this is the
+    first surface that reads them back.
+    """
+    cards = technician_satisfaction.scorecards(db, window_days=window_days)
+    return {
+        "items": [asdict(card) for card in cards],
+        "count": len(cards),
+        "window_days": window_days,
     }
 
 

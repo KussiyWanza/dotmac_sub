@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.dispatch import TechnicianProfile
 from app.models.network_operation import NetworkOperation, NetworkOperationTargetType
 from app.models.team_inbox import InboxConversation
 from app.services.auth_dependencies import has_permission
@@ -57,6 +58,40 @@ def _can_read_conversation(auth: dict, conversation: InboxConversation) -> bool:
     return False
 
 
+def _person_id_for_principal(db: Session, auth: dict) -> UUID | None:
+    """Map a staff principal to the neutral person identity assignments use."""
+    try:
+        principal_uuid = UUID(str(auth.get("principal_id")))
+    except (TypeError, ValueError):
+        return None
+    profile = (
+        db.query(TechnicianProfile)
+        .filter(TechnicianProfile.system_user_id == principal_uuid)
+        .one_or_none()
+    )
+    if profile is not None:
+        return profile.person_id
+    # Native staff hold the same id for both identities.
+    return principal_uuid
+
+
+def _holds_assignment(db: Session, auth: dict, conversation: InboxConversation) -> bool:
+    """True for the staff member who actually holds this conversation.
+
+    A technician on a job chat is authorized by holding the assignment rather
+    than by a support permission: the field role does not necessarily carry
+    ``support:ticket:read``, and a 1:1 job chat should be readable by the
+    technician on that job, not by anyone with inbox access.
+    """
+    person_id = _person_id_for_principal(db, auth)
+    if person_id is None:
+        return False
+    return any(
+        assignment.is_active and str(assignment.person_id) == str(person_id)
+        for assignment in conversation.assignments
+    )
+
+
 def authorize_topic(db: Session, auth: dict, requested_topic: str) -> str:
     """Resolve a legacy/explicit topic and enforce its object-level read gate."""
     kind, object_id = _topic_parts(requested_topic)
@@ -72,8 +107,10 @@ def authorize_topic(db: Session, auth: dict, requested_topic: str) -> str:
                     "topic_forbidden",
                     "Chat sessions can only subscribe to their conversation",
                 )
-            if _can_read_conversation(auth, conversation) or has_permission(
-                auth, db, "support:ticket:read"
+            if (
+                _can_read_conversation(auth, conversation)
+                or _holds_assignment(db, auth, conversation)
+                or has_permission(auth, db, "support:ticket:read")
             ):
                 return conversation_topic(object_id)
             raise RealtimeSubscriptionError(

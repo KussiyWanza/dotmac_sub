@@ -1487,6 +1487,101 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.field_job_chat",
+                module="app.services.customer_field_job_chat",
+                owns=("subscriber-scoped job chat read and send",),
+                depends_on=(
+                    "customer.identity_scope",
+                    "communications.team_inbox_field_job",
+                    "operations.work_orders",
+                ),
+                notes=(
+                    "Portal adapter for the technician chat. It scopes every "
+                    "call to the caller's own work order and delegates the "
+                    "inbox write to communications.team_inbox_field_job; it "
+                    "decides nothing about when a chat exists."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="subscriber-scoped job chat read and send",
+                            role=OwnerRole.TRANSPORT,
+                            input_names=(
+                                "authenticated subscriber identity",
+                                "canonical job chat conversation",
+                                "canonical work order ownership",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated subscriber identity",
+                            owner="customer.identity_scope",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="Portal session principal id.",
+                        ),
+                        AuthorityInput(
+                            name="canonical job chat conversation",
+                            owner="communications.team_inbox_field_job",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "field_job conversation keyed by work order, with "
+                                "its open/closed lifecycle."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical work order ownership",
+                            owner="operations.work_orders",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="WorkOrder.subscriber_id and public_id.",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Holds no transaction. The inbox owner writes and "
+                            "commits the message and returns an inert snapshot; "
+                            "this service only scopes the request and broadcasts "
+                            "afterwards, which never rolls the write back."
+                        ),
+                        locking="None: it takes no locks of its own.",
+                        idempotency=(
+                            "None: a repeated send is a genuinely new message, as "
+                            "in any chat."
+                        ),
+                        retries=(
+                            "A closed or undeparted visit fails closed rather than "
+                            "creating a conversation the technician never opened."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "customer.field_job_chat.empty_body",
+                            "customer.field_job_chat.not_found",
+                            "customer.field_job_chat.not_departed",
+                            "customer.field_job_chat.closed",
+                        ),
+                        mapping_owner="app.api.me",
+                        fail_closed_on=(
+                            "customer.field_job_chat.not_found",
+                            "customer.field_job_chat.not_departed",
+                            "customer.field_job_chat.closed",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="customer.field_job_chat",
+                        verification=(
+                            "tests/test_field_job_chat.py asserts subscriber "
+                            "scoping and the not-departed and closed refusals."
+                        ),
+                    ),
+                    steward="customer experience platform",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_field_job_chat.py",),
+                ),
+            ),
+            SOTService(
                 name="subscriber.growth_reports",
                 module="app.services.subscriber_growth",
                 owns=(
@@ -11414,6 +11509,40 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
                     event_types=("team_inbox.provider_observation_recorded.v1",),
+                ),
+            ),
+            SOTService(
+                name="communications.team_inbox_field_job",
+                module="app.services.team_inbox_field_job",
+                owns=(
+                    "field job chat conversation lifecycle",
+                    "work order to inbox conversation link",
+                ),
+                depends_on=("communications.team_inbox_routing",),
+                contract=_team_inbox_contract(
+                    service_name="communications.team_inbox_field_job",
+                    concerns=(
+                        (
+                            "field job chat conversation lifecycle",
+                            OwnerRole.POLICY,
+                        ),
+                        (
+                            "work order to inbox conversation link",
+                            OwnerRole.AUTHORITATIVE_RECORD,
+                        ),
+                    ),
+                    inputs=(
+                        AuthorityInput(
+                            name="committed field job departure",
+                            owner="operations.field_completion",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Technician en_route/complete transition, row-locked "
+                                "and idempotent on the client event id."
+                            ),
+                        ),
+                    ),
+                    transaction_mode=TransactionMode.PARTICIPANT,
                 ),
             ),
             SOTService(
