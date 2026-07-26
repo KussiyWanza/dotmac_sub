@@ -81,6 +81,45 @@ Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad
 mechanical rewrites that obscure business behavior.
 
+## Dotmac CRM Application Retirement
+
+The complete migration contract is
+`docs/designs/CRM_WEB_RETIREMENT.md`. Its executable route-level control is
+`docs/audits/crm_web_retirement_ledger.json`, generated and validated by
+`scripts/architecture/crm_web_retirement.py`.
+
+Every operational capability exposed by every CRM web module is in scope. The
+migration closes capability, usable-surface, data, caller, job, traffic,
+fallback, and source-deletion obligations before CRM is decommissioned.
+Initial “covered”, “partial”, “owner/policy”, “surface gap”, and
+“replacement/retirement” classifications are discovery states, not permission
+to omit a module.
+
+Each CRM capability migrates to its actual domain owner in this registry; there
+is no omnibus CRM-retirement service that becomes a parallel business owner.
+Routes and templates are adapters, retained CRM identifiers are provenance,
+and external CRM integration remains transport/observation only. A route is
+retired only after its replacement or explicit removal is reviewed, parity and
+control evidence pass, data and callers are migrated, shadow/cutover and
+rollback gates are satisfied, fallbacks are removed, a defined observation
+window shows zero traffic, and the CRM source is deleted.
+
+The first blocking owner review is service-team lifecycle. This does not replace
+Sub identity: `party.registry` remains the Person Party owner and
+`auth.staff_provisioning` remains the staff-principal owner. The unresolved
+boundary is that `support.ticket_configuration` calls synchronized
+`ServiceTeam` and `ServiceTeamMember` rows complete while
+`app/services/support_ticket_settings.py` still mirrors workflow settings into
+the shared tables consumed across Inbox, workqueue, dispatch, projects, and
+support. The proposed `operations.service_team_lifecycle` owner remains an
+in-progress decision until its typed lifecycle, native admin surface, settings
+backfill/reconciliation, caller cutover, and mirror retirement land together.
+
+The reviewed Sub target is
+`9a09d8d0e293d0f6424eee5f90d2f69ff7f1fa2a` (`v7.33.0`). Merged PRs
+#1601 through #1611 are included in the target assessment; unpushed local
+worktrees are not evidence.
+
 Collaboration-quality documentation is part of the source-of-truth contract.
 Current architecture documents, migration descriptions, code comments, and
 operator guidance must name the owner, affected capability, compatibility
