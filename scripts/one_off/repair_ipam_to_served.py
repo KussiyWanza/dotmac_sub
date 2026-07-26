@@ -15,7 +15,7 @@ import sys
 from uuid import uuid4
 
 from app.db import SessionLocal
-from app.services.ip_assignment_repair import (
+from app.services.ip_assignment_lifecycle import (
     IPAssignmentOwnershipDecision,
     ReconcileIPAssignmentOwnershipCommand,
     preview_ip_assignment_service_ownership,

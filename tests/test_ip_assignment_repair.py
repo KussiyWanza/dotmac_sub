@@ -11,7 +11,7 @@ from app.models.audit import AuditEvent
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.network import IPAssignment, IPv4Address, IPVersion
 from app.models.subscriber import Subscriber
-from app.services.ip_assignment_repair import (
+from app.services.ip_assignment_lifecycle import (
     IPAssignmentOwnershipDecision,
     IPAssignmentOwnershipError,
     ReconcileIPAssignmentOwnershipCommand,
