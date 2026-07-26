@@ -179,8 +179,10 @@ def _append_billing_health_snapshot(session, result: dict) -> None:
             "unbilled_no_path": health.unbilled_no_path,
             "active_subs_on_terminal_account": (health.active_subs_on_terminal_account),
             "negative_prepaid_balance_count": health.negative_prepaid_balance_count,
-            "negative_prepaid_balance_total": str(
-                health.negative_prepaid_balance_total
+            "negative_prepaid_balance_total": (
+                None
+                if health.negative_prepaid_balance_total is None
+                else str(health.negative_prepaid_balance_total)
             ),
             "anomalies": sorted(anomalies),
         }

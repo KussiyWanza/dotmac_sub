@@ -278,6 +278,54 @@ def test_negative_prepaid_balance_exposure(db_session):
     assert "negative_prepaid_balances" in snap.anomalies
 
 
+def test_missing_funding_baseline_degrades_one_signal_not_the_snapshot(
+    db_session, monkeypatch
+):
+    """A single un-baselined account must not blank the whole dashboard.
+
+    Regression: the balance resolver is fail-closed by design (enforcement must
+    never act on a balance it cannot verify), but this monitoring-only path
+    shared it. One account missing a prepaid funding baseline therefore raised
+    out of billing_health_snapshot, so the scheduled task published nothing and
+    EVERY billing gauge vanished -- including the ones that would reveal an
+    invoicing or payment-intake failure. Prod ran blind from 2026-07-18.
+    """
+    from app.services.prepaid_funding_reconstruction import (
+        PrepaidFundingBaselineMissingError,
+    )
+
+    def _raise(*_args, **_kwargs):
+        raise PrepaidFundingBaselineMissingError(
+            "verified prepaid funding baseline missing for: 03dbf141"
+        )
+
+    monkeypatch.setattr(billing_health, "prepaid_available_balances", _raise)
+
+    count, total = billing_health.negative_prepaid_balance_exposure(db_session)
+    assert count is None
+    assert total is None
+
+    # The snapshot must still be produced, not raise.
+    snap = billing_health.billing_health_snapshot(db_session)
+    assert snap.negative_prepaid_balance_count is None
+    assert "negative_prepaid_exposure_unmeasurable" in snap.anomalies
+    assert "negative_prepaid_balances" not in snap.anomalies
+
+    signals = {
+        signal
+        for signal, _scope, *_ in (
+            (o.signal, o.scope)
+            for o in billing_health.billing_health_observations(snap)
+        )
+    }
+    # The unmeasurable signal is omitted rather than reported as a false zero...
+    assert "negative_prepaid_balance_accounts" not in signals
+    assert "negative_prepaid_balance_total" not in signals
+    # ...while every other billing gauge still publishes.
+    assert "paid_invoices_with_balance" in signals
+    assert "active_subscriptions" in signals
+
+
 def test_negative_prepaid_balance_exposure_has_bounded_query_count(db_session):
     offer = _offer(db_session)
     accounts = []
