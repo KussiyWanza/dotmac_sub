@@ -2865,6 +2865,16 @@ function customerDetail(config = {}) {
                 }
                 if (!preview.eligible) {
                     const reasons = (preview.eligibility_reasons || []).map(humanize).join(', ');
+                    if (
+                        (preview.eligibility_reasons || []).includes('prepaid_financial_reconciliation_required')
+                        && preview.recommended_action_url
+                    ) {
+                        window.alert(
+                            'This service has an unresolved prepaid financial lock. Review and reconcile the draft invoice before restoring access.'
+                        );
+                        window.location.assign(preview.recommended_action_url);
+                        return;
+                    }
                     throw new Error(reasons || 'This subscription is not eligible for restoration.');
                 }
 

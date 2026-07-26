@@ -611,8 +611,10 @@ from app.models.prepaid_coverage import (  # noqa: F401
 )
 from app.models.prepaid_enforcement import PrepaidEnforcementReadiness  # noqa: F401
 from app.models.prepaid_funding import (  # noqa: F401
+    PrepaidDraftReconciliationException,
     PrepaidFundingBaseline,
     PrepaidFundingReconstructionBatch,
+    PrepaidOpeningFundingConsumption,
 )
 from app.models.project import (  # noqa: F401
     Project,

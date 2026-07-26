@@ -348,6 +348,7 @@ class FundingChangeRenewalDisposition(enum.StrEnum):
     payable_invoice_remaining = "payable_invoice_remaining"
     draft_invoice_settled = "draft_invoice_settled"
     draft_invoice_pending = "draft_invoice_pending"
+    draft_invoice_review_required = "draft_invoice_review_required"
     funded = "funded"
     unfunded = "unfunded"
     already_covered = "already_covered"
@@ -388,6 +389,7 @@ class FundingChangeRenewalResult:
     treatment_blocked: int = 0
     draft_invoices_settled: int = 0
     draft_invoices_pending: int = 0
+    draft_review_exceptions: int = 0
 
 
 def evaluate_prepaid_service_after_settlement(
@@ -934,10 +936,15 @@ def apply_due_prepaid_service_after_funding_change(
             disposition=(
                 FundingChangeRenewalDisposition.draft_invoice_settled
                 if settled
-                else FundingChangeRenewalDisposition.draft_invoice_pending
+                else (
+                    FundingChangeRenewalDisposition.draft_invoice_review_required
+                    if draft_result.review_exceptions
+                    else FundingChangeRenewalDisposition.draft_invoice_pending
+                )
             ),
             draft_invoices_settled=settled,
             draft_invoices_pending=pending,
+            draft_review_exceptions=draft_result.review_exceptions,
         )
 
     due_subscriptions = list(

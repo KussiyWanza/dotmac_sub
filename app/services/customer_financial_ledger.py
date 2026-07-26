@@ -43,7 +43,10 @@ from app.models.billing import (
     ServiceEntitlement,
     ServiceEntitlementStatus,
 )
-from app.models.prepaid_funding import PrepaidFundingBaseline
+from app.models.prepaid_funding import (
+    PrepaidFundingBaseline,
+    PrepaidOpeningFundingConsumption,
+)
 from app.services.common import coerce_uuid, round_money
 from app.services.invoice_classification import (
     collectible_ar_invoice_filter,
@@ -333,7 +336,15 @@ def _exactly_settled_invoice_ids():
             CreditNoteApplication.amount > Decimal("0.00"),
         )
     )
-    settlement_rows = union_all(payment_rows, credit_rows).subquery()
+    opening_funding_rows = select(
+        PrepaidOpeningFundingConsumption.invoice_id.label("invoice_id"),
+        PrepaidOpeningFundingConsumption.amount.label("amount"),
+    )
+    settlement_rows = union_all(
+        payment_rows,
+        credit_rows,
+        opening_funding_rows,
+    ).subquery()
     return (
         select(settlement_rows.c.invoice_id)
         .join(Invoice, Invoice.id == settlement_rows.c.invoice_id)

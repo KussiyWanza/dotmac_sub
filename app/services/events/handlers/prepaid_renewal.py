@@ -67,6 +67,9 @@ class PrepaidRenewalHandler:
                 "currency_mismatch": (
                     result.currency_mismatch if result is not None else 0
                 ),
+                "draft_review_exceptions": (
+                    result.draft_review_exceptions if result is not None else 0
+                ),
                 "renewed_through": (
                     [outcome.renewed_through.isoformat() for outcome in result.renewals]
                     if result is not None

@@ -850,6 +850,18 @@ def _eligibility_reasons(
     }
     if status not in allowed_statuses[command.kind]:
         reasons.append(f"status_{status.value}_not_eligible_for_{command.kind.value}")
+    if command.kind == SubscriptionCommandKind.restore:
+        unresolved_prepaid_lock = db.scalar(
+            select(EnforcementLock.id)
+            .where(
+                EnforcementLock.subscription_id == subscription.id,
+                EnforcementLock.reason == EnforcementReason.prepaid,
+                EnforcementLock.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        if unresolved_prepaid_lock is not None:
+            reasons.append("prepaid_financial_reconciliation_required")
     if (
         command.effective_timing == SubscriptionEffectiveTiming.scheduled
         and command.effective_at is not None

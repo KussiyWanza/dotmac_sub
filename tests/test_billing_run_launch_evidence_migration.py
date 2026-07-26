@@ -14,9 +14,9 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: the service-extension-activity migration (421) chains
-    # onto billing-run evidence (420), which chains onto customer WHT (419).
-    assert script.get_heads() == ["422_conversation_ticket_handoff"]
+    # Single linear head: prepaid opening-funding reconciliation (423) chains
+    # onto conversation ticket handoff (422).
+    assert script.get_heads() == ["423_prepaid_opening_funding_reconciliation"]
     assert (
         script.get_revision("422_conversation_ticket_handoff").down_revision
         == "421_service_extension_activity_sot"

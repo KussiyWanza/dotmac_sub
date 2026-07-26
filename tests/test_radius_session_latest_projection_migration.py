@@ -31,7 +31,11 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["422_conversation_ticket_handoff"]
+    assert script.get_heads() == ["423_prepaid_opening_funding_reconciliation"]
+    assert (
+        script.get_revision("423_prepaid_opening_funding_reconciliation").down_revision
+        == "422_conversation_ticket_handoff"
+    )
     assert (
         script.get_revision("422_conversation_ticket_handoff").down_revision
         == "421_service_extension_activity_sot"

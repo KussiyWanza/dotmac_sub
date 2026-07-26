@@ -48,6 +48,7 @@ from app.services.subscription_lifecycle_schedules import (
 )
 from app.services.web_catalog_subscription_workflows import (
     execute_lifecycle_command_response,
+    preview_lifecycle_command_response,
 )
 
 
@@ -380,6 +381,61 @@ def test_suspend_and_restore_delegate_to_account_lifecycle(
     assert lock.is_active is False
     assert restored.status == SubscriptionCommandOutcomeStatus.applied
     assert subscription.status == SubscriptionStatus.active
+
+
+def test_restore_rejects_unresolved_prepaid_financial_lock_and_redirects_operator(
+    db_session, subscriber, catalog_offer
+):
+    subscription = _subscription(
+        db_session,
+        subscriber,
+        catalog_offer,
+        status=SubscriptionStatus.suspended,
+    )
+    db_session.add(
+        EnforcementLock(
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            reason=EnforcementReason.prepaid,
+            source="prepaid_enforcement:test",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    preview_payload, preview_status = preview_lifecycle_command_response(
+        db_session,
+        subscription_id=str(subscription.id),
+        kind=SubscriptionCommandKind.restore,
+        actor_id="operator-1",
+        reason="operator requested restore",
+    )
+    reviewed = resolve_subscription_lifecycle(db_session, str(subscription.id))
+    outcome = execute_subscription_command(
+        db_session,
+        SubscriptionLifecycleCommand(
+            subscription_id=str(subscription.id),
+            kind=SubscriptionCommandKind.restore,
+            source="admin:test",
+            reason="operator requested restore",
+            expected_head=reviewed.head,
+            idempotency_key="restore-prepaid-financial-lock",
+        ),
+    )
+
+    assert preview_status == 200
+    assert preview_payload["eligible"] is False
+    assert preview_payload["eligibility_reasons"] == [
+        "prepaid_financial_reconciliation_required"
+    ]
+    assert (
+        preview_payload["recommended_action_url"]
+        == "/admin/billing/invoices?status=draft"
+    )
+    assert outcome.status == SubscriptionCommandOutcomeStatus.rejected
+    assert outcome.error_code == "prepaid_financial_reconciliation_required"
+    db_session.refresh(subscription)
+    assert subscription.status == SubscriptionStatus.suspended
 
 
 def test_disable_and_restore_preserve_service_configuration(

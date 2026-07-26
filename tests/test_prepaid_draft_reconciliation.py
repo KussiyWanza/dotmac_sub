@@ -22,6 +22,11 @@ from app.models.billing import (
     ServiceEntitlement,
 )
 from app.models.catalog import BillingMode, SubscriptionStatus
+from app.models.prepaid_funding import (
+    PrepaidDraftReconciliationException,
+    PrepaidOpeningFundingConsumption,
+)
+from app.services.customer_financial_position import prepaid_available_balance
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
@@ -169,6 +174,320 @@ def test_fifty_kobo_shortfall_stays_draft(
     assert db_session.query(PaymentAllocation).count() == 0
     assert db_session.query(AccountAdjustment).count() == 0
     assert db_session.query(ServiceEntitlement).count() == 0
+
+
+def test_reviewed_opening_funding_settles_exact_remainder_atomically(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("2000.00"),
+    )
+    _payment(db_session, subscriber, amount=Decimal("16812.50"))
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable
+    assert preview.payment_backed_credit == Decimal("16812.50")
+    assert preview.opening_funding_required == Decimal("2000.00")
+    assert preview.authoritative_funding == Decimal("18812.50")
+    invoice_id = invoice.id
+    db_session.commit()
+
+    command = _command(
+        invoice_id,
+        preview.fingerprint,
+        key=f"pytest-prepaid-opening-{invoice_id}",
+    )
+    result = reconcile_prepaid_draft_invoice(db_session, command)
+    replay = reconcile_prepaid_draft_invoice(db_session, command)
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert result.payment_applied_amount == Decimal("16812.50")
+    assert result.opening_funding_applied_amount == Decimal("2000.00")
+    assert result.opening_funding_consumption_id == consumption.id
+    assert replay.replayed is True
+    assert db_session.query(PaymentAllocation).count() == 1
+    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 1
+    assert consumption.invoice_id == invoice.id
+    assert consumption.baseline_id == preview.opening_funding_baseline_id
+    assert consumption.ledger_entry.invoice_id == invoice.id
+    assert consumption.ledger_entry.affects_customer_position is False
+    assert entitlement.source_invoice_id == invoice.id
+    assert subscription.next_billing_at == entitlement.ends_at
+    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("0.00")
+
+
+def test_opening_funding_shortfall_stays_unmodified(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("1000.00"),
+    )
+    _payment(db_session, subscriber, amount=Decimal("16812.50"))
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+    result = apply_due_prepaid_service_after_funding_change(
+        db_session,
+        account_id=subscriber.id,
+        effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        funding_currency="NGN",
+        evidence_ref="pytest:opening-shortfall",
+    )
+    db_session.commit()
+
+    assert preview.disposition is PrepaidDraftDisposition.insufficient_funding
+    assert result.disposition is FundingChangeRenewalDisposition.draft_invoice_pending
+    assert db_session.query(PaymentAllocation).count() == 0
+    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 0
+    assert db_session.query(PrepaidDraftReconciliationException).count() == 0
+
+
+def test_lapsed_opening_funded_invoice_reanchors_coverage_to_effective_date(
+    db_session,
+    subscriber,
+    subscription,
+):
+    effective_at = datetime(2026, 7, 23, 10, tzinfo=UTC)
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    invoice.billing_period_start = datetime(2026, 5, 1, tzinfo=UTC)
+    invoice.billing_period_end = datetime(2026, 6, 1, tzinfo=UTC)
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("100.00"),
+    )
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+    invoice_id = invoice.id
+    db_session.commit()
+
+    reconcile_prepaid_draft_invoice(
+        db_session,
+        ReconcilePrepaidDraftCommand(
+            context=CommandContext.system(
+                actor="pytest:billing-operator",
+                scope="prepaid_draft_reconciliation",
+                reason="Reviewed lapsed prepaid reconciliation",
+                idempotency_key=f"pytest-lapsed-opening-{invoice_id}",
+            ),
+            invoice_id=invoice_id,
+            preview_fingerprint=preview.fingerprint,
+            effective_at=effective_at,
+        ),
+    )
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert invoice.billing_period_start == datetime(2026, 7, 23)
+    assert invoice.billing_period_end == datetime(2026, 8, 23)
+    assert entitlement.starts_at == invoice.billing_period_start
+    assert entitlement.ends_at == invoice.billing_period_end
+    assert subscription.next_billing_at == entitlement.ends_at
+
+
+def test_funding_event_creates_review_exception_without_spending_opening_funding(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("2000.00"),
+    )
+    _payment(db_session, subscriber, amount=Decimal("16812.50"))
+
+    first = apply_due_prepaid_service_after_funding_change(
+        db_session,
+        account_id=subscriber.id,
+        effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        funding_currency="NGN",
+        evidence_ref="pytest:opening-review-required",
+    )
+    second = apply_due_prepaid_service_after_funding_change(
+        db_session,
+        account_id=subscriber.id,
+        effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        funding_currency="NGN",
+        evidence_ref="pytest:opening-review-required-retry",
+    )
+    db_session.commit()
+
+    exception = db_session.query(PrepaidDraftReconciliationException).one()
+    assert (
+        first.disposition
+        is FundingChangeRenewalDisposition.draft_invoice_review_required
+    )
+    assert (
+        second.disposition
+        is FundingChangeRenewalDisposition.draft_invoice_review_required
+    )
+    assert exception.invoice_id == invoice.id
+    assert exception.status == "open"
+    assert exception.opening_funding_amount == Decimal("2000.00")
+    assert exception.attempt_count == 1
+    assert db_session.query(PaymentAllocation).count() == 0
+    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 0
+
+
+def test_multiple_drafts_fail_closed_without_exception_or_funding_consumption(
+    db_session,
+    subscriber,
+    subscription,
+):
+    first = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    second = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("200.00"),
+    )
+
+    result = apply_due_prepaid_service_after_funding_change(
+        db_session,
+        account_id=subscriber.id,
+        effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        funding_currency="NGN",
+        evidence_ref="pytest:multiple-drafts",
+    )
+    db_session.commit()
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert result.disposition is FundingChangeRenewalDisposition.draft_invoice_pending
+    assert result.draft_invoices_pending == 2
+    assert first.status is InvoiceStatus.draft
+    assert second.status is InvoiceStatus.draft
+    assert db_session.query(PaymentAllocation).count() == 0
+    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 0
+    assert db_session.query(PrepaidDraftReconciliationException).count() == 0
+
+
+def test_consumed_opening_funding_cannot_fund_a_second_invoice(
+    db_session,
+    subscriber,
+    subscription,
+):
+    first_invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("100.00"),
+    )
+    first_preview = preview_prepaid_draft_reconciliation(
+        db_session,
+        first_invoice.id,
+    )
+    first_invoice_id = first_invoice.id
+    db_session.commit()
+    reconcile_prepaid_draft_invoice(
+        db_session,
+        _command(
+            first_invoice_id,
+            first_preview.fingerprint,
+            key=f"pytest-opening-first-{first_invoice_id}",
+        ),
+    )
+
+    second_invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("100.00"),
+    )
+    second_invoice.billing_period_start = datetime(2026, 9, 1, tzinfo=UTC)
+    second_invoice.billing_period_end = datetime(2026, 10, 1, tzinfo=UTC)
+    db_session.commit()
+
+    second_preview = preview_prepaid_draft_reconciliation(
+        db_session,
+        second_invoice.id,
+    )
+
+    assert second_preview.opening_funding_available == Decimal("0.00")
+    assert second_preview.recommended_action is PrepaidDraftAction.none
+    assert db_session.query(PrepaidOpeningFundingConsumption).count() == 1
+
+
+def test_reversed_payment_is_not_reused_with_opening_funding(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("3000.00"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("2000.00"),
+    )
+    payment = _payment(db_session, subscriber, amount=Decimal("1000.00"))
+    payment.status = PaymentStatus.reversed
+    db_session.commit()
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert preview.payment_backed_credit == Decimal("0.00")
+    # A status-only reversal leaves unmatched ledger credit. The reconciler
+    # quarantines that ambiguity instead of combining it with opening funding.
+    assert preview.opening_funding_available == Decimal("0.00")
+    assert preview.unbacked_credit == Decimal("1000.00")
+    assert preview.disposition is PrepaidDraftDisposition.legacy_unbacked_funding
 
 
 def test_cohort_deduplicates_invoice_with_multiple_prepaid_lines(

@@ -35,6 +35,7 @@ from app.models.billing import (
     TaxApplication,
     TaxRate,
 )
+from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
 from app.models.subscriber import Subscriber
 from app.services.common import get_by_id, round_money, to_decimal
 from app.services.locking import lock_for_update
@@ -48,6 +49,13 @@ class InvoiceSettlementAmounts:
 
     payments_applied: Decimal
     credits_applied: Decimal
+    opening_funding_applied: Decimal
+
+    @property
+    def total_applied(self) -> Decimal:
+        return round_money(
+            self.payments_applied + self.credits_applied + self.opening_funding_applied
+        )
 
 
 def resolve_invoice_settlement_amounts(
@@ -92,9 +100,15 @@ def resolve_invoice_settlement_amounts(
         .filter(CreditNoteApplication.invoice_id == invoice_id)
         .scalar()
     )
+    opening_funding_amount = (
+        db.query(func.coalesce(func.sum(PrepaidOpeningFundingConsumption.amount), 0))
+        .filter(PrepaidOpeningFundingConsumption.invoice_id == invoice_id)
+        .scalar()
+    )
     return InvoiceSettlementAmounts(
         payments_applied=round_money(paid_amount),
         credits_applied=round_money(to_decimal(credit_amount)),
+        opening_funding_applied=round_money(to_decimal(opening_funding_amount)),
     )
 
 
@@ -430,9 +444,7 @@ def _recalculate_invoice_totals(db: Session, invoice: Invoice):
         return
     invoice.balance_due = max(
         Decimal("0.00"),
-        round_money(
-            invoice.total - settlement.payments_applied - settlement.credits_applied
-        ),
+        round_money(invoice.total - settlement.total_applied),
     )
     # A draft is pre-issue: keep its computed balance for display but do NOT
     # auto-advance it to paid/partially_paid (it must be explicitly issued).
@@ -442,7 +454,7 @@ def _recalculate_invoice_totals(db: Session, invoice: Invoice):
         invoice.status = InvoiceStatus.paid
         if not invoice.paid_at:
             invoice.paid_at = datetime.now(UTC)
-    elif settlement.payments_applied > 0 or settlement.credits_applied > 0:
+    elif settlement.total_applied > 0:
         invoice.status = InvoiceStatus.partially_paid
     elif invoice.status in (InvoiceStatus.paid, InvoiceStatus.partially_paid):
         # The invoice is fully unpaid again (e.g. its payment was refunded or

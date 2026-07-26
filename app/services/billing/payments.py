@@ -107,6 +107,7 @@ from app.services.locking import lock_for_update
 from app.services.response import ListResponseMixin
 from app.services.service_entitlements import (
     ensure_prepaid_entitlements_for_paid_invoice,
+    project_paid_invoice_billing_anchors,
     revoke_prepaid_entitlements_for_unpaid_invoice,
 )
 from app.services.sync_feeds import apply_sync_page, sync_page_response
@@ -1019,7 +1020,12 @@ def _prepaid_extension_delta_after_invoice(
     return next_billing - period_end
 
 
-def _reanchor_paid_prepaid_invoice_if_lapsed(db: Session, invoice: Invoice) -> bool:
+def _reanchor_paid_prepaid_invoice_if_lapsed(
+    db: Session,
+    invoice: Invoice,
+    *,
+    fallback_effective_at: datetime | None = None,
+) -> bool:
     """Start lapsed prepaid renewals from the settlement date.
 
     Prepaid customers should not lose paid entitlement to a historical unpaid
@@ -1033,9 +1039,13 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(db: Session, invoice: Invoice) -> b
         return False
 
     payment = _latest_successful_invoice_payment(db, invoice)
-    if payment is None:
+    if payment is None and fallback_effective_at is None:
         return False
-    effective_at = payment.paid_at or payment.created_at or datetime.now(UTC)
+    effective_at = (
+        payment.paid_at or payment.created_at
+        if payment is not None
+        else fallback_effective_at
+    ) or datetime.now(UTC)
     paid_at_utc = (
         effective_at if effective_at.tzinfo else effective_at.replace(tzinfo=UTC)
     )
@@ -1099,7 +1109,7 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(db: Session, invoice: Invoice) -> b
             "event": "prepaid_invoice_reanchored_to_payment_date",
             "invoice_id": str(invoice.id),
             "subscription_id": str(subscription.id),
-            "payment_id": str(payment.id),
+            "payment_id": str(payment.id) if payment is not None else None,
             "old_period_start": old_period_start.isoformat(),
             "old_period_end": old_period_end.isoformat(),
             "new_period_start": new_period_start.isoformat(),
@@ -1139,6 +1149,38 @@ def _finalize_invoice_payment_effects(db: Session, invoice: Invoice) -> None:
     from app.services.account_lifecycle import compute_account_status
 
     compute_account_status(db, str(invoice.account_id))
+
+
+def finalize_invoice_application_for_owner(
+    db: Session,
+    invoice: Invoice,
+    *,
+    effective_at: datetime,
+) -> None:
+    """Flush-only participant for a typed non-Payment invoice application."""
+
+    _recalculate_invoice_totals(db, invoice)
+    db.flush()
+    if invoice.status == InvoiceStatus.paid:
+        _reanchor_paid_prepaid_invoice_if_lapsed(
+            db,
+            invoice,
+            fallback_effective_at=effective_at,
+        )
+        ensure_prepaid_entitlements_for_paid_invoice(db, invoice)
+        project_paid_invoice_billing_anchors(db, invoice)
+        from app.services import collections as collections_service
+
+        if not collections_service.has_overdue_balance(db, str(invoice.account_id)):
+            collections_service.restore_account_services(
+                db,
+                str(invoice.account_id),
+                invoice_id=str(invoice.id),
+            )
+    from app.services.account_lifecycle import compute_account_status
+
+    compute_account_status(db, str(invoice.account_id))
+    db.flush()
 
 
 def _primary_allocation_invoice_id(payment: Payment) -> str | None:

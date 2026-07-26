@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -168,3 +169,170 @@ class PrepaidFundingBaseline(Base):
         back_populates="baselines",
     )
     account = relationship("Subscriber")
+
+
+class PrepaidOpeningFundingConsumption(Base):
+    """Immutable use of one reviewed opening position against one invoice."""
+
+    __tablename__ = "prepaid_opening_funding_consumptions"
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_prepaid_opening_consumption_positive_amount",
+        ),
+        CheckConstraint(
+            "length(currency) = 3 AND currency = upper(currency)",
+            name="ck_prepaid_opening_consumption_currency",
+        ),
+        CheckConstraint(
+            "length(reconciliation_fingerprint) = 64",
+            name="ck_prepaid_opening_consumption_fingerprint",
+        ),
+        Index(
+            "uq_prepaid_opening_consumption_invoice",
+            "invoice_id",
+            unique=True,
+        ),
+        Index(
+            "uq_prepaid_opening_consumption_ledger",
+            "ledger_entry_id",
+            unique=True,
+        ),
+        Index(
+            "uq_prepaid_opening_consumption_idempotency",
+            "idempotency_key",
+            unique=True,
+        ),
+        Index(
+            "ix_prepaid_opening_consumption_baseline",
+            "baseline_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    baseline_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prepaid_funding_baselines.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ledger_entries.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    approval_evidence_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    reconciliation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    consumed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    baseline = relationship("PrepaidFundingBaseline")
+    account = relationship("Subscriber")
+    invoice = relationship("Invoice")
+    ledger_entry = relationship("LedgerEntry")
+
+
+class PrepaidDraftReconciliationException(Base):
+    """Durable operator work item for a prepaid draft funding mismatch."""
+
+    __tablename__ = "prepaid_draft_reconciliation_exceptions"
+    __table_args__ = (
+        CheckConstraint(
+            "required_amount > 0",
+            name="ck_prepaid_draft_exception_required_amount",
+        ),
+        CheckConstraint(
+            "payment_backed_amount >= 0 AND opening_funding_amount >= 0",
+            name="ck_prepaid_draft_exception_nonnegative_sources",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'resolved')",
+            name="ck_prepaid_draft_exception_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 1",
+            name="ck_prepaid_draft_exception_attempt_count",
+        ),
+        CheckConstraint(
+            "length(currency) = 3 AND currency = upper(currency)",
+            name="ck_prepaid_draft_exception_currency",
+        ),
+        CheckConstraint(
+            "length(preview_fingerprint) = 64",
+            name="ck_prepaid_draft_exception_fingerprint",
+        ),
+        Index(
+            "uq_prepaid_draft_exception_invoice",
+            "invoice_id",
+            unique=True,
+        ),
+        Index(
+            "ix_prepaid_draft_exception_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+    reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    required_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    payment_backed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False
+    )
+    opening_funding_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False
+    )
+    preview_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    alert_fingerprint: Mapped[str] = mapped_column(String(160), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    account = relationship("Subscriber")
+    invoice = relationship("Invoice")

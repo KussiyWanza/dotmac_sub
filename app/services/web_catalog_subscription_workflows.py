@@ -161,6 +161,12 @@ def preview_lifecycle_command_response(
             "proposed": _serialize_lifecycle_state(preview.proposed),
             "billing_impact": _json_value(preview.billing_impact),
             "access_impact": _json_value(preview.access_impact),
+            "recommended_action_url": (
+                "/admin/billing/invoices?status=draft"
+                if "prepaid_financial_reconciliation_required"
+                in preview.eligibility_reasons
+                else None
+            ),
         },
         200,
     )

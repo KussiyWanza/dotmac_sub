@@ -51,6 +51,14 @@ def _preview_payload(preview) -> dict[str, object]:
         "invoice_total": str(preview.invoice_total),
         "balance_due": str(preview.balance_due),
         "payment_backed_credit": str(preview.payment_backed_credit),
+        "authoritative_funding": str(preview.authoritative_funding),
+        "opening_funding_available": str(preview.opening_funding_available),
+        "opening_funding_required": str(preview.opening_funding_required),
+        "opening_funding_baseline_id": (
+            str(preview.opening_funding_baseline_id)
+            if preview.opening_funding_baseline_id
+            else None
+        ),
         "unbacked_credit": str(preview.unbacked_credit),
         "shortfall": str(preview.shortfall),
         "subscription_ids": [str(value) for value in preview.subscription_ids],
@@ -118,6 +126,15 @@ def main() -> int:
                     "action": result.action.value,
                     "final_status": result.final_status.value,
                     "applied_amount": str(result.applied_amount),
+                    "payment_applied_amount": str(result.payment_applied_amount),
+                    "opening_funding_applied_amount": str(
+                        result.opening_funding_applied_amount
+                    ),
+                    "opening_funding_consumption_id": (
+                        str(result.opening_funding_consumption_id)
+                        if result.opening_funding_consumption_id
+                        else None
+                    ),
                     "preview_fingerprint": result.preview_fingerprint,
                     "replayed": result.replayed,
                 },

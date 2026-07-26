@@ -1,15 +1,18 @@
 """Evidence-first owner for stranded prepaid draft invoices.
 
 Preview is read-only and classifies one exact invoice. Confirmation locks the
-account and invoice, recomputes the preview fingerprint, and performs only one
-of two safe repairs:
+account and invoice, recomputes the preview fingerprint, and performs one safe
+repair:
 
 * exact native payment-backed funding issues and fully settles the draft; or
+* settlement-backed payments plus reviewed opening funding settle the exact
+  remainder without representing that opening source as a Payment; or
 * an exact direct-renewal debit/entitlement voids the duplicate draft without
   charging the customer again.
 
-Insufficient funding, legacy/unbacked credit, mixed invoices, and ambiguous
-coverage remain unchanged for manual review.
+Automatic mixed-source discovery creates a durable operator exception.
+Insufficient funding, legacy/unbacked credit, multiple drafts, mixed invoices,
+and ambiguous coverage otherwise remain unchanged and fail closed.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from enum import StrEnum
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -33,14 +36,23 @@ from app.models.billing import (
     Invoice,
     InvoiceLine,
     InvoiceStatus,
+    LedgerCategory,
     LedgerEntry,
+    LedgerEntryType,
+    LedgerSource,
     PaymentAllocation,
     ServiceEntitlement,
     ServiceEntitlementStatus,
 )
 from app.models.catalog import BillingMode, Subscription
 from app.models.idempotency import IdempotencyKey
+from app.models.prepaid_funding import (
+    PrepaidDraftReconciliationException,
+    PrepaidFundingBaseline,
+    PrepaidOpeningFundingConsumption,
+)
 from app.schemas.audit import AuditEventCreate
+from app.schemas.billing import LedgerEntryCreate
 from app.services.audit import AuditEvents
 from app.services.billing._common import lock_account
 from app.services.billing.account_credit import (
@@ -50,6 +62,8 @@ from app.services.billing.account_credit import (
 )
 from app.services.billing.adjustments import AccountAdjustmentOrigin
 from app.services.billing.invoices import InvoiceOwnerError, Invoices
+from app.services.billing.ledger import LedgerEntries
+from app.services.billing.payments import finalize_invoice_application_for_owner
 from app.services.common import round_money, to_decimal
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -59,6 +73,9 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+)
+from app.services.prepaid_funding_reconstruction import (
+    verified_prepaid_funding_balance,
 )
 
 _OWNER = "financial.prepaid_draft_reconciliation"
@@ -75,6 +92,7 @@ _RENEWAL_ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 
 class PrepaidDraftDisposition(StrEnum):
     exact_payment_fundable = "exact_payment_fundable"
+    reviewed_opening_fundable = "reviewed_opening_fundable"
     already_renewed = "already_renewed"
     insufficient_funding = "insufficient_funding"
     legacy_unbacked_funding = "legacy_unbacked_funding"
@@ -103,6 +121,10 @@ class PrepaidDraftReconciliationPreview:
     invoice_total: Decimal
     balance_due: Decimal
     payment_backed_credit: Decimal
+    authoritative_funding: Decimal
+    opening_funding_available: Decimal
+    opening_funding_required: Decimal
+    opening_funding_baseline_id: UUID | None
     unbacked_credit: Decimal
     shortfall: Decimal
     subscription_ids: tuple[UUID, ...]
@@ -134,6 +156,9 @@ class PrepaidDraftReconciliationResult:
     action: PrepaidDraftAction
     final_status: InvoiceStatus
     applied_amount: Decimal
+    payment_applied_amount: Decimal
+    opening_funding_applied_amount: Decimal
+    opening_funding_consumption_id: UUID | None
     preview_fingerprint: str
     replayed: bool
 
@@ -143,7 +168,19 @@ class FundingChangeDraftResult:
     drafts_found: int
     drafts_settled: int
     drafts_blocked: int
+    review_exceptions: int
     invoice_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedOpeningFundingPreview:
+    baseline_id: UUID | None
+    approved_amount: Decimal
+    previously_consumed: Decimal
+    available_amount: Decimal
+    authoritative_funding: Decimal
+    approval_evidence_ref: str | None
+    approval_actor: str | None
 
 
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
@@ -195,6 +232,75 @@ def _funding_preview(
     invoice: Invoice,
 ) -> AccountCreditInvoiceFundingPreview:
     return AccountCreditApplications.preview_invoice_funding(db, invoice)
+
+
+def _reviewed_opening_funding_preview(
+    db: Session,
+    *,
+    invoice: Invoice,
+    payment_funding: AccountCreditInvoiceFundingPreview,
+) -> ReviewedOpeningFundingPreview:
+    currency = (invoice.currency or "NGN").upper()
+    baseline = db.scalar(
+        select(PrepaidFundingBaseline).where(
+            PrepaidFundingBaseline.account_id == invoice.account_id,
+            PrepaidFundingBaseline.currency == currency,
+            PrepaidFundingBaseline.is_active.is_(True),
+        )
+    )
+    authoritative = round_money(
+        verified_prepaid_funding_balance(
+            db,
+            invoice.account_id,
+            currency=currency,
+        )
+    )
+    if baseline is None or baseline.amount <= Decimal("0.00"):
+        return ReviewedOpeningFundingPreview(
+            baseline_id=None,
+            approved_amount=Decimal("0.00"),
+            previously_consumed=Decimal("0.00"),
+            available_amount=Decimal("0.00"),
+            authoritative_funding=authoritative,
+            approval_evidence_ref=None,
+            approval_actor=None,
+        )
+    consumed = round_money(
+        to_decimal(
+            db.query(
+                func.coalesce(
+                    func.sum(PrepaidOpeningFundingConsumption.amount),
+                    0,
+                )
+            )
+            .filter(PrepaidOpeningFundingConsumption.baseline_id == baseline.id)
+            .scalar()
+        )
+    )
+    source_remaining = max(
+        Decimal("0.00"),
+        round_money(to_decimal(baseline.amount) - consumed),
+    )
+    authoritative_nonpayment = max(
+        Decimal("0.00"),
+        round_money(authoritative - payment_funding.payment_backed_credit),
+    )
+    # Untyped ledger credit is not opening-funding provenance. Keep it
+    # quarantined rather than allowing it to revive an already spent baseline.
+    available = (
+        Decimal("0.00")
+        if payment_funding.unbacked_credit > Decimal("0.00")
+        else min(source_remaining, authoritative_nonpayment)
+    )
+    return ReviewedOpeningFundingPreview(
+        baseline_id=baseline.id,
+        approved_amount=round_money(to_decimal(baseline.amount)),
+        previously_consumed=consumed,
+        available_amount=round_money(available),
+        authoritative_funding=authoritative,
+        approval_evidence_ref=baseline.batch.evidence_ref,
+        approval_actor=baseline.batch.approved_by,
+    )
 
 
 def _direct_renewal_evidence(
@@ -264,8 +370,18 @@ def _build_preview(
     subscription_ids: tuple[UUID, ...],
     entitlement_ids: tuple[UUID, ...] = (),
     adjustment_ids: tuple[UUID, ...] = (),
+    opening: ReviewedOpeningFundingPreview | None = None,
     reason: str,
 ) -> PrepaidDraftReconciliationPreview:
+    opening_available = (
+        opening.available_amount if opening is not None else Decimal("0.00")
+    )
+    opening_required = min(funding.shortfall, opening_available)
+    authoritative_funding = (
+        opening.authoritative_funding
+        if opening is not None
+        else funding.payment_backed_credit
+    )
     payload = {
         "invoice_id": invoice.id,
         "account_id": invoice.account_id,
@@ -281,6 +397,12 @@ def _build_preview(
         "disposition": disposition,
         "action": action,
         "funding_fingerprint": funding.fingerprint,
+        "authoritative_funding": authoritative_funding,
+        "opening_funding_baseline_id": (
+            opening.baseline_id if opening is not None else None
+        ),
+        "opening_funding_available": opening_available,
+        "opening_funding_required": opening_required,
         "subscription_ids": subscription_ids,
         "entitlement_ids": entitlement_ids,
         "adjustment_ids": adjustment_ids,
@@ -296,6 +418,12 @@ def _build_preview(
         invoice_total=round_money(to_decimal(invoice.total)),
         balance_due=round_money(to_decimal(invoice.balance_due)),
         payment_backed_credit=funding.payment_backed_credit,
+        authoritative_funding=authoritative_funding,
+        opening_funding_available=opening_available,
+        opening_funding_required=opening_required,
+        opening_funding_baseline_id=(
+            opening.baseline_id if opening is not None else None
+        ),
         unbacked_credit=funding.unbacked_credit,
         shortfall=funding.shortfall,
         subscription_ids=subscription_ids,
@@ -318,6 +446,11 @@ def preview_prepaid_draft_reconciliation(
             "invoice_not_found", "Invoice was not found.", invoice_id=str(invoice_id)
         )
     funding = _funding_preview(db, invoice)
+    opening = _reviewed_opening_funding_preview(
+        db,
+        invoice=invoice,
+        payment_funding=funding,
+    )
     metadata = dict(invoice.metadata_ or {}).get(_METADATA_KEY)
     if isinstance(metadata, dict) and invoice.status in {
         InvoiceStatus.paid,
@@ -330,6 +463,7 @@ def preview_prepaid_draft_reconciliation(
             action = PrepaidDraftAction.none
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.already_reconciled,
             action=action,
             funding=funding,
@@ -344,6 +478,7 @@ def preview_prepaid_draft_reconciliation(
     ):
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -357,6 +492,7 @@ def preview_prepaid_draft_reconciliation(
     ):
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -368,6 +504,7 @@ def preview_prepaid_draft_reconciliation(
     if len(lines) != 1 or lines[0].subscription_id is None:
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -394,6 +531,7 @@ def preview_prepaid_draft_reconciliation(
     ):
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -425,6 +563,7 @@ def preview_prepaid_draft_reconciliation(
     if has_activity:
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -442,6 +581,7 @@ def preview_prepaid_draft_reconciliation(
         entitlement, adjustment = direct_evidence[0]
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.already_renewed,
             action=PrepaidDraftAction.void_duplicate,
             funding=funding,
@@ -453,6 +593,7 @@ def preview_prepaid_draft_reconciliation(
     if len(direct_evidence) > 1:
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -475,6 +616,7 @@ def preview_prepaid_draft_reconciliation(
     if other_overlap is not None:
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.manual_review,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -485,15 +627,36 @@ def preview_prepaid_draft_reconciliation(
     if funding.fully_funded:
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.exact_payment_fundable,
             action=PrepaidDraftAction.settle_paid,
             funding=funding,
             subscription_ids=(subscription.id,),
             reason="exact native payment-backed credit fully covers the draft",
         )
+    if (
+        funding.shortfall > Decimal("0.00")
+        and opening.baseline_id is not None
+        and opening.available_amount >= funding.shortfall
+        and opening.authoritative_funding >= funding.invoice_remaining
+        and funding.unbacked_credit == Decimal("0.00")
+    ):
+        return _build_preview(
+            invoice=invoice,
+            opening=opening,
+            disposition=PrepaidDraftDisposition.reviewed_opening_fundable,
+            action=PrepaidDraftAction.settle_paid,
+            funding=funding,
+            subscription_ids=(subscription.id,),
+            reason=(
+                "settlement-backed payments plus reviewed opening funding "
+                "fully cover the draft"
+            ),
+        )
     if funding.unbacked_credit > Decimal("0.00"):
         return _build_preview(
             invoice=invoice,
+            opening=opening,
             disposition=PrepaidDraftDisposition.legacy_unbacked_funding,
             action=PrepaidDraftAction.none,
             funding=funding,
@@ -502,6 +665,7 @@ def preview_prepaid_draft_reconciliation(
         )
     return _build_preview(
         invoice=invoice,
+        opening=opening,
         disposition=PrepaidDraftDisposition.insufficient_funding,
         action=PrepaidDraftAction.none,
         funding=funding,
@@ -569,13 +733,234 @@ def _record_metadata(
     invoice.metadata_ = metadata
 
 
+def _stage_opening_funding_consumption(
+    db: Session,
+    *,
+    invoice: Invoice,
+    preview: PrepaidDraftReconciliationPreview,
+    amount: Decimal,
+    effective_at: datetime,
+    context: CommandContext,
+) -> PrepaidOpeningFundingConsumption:
+    baseline_id = preview.opening_funding_baseline_id
+    if baseline_id is None or amount <= Decimal("0.00"):
+        _error(
+            "opening_funding_unavailable",
+            "Reviewed opening funding is not available for this invoice.",
+        )
+    baseline = db.scalar(
+        select(PrepaidFundingBaseline)
+        .where(PrepaidFundingBaseline.id == baseline_id)
+        .with_for_update()
+    )
+    if (
+        baseline is None
+        or not baseline.is_active
+        or baseline.account_id != invoice.account_id
+        or baseline.currency != preview.currency
+    ):
+        _error(
+            "opening_funding_changed",
+            "Reviewed opening funding changed after preview; preview again.",
+        )
+    consumed = round_money(
+        to_decimal(
+            db.query(
+                func.coalesce(
+                    func.sum(PrepaidOpeningFundingConsumption.amount),
+                    0,
+                )
+            )
+            .filter(PrepaidOpeningFundingConsumption.baseline_id == baseline.id)
+            .scalar()
+        )
+    )
+    source_remaining = round_money(to_decimal(baseline.amount) - consumed)
+    if source_remaining < amount:
+        _error(
+            "opening_funding_changed",
+            "Reviewed opening funding was already consumed; preview again.",
+            available_amount=str(max(Decimal("0.00"), source_remaining)),
+        )
+    command_key = context.idempotency_key or ""
+    opening_key = (
+        "prepaid-opening:" + hashlib.sha256(command_key.encode("utf-8")).hexdigest()
+    )
+    existing = db.scalar(
+        select(PrepaidOpeningFundingConsumption).where(
+            PrepaidOpeningFundingConsumption.idempotency_key == opening_key
+        )
+    )
+    if existing is not None:
+        if (
+            existing.invoice_id != invoice.id
+            or round_money(to_decimal(existing.amount)) != amount
+            or existing.reconciliation_fingerprint != preview.fingerprint
+        ):
+            _error(
+                "idempotency_conflict",
+                "Opening-funding idempotency evidence belongs to another request.",
+            )
+        return existing
+    ledger_entry = LedgerEntries.create(
+        db,
+        LedgerEntryCreate(
+            account_id=invoice.account_id,
+            invoice_id=invoice.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.adjustment,
+            category=LedgerCategory.internet_service,
+            amount=amount,
+            currency=preview.currency,
+            memo=(
+                "Reviewed opening funding consumed for prepaid invoice "
+                f"{invoice.invoice_number or invoice.id}"
+            ),
+            effective_date=_utc(effective_at),
+        ),
+        affects_customer_position=False,
+        commit=False,
+    )
+    consumption = PrepaidOpeningFundingConsumption(
+        baseline_id=baseline.id,
+        account_id=invoice.account_id,
+        invoice_id=invoice.id,
+        ledger_entry_id=ledger_entry.id,
+        amount=amount,
+        currency=preview.currency,
+        approval_evidence_ref=baseline.batch.evidence_ref,
+        approval_actor=baseline.batch.approved_by,
+        reconciliation_fingerprint=preview.fingerprint,
+        idempotency_key=opening_key,
+        consumed_at=_utc(effective_at),
+    )
+    db.add(consumption)
+    db.flush()
+    return consumption
+
+
+def _exception_alert_fingerprint(invoice_id: UUID) -> str:
+    return f"prepaid-draft-reconciliation:{invoice_id}"
+
+
+def _exception_event_type(invoice_id: UUID) -> str:
+    return f"prepaid_draft_reconciliation_review:{invoice_id}"
+
+
+def _stage_review_exception(
+    db: Session,
+    *,
+    preview: PrepaidDraftReconciliationPreview,
+) -> PrepaidDraftReconciliationException:
+    alert_fingerprint = _exception_alert_fingerprint(preview.invoice_id)
+    exception = db.scalar(
+        select(PrepaidDraftReconciliationException).where(
+            PrepaidDraftReconciliationException.invoice_id == preview.invoice_id
+        )
+    )
+    created = exception is None
+    if exception is None:
+        exception = PrepaidDraftReconciliationException(
+            account_id=preview.account_id,
+            invoice_id=preview.invoice_id,
+            status="open",
+            reason="reviewed_opening_funding_required",
+            currency=preview.currency,
+            required_amount=preview.balance_due,
+            payment_backed_amount=preview.payment_backed_credit,
+            opening_funding_amount=preview.opening_funding_required,
+            preview_fingerprint=preview.fingerprint,
+            alert_fingerprint=alert_fingerprint,
+        )
+        db.add(exception)
+    else:
+        same_evidence = exception.preview_fingerprint == preview.fingerprint
+        exception.status = "open"
+        exception.reason = "reviewed_opening_funding_required"
+        exception.required_amount = preview.balance_due
+        exception.payment_backed_amount = preview.payment_backed_credit
+        exception.opening_funding_amount = preview.opening_funding_required
+        exception.preview_fingerprint = preview.fingerprint
+        exception.resolved_at = None
+        if not same_evidence:
+            exception.attempt_count = int(exception.attempt_count or 0) + 1
+    db.flush()
+
+    from app.services import staff_notifications
+
+    staff_notifications.queue_permission_review_request(
+        db,
+        permission_key="billing:write",
+        fingerprint=alert_fingerprint,
+        event_type=_exception_event_type(preview.invoice_id),
+        title="Prepaid invoice needs funding review",
+        body=(
+            f"Invoice {preview.invoice_number or preview.invoice_id} has "
+            f"{preview.currency} {preview.payment_backed_credit:.2f} in "
+            "settlement-backed payments and requires "
+            f"{preview.currency} {preview.opening_funding_required:.2f} from "
+            "approved opening funding."
+        ),
+        target_url=(
+            f"/admin/billing/invoices/{preview.invoice_id}#prepaid-reconciliation"
+        ),
+        category="billing",
+        source="prepaid_draft_reconciliation",
+    )
+    if created:
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                action="record_prepaid_draft_reconciliation_exception",
+                entity_type="prepaid_draft_reconciliation_exception",
+                entity_id=str(exception.id),
+                metadata_={
+                    "invoice_id": str(preview.invoice_id),
+                    "account_id": str(preview.account_id),
+                    "currency": preview.currency,
+                    "required_amount": str(preview.balance_due),
+                    "payment_backed_amount": str(preview.payment_backed_credit),
+                    "opening_funding_amount": str(preview.opening_funding_required),
+                    "preview_fingerprint": preview.fingerprint,
+                },
+            ),
+        )
+    db.flush()
+    return exception
+
+
+def _resolve_review_exception(db: Session, invoice_id: UUID) -> None:
+    exception = db.scalar(
+        select(PrepaidDraftReconciliationException).where(
+            PrepaidDraftReconciliationException.invoice_id == invoice_id
+        )
+    )
+    if exception is None or exception.status == "resolved":
+        return
+    exception.status = "resolved"
+    exception.resolved_at = datetime.now(UTC)
+    from app.services import staff_notifications
+
+    staff_notifications.resolve_permission_review_request(
+        db,
+        fingerprint=_exception_alert_fingerprint(invoice_id),
+        event_type=_exception_event_type(invoice_id),
+    )
+    db.flush()
+
+
 def _stage_action(
     db: Session,
     *,
     preview: PrepaidDraftReconciliationPreview,
     effective_at: datetime,
     context: CommandContext | None,
-) -> tuple[Invoice, Decimal]:
+) -> tuple[
+    Invoice,
+    Decimal,
+    Decimal,
+    PrepaidOpeningFundingConsumption | None,
+]:
     invoice = lock_for_update(db, Invoice, str(preview.invoice_id))
     if invoice is None:
         _error("invoice_not_found", "Invoice was not found.")
@@ -590,11 +975,43 @@ def _stage_action(
                 apply_available_credit=False,
             )
             funding = _funding_preview(db, invoice)
-            result = AccountCreditApplications.apply_invoice_fully(
-                db,
-                invoice,
-                preview_fingerprint=funding.fingerprint,
-            )
+            if preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable:
+                if context is None:
+                    _error(
+                        "review_required",
+                        "Reviewed opening funding requires operator confirmation.",
+                    )
+                result = AccountCreditApplications.apply_invoice_available(
+                    db,
+                    invoice,
+                    preview_fingerprint=funding.fingerprint,
+                )
+                opening_amount = round_money(to_decimal(invoice.balance_due))
+                if opening_amount != preview.opening_funding_required:
+                    _error(
+                        "stale_preview",
+                        "Invoice remainder changed while applying payment sources.",
+                    )
+                opening_consumption = _stage_opening_funding_consumption(
+                    db,
+                    invoice=invoice,
+                    preview=preview,
+                    amount=opening_amount,
+                    effective_at=effective_at,
+                    context=context,
+                )
+                finalize_invoice_application_for_owner(
+                    db,
+                    invoice,
+                    effective_at=_utc(effective_at),
+                )
+            else:
+                result = AccountCreditApplications.apply_invoice_fully(
+                    db,
+                    invoice,
+                    preview_fingerprint=funding.fingerprint,
+                )
+                opening_consumption = None
         except (AccountCreditApplicationError, InvoiceOwnerError) as exc:
             _error(
                 "participant_rejected",
@@ -602,6 +1019,9 @@ def _stage_action(
                 participant_error=getattr(exc, "code", type(exc).__name__),
             )
         applied = result.applied
+        if opening_consumption is not None:
+            applied = round_money(applied + opening_consumption.amount)
+        payment_applied = result.applied
     elif preview.recommended_action is PrepaidDraftAction.void_duplicate:
         try:
             Invoices.void_pristine_draft_for_owner(
@@ -617,6 +1037,8 @@ def _stage_action(
                 participant_error=type(exc).__name__,
             )
         applied = Decimal("0.00")
+        payment_applied = Decimal("0.00")
+        opening_consumption = None
     else:
         _error(
             "not_actionable",
@@ -641,6 +1063,27 @@ def _stage_action(
                 "source_disposition": preview.disposition.value,
                 "preview_fingerprint": preview.fingerprint,
                 "applied_amount": str(applied),
+                "payment_applied_amount": str(payment_applied),
+                "opening_funding_applied_amount": str(
+                    opening_consumption.amount
+                    if opening_consumption is not None
+                    else Decimal("0.00")
+                ),
+                "opening_funding_consumption_id": (
+                    str(opening_consumption.id)
+                    if opening_consumption is not None
+                    else None
+                ),
+                "opening_funding_baseline_id": (
+                    str(opening_consumption.baseline_id)
+                    if opening_consumption is not None
+                    else None
+                ),
+                "opening_funding_ledger_entry_id": (
+                    str(opening_consumption.ledger_entry_id)
+                    if opening_consumption is not None
+                    else None
+                ),
                 "economic_delta": (
                     str(applied)
                     if preview.recommended_action is PrepaidDraftAction.settle_paid
@@ -663,6 +1106,12 @@ def _stage_action(
             "source_disposition": preview.disposition.value,
             "final_status": invoice.status.value,
             "applied_amount": str(applied),
+            "payment_applied_amount": str(payment_applied),
+            "opening_funding_applied_amount": str(
+                opening_consumption.amount
+                if opening_consumption is not None
+                else Decimal("0.00")
+            ),
             "currency": invoice.currency,
             "preview_fingerprint": preview.fingerprint,
         },
@@ -670,7 +1119,14 @@ def _stage_action(
         invoice_id=invoice.id,
     )
     db.flush()
-    return invoice, applied
+    if preview.recommended_action is PrepaidDraftAction.settle_paid and (
+        invoice.status != InvoiceStatus.paid or invoice.balance_due != Decimal("0.00")
+    ):
+        _error(
+            "incomplete_repair",
+            "Reconciliation did not produce a fully paid invoice.",
+        )
+    return invoice, applied, payment_applied, opening_consumption
 
 
 def _replay_result(
@@ -684,7 +1140,7 @@ def _replay_result(
             "idempotency_conflict",
             "Idempotency key belongs to another invoice.",
         )
-    invoice = db.get(Invoice, command.invoice_id)
+    invoice = db.get(Invoice, command.invoice_id, populate_existing=True)
     metadata = (
         dict(invoice.metadata_ or {}).get(_METADATA_KEY)
         if invoice is not None
@@ -702,15 +1158,33 @@ def _replay_result(
         )
     action = PrepaidDraftAction(str(metadata["action"]))
     source = PrepaidDraftDisposition(str(metadata["source_disposition"]))
+    opening_consumption = db.scalar(
+        select(PrepaidOpeningFundingConsumption).where(
+            PrepaidOpeningFundingConsumption.invoice_id == invoice.id
+        )
+    )
+    opening_applied = round_money(
+        to_decimal(
+            opening_consumption.amount
+            if opening_consumption is not None
+            else Decimal("0.00")
+        )
+    )
+    applied_amount = (
+        round_money(to_decimal(invoice.total))
+        if action is PrepaidDraftAction.settle_paid
+        else Decimal("0.00")
+    )
     return PrepaidDraftReconciliationResult(
         invoice_id=invoice.id,
         disposition=source,
         action=action,
         final_status=invoice.status,
-        applied_amount=(
-            round_money(to_decimal(invoice.total))
-            if action is PrepaidDraftAction.settle_paid
-            else Decimal("0.00")
+        applied_amount=applied_amount,
+        payment_applied_amount=round_money(applied_amount - opening_applied),
+        opening_funding_applied_amount=opening_applied,
+        opening_funding_consumption_id=(
+            opening_consumption.id if opening_consumption is not None else None
         ),
         preview_fingerprint=str(metadata["preview_fingerprint"]),
         replayed=True,
@@ -730,6 +1204,10 @@ def reconcile_prepaid_draft_invoice(
                 "missing_idempotency_key",
                 "A bounded idempotency key is required.",
             )
+        invoice = db.get(Invoice, command.invoice_id)
+        if invoice is None:
+            _error("invoice_not_found", "Invoice was not found.")
+        lock_account(db, str(invoice.account_id))
         reservation = db.scalar(
             select(IdempotencyKey)
             .where(
@@ -741,10 +1219,6 @@ def reconcile_prepaid_draft_invoice(
         if reservation is not None:
             return _replay_result(db, command=command, reservation=reservation)
 
-        invoice = db.get(Invoice, command.invoice_id)
-        if invoice is None:
-            _error("invoice_not_found", "Invoice was not found.")
-        lock_account(db, str(invoice.account_id))
         locked = lock_for_update(db, Invoice, str(invoice.id))
         if locked is None:
             _error("invoice_not_found", "Invoice was not found.")
@@ -776,18 +1250,30 @@ def reconcile_prepaid_draft_invoice(
                 "idempotency_conflict",
                 "Idempotency key was concurrently reserved by another command.",
             )
-        changed_invoice, applied = _stage_action(
+        changed_invoice, applied, payment_applied, opening_consumption = _stage_action(
             db,
             preview=current,
             effective_at=command.effective_at,
             context=command.context,
         )
+        _resolve_review_exception(db, changed_invoice.id)
         return PrepaidDraftReconciliationResult(
             invoice_id=changed_invoice.id,
             disposition=current.disposition,
             action=current.recommended_action,
             final_status=changed_invoice.status,
             applied_amount=applied,
+            payment_applied_amount=payment_applied,
+            opening_funding_applied_amount=round_money(
+                to_decimal(
+                    opening_consumption.amount
+                    if opening_consumption is not None
+                    else Decimal("0.00")
+                )
+            ),
+            opening_funding_consumption_id=(
+                opening_consumption.id if opening_consumption is not None else None
+            ),
             preview_fingerprint=current.fingerprint,
             replayed=False,
         )
@@ -838,19 +1324,23 @@ def stage_prepaid_draft_after_funding_change(
         )
     )
     if not invoice_ids:
-        return FundingChangeDraftResult(0, 0, 0, ())
+        return FundingChangeDraftResult(0, 0, 0, 0, ())
     if len(invoice_ids) != 1:
         return FundingChangeDraftResult(
             len(invoice_ids),
             0,
             len(invoice_ids),
+            0,
             invoice_ids,
         )
 
     preview = preview_prepaid_draft_reconciliation(db, invoice_ids[0])
+    if preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable:
+        _stage_review_exception(db, preview=preview)
+        return FundingChangeDraftResult(1, 0, 1, 1, invoice_ids)
     if preview.recommended_action is not PrepaidDraftAction.settle_paid:
-        return FundingChangeDraftResult(1, 0, 1, invoice_ids)
-    invoice, _applied = _stage_action(
+        return FundingChangeDraftResult(1, 0, 1, 0, invoice_ids)
+    invoice, _applied, _payment_applied, _opening_consumption = _stage_action(
         db,
         preview=preview,
         effective_at=effective_at,
@@ -861,7 +1351,7 @@ def stage_prepaid_draft_after_funding_change(
             "incomplete_repair",
             "Funding-change draft settlement did not produce a paid invoice.",
         )
-    return FundingChangeDraftResult(1, 1, 0, invoice_ids)
+    return FundingChangeDraftResult(1, 1, 0, 0, invoice_ids)
 
 
 __all__ = [

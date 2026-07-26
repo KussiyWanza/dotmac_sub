@@ -348,6 +348,37 @@ class AccountCreditApplications:
     ) -> AccountCreditApplicationResult:
         """Apply exact payment-backed credit only when it covers the invoice."""
 
+        return AccountCreditApplications._apply_invoice_payment_sources(
+            db,
+            invoice,
+            preview_fingerprint=preview_fingerprint,
+            require_full_funding=True,
+        )
+
+    @staticmethod
+    def apply_invoice_available(
+        db: Session,
+        invoice: Invoice,
+        *,
+        preview_fingerprint: str,
+    ) -> AccountCreditApplicationResult:
+        """Apply all exact payment-backed credit before another typed source."""
+
+        return AccountCreditApplications._apply_invoice_payment_sources(
+            db,
+            invoice,
+            preview_fingerprint=preview_fingerprint,
+            require_full_funding=False,
+        )
+
+    @staticmethod
+    def _apply_invoice_payment_sources(
+        db: Session,
+        invoice: Invoice,
+        *,
+        preview_fingerprint: str,
+        require_full_funding: bool,
+    ) -> AccountCreditApplicationResult:
         lock_account(db, str(invoice.account_id))
         db.refresh(invoice)
         preview = AccountCreditApplications.preview_invoice_funding(db, invoice)
@@ -357,7 +388,7 @@ class AccountCreditApplications:
                 message="Invoice funding changed after preview; preview again.",
                 details={"invoice_id": str(invoice.id)},
             )
-        if not preview.fully_funded:
+        if require_full_funding and not preview.fully_funded:
             raise AccountCreditApplicationError(
                 code="financial.account_credit_applications.insufficient_funding",
                 message="Exact payment-backed credit does not fully fund the invoice.",
@@ -416,7 +447,9 @@ class AccountCreditApplications:
 
         db.flush()
         db.refresh(invoice)
-        if remaining != Decimal("0.00") or invoice.status != InvoiceStatus.paid:
+        if require_full_funding and (
+            remaining != Decimal("0.00") or invoice.status != InvoiceStatus.paid
+        ):
             raise AccountCreditApplicationError(
                 code="financial.account_credit_applications.incomplete_application",
                 message="Exact invoice funding did not produce a paid invoice.",
@@ -427,7 +460,8 @@ class AccountCreditApplications:
                 },
             )
         result.invoices_touched.append(str(invoice.id))
-        result.invoices_settled.append(str(invoice.id))
+        if invoice.status == InvoiceStatus.paid:
+            result.invoices_settled.append(str(invoice.id))
         return result
 
     @staticmethod
@@ -691,9 +725,7 @@ class AccountCreditApplications:
             )
         for invoice in paid_query.all():
             settlement = resolve_invoice_settlement_amounts(db, invoice.id)
-            funded = round_money(
-                settlement.payments_applied + settlement.credits_applied
-            )
+            funded = settlement.total_applied
             total = round_money(to_decimal(invoice.total))
             if funded < total:
                 violations.append(

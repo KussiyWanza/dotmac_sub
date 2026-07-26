@@ -67,6 +67,42 @@ def ensure_prepaid_entitlements_for_paid_invoice(
     return created
 
 
+def project_paid_invoice_billing_anchors(
+    db: Session,
+    invoice: Invoice,
+) -> tuple[Subscription, ...]:
+    """Project next billing strictly from this paid invoice's entitlements."""
+
+    entitlements = list(
+        db.scalars(
+            select(ServiceEntitlement)
+            .where(
+                ServiceEntitlement.source_invoice_id == invoice.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            )
+            .order_by(
+                ServiceEntitlement.subscription_id,
+                ServiceEntitlement.ends_at.desc(),
+            )
+        ).all()
+    )
+    ends_by_subscription: dict[object, datetime] = {}
+    for entitlement in entitlements:
+        current = ends_by_subscription.get(entitlement.subscription_id)
+        if current is None or entitlement.ends_at > current:
+            ends_by_subscription[entitlement.subscription_id] = entitlement.ends_at
+    projected: list[Subscription] = []
+    for subscription_id, entitlement_end in ends_by_subscription.items():
+        subscription = db.get(Subscription, subscription_id)
+        if subscription is None or subscription.subscriber_id != invoice.account_id:
+            continue
+        subscription.next_billing_at = entitlement_end
+        projected.append(subscription)
+    if projected:
+        db.flush()
+    return tuple(projected)
+
+
 def ensure_prepaid_entitlement_for_paid_invoice_line(
     db: Session,
     *,

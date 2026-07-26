@@ -143,6 +143,21 @@ entitlement. `Subscription.next_billing_at` is also a projection: a future
 anchor without exact evidence is `unresolved_projection`, blocks adverse
 action, and enters reconciliation.
 
+When an existing prepaid draft is covered by settlement-backed Payments plus a
+signed reviewed opening balance, `financial.prepaid_draft_reconciliation` owns
+the invoice-first repair. It allocates Payments first, records the remainder as
+typed opening-funding consumption (never as a Payment), creates the entitlement,
+then projects `next_billing_at` from the entitlement end. Automatic discovery
+creates a durable operator exception; it does not silently leave a generic
+`draft_invoice_pending` outcome.
+
+Generic subscription Restore cannot clear an active prepaid financial lock.
+The lifecycle preview reports
+`prepaid_financial_reconciliation_required` and the admin UI routes the
+operator to the draft-invoice reconciliation queue. Only the financial access
+owner may clear the prepaid lock after exact funding and coverage evidence
+commits.
+
 Current exact coverage wins over reserve balance. A customer is not suspended
 during a funded or explicitly granted service period merely because they do not
 hold the next period's reserve. `min_balance` is a top-up target and becomes an
@@ -450,9 +465,13 @@ does not itself cut RADIUS or runtime readers over to exact-service ownership.
    or provider service.
 3. Run read-only previews before historical repair. Apply only the reviewed,
    fingerprinted cohort through the owner command.
-4. Verify money facts, entitlement, subscription anchor, lock, RADIUS state,
-   receipt, and customer-visible outcome.
-5. Keep unresolved evidence quarantined. Never fabricate zero funding, a paid
+4. Process exact cases in small canary batches. For mixed-source prepaid drafts,
+   verify the opening baseline, approval evidence, and prior consumption before
+   confirmation.
+5. Verify money facts, opening consumption, entitlement, subscription anchor,
+   lock, billing event, RADIUS state, receipt, and customer-visible outcome
+   after every batch.
+6. Keep unresolved evidence quarantined. Never fabricate zero funding, a paid
    period, or a restoration/suspension decision.
 
 ### Continuous acceptance signals

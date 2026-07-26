@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
-from app.services import prepaid_draft_reconciliation, prepaid_service_renewals
+from app.services import (
+    prepaid_draft_reconciliation,
+    prepaid_service_renewals,
+    subscription_lifecycle,
+)
 from app.services.sot_manifest import (
     AuthorityMigrationState,
     OwnerRole,
     TransactionMode,
 )
 from app.services.sot_relationships import service_relationship
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_prepaid_draft_reconciliation_has_one_contracted_owner():
@@ -48,6 +55,35 @@ def test_reconciler_has_no_rounding_tolerance_or_raw_money_writes():
     assert "execute_owner_command(" in source
     assert "AccountCreditApplications.apply_invoice_fully(" in source
     assert "Invoices.void_pristine_draft_for_owner(" in source
+
+
+def test_opening_consumption_and_exception_have_one_writer_owner():
+    constructors = {
+        "PrepaidOpeningFundingConsumption(": [],
+        "PrepaidDraftReconciliationException(": [],
+    }
+    for path in (ROOT / "app").rglob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        if relative == "app/models/prepaid_funding.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for constructor in constructors:
+            if constructor in source:
+                constructors[constructor].append(relative)
+
+    expected_owner = ["app/services/prepaid_draft_reconciliation.py"]
+    assert constructors == {
+        "PrepaidOpeningFundingConsumption(": expected_owner,
+        "PrepaidDraftReconciliationException(": expected_owner,
+    }
+
+
+def test_generic_restore_redirects_prepaid_financial_locks_to_reconciliation():
+    source = inspect.getsource(subscription_lifecycle._eligibility_reasons)
+
+    assert "EnforcementReason.prepaid" in source
+    assert "prepaid_financial_reconciliation_required" in source
+    assert "reconcile_prepaid_draft_invoice" not in source
 
 
 def test_reconciliation_cli_is_dry_run_first():

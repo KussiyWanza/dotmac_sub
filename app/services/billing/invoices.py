@@ -368,7 +368,7 @@ def _build_closure_preview(
     released_allocation_ids: tuple[UUID, ...] = ()
     derived_receivable = max(
         Decimal("0.00"),
-        round_money(to_decimal(invoice.total) - payments_applied - credits_applied),
+        round_money(to_decimal(invoice.total) - settlement.total_applied),
     )
     effects: tuple[InvoiceClosureLedgerEffect, ...]
 
@@ -423,7 +423,11 @@ def _build_closure_preview(
         release_preview = AccountCreditApplications.preview_invoice_void_release(
             db, invoice.id
         )
-        if credits_applied > 0 or release_preview.amount != payments_applied:
+        if (
+            credits_applied > 0
+            or settlement.opening_funding_applied > 0
+            or release_preview.amount != payments_applied
+        ):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1135,11 +1139,7 @@ class Invoices(ListResponseMixin):
         settlement = resolve_invoice_settlement_amounts(db, invoice.id)
         expected_amount = max(
             Decimal("0.00"),
-            round_money(
-                to_decimal(invoice.total)
-                - settlement.payments_applied
-                - settlement.credits_applied
-            ),
+            round_money(to_decimal(invoice.total) - settlement.total_applied),
         )
         entries = (
             db.query(LedgerEntry)
@@ -1649,7 +1649,7 @@ class Invoices(ListResponseMixin):
                 detail="Only an unpaid issued prepaid invoice can return to draft",
             )
         settlement = resolve_invoice_settlement_amounts(db, invoice.id)
-        if settlement.payments_applied > 0 or settlement.credits_applied > 0:
+        if settlement.total_applied > 0:
             raise HTTPException(
                 status_code=409,
                 detail="Invoice has financial activity and cannot return to draft",
@@ -1695,6 +1695,7 @@ class Invoices(ListResponseMixin):
                     "reason": reason,
                     "payments_applied": str(settlement.payments_applied),
                     "credits_applied": str(settlement.credits_applied),
+                    "opening_funding_applied": str(settlement.opening_funding_applied),
                     "ledger_transaction_id": None,
                     "service_access_consequence": "none",
                 },
