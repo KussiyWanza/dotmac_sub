@@ -268,14 +268,83 @@ def test_negative_prepaid_balance_exposure(db_session):
     db_session.commit()
     materialize_test_prepaid_opening_balance(db_session, account.id, "0.00")
 
-    count, total = billing_health.negative_prepaid_balance_exposure(db_session)
+    count, total, quarantined = billing_health.negative_prepaid_balance_exposure(
+        db_session
+    )
 
     assert count == 1
     assert total == Decimal("75.00")
+    assert quarantined == 0
     snap = billing_health.billing_health_snapshot(db_session)
     assert snap.negative_prepaid_balance_count == 1
     assert snap.negative_prepaid_balance_total == Decimal("75.00")
     assert "negative_prepaid_balances" in snap.anomalies
+    assert "prepaid_funding_quarantined" not in snap.anomalies
+
+
+def test_exposure_excludes_funding_quarantined_accounts_like_the_sweep(db_session):
+    """Monitoring must measure the cohort enforcement actually acts on.
+
+    ``collections.prepaid_balance_sweep`` computes
+    ``enforceable_ids = account_ids - quarantined_ids`` BEFORE resolving any
+    balance, so a legacy account with no reviewed opening baseline is never
+    asked for one. This function queried the same cohort WITHOUT that filter,
+    walked straight into the fail-closed resolver, and reported the whole
+    signal unavailable -- in production, 80 quarantined accounts blanking the
+    exposure figure for the other 3,842 that enforcement was handling fine.
+
+    One cohort definition, not two: quarantined accounts come back as their own
+    count, and exposure is measured over the remainder.
+    """
+    offer = _offer(db_session)
+
+    enforceable = _subscriber(db_session, email="enforceable@example.com")
+    enforceable.billing_mode = BillingMode.prepaid
+    _subscription(db_session, enforceable, offer, billing_mode=BillingMode.prepaid)
+    db_session.add(
+        LedgerEntry(
+            account_id=enforceable.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.adjustment,
+            amount=Decimal("40.00"),
+            currency="NGN",
+            memo="prepaid drawdown",
+        )
+    )
+
+    # Legacy: created before the authority cutover and never given a reviewed
+    # opening baseline, so the sweep quarantines it. Asking the resolver for
+    # its balance is exactly what used to raise.
+    quarantined_account = _subscriber(db_session, email="quarantined@example.com")
+    quarantined_account.billing_mode = BillingMode.prepaid
+    quarantined_account.created_at = datetime(1999, 1, 1, tzinfo=UTC)
+    _subscription(
+        db_session, quarantined_account, offer, billing_mode=BillingMode.prepaid
+    )
+    db_session.commit()
+    materialize_test_prepaid_opening_balance(db_session, enforceable.id, "0.00")
+
+    count, total, quarantined = billing_health.negative_prepaid_balance_exposure(
+        db_session
+    )
+
+    # The un-baselined account is excluded, not fatal, and not counted as zero.
+    assert quarantined == 1
+    assert count == 1
+    assert total == Decimal("40.00")
+
+    snap = billing_health.billing_health_snapshot(db_session)
+    assert snap.negative_prepaid_funding_quarantined_count == 1
+    assert snap.negative_prepaid_balance_count == 1
+    assert "prepaid_funding_quarantined" in snap.anomalies
+    # The exposure signal stays measurable and keeps publishing.
+    assert "negative_prepaid_exposure_unmeasurable" not in snap.anomalies
+    observed = {
+        (o.signal, o.scope): o.value
+        for o in billing_health.billing_health_observations(snap)
+    }
+    assert observed[("prepaid_funding_quarantined", "all")] == 1
+    assert observed[("negative_prepaid_balance_accounts", "all")] == 1
 
 
 def test_missing_funding_baseline_degrades_one_signal_not_the_snapshot(
@@ -301,7 +370,9 @@ def test_missing_funding_baseline_degrades_one_signal_not_the_snapshot(
 
     monkeypatch.setattr(billing_health, "prepaid_available_balances", _raise)
 
-    count, total = billing_health.negative_prepaid_balance_exposure(db_session)
+    count, total, _quarantined = billing_health.negative_prepaid_balance_exposure(
+        db_session
+    )
     assert count is None
     assert total is None
 
@@ -360,7 +431,9 @@ def test_negative_prepaid_balance_exposure_has_bounded_query_count(db_session):
 
     event.listen(db_session.bind, "before_cursor_execute", capture)
     try:
-        count, total = billing_health.negative_prepaid_balance_exposure(db_session)
+        count, total, _quarantined = billing_health.negative_prepaid_balance_exposure(
+            db_session
+        )
     finally:
         event.remove(db_session.bind, "before_cursor_execute", capture)
 

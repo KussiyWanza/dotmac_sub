@@ -560,6 +560,11 @@ class _BillingHealthCollector(Collector):
             "billing_negative_prepaid_balance_total",
             "Absolute total negative prepaid wallet exposure",
         )
+        yield _gauge_description(
+            "billing_prepaid_funding_quarantined_accounts",
+            "Prepaid accounts excluded from funding enforcement for want of a "
+            "reviewed opening baseline (also excluded from the exposure gauges)",
+        )
 
     def collect(self):  # noqa: ANN201 - prometheus collector protocol
         from datetime import UTC, datetime
@@ -671,6 +676,13 @@ class _BillingHealthCollector(Collector):
                 "negative_prepaid_balance_total",
                 "billing_negative_prepaid_balance_total",
                 "Absolute total negative prepaid wallet exposure",
+            ),
+            (
+                "prepaid_funding_quarantined",
+                "billing_prepaid_funding_quarantined_accounts",
+                "Prepaid accounts excluded from funding enforcement for want of "
+                "a reviewed opening baseline (also excluded from the exposure "
+                "gauges)",
             ),
         )
         for signal, name, help_text in global_metrics:

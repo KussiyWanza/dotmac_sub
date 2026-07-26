@@ -58,8 +58,12 @@ from app.services.job_heartbeat import (
     get_last_result,
     get_last_success,
 )
+from app.services.prepaid_enforcement_planner import (
+    candidate_prepaid_funding_account_ids,
+)
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
+    prepaid_funding_quarantined_account_ids,
 )
 
 # Alert thresholds. Conservative defaults; tune via ops experience.
@@ -174,6 +178,10 @@ class BillingHealthSnapshot:
     # missing), which is deliberately distinct from a measured zero.
     negative_prepaid_balance_count: int | None = 0
     negative_prepaid_balance_total: Decimal | None = Decimal("0.00")
+    # Accounts the sweep excludes from funding enforcement, and which the two
+    # counts above therefore deliberately exclude too. A real measured number,
+    # never None: it is the reason exposure is measured over a smaller cohort.
+    negative_prepaid_funding_quarantined_count: int = 0
     billing_profile_mismatch_count: int = 0
     billing_profile_mixed_count: int = 0
     account_credit_invariant_count: int = 0
@@ -207,6 +215,8 @@ class BillingHealthSnapshot:
             out.append("negative_prepaid_exposure_unmeasurable")
         elif self.negative_prepaid_balance_count > 0:
             out.append("negative_prepaid_balances")
+        if self.negative_prepaid_funding_quarantined_count > 0:
+            out.append("prepaid_funding_quarantined")
         if self.billing_profile_mismatch_count > 0:
             out.append("billing_profile_mismatch")
         if self.billing_profile_mixed_count > 0:
@@ -260,6 +270,11 @@ def billing_health_observations(snapshot: BillingHealthSnapshot):  # noqa: ANN20
             "prepaid_coverage_quarantined",
             "all",
             snapshot.prepaid_coverage_quarantined_count,
+        ),
+        (
+            "prepaid_funding_quarantined",
+            "all",
+            snapshot.negative_prepaid_funding_quarantined_count,
         ),
         (
             "billing_profile_mismatch_accounts",
@@ -616,13 +631,21 @@ def billing_path_coverage(db: Session) -> tuple[int, int]:
 
 def negative_prepaid_balance_exposure(
     db: Session,
-) -> tuple[int | None, Decimal | None]:
-    """Negative prepaid wallet exposure using the same balance as enforcement.
+) -> tuple[int | None, Decimal | None, int]:
+    """Negative prepaid wallet exposure over the cohort enforcement acts on.
+
+    Returns ``(negative count, absolute total, funding-quarantined count)``.
 
     This is a monitoring signal only; the permanent prepaid sweep owns warning,
-    suspension, and restoration consequences.
+    suspension, and restoration consequences. It must therefore measure the
+    same cohort the sweep acts on: the sweep excludes funding-quarantined
+    accounts BEFORE resolving any balance, so measuring them here would report
+    exposure for accounts that can never be enforced -- and would hit the
+    fail-closed resolver on accounts the sweep deliberately never asks about.
+    Quarantined accounts are reported as their own count instead of being
+    silently folded into (or silently dropped from) the exposure figure.
     """
-    account_ids = (
+    account_ids = set(
         db.execute(
             select(Subscriber.id)
             .join(Subscription, Subscription.subscriber_id == Subscriber.id)
@@ -632,10 +655,16 @@ def negative_prepaid_balance_exposure(
         .scalars()
         .all()
     )
+    # Same two owning helpers, same order, as collections.prepaid_balance_sweep:
+    # one cohort definition, not two.
+    quarantined_ids = prepaid_funding_quarantined_account_ids(
+        db, account_ids & candidate_prepaid_funding_account_ids(db)
+    )
+    measurable_ids = account_ids - quarantined_ids
     count = 0
     total = Decimal("0.00")
     try:
-        balances = prepaid_available_balances(db, account_ids)
+        balances = prepaid_available_balances(db, measurable_ids)
     except PrepaidFundingBaselineMissingError:
         # The balance resolver is fail-closed on purpose: enforcement must never
         # act on a balance it cannot verify. But this function is monitoring
@@ -647,18 +676,22 @@ def negative_prepaid_balance_exposure(
         # Degrade this one signal instead. Returning None marks it unavailable
         # so the gauge is omitted rather than reported as a false zero, and the
         # rest of the snapshot still publishes.
+        # Retained as a backstop. Quarantine filtering above removes the known
+        # un-baselined cohort, so reaching here means an account outside that
+        # cohort cannot be resolved -- unexpected, and worth an anomaly, but
+        # still never a reason to take the whole snapshot down.
         logger.exception(
             "billing_negative_prepaid_exposure_unavailable: prepaid funding "
-            "baseline missing; reporting this signal as unavailable and "
-            "publishing the rest of the billing-health snapshot"
+            "baseline missing outside the quarantined cohort; reporting this "
+            "signal as unavailable and publishing the rest of the snapshot"
         )
-        return None, None
-    for account_id in account_ids:
+        return None, None, len(quarantined_ids)
+    for account_id in measurable_ids:
         balance = balances[account_id]
         if balance < Decimal("0.00"):
             count += 1
             total += abs(balance)
-    return count, total
+    return count, total, len(quarantined_ids)
 
 
 def billing_profile_integrity(db: Session) -> tuple[int, int]:
@@ -705,9 +738,11 @@ def billing_health_snapshot(
     last_scanned, eligible, scan_ratio = invoice_scan_coverage(db)
     c24, avg7, ratio, collapsed = payment_volume(db, now=now)
     no_path, terminal = billing_path_coverage(db)
-    negative_prepaid_count, negative_prepaid_total = negative_prepaid_balance_exposure(
-        db
-    )
+    (
+        negative_prepaid_count,
+        negative_prepaid_total,
+        negative_prepaid_quarantined,
+    ) = negative_prepaid_balance_exposure(db)
     profile_mismatch_count, profile_mixed_count = billing_profile_integrity(db)
     from app.services.billing.account_credit import AccountCreditApplications
 
@@ -736,6 +771,7 @@ def billing_health_snapshot(
         active_subs_on_terminal_account=terminal,
         negative_prepaid_balance_count=negative_prepaid_count,
         negative_prepaid_balance_total=negative_prepaid_total,
+        negative_prepaid_funding_quarantined_count=negative_prepaid_quarantined,
         billing_profile_mismatch_count=profile_mismatch_count,
         billing_profile_mixed_count=profile_mixed_count,
         account_credit_invariant_count=account_credit_invariant_count,
