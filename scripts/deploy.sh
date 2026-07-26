@@ -13,6 +13,9 @@
 #   HEALTH_CURL_TIMEOUT=N ...    cap each health-check curl attempt at N seconds
 #                                (default 5) so a hung health endpoint can't stall
 #                                a retry indefinitely
+#   BACKGROUND_STABILITY_SECONDS=N
+#                              require workers and Beat to remain restart-free
+#                              for N seconds before accepting the release
 #
 # RUN IT DETACHED over SSH -- `nohup ./scripts/deploy.sh sha-... &` or inside
 # tmux. A dropped SSH session sends SIGHUP and kills the deploy mid-flight; the
@@ -22,7 +25,8 @@
 # Procedure:
 #   verify image on GHCR -> DB backup -> pull -> verify OCI revision ->
 #   pin APP_IMAGE + GIT_SHA in .env ->
-#   migrate + verify -> warm candidate -> recreate app+workers -> health gate.
+#   migrate + verify -> warm candidate -> recreate app+workers ->
+#   web + background-runtime health gates.
 #
 # On a failed health gate the previous image is re-pinned and the services are
 # recreated on it. Migrations are NOT reverted automatically — new revisions must
@@ -48,10 +52,17 @@ CANDIDATE_CONTAINER="${CANDIDATE_CONTAINER:-dotmac_sub_app_candidate}"
 CANDIDATE_PORT="${CANDIDATE_PORT:-18001}"
 CANDIDATE_HEALTH_URL="${CANDIDATE_HEALTH_URL:-http://127.0.0.1:${CANDIDATE_PORT}/health}"
 CANDIDATE_DRAIN_SECONDS="${CANDIDATE_DRAIN_SECONDS:-2}"
+BACKGROUND_RUNTIME_TIMEOUT_SECONDS="${BACKGROUND_RUNTIME_TIMEOUT_SECONDS:-90}"
+BACKGROUND_STABILITY_SECONDS="${BACKGROUND_STABILITY_SECONDS:-15}"
+CELERY_INSPECT_TIMEOUT_SECONDS="${CELERY_INSPECT_TIMEOUT_SECONDS:-5}"
 # Every service that runs the app image and must be recreated on a new build.
 APP_SERVICES=(app celery-worker celery-worker-bandwidth celery-worker-ingestion \
   celery-worker-monitoring celery-worker-billing celery-worker-tr069 celery-beat \
   bandwidth-poller syslog-listener)
+CELERY_WORKER_SERVICES=(celery-worker celery-worker-bandwidth \
+  celery-worker-ingestion celery-worker-monitoring celery-worker-billing \
+  celery-worker-tr069)
+CELERY_BEAT_SERVICE="celery-beat"
 
 DB_CONTAINER="${DB_CONTAINER:-dotmac_pg_local}"
 
@@ -109,6 +120,89 @@ wait_for_health() {
     fi
     sleep 5
   done
+}
+
+service_container_id() {
+  local service="$1"
+  "${COMPOSE[@]}" ps -q "${service}" 2>/dev/null | tail -n 1
+}
+
+assert_background_service_running() {
+  local service="$1"
+  local container
+  local state
+  local restart_count
+
+  container="$(service_container_id "${service}")"
+  if [[ -z "${container}" ]]; then
+    echo "BACKGROUND RUNTIME FAILURE: ${service} has no Compose container." >&2
+    return 1
+  fi
+  state="$(docker inspect "${container}" \
+    --format '{{.State.Status}}' 2>/dev/null || true)"
+  restart_count="$(docker inspect "${container}" \
+    --format '{{.RestartCount}}' 2>/dev/null || true)"
+  if [[ "${state}" != "running" ]]; then
+    echo "BACKGROUND RUNTIME FAILURE: ${service} is ${state:-unavailable}." >&2
+    return 1
+  fi
+  if [[ ! "${restart_count}" =~ ^[0-9]+$ ]] || ((restart_count != 0)); then
+    echo "BACKGROUND RUNTIME FAILURE: ${service} restart count is ${restart_count:-unknown}; expected 0." >&2
+    return 1
+  fi
+}
+
+background_runtime_ready() {
+  local service
+  local container
+  local hostname
+  local probe_container=""
+  local -a expected_nodes=()
+
+  assert_background_service_running "${CELERY_BEAT_SERVICE}" || return 1
+  for service in "${CELERY_WORKER_SERVICES[@]}"; do
+    assert_background_service_running "${service}" || return 1
+    container="$(service_container_id "${service}")"
+    hostname="$(docker inspect "${container}" \
+      --format '{{.Config.Hostname}}' 2>/dev/null || true)"
+    if [[ -z "${hostname}" ]]; then
+      echo "BACKGROUND RUNTIME FAILURE: cannot resolve ${service} Celery node name." >&2
+      return 1
+    fi
+    if [[ -z "${probe_container}" ]]; then
+      probe_container="${container}"
+    fi
+    expected_nodes+=("celery@${hostname}")
+  done
+
+  if ! docker exec "${probe_container}" \
+    python -m scripts.verify_celery_workers \
+    --timeout "${CELERY_INSPECT_TIMEOUT_SECONDS}" \
+    "${expected_nodes[@]}" >/dev/null 2>&1; then
+    echo "BACKGROUND RUNTIME FAILURE: not every declared Celery worker answered ping." >&2
+    return 1
+  fi
+}
+
+wait_for_background_runtime() {
+  local deadline=$((SECONDS + BACKGROUND_RUNTIME_TIMEOUT_SECONDS))
+
+  until background_runtime_ready; do
+    if ((SECONDS >= deadline)); then
+      echo "Background runtime health gate failed after ${BACKGROUND_RUNTIME_TIMEOUT_SECONDS}s." >&2
+      return 1
+    fi
+    sleep 5
+  done
+
+  if ((BACKGROUND_STABILITY_SECONDS > 0)); then
+    log "Celery workers and Beat are ready; verifying ${BACKGROUND_STABILITY_SECONDS}s restart-free stability"
+    sleep "${BACKGROUND_STABILITY_SECONDS}"
+  fi
+  if ! background_runtime_ready; then
+    echo "Background runtime health gate failed during the restart-free stability check." >&2
+    return 1
+  fi
 }
 
 assert_proxy_handoff_contract() {
@@ -404,6 +498,20 @@ if ! wait_for_health "${HEALTH_URL}" "Primary app"; then
   else
     cleanup_candidate
     log "No previous image recorded — cannot auto-roll-back. Investigate the app container."
+  fi
+  exit 1
+fi
+
+log "Verifying Celery workers and Beat (timeout ${BACKGROUND_RUNTIME_TIMEOUT_SECONDS}s)"
+if ! wait_for_background_runtime; then
+  trap - ERR
+  log "Background runtime health gate FAILED — rolling back to ${PREV_IMAGE:-none}"
+  if [[ -n "${PREV_IMAGE}" ]]; then
+    restore_prev
+    log "Rolled back to ${PREV_IMAGE}. NOTE: migrations from ${TAG} were NOT reverted."
+  else
+    cleanup_candidate
+    log "No previous image recorded — cannot auto-roll-back. Investigate the Celery containers."
   fi
   exit 1
 fi

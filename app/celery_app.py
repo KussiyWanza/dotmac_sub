@@ -169,10 +169,6 @@ celery_app.conf.task_queues = (
     Queue("billing"),  # Daily business runners (billing/dunning/expiry/FUP)
 )
 
-# Ensure all tasks are registered by importing the tasks package
-import app.tasks  # noqa: E402, F401
-import app.tasks.nin_tasks  # noqa: E402, F401
-
 
 def _release_metadata() -> dict[str, str | None]:
     return {
@@ -468,3 +464,11 @@ def _log_task_retry(request=None, reason=None, einfo=None, **_kwargs):
         ),
         exc_info=einfo.exc_info if einfo is not None else None,
     )
+
+
+# Import task modules only after the Celery application's public helpers and
+# signal handlers are defined. Task modules import both ``celery_app`` and, in
+# some cases, ``enqueue_celery_task``; importing them earlier leaves those
+# helpers unavailable while this module is still initializing.
+import app.tasks  # noqa: E402, F401
+import app.tasks.nin_tasks  # noqa: E402, F401

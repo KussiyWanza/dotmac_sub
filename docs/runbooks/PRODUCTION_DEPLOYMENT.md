@@ -38,7 +38,10 @@ contain the backup upstream.
    candidate while the primary port is unavailable.
 11. Verify the primary image has no source-code bind mount and wait for its
    health endpoint.
-12. Gracefully drain the candidate and retain the configured rollback images.
+12. Require every declared Celery worker to remain restart-free and answer a
+   node-specific ping, and require Celery Beat to remain running without
+   restarts, across a bounded stabilization window.
+13. Gracefully drain the candidate and retain the configured rollback images.
 
 The candidate runs the same image, environment, and database schema as the
 primary. It is bound to localhost and exists only for the handoff window.
@@ -102,5 +105,8 @@ docker compose -f docker-compose.yml run --rm --no-deps app \
 - Candidate startup failure leaves the primary release serving traffic.
 - Primary health failure restores the previous image while the candidate
   continues serving, then removes the candidate after the rollback is healthy.
+- Celery worker or Beat startup/readiness failure follows the same rollback
+  path. A healthy web endpoint cannot make a release acceptable while
+  background processing is unavailable.
 - Database migrations are forward-only and are not rolled back automatically,
   so every release migration must remain compatible with the previous image.
