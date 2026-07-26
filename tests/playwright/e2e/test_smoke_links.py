@@ -122,12 +122,13 @@ def test_public_internal_links_smoke(admin_page, settings):
             "/",
             "/auth/login",
             "/auth/forgot-password",
+            # Only routes the app actually serves. /web/catalog, /web/projects
+            # and /web/tickets were listed here but have never existed in app
+            # code, so this spec asserted a 404 on every run. E2E is nightly and
+            # not a PR gate, so that failure sat unnoticed.
             "/web/network",
             "/web/usage",
             "/web/billing",
-            "/web/catalog",
-            "/web/projects",
-            "/web/tickets",
         ],
         max_pages,
     )
