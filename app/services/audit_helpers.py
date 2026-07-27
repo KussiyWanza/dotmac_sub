@@ -426,6 +426,42 @@ def build_audit_activities_for_types(
     return _events_to_activities(db, events, include_entity_label=True)
 
 
+def build_audit_activities_for_events(db: Session, events: list) -> list[dict]:
+    """Build labelled activity rows from a caller's already-scoped events."""
+    return _events_to_activities(db, events, include_entity_label=True)
+
+
+def build_tax_rate_audit_activities(db: Session, limit: int = 5) -> list[dict]:
+    """Recent tax-rate activity, including WHT changes recorded on settings.
+
+    A withholding change is written against ``domain_setting``, not
+    ``tax_rate``, so scoping by entity type alone would hide it. Read a bounded
+    window of both types and keep the rows whose changes actually concern tax.
+    """
+    try:
+        from app.models.audit import AuditEvent
+
+        events = (
+            db.query(AuditEvent)
+            .filter(AuditEvent.entity_type.in_(("tax_rate", "domain_setting")))
+            .filter(AuditEvent.is_active.is_(True))
+            .order_by(AuditEvent.occurred_at.desc())
+            .limit(200)
+            .all()
+        )
+        tax_events = [
+            event
+            for event in events
+            if event.entity_type == "tax_rate"
+            or "withholding_tax_rate_percent"
+            in ((event.metadata_ or {}).get("changes") or {})
+        ]
+        return build_audit_activities_for_events(db, tax_events[:limit])
+    except Exception:
+        db.rollback()
+        return []
+
+
 def list_audit_events_for_entities(
     db: Session,
     entity_refs: list[tuple[str, str]],

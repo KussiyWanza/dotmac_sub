@@ -10,6 +10,20 @@
   {% if message %}<div class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ message }}</div>{% endif %}
 
   {% if show_field_reviews %}
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Draft projects awaiting vendor procurement</h2><p class="mt-1 text-sm text-slate-500">Assign one vendor directly or open a time-bounded bidding round. Tasks and work orders remain internal delivery scope.</p></header>
+    {% for project in draft_projects %}
+    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[1fr_1fr]">
+      <div><strong>{{ project.project.name if project.project else project.id }}</strong><p class="mt-1 text-sm text-slate-500">Installation Project · draft</p></div>
+      <form method="post" action="/admin/vendors/operations/projects/{{ project.id }}/procurement" class="grid gap-2 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
+        <select name="mode" class="rounded-md border-slate-300 text-sm"><option value="direct">Assign vendor directly</option><option value="bidding">Open for bids</option></select>
+        <select name="vendor_id" class="rounded-md border-slate-300 text-sm"><option value="">Select vendor (direct)</option>{% for vendor in active_vendors %}<option value="{{ vendor.id }}">{{ vendor.name }}</option>{% endfor %}</select>
+        <label class="text-xs text-slate-500 sm:col-span-2">Bid close time (required only for bidding)<input type="datetime-local" name="bidding_close_at" class="mt-1 block w-full rounded-md border-slate-300 text-sm"></label>
+        <button class="rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white sm:col-span-2">Configure procurement</button>
+      </form>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No draft installation projects awaiting vendor assignment.</p>{% endfor %}
+  </section>
   {% if show_route_reviews %}
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Proposed routes awaiting review</h2></header>

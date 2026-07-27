@@ -95,7 +95,7 @@ rollback 2 app/web/admin/billing_accounts.py
 rollback 2 app/web/admin/billing_consolidated.py
 rollback 2 app/web/admin/billing_credits.py
 rollback 3 app/web/admin/billing_payments.py
-rollback 2 app/web/admin/billing_reporting.py
+rollback 1 app/web/admin/billing_reporting.py
 rollback 17 app/web/admin/customers.py
 rollback 1 app/web/admin/dashboard.py
 rollback 2 app/web/admin/nas.py

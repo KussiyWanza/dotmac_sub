@@ -1,5 +1,6 @@
 """Admin review workspace for vendor projects, quotes, and purchase invoices."""
 
+from datetime import datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -26,6 +27,7 @@ from app.services.vendor_as_built_review_proposals import (
     ConfirmVendorAsBuiltReviewCommand,
 )
 from app.services.vendor_portal_operations import (
+    ConfigureVendorProcurementCommand,
     ReviewVendorQuoteCommand,
     vendor_portal_operations,
 )
@@ -124,6 +126,16 @@ def vendor_operations_queue(
     )
     context.update(
         {
+            "draft_projects": (
+                vendor_portal_operations.list_draft_projects(db)
+                if show_field_reviews
+                else []
+            ),
+            "active_vendors": (
+                vendor_portal_operations.list_active_vendors(db)
+                if show_field_reviews
+                else []
+            ),
             "message": message,
             "show_field_reviews": show_field_reviews,
             "show_route_reviews": show_route_reviews,
@@ -161,6 +173,39 @@ def vendor_operations_queue(
         }
     )
     return templates.TemplateResponse("admin/vendors/operations.html", context)
+
+
+@router.post("/projects/{project_id}/procurement")
+def configure_vendor_procurement(
+    request: Request,
+    project_id: str,
+    mode: str = Form(...),
+    vendor_id: str | None = Form(None),
+    bidding_close_at: datetime | None = Form(None),
+    _auth: dict = Depends(_project_write),
+    db: Session = Depends(get_db),
+):
+    context = _staff_confirmation_context(
+        request, scope=project_id, reason="vendor_procurement_configuration"
+    )
+    db_session_adapter.release_read_transaction(db)
+    try:
+        vendor_portal_operations.configure_procurement(
+            db,
+            ConfigureVendorProcurementCommand(
+                context=context,
+                project_id=project_id,
+                mode=mode,
+                vendor_id=vendor_id,
+                bidding_close_at=bidding_close_at,
+            ),
+        )
+    except DomainError as exc:
+        raise _quote_error(exc) from exc
+    return RedirectResponse(
+        "/admin/vendors/operations?message=Vendor+procurement+configured",
+        status_code=303,
+    )
 
 
 @router.get("/quotes/{quote_id}", response_class=HTMLResponse)
