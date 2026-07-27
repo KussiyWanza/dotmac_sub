@@ -14026,37 +14026,135 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="ai_advisory",
         services=(
             SOTService(
+                name="ai.gateway",
+                module="app.services.ai.gateway",
+                owns=(
+                    "LLM provider transport",
+                    "provider circuit-breaker and endpoint health",
+                ),
+                notes=(
+                    "The same species as a payment gateway: an external system "
+                    "Sub calls. Holds no business rule and owns no domain "
+                    "state. Credentials resolve through secrets (OpenBao), "
+                    "never settings rows. See docs/designs/AI_SOT.md."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="LLM provider transport",
+                            role=OwnerRole.TRANSPORT,
+                            input_names=(
+                                "assembled advisory prompt",
+                                "resolved provider credential",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="provider circuit-breaker and endpoint health",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("observed provider response",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="assembled advisory prompt",
+                            owner="ai.generation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "System prompt plus the caller's owned "
+                                "projection, already redacted to the advisor's "
+                                "declared input sensitivity."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="resolved provider credential",
+                            owner="secrets.reference_store",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="OpenBao-backed provider API key.",
+                        ),
+                        AuthorityInput(
+                            name="observed provider response",
+                            owner="external:llm_provider",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source="HTTP status, latency and token counts.",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Holds no transaction and writes no row. Circuit "
+                            "state is process-local."
+                        ),
+                        locking="None.",
+                        idempotency=(
+                            "None: a repeated generation is a new provider "
+                            "call and new spend."
+                        ),
+                        retries=(
+                            "Falls back to the secondary endpoint, then fails "
+                            "closed. An open circuit refuses before calling."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "ai.gateway.disabled",
+                            "ai.gateway.circuit_open",
+                            "ai.gateway.provider_unavailable",
+                        ),
+                        mapping_owner="app.services.ai.engine",
+                        retryable_codes=("ai.gateway.provider_unavailable",),
+                        fail_closed_on=(
+                            "ai.gateway.disabled",
+                            "ai.gateway.circuit_open",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ai.gateway",
+                        verification=(
+                            "tests/test_ai_engine.py exercises the transport "
+                            "through the advisory port."
+                        ),
+                    ),
+                    steward="customer experience platform",
+                    design_refs=("docs/designs/AI_SOT.md",),
+                    test_refs=(
+                        "tests/test_ai_engine.py",
+                        "tests/architecture/test_ai_boundaries.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ai.insights",
                 module="app.services.ai_operations",
                 owns=(
                     "AI insight rows",
                     "insight lifecycle: create, acknowledge, expire",
-                    "per-scope AI intake configuration",
                 ),
                 notes=(
                     "The canonical writer of AIInsight. Generated insights "
-                    "land here and nowhere else; AiIntakeConfig owns the "
-                    "per-scope/channel decision to run AI at all. AI is "
-                    "advisory: it never mutates domain state — acting on a "
-                    "recommendation means calling the domain's declared "
-                    "owner. See docs/designs/AI_SOT.md."
+                    "land here and nowhere else. AI is advisory: it never "
+                    "mutates domain state — acting on a recommendation means "
+                    "calling the domain's declared owner. AiIntakeConfig is a "
+                    "CRM import for an unimplemented conversational-intake "
+                    "feature and gates nothing; see docs/designs/AI_SOT.md."
                 ),
             ),
             SOTService(
                 name="ai.generation",
                 module="app.services.ai.engine",
                 owns=(
-                    "the report-advisory generation path",
+                    "the advisory generation path",
                     "advisor lookup, token budget, and prompt assembly",
+                    "input-sensitivity redaction before a prompt leaves",
                 ),
-                depends_on=("ai.insights",),
+                depends_on=("ai.insights", "ai.gateway"),
                 notes=(
-                    "advise() takes the CALLER's owned report projection and "
-                    "never queries a domain model, so the AI boundary holds by "
-                    "construction. It persists only through ai.insights (the "
-                    "single AIInsight writer). Behind the default-OFF "
-                    "ai.generation control. Called on demand from the admin "
-                    "report surface (app.web.admin.reports)."
+                    "advise() takes the CALLER's owned projection and never "
+                    "queries a domain model, so the AI boundary holds by "
+                    "construction rather than by vigilance — this is why "
+                    "personas were removed from the design. It persists only "
+                    "through ai.insights. Behind the default-OFF ai.generation "
+                    "control. Called on demand from the admin report surface."
                 ),
             ),
         ),
@@ -14066,10 +14164,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             "app.web.admin.reports",
         ),
         rule=(
-            "AI observes, derives, and recommends; it never decides domain "
-            "state. Insight consequences are requested from the owning domain "
-            "service, which applies its own guards, events, and audit. No "
-            "app/services/ai* module writes a non-AI ORM row."
+            "AI advises ON an owned projection and never re-derives one: the "
+            "caller hands in what it already computes, so the boundary holds "
+            "by construction. AI observes, derives, and recommends; it never "
+            "decides domain state. Insight consequences are requested from the "
+            "owning domain service, which applies its own guards, events, and "
+            "audit. No app/services/ai* module writes a non-AI ORM row."
         ),
     ),
     DomainSOT(

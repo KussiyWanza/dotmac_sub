@@ -26,6 +26,7 @@ from app.services import ai_operations, control_registry
 from app.services.ai import engine as ai_engine
 from app.services.ai.advisors import (
     AdvisorSpec,
+    InputSensitivity,
     OutputField,
     OutputSchema,
     advisor_registry,
@@ -76,7 +77,8 @@ def _spec(**overrides) -> AdvisorSpec:
         name="Test Advisor",
         domain="tickets",
         description="test",
-        report_key="ticket_sla_reports.summary",
+        projection_key="ticket_sla_reports.summary",
+        input_sensitivity=InputSensitivity.AGGREGATE,
         system_prompt="You are a test advisor.\n{output_instructions}",
         output_schema=OutputSchema(
             fields=(
@@ -199,7 +201,7 @@ def test_the_insight_records_which_report_it_advised_on(db_session):
     _enable_generation(db_session)
     insight = _advise(db_session, _spec(), _Gateway())
     # So a reader can reproduce the input rather than trust the output.
-    assert insight.metadata_["report_key"] == "ticket_sla_reports.summary"
+    assert insight.metadata_["projection_key"] == "ticket_sla_reports.summary"
 
 
 # ── telemetry ───────────────────────────────────────────────────────────────
@@ -270,7 +272,7 @@ def test_advisor_disabled_makes_no_provider_call(db_session):
 
 def test_ticket_sla_advisor_is_registered_and_bound_to_its_report():
     spec = advisor_registry.get("ticket_sla_advisor")
-    assert spec.report_key == "ticket_sla_reports.summary"
+    assert spec.projection_key == "ticket_sla_reports.summary"
     # The prompt must carry the slot the engine fills, or the schema is lost.
     assert "{output_instructions}" in spec.system_prompt
     assert "title" in spec.output_schema.required_keys()
@@ -324,3 +326,63 @@ def test_tokens_used_today_counts_completed_rows(db_session):
     _enable_generation(db_session)
     _advise(db_session, _spec(), _Gateway(_result(tokens_in=100, tokens_out=50)))
     assert ai_operations.tokens_used_today(db_session) == 150
+
+
+# --- what leaves the estate ------------------------------------------------
+
+
+def test_a_customer_content_advisor_has_its_prompt_redacted():
+    """The declaration is what turns redaction on.
+
+    Before this, redaction.py existed and nothing called it, so the sensitive
+    class was protected by a module that never ran.
+    """
+    from app.services.ai.engine import _serialise_projection
+
+    projection = {
+        "messages": [
+            {"body": "call me on +234 803 555 0111 or ada@example.com"},
+        ]
+    }
+
+    sent = _serialise_projection(projection, InputSensitivity.CUSTOMER_CONTENT)
+
+    assert "ada@example.com" not in sent
+    assert "555 0111" not in sent
+    assert "[redacted-email]" in sent
+    assert "[redacted-phone]" in sent
+
+
+def test_an_aggregate_advisor_is_sent_unchanged():
+    """Redacting counts would corrupt the input for no benefit."""
+    from app.services.ai.engine import _serialise_projection
+
+    projection = {"total_clocks": 40, "breach_rate": 0.12}
+
+    sent = _serialise_projection(projection, InputSensitivity.AGGREGATE)
+
+    assert '"total_clocks": 40' in sent
+    assert "0.12" in sent
+
+
+def test_redaction_never_silently_truncates_the_prompt():
+    """redact_text truncates at max_chars and its replacements are longer than
+    what they replace; a shortened prompt would be a worse failure than a long
+    one."""
+    from app.services.ai.engine import _serialise_projection
+
+    projection = {
+        "messages": [{"body": f"a{index}@example.com"} for index in range(80)]
+    }
+
+    sent = _serialise_projection(projection, InputSensitivity.CUSTOMER_CONTENT)
+
+    assert sent.count("[redacted-email]") == 80
+    assert sent.rstrip().endswith("}")
+
+
+def test_every_registered_advisor_declares_its_sensitivity():
+    """A forgotten default is how customer text reaches a provider unredacted,
+    so the field has none — this pins that no advisor slips through."""
+    for spec in advisor_registry.list_all():
+        assert isinstance(spec.input_sensitivity, InputSensitivity), spec.key

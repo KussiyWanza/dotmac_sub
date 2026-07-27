@@ -1,16 +1,17 @@
-"""Advisors: AI advises ON an owned report projection, it never re-derives one.
+"""Advisors: AI advises ON an owned projection, it never re-derives one.
 
-``docs/designs/AI_SOT.md`` calls personas "the resolver" that builds context
-from the owning domain's read models. Taken literally — as CRM did — each
-persona queries raw models itself, which is a **parallel derivation path**
-sitting next to the projection the domain owner already computes. CRM needed
-a ``data_quality`` scorer per persona precisely because each re-derived its
-own context and then had to grade it.
+The original design called personas "the resolver" that builds context from
+the owning domain's read models. Taken literally — as CRM did — each persona
+queries raw models itself, which is a **parallel derivation path** sitting
+next to the projection the domain owner already computes. CRM needed a
+``data_quality`` scorer per persona precisely because each re-derived its own
+context and then had to grade it. ``docs/designs/AI_SOT.md`` now records that
+personas are out of the design for this reason.
 
 Sub already owns ~35 report projections (revenue, churn, network,
 technician, ticket-SLA, NCC, MRR). An advisor therefore declares the
-projection it advises on via ``report_key``; the CALLER fetches that report
-from its owner and hands the dict to the engine. The engine never touches a
+projection it advises on via ``projection_key``; the CALLER fetches it from
+its owner and hands the dict to the engine. The engine never touches a
 domain model, so the boundary in
 ``tests/architecture/test_ai_boundaries.py`` holds by construction rather
 than by vigilance — and the quality gate disappears, because a report the
@@ -25,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -55,21 +57,43 @@ class OutputSchema:
         return "\n".join(lines)
 
 
+class InputSensitivity(StrEnum):
+    """What class of data this advisor sends out of the estate.
+
+    The port redacts from this, so the classes cannot be collapsed into one
+    global switch: an SLA report is breach counts and team names, an inbox
+    advisor is whatever a subscriber typed.
+    """
+
+    #: Counts, rates, durations. No identifiers.
+    AGGREGATE = "aggregate"
+    #: Aggregates carrying internal names — team, assignee.
+    STAFF_IDENTIFIABLE = "staff_identifiable"
+    #: Text a customer wrote, or their identifiers. Redacted before sending.
+    CUSTOMER_CONTENT = "customer_content"
+
+
 @dataclass(frozen=True)
 class AdvisorSpec:
-    """One advisor, bound to one owned report projection.
+    """One advisor, bound to one owned projection.
 
-    ``report_key`` names the projection this advises on. It is documentation
-    with teeth: the binding is explicit, so a reader can find the owner that
-    computes the input, and a caller cannot quietly feed an advisor something
-    it was never designed to read.
+    ``projection_key`` names the projection this advises on. It is
+    documentation with teeth: the binding is explicit, so a reader can find
+    the owner that computes the input, and a caller cannot quietly feed an
+    advisor something it was never designed to read.
+
+    ``input_sensitivity`` is the declaration that turns redaction on. It has
+    no default: an advisor author must decide what their projection carries,
+    because a forgotten default is how customer text reaches a provider
+    unredacted.
     """
 
     key: str
     name: str
     domain: str
     description: str
-    report_key: str
+    projection_key: str
+    input_sensitivity: InputSensitivity
     system_prompt: str  # must contain the {output_instructions} slot
     output_schema: OutputSchema
     default_max_tokens: int = 1200
@@ -112,7 +136,7 @@ advisor_registry = AdvisorRegistry()
 #       [{key, label?, total, breached, breach_rate}]
 # The prompt describes only those fields; nothing here invents any.
 
-TICKET_SLA_REPORT_KEY = "ticket_sla_reports.summary"
+TICKET_SLA_PROJECTION_KEY = "ticket_sla_reports.summary"
 
 
 def _sla_severity(parsed: dict[str, Any]) -> str:
@@ -134,7 +158,10 @@ TICKET_SLA_ADVISOR = AdvisorSpec(
         "Reads the owned ticket-SLA summary and points out where breaches "
         "concentrate and what to look at first."
     ),
-    report_key=TICKET_SLA_REPORT_KEY,
+    projection_key=TICKET_SLA_PROJECTION_KEY,
+    # by_service_team and by_assignee carry internal names, so this is not
+    # purely aggregate — but it holds nothing a customer wrote.
+    input_sensitivity=InputSensitivity.STAFF_IDENTIFIABLE,
     setting_key="intelligence_ticket_sla_advisor_enabled",
     system_prompt=(
         "You are an ISP support operations analyst. You are given a ticket "

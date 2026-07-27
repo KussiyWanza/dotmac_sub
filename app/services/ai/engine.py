@@ -42,6 +42,8 @@ from sqlalchemy.orm import Session
 from app.models.ai_insight import AIInsight, AIInsightStatus, InsightSeverity
 from app.models.domain_settings import SettingDomain
 from app.services import ai_operations, control_registry
+from app.services.ai.advisors import InputSensitivity
+from app.services.ai.redaction import redact_text
 from app.services.audit_helpers import log_audit_event
 from app.services.settings_spec import resolve_value
 
@@ -109,14 +111,28 @@ def _advisor_registry():
     return advisor_registry
 
 
-def _serialise_report(report: dict[str, Any]) -> str:
+def _serialise_projection(
+    projection: dict[str, Any], sensitivity: InputSensitivity
+) -> str:
     """The owned projection, as the model sees it.
 
     ``default=str`` so a Decimal or datetime the owner emits degrades to text
-    rather than exploding — the engine must not be the reason a report cannot
-    be advised on.
+    rather than exploding — the engine must not be the reason a projection
+    cannot be advised on.
+
+    An advisor that declared ``customer_content`` has its serialised prompt
+    redacted here, at the port, rather than in each caller: a caller that
+    forgets is exactly the failure the declaration exists to prevent. See
+    ``docs/designs/AI_SOT.md``.
     """
-    return json.dumps(report, indent=2, sort_keys=True, default=str)
+    serialised = json.dumps(projection, indent=2, sort_keys=True, default=str)
+    if sensitivity is InputSensitivity.CUSTOMER_CONTENT:
+        # redact_text truncates at max_chars, and each replacement is longer
+        # than the shortest thing it can replace. Silently shortening a prompt
+        # would be a worse failure than a long one, so the bound is set where
+        # no expansion can reach it.
+        return redact_text(serialised, max_chars=len(serialised) * 4 + 100)
+    return serialised
 
 
 class IntelligenceEngine:
@@ -170,7 +186,7 @@ class IntelligenceEngine:
         """Advise on an owned report projection.
 
         ``report`` is the dict the CALLER fetched from the projection's owner
-        (see ``AdvisorSpec.report_key``). The engine reads nothing else — no
+        (see ``AdvisorSpec.projection_key``). The engine reads nothing else — no
         session query against a domain model happens here.
 
         Raises ``AIEngineError`` when the engine declines (disabled, out of
@@ -199,7 +215,7 @@ class IntelligenceEngine:
             primary=primary,
             fallback="secondary",
             system=system,
-            prompt=_serialise_report(report),
+            prompt=_serialise_projection(report, spec.input_sensitivity),
             max_tokens=spec.default_max_tokens,
         )
 
@@ -226,7 +242,7 @@ class IntelligenceEngine:
             expires_at=_expiry_of(spec),
             # Which owned projection this advice was derived from — so a
             # reader can reproduce the input rather than trust the output.
-            metadata={"report_key": spec.report_key},
+            metadata={"projection_key": spec.projection_key},
         )
         insight = ai_operations.create_insight(
             db,
@@ -255,7 +271,7 @@ class IntelligenceEngine:
             actor_id=triggered_by_system_user_id,
             metadata={
                 "advisor_key": spec.key,
-                "report_key": spec.report_key,
+                "projection_key": spec.projection_key,
                 "domain": _enum_value(spec.domain),
                 "llm_provider": result.provider,
                 "llm_model": result.model,
