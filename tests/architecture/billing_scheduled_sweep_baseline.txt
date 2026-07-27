@@ -1,0 +1,20 @@
+# Scheduled tasks that sweep customer money or access for a whole cohort.
+# ADR 0007 section 7 and invariant 18 replace business-wide scans with durable
+# per-entity timers created by the owning transition. Phase 5 retires the
+# entries below; until then they stay frozen.
+#
+# This is migration debt, not permission. Names must only be removed; a new
+# scheduled financial sweep requires an accepted deviation recorded in the ADR.
+# Format: one scheduled task name per line.
+billing_approval_reconcile
+billing_health_snapshot
+billing_notifications_runner
+billing_runner
+billing_switch_guard
+bundle_reconcile
+cutover_balance_invariant_audit
+dunning_runner
+funded_inactive_exposure_audit
+overdue_checker
+prepaid_balance_sweep
+stale_overdue_lock_detect

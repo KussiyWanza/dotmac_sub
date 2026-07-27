@@ -1,0 +1,13 @@
+# Writes to a mutable money counter (balance, amount_paid,
+# collection_blocking_balance) that stands in for a derived financial position.
+# ADR 0007 invariants 12 and 13 replace these with typed per-currency position
+# derived from the immutable customer subledger.
+#
+# This is migration debt, not permission. Counts must only shrink; a new entry
+# requires an accepted deviation recorded in the ADR.
+# Format: count repository-relative-path.
+3 app/services/billing/consolidated_payments.py
+1 app/services/sales/selfserve.py
+1 app/services/sales_orders.py
+1 app/services/service_status.py
+1 app/services/web_billing_accounts.py

@@ -1,0 +1,20 @@
+# Financial identity or accounting treatment read out of a metadata/JSON bag.
+# ADR 0007 invariant 4 makes metadata and external identifiers provenance only;
+# the target joins Sale to Money through structural obligation, document, and
+# application links instead.
+#
+# This is migration debt, not permission. Counts must only shrink; a new entry
+# requires an accepted deviation recorded in the ADR.
+# Format: count repository-relative-path.
+1 app/services/account_credit_deposits.py
+2 app/services/billing/account_credit.py
+6 app/services/customer_portal_flow_payments.py
+1 app/services/invoice_classification.py
+2 app/services/ip_assignment_lifecycle.py
+2 app/services/payment_proofs.py
+2 app/services/payment_reconciliation.py
+1 app/services/payment_webhook_commands.py
+1 app/services/quote_deposits.py
+1 app/services/reseller_portal_billing.py
+5 app/services/sales_orders.py
+3 app/services/topup_intents.py
