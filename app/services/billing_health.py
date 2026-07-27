@@ -746,9 +746,9 @@ def billing_health_snapshot(
     profile_mismatch_count, profile_mixed_count = billing_profile_integrity(db)
     from app.services.billing.account_credit import AccountCreditApplications
 
-    account_credit_invariant_count = len(
-        AccountCreditApplications.inspect_invariants(db)
-    )
+    account_credit_invariant_count = AccountCreditApplications.summarize_invariants(
+        db
+    ).total
     coverage_repairable_count, coverage_quarantined_count = (
         prepaid_coverage_reconciliation_counts(db)
     )

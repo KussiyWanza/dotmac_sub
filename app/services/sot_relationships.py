@@ -1993,6 +1993,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "all-or-nothing exact invoice credit application",
                     "invoice-void release of exact account-credit allocations",
                     "account-credit application invariant monitoring",
+                    "bounded account-credit invariant summary",
                 ),
                 depends_on=("financial.payments", "financial.invoices"),
                 notes=(
@@ -7727,7 +7728,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
                 notes=(
                     "Billing health is monitoring evidence, never a financial "
-                    "balance owner or direct suspension/restoration decision."
+                    "balance owner or direct suspension/restoration decision. "
+                    "The frequent snapshot consumes typed aggregate counts; "
+                    "record-level forensic inspection stays with the financial "
+                    "owner and is not used merely to calculate a metric count."
                 ),
             ),
             SOTService(

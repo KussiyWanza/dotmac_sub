@@ -988,7 +988,10 @@ detailed security and delivery boundary is
    eligibility, and an arrangement does not rewrite receivables or access.
 17. `financial.billing_health` owns monitoring snapshots and anomaly
     classification. Health signals are observations, not balances or direct
-    suspension/restoration permission.
+    suspension/restoration permission. Its frequent snapshot consumes typed,
+    database-aggregated invariant counts from the financial owner; exact
+    record-level forensic inspection remains a separate owner query and is not
+    used merely to produce a metric count.
 18. Scheduled billing, collections, and payment-reconciliation services own DB
    sessions, transaction outcomes, and operational logging for Celery runners.
 19. `integration.inbox` owns signature-verified payment receipt identity,

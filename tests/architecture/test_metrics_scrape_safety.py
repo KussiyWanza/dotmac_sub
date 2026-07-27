@@ -108,6 +108,52 @@ def test_metrics_scrape_policy_is_checked_in() -> None:
     assert (ROOT / "docs/METRICS_SCRAPE_SAFETY.md").is_file()
 
 
+def test_billing_health_producer_does_not_call_forensic_invariant_scan() -> None:
+    source = (ROOT / "app/services/billing_health.py").read_text(encoding="utf-8")
+    assert "AccountCreditApplications.summarize_invariants(" in source
+    assert "AccountCreditApplications.inspect_invariants(" not in source
+
+
+def test_invariant_summary_covers_every_forensic_violation_code() -> None:
+    """The aggregate and the record scan must define the same invariant set.
+
+    `summarize_invariants` re-implements `inspect_invariants` in SQL so the
+    frequent snapshot stays bounded. Two implementations of one definition
+    drift: adding an eighth violation code to the forensic scan without a
+    matching summary field makes the gauge silently under-count, and no
+    scenario test fails, because a scenario test only covers the codes someone
+    remembered to write one for.
+
+    Pin the correspondence itself. A new code must land with its field.
+    """
+    from app.services.billing.account_credit import AccountCreditInvariantSummary
+
+    source = (ROOT / "app/services/billing/account_credit.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+
+    inspector = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "inspect_invariants"
+    )
+    emitted_codes = {
+        keyword.value.value
+        for call in ast.walk(inspector)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "AccountCreditInvariantViolation"
+        for keyword in call.keywords
+        if keyword.arg == "code" and isinstance(keyword.value, ast.Constant)
+    }
+
+    summary_fields = set(AccountCreditInvariantSummary.__dataclass_fields__)
+
+    assert emitted_codes, "found no violation codes -- the AST scan stopped matching"
+    assert emitted_codes == summary_fields
+
+
 def test_prometheus_callbacks_stay_in_reviewed_exporter_module() -> None:
     violations = []
     for path in (ROOT / "app").rglob("*.py"):

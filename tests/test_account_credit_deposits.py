@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError
 
 from app.models.billing import (
     Invoice,
@@ -15,6 +17,9 @@ from app.models.billing import (
     PaymentAllocation,
     PaymentProvider,
     PaymentProviderType,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
+    PaymentStatus,
     ServiceEntitlement,
     TopupIntent,
 )
@@ -32,6 +37,11 @@ from app.models.catalog import (
     SubscriptionStatus,
 )
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
+from app.models.integration_platform import (
+    IntegrationCapabilityBinding,
+    IntegrationInbox,
+    IntegrationInstallation,
+)
 from app.models.subscriber import SubscriberStatus
 from app.schemas.billing import InvoiceCreate, PaymentSyncRead
 from app.services.account_credit_deposits import (
@@ -996,6 +1006,9 @@ def test_invariant_monitor_reports_payable_invoice_with_unused_credit(
     )
 
     assert [item.code for item in violations] == ["eligible_invoice_with_unused_credit"]
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+    assert summary.eligible_invoice_with_unused_credit == 1
+    assert summary.total == len(violations)
 
 
 def test_invariant_monitor_reports_paid_invoice_without_settlement_evidence(
@@ -1017,3 +1030,252 @@ def test_invariant_monitor_reports_paid_invoice_without_settlement_evidence(
     )
 
     assert [item.code for item in violations] == ["paid_invoice_underfunded"]
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+    assert summary.paid_invoice_underfunded == 1
+    assert summary.total == len(violations)
+
+
+def test_invariant_summary_matches_payment_capacity_violations(db_session, subscriber):
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("100.00"),
+        status=PaymentStatus.succeeded,
+        paid_at=datetime.now(UTC),
+    )
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.paid,
+        currency="NGN",
+        total=Decimal("125.00"),
+        balance_due=Decimal("0.00"),
+    )
+    db_session.add_all([payment, invoice])
+    db_session.flush()
+    consumption = LedgerEntry(
+        account_id=subscriber.id,
+        payment_id=payment.id,
+        entry_type=LedgerEntryType.debit,
+        source=LedgerSource.payment,
+        amount=Decimal("125.00"),
+        currency="NGN",
+    )
+    db_session.add(consumption)
+    db_session.flush()
+    db_session.add_all(
+        [
+            PaymentSettlement(
+                payment_id=payment.id,
+                amount=Decimal("100.00"),
+                unallocated_amount=Decimal("100.00"),
+                prepaid_amount=Decimal("0.00"),
+                currency="NGN",
+                origin=PaymentSettlementOrigin.system,
+                idempotency_key="invariant-summary-capacity",
+            ),
+            PaymentAllocation(
+                payment_id=payment.id,
+                invoice_id=invoice.id,
+                consumption_ledger_entry_id=consumption.id,
+                amount=Decimal("125.00"),
+                is_active=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    violations = AccountCreditApplications.inspect_invariants(db_session)
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert [item.code for item in violations] == [
+        "payment_overallocated",
+        "negative_payment_credit_source_availability",
+    ]
+    assert summary.payment_overallocated == 1
+    assert summary.negative_payment_credit_source_availability == 1
+    assert summary.total == len(violations)
+
+
+def test_invariant_summary_matches_partial_refund_settlement(db_session, subscriber):
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("100.00"),
+        refunded_amount=Decimal("25.00"),
+        status=PaymentStatus.partially_refunded,
+        paid_at=datetime.now(UTC),
+    )
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.paid,
+        currency="NGN",
+        total=Decimal("75.00"),
+        balance_due=Decimal("0.00"),
+    )
+    db_session.add_all([payment, invoice])
+    db_session.flush()
+    db_session.add(
+        PaymentAllocation(
+            payment_id=payment.id,
+            invoice_id=invoice.id,
+            amount=Decimal("100.00"),
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    violations = AccountCreditApplications.inspect_invariants(db_session)
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert violations == []
+    assert summary.paid_invoice_underfunded == 0
+    assert summary.total == 0
+
+
+def test_invariant_summary_matches_completed_deposit_without_payment(
+    db_session, subscriber
+):
+    provider = _provider(db_session)
+    intent = _intent(db_session, subscriber, provider, amount="1000.00")
+    intent.status = "completed"
+    db_session.commit()
+
+    violations = AccountCreditApplications.inspect_invariants(db_session)
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert [item.code for item in violations] == [
+        "settled_deposit_without_exact_payment"
+    ]
+    assert summary.settled_deposit_without_exact_payment == 1
+    assert summary.total == len(violations)
+
+
+def test_invariant_summary_matches_unresolved_deposit_webhook(db_session, subscriber):
+    provider = _provider(db_session)
+    intent = _intent(db_session, subscriber, provider, amount="1000.00")
+    installation = IntegrationInstallation(
+        connector_key="paystack",
+        connector_version="1.0.0",
+        manifest_digest="a" * 64,
+        name="Paystack invariant test",
+        environment="test",
+        state="enabled",
+    )
+    db_session.add(installation)
+    db_session.flush()
+    binding = IntegrationCapabilityBinding(
+        installation_id=installation.id,
+        capability_id="payments.webhook.v1",
+        state="enabled",
+    )
+    db_session.add(binding)
+    db_session.flush()
+    db_session.add(
+        IntegrationInbox(
+            installation_id=installation.id,
+            capability_binding_id=binding.id,
+            provider_event_id="unresolved-deposit-event",
+            event_type="charge.success",
+            payload_digest="b" * 64,
+            payload_json={"data": {"metadata": {"topup_intent_id": str(intent.id)}}},
+            state="retryable",
+        )
+    )
+    db_session.commit()
+
+    violations = AccountCreditApplications.inspect_invariants(db_session)
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+
+    assert [item.code for item in violations] == ["deposit_webhook_unresolved"]
+    assert summary.deposit_webhook_unresolved == 1
+    assert summary.total == len(violations)
+
+
+def test_duplicate_provider_reference_is_unreachable_by_constraint(
+    db_session, subscriber
+):
+    """The seventh invariant has no equivalence test because it cannot happen.
+
+    `uq_payments_active_external_id` is a unique index over
+    `(provider_id, external_id)`, on PostgreSQL partial with predicate
+    `is_active AND provider_id IS NOT NULL AND external_id IS NOT NULL` --
+    exactly the rows `duplicate_provider_reference` inspects. The database
+    refuses the state the invariant looks for, so both the forensic scan and
+    the aggregate can only ever report zero, and neither can be exercised
+    against a real duplicate.
+
+    Pin the constraint instead. If it is ever dropped or narrowed, this fails
+    and the invariant becomes live -- at which point it needs the equivalence
+    test that cannot be written today.
+    """
+    provider = _provider(db_session)
+    db_session.add(
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("500.00"),
+            status=PaymentStatus.succeeded,
+            paid_at=datetime.now(UTC),
+            provider_id=provider.id,
+            external_id="duplicate-provider-reference",
+        )
+    )
+    db_session.commit()
+
+    db_session.add(
+        Payment(
+            account_id=subscriber.id,
+            amount=Decimal("500.00"),
+            status=PaymentStatus.succeeded,
+            paid_at=datetime.now(UTC),
+            provider_id=provider.id,
+            external_id="duplicate-provider-reference",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+    summary = AccountCreditApplications.summarize_invariants(db_session)
+    violations = AccountCreditApplications.inspect_invariants(db_session)
+    assert summary.duplicate_provider_reference == 0
+    assert [item.code for item in violations] == []
+    assert summary.total == len(violations)
+
+
+def test_invariant_summary_query_count_is_bounded(db_session, subscriber):
+    for index in range(25):
+        db_session.add(
+            Payment(
+                account_id=subscriber.id,
+                amount=Decimal("100.00"),
+                status=PaymentStatus.succeeded,
+                paid_at=datetime.now(UTC),
+                external_id=f"bounded-payment-{index}",
+            )
+        )
+        db_session.add(
+            Invoice(
+                account_id=subscriber.id,
+                status=InvoiceStatus.paid,
+                currency="NGN",
+                total=Decimal("100.00"),
+                balance_due=Decimal("0.00"),
+            )
+        )
+    db_session.commit()
+
+    statements: list[str] = []
+
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        summary = AccountCreditApplications.summarize_invariants(db_session)
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+
+    assert summary.paid_invoice_underfunded == 25
+    assert summary.total == 25
+    # Full-fleet health uses a fixed set of aggregate reads instead of one or
+    # more relationship/settlement queries for every payment and invoice.
+    assert len(statements) <= 8

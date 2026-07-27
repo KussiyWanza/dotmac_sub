@@ -45,6 +45,15 @@ database, cache, worker fleet, or a business integration is degraded.
 7. Every change to a metrics route, custom collector, or scrape helper must pass
    the local architecture test that rejects database and business-service
    access from the scrape path.
+8. Moving a scan out of the scrape request does not by itself make the producer
+   bounded. Frequent health producers use a fixed query budget and aggregate in
+   the database; they do not load a complete historical cohort and issue
+   relationship or settlement queries per record.
+9. A fast health projection and a detailed forensic audit may expose different
+   read models, but they share one domain owner and the same invariant
+   definitions. The health projection publishes typed counts. The detailed
+   audit returns entity-level evidence on a separate cadence or operator
+   request and must not be called merely to obtain a count.
 
 ## Migration Rule
 
@@ -58,6 +67,8 @@ When a scrape-time query is found:
 6. Add query-budget tests to the producer and no-database tests to the
    collector.
 7. Remove the old scrape-time path before enabling the scraper.
+8. Prove aggregate equivalence against the owning detailed resolver for each
+   invariant moved into the snapshot.
 
 ## Incident Basis
 
