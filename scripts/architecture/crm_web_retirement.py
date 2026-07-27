@@ -70,7 +70,7 @@ ZERO_TRAFFIC_EVIDENCE_CONTRACT = {
 EXPECTED_MODULE_COUNT = 73
 EXPECTED_ROUTE_COUNT = 813
 EXPECTED_METHOD_COUNTS = {"DELETE": 3, "GET": 430, "POST": 380}
-DEFAULT_SUB_REVISION = "680a9ca2a9ec1ca2097a6841f47700df1a114539"
+DEFAULT_SUB_REVISION = "0fbff5c1c2e52b495e50e9c081f31692c02112b3"
 REVIEWED_SUB_PULL_REQUESTS = (
     *range(1601, 1618),
     1619,
@@ -78,6 +78,11 @@ REVIEWED_SUB_PULL_REQUESTS = (
     1623,
     1624,
     1625,
+    1626,
+    1629,
+    1631,
+    1632,
+    1633,
 )
 
 HTTP_METHODS = {"delete", "get", "head", "options", "patch", "post", "put"}
@@ -245,20 +250,21 @@ MODULE_REVIEW_OVERRIDES: dict[str, dict[str, Any]] = {
         "target_slice": "project-crm-data-caller-and-traffic-cutover",
     },
     "app/web/admin/service_teams.py": {
-        "assessment_state": "assessed",
+        "assessment_state": "cutover_ready",
         "decision": {
             "notes": (
-                "Sub Party/SystemUser identity is canonical. The missing decision is "
-                "the shared service-team topology and membership lifecycle owner: "
-                "support ticket settings still mirrors configuration payloads into "
-                "ServiceTeam rows consumed across Inbox, workqueue, dispatch, projects, "
-                "and support. The proposed operations.service_team_lifecycle owner is "
-                "not registered or cut over on the reviewed target revision."
+                "This slice registers operations.service_team_lifecycle as the native "
+                "owner, adds its admin surface, moves ServiceTeam person references to "
+                "reviewed Party identity, removes the ticket-settings mirror writer, "
+                "cuts reviewed application callers over to the owner contract, and "
+                "adds authenticated browser lifecycle, CSRF, and permission coverage. "
+                "Production migration apply evidence, traffic cutover, fallback "
+                "removal, zero traffic, and CRM source deletion remain."
             ),
             "owner_service": "operations.service_team_lifecycle",
-            "state": "in_progress",
+            "state": "verified",
         },
-        "target_slice": "service-team-lifecycle-and-admin-surface",
+        "target_slice": "service-team-production-cutover-and-crm-retirement",
     },
     "app/web/agent/workqueue.py": {
         "assessment_state": "assessed",
@@ -276,6 +282,73 @@ MODULE_REVIEW_OVERRIDES: dict[str, dict[str, Any]] = {
         "target_slice": "agent-workqueue-owner-and-web-surface",
     },
 }
+
+SERVICE_TEAM_ROUTE_REPLACEMENTS: dict[str, tuple[str, str, str]] = {
+    "service_team_list": (
+        "Service-team list and active role/region projection",
+        "native_web_route",
+        "GET /admin/system/service-teams",
+    ),
+    "service_team_new": (
+        "Service-team creation form",
+        "native_web_route",
+        "GET /admin/system/service-teams/new",
+    ),
+    "service_team_create": (
+        "Service-team creation",
+        "native_web_route",
+        "POST /admin/system/service-teams",
+    ),
+    "service_team_detail": (
+        "Service-team detail and membership projection",
+        "native_web_route",
+        "GET /admin/system/service-teams/{team_id}",
+    ),
+    "service_team_edit": (
+        "Service-team edit form",
+        "native_web_route",
+        "GET /admin/system/service-teams/{team_id}/edit",
+    ),
+    "service_team_update": (
+        "Service-team metadata and manager update",
+        "native_web_route",
+        "POST /admin/system/service-teams/{team_id}",
+    ),
+    "service_team_activate": (
+        "Service-team activation",
+        "native_web_route",
+        "POST /admin/system/service-teams/{team_id}/active",
+    ),
+    "service_team_deactivate": (
+        "Service-team deactivation",
+        "native_web_route",
+        "POST /admin/system/service-teams/{team_id}/active",
+    ),
+    "service_team_delete": (
+        "Hard delete removed; audited deactivation preserves operational history",
+        "explicit_removal",
+        "POST /admin/system/service-teams/{team_id}/active",
+    ),
+    "service_team_add_member": (
+        "Service-team membership add",
+        "native_web_route",
+        "POST /admin/system/service-teams/{team_id}/members",
+    ),
+    "service_team_remove_member": (
+        "Service-team membership removal",
+        "native_web_route",
+        "POST /admin/system/service-teams/{team_id}/members/{member_id}/remove",
+    ),
+}
+
+SERVICE_TEAM_READ_HANDLERS = frozenset(
+    {
+        "service_team_list",
+        "service_team_new",
+        "service_team_detail",
+        "service_team_edit",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -678,6 +751,121 @@ def _evidence_gate() -> dict[str, Any]:
     return {"evidence": [], "state": "unassessed"}
 
 
+def _service_team_route_tracking(route: dict[str, Any]) -> dict[str, Any]:
+    source = route.get("source", {})
+    if source.get("file") != "app/web/admin/service_teams.py":
+        return {}
+    handler = source.get("handler")
+    replacement = SERVICE_TEAM_ROUTE_REPLACEMENTS.get(handler)
+    if replacement is None:
+        return {}
+    capability, kind, surface = replacement
+    write_route = handler not in SERVICE_TEAM_READ_HANDLERS
+    no_write_evidence = [
+        (
+            "CRM GET capability is replaced by a query-only native adapter; "
+            "audit, event, and idempotency write semantics do not apply."
+        )
+    ]
+    command_evidence = [
+        "tests/test_service_team_lifecycle.py",
+        "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
+    ]
+    write_gate = (
+        {"evidence": command_evidence, "state": "verified"}
+        if write_route
+        else {"evidence": no_write_evidence, "state": "not_applicable"}
+    )
+    notes = (
+        "Hard delete is intentionally removed by the native retention policy; "
+        "audited deactivation is the replacement. Authenticated browser coverage "
+        "verifies that no delete action is exposed. Production migration, traffic "
+        "cutover, and retirement evidence remain."
+        if handler == "service_team_delete"
+        else (
+            "The native owner and thin admin surface are implemented in this slice. "
+            "Authenticated browser lifecycle, CSRF, and permission parity is covered. "
+            "Production migration, traffic cutover, and retirement evidence remain."
+        )
+    )
+    return {
+        "assessment_state": "cutover_ready",
+        "replacement": {
+            "capability": capability,
+            "kind": kind,
+            "notes": notes,
+            "owner_service": "operations.service_team_lifecycle",
+            "surfaces": [surface],
+        },
+        "parity": {
+            "audit": write_gate,
+            "behavior": {
+                "evidence": [
+                    "tests/test_service_team_lifecycle.py",
+                    "tests/test_service_team_web.py",
+                    "tests/playwright/e2e/test_service_teams.py",
+                    "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
+                ],
+                "state": "verified",
+            },
+            "errors": {
+                "evidence": [
+                    "tests/test_service_team_lifecycle.py",
+                    "app/web/admin/service_teams.py",
+                ],
+                "state": "verified",
+            },
+            "events": write_gate,
+            "idempotency": write_gate,
+            "permissions": {
+                "evidence": [
+                    "tests/architecture/test_service_team_lifecycle_boundary.py",
+                    "tests/test_service_team_web.py",
+                    "tests/playwright/e2e/test_service_teams.py",
+                    "scripts/seed/seed_rbac.py",
+                ],
+                "state": "verified",
+            },
+        },
+        "migration": {
+            "callers": {
+                "evidence": [
+                    "tests/architecture/test_service_team_lifecycle_boundary.py",
+                    "tests/test_support_ticket_settings.py",
+                    "tests/test_field_job_chat.py",
+                ],
+                "state": "verified",
+            },
+            "cutover": {
+                "evidence": [
+                    (
+                        "Native code cutover and authenticated browser parity are "
+                        "complete in this slice; production migration and CRM traffic "
+                        "cutover remain pending."
+                    )
+                ],
+                "state": "in_progress",
+            },
+            "data": {
+                "evidence": [
+                    "alembic/versions/426_service_team_lifecycle.py",
+                    "tests/test_service_team_lifecycle_migration.py",
+                ],
+                "state": "in_progress",
+            },
+            "rollback": {
+                "evidence": [
+                    (
+                        "Migration 425 is forward-only; the design requires a reviewed "
+                        "pre-cutover backup before production apply."
+                    )
+                ],
+                "state": "in_progress",
+            },
+        },
+    }
+
+
 def _new_module_tracking(module: dict[str, Any]) -> dict[str, Any]:
     tracking = {
         "assessment_state": "inventory_only",
@@ -719,8 +907,8 @@ def _new_module_tracking(module: dict[str, Any]) -> dict[str, Any]:
     return _deep_merge(tracking, MODULE_REVIEW_OVERRIDES.get(file, {}))
 
 
-def _new_route_tracking() -> dict[str, Any]:
-    return {
+def _new_route_tracking(route: dict[str, Any] | None = None) -> dict[str, Any]:
+    tracking = {
         "assessment_state": "inventory_only",
         "production_usage": {"evidence": [], "state": "unknown"},
         "replacement": {
@@ -751,6 +939,9 @@ def _new_route_tracking() -> dict[str, Any]:
             "zero_traffic": _evidence_gate(),
         },
     }
+    if route is None:
+        return tracking
+    return _deep_merge(tracking, _service_team_route_tracking(route))
 
 
 def _merge_tracking(
@@ -845,7 +1036,8 @@ def build_ledger(
         routes,
         existing_routes,
         key="id",
-        default_factory=lambda _item: _new_route_tracking(),
+        default_factory=_new_route_tracking,
+        sparse_default=_new_route_tracking(),
     )
     method_counts = Counter(route["source"]["method"] for route in merged_routes)
     category_counts = Counter(module["classification"] for module in merged_modules)

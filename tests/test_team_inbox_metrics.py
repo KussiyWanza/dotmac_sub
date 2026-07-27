@@ -21,6 +21,7 @@ from app.models.team_inbox import (
 )
 from app.services import team_inbox_metrics
 from app.web.admin import reports as admin_reports
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str = "Support") -> ServiceTeam:
@@ -93,12 +94,13 @@ def test_team_performance_metrics_tracks_response_and_queue_wait(db_session):
         direction=InboxMessageDirection.outbound.value,
         at=base + timedelta(minutes=12),
     )
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
+    person_id = user.id
     db_session.add(
         InboxConversationAssignment(
             conversation_id=conversation.id,
             service_team_id=team.id,
-            person_id=person_id,
+            person_id=person.id,
             assigned_at=base + timedelta(minutes=4),
             is_active=True,
         )
@@ -223,11 +225,12 @@ def test_team_performance_report_uses_team_sla_metadata(db_session):
 
 def test_agent_performance_report_lists_active_team_members(db_session):
     team = _team(db_session)
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
+    person_id = user.id
     db_session.add(
         ServiceTeamMember(
             team_id=team.id,
-            person_id=person_id,
+            person_id=person.id,
             is_active=True,
         )
     )
@@ -332,9 +335,10 @@ def test_escalation_candidates_flag_breached_unassigned_conversation(db_session)
 
 def test_escalation_candidates_ignore_responded_assigned_conversation(db_session):
     team = _team(db_session)
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
+    person_id = user.id
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
     db_session.add(
         InboxAgentPresence(
@@ -453,9 +457,10 @@ def test_inbox_escalation_report_is_visible_from_reports_hub():
 
 def test_inbox_escalation_report_action_auto_assigns_candidate(db_session):
     team = _team(db_session)
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
+    person_id = user.id
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
     db_session.add(
         InboxAgentPresence(

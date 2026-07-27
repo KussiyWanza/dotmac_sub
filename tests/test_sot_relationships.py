@@ -18,6 +18,7 @@ def test_domain_sot_relationships_cover_expected_domains():
         "events_webhooks",
         "runtime_infrastructure",
         "observability",
+        "workforce_operations",
         "support_operations",
         "ai_advisory",
         "provisioning_operations",

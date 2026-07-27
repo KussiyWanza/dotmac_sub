@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember
+from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
@@ -435,9 +436,14 @@ def agent_performance_report(
     include_inactive_members: bool = False,
 ) -> list[InboxAgentPerformanceReportRow]:
     query = (
-        db.query(ServiceTeamMember, ServiceTeam)
+        db.query(ServiceTeamMember, ServiceTeam, SystemUser)
         .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+        .join(
+            SystemUser,
+            SystemUser.person_party_id == ServiceTeamMember.person_id,
+        )
         .filter(ServiceTeam.is_active.is_(True))
+        .filter(SystemUser.is_active.is_(True))
         .order_by(ServiceTeam.name.asc(), ServiceTeamMember.created_at.asc())
     )
     if service_team_id is not None:
@@ -446,15 +452,15 @@ def agent_performance_report(
         query = query.filter(ServiceTeamMember.is_active.is_(True))
 
     rows: list[InboxAgentPerformanceReportRow] = []
-    for member, team in query.all():
+    for member, team, user in query.all():
         metrics = agent_performance_metrics(
             db,
             service_team_id=team.id,
-            person_id=member.person_id,
+            person_id=user.id,
         )
         rows.append(
             InboxAgentPerformanceReportRow(
-                person_id=str(member.person_id),
+                person_id=str(user.id),
                 service_team_id=str(team.id),
                 service_team_name=team.name,
                 service_team_type=team.team_type,

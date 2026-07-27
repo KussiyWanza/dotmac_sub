@@ -58,6 +58,13 @@ refuses duplicate principals and repoints. It does not activate the user,
 create credentials, or assign a staff/agent Party role, RBAC role, or direct
 permission.
 
+The explicit local-admin bootstrap is the one seeding path that also creates a
+Person Party: `scripts.seed.seed_admin` creates a fresh Person Party for an
+unbound seeded administrator and delegates the reviewed binding to
+`bind_system_user_principal` with operator-bootstrap provenance. It never
+matches an existing Party by name or email. Existing, conflicting bindings
+remain fail-closed.
+
 ### ResellerUser
 
 `bind_reseller_user_principal` atomically records the Person and one existing

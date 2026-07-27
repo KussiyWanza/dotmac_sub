@@ -134,6 +134,10 @@ class EventType(enum.Enum):
     service_order_completed = "service_order.completed"
     service_order_recovered = "service_order.recovered"
 
+    # Shared operational service-team lifecycle
+    service_team_changed = "service_team.changed"
+    service_team_membership_changed = "service_team.membership_changed"
+
     # Operations - vendor installation project lifecycle
     vendor_project_published = "vendor_project.published"
     vendor_project_assigned = "vendor_project.assigned"

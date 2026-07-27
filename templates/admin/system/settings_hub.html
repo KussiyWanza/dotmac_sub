@@ -35,13 +35,15 @@
 
     {# Category Cards #}
     {% for cat in categories %}
-    {% set cat_search_blob = cat.name ~ ' ' ~ cat.description ~ ' ' ~ (cat.links | map(attribute='name') | join(' ')) ~ ' ' ~ (cat.links | map(attribute='description') | join(' ')) %}
+    {# Permission-restricted link labels must not leak through search metadata. #}
+    {% set cat_search_blob = cat.name ~ ' ' ~ cat.description %}
     {% if not selected_category or selected_category == cat.id %}
     <div class="animate-fade-in-up settings-hub-category" data-settings-search="{{ cat_search_blob | lower | e }}" style="animation-delay: {{ 100 + loop.index * 50 }}ms;">
         {% call card(cat.name, color=cat.color) %}
         <p class="mb-4 text-sm text-slate-500 dark:text-slate-400">{{ cat.description }}</p>
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {% for link in cat.links %}
+            {% if not link.get("permission") or can(request, link.permission) %}
             {% set link_search_blob = link.name ~ ' ' ~ link.description %}
             <a href="{{ link.url }}" data-settings-search="{{ link_search_blob | lower | e }}" class="group settings-hub-link flex items-start gap-3 rounded-lg border border-slate-100 bg-slate-50 p-3 transition hover:border-{{ cat.color }}-200 hover:bg-{{ cat.color }}-50 dark:border-slate-700 dark:bg-slate-800/50 dark:hover:border-{{ cat.color }}-700 dark:hover:bg-{{ cat.color }}-900/20">
                 <div class="min-w-0">
@@ -50,6 +52,7 @@
                 </div>
                 <svg class="mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400 transition group-hover:text-{{ cat.color }}-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
             </a>
+            {% endif %}
             {% endfor %}
         </div>
         {% endcall %}

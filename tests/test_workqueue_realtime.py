@@ -25,6 +25,7 @@ from app.services.workqueue.events import (
     team_channel,
     user_channel,
 )
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 
@@ -59,7 +60,8 @@ def _team(db, name="Support"):
 
 
 def _member(db, team, person_id, *, role=ServiceTeamMemberRole.member.value):
-    db.add(ServiceTeamMember(team_id=team.id, person_id=person_id, role=role))
+    _user, person = add_bound_staff_user(db, system_user_id=person_id)
+    db.add(ServiceTeamMember(team_id=team.id, person_id=person.id, role=role))
     db.flush()
 
 

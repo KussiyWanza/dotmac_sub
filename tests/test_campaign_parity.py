@@ -62,6 +62,9 @@ def _subscriber(db_session, *, email: str, first_name: str = "Ada") -> Subscribe
 
 
 def _team(db_session, name: str = "Marketing") -> ServiceTeam:
+    existing = db_session.query(ServiceTeam).filter(ServiceTeam.name == name).first()
+    if existing is not None:
+        return existing
     team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
     db_session.add(team)
     db_session.flush()

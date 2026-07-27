@@ -350,9 +350,14 @@ def _team_targets(
     if not delivery.recipient_id:
         return []
     members = (
-        db.query(ServiceTeamMember)
+        db.query(SystemUser)
+        .join(
+            ServiceTeamMember,
+            ServiceTeamMember.person_id == SystemUser.person_party_id,
+        )
         .filter(ServiceTeamMember.team_id == _uuid(delivery.recipient_id))
         .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(SystemUser.is_active.is_(True))
         .all()
     )
     targets: list[DeliveryTarget] = []
@@ -360,7 +365,7 @@ def _team_targets(
         targets.extend(
             _target_for_system_user(
                 db,
-                person_id=str(member.person_id),
+                person_id=str(member.id),
                 channel=delivery.channel,
             )
         )

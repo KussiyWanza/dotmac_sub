@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
@@ -15,6 +14,7 @@ from app.models.team_inbox import (
     TeamInboxEmailRoute,
 )
 from app.services import team_inbox_receive
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str, team_type: str) -> ServiceTeam:
@@ -94,13 +94,13 @@ def test_receive_inbound_email_creates_one_thread_for_multiple_teams(db_session)
 
 def test_receive_inbound_email_auto_assigns_route_to_online_agent(db_session):
     support = _team(db_session, "Support", ServiceTeamType.support.value)
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
     db_session.add(
-        ServiceTeamMember(team_id=support.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=support.id, person_id=person.id, is_active=True)
     )
     db_session.add(
         InboxAgentPresence(
-            person_id=person_id,
+            person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
         )
     )
@@ -128,7 +128,7 @@ def test_receive_inbound_email_auto_assigns_route_to_online_agent(db_session):
     conversation = db_session.get(InboxConversation, result.conversation_id)
     assignment = db_session.query(InboxConversationAssignment).one()
     assert conversation.primary_service_team_id == support.id
-    assert assignment.person_id == person_id
+    assert assignment.person_id == user.id
     assert assignment.service_team_id == support.id
     assert assignment.is_active is True
     assert assignment.metadata_["source"] == "routing_rule"

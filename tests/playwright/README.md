@@ -45,6 +45,8 @@ Optional:
 - `PLAYWRIGHT_NAV_TIMEOUT_MS` (default: `15000`)
 - `PLAYWRIGHT_EXPECT_TIMEOUT_MS` (default: `10000`)
 - `PLAYWRIGHT_LINK_CHECK_MAX` (default: `200`) - cap on pages scanned in link smoke tests
+- `TEST_DATABASE_URL` - disposable database used only to prepare test state that
+  has no public setup API; never point it at a shared or production database
 - `E2E_AGENT_USERNAME` (default: `e2e.agent`)
 - `E2E_AGENT_PASSWORD` (default: `AgentPass123!`)
 - `E2E_USER_USERNAME` (default: `e2e.user`)

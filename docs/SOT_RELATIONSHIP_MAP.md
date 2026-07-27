@@ -59,23 +59,24 @@ but equivalent state and actions resolve through the same backend owners.
 9. `events_webhooks`
 10. `runtime_infrastructure`
 11. `observability`
-12. `support_operations`
-13. `ai_advisory`
-14. `provisioning_operations`
-15. `feature_control_plane`
-16. `authorization_control_plane`
-17. `scheduler_control_plane`
-18. `network_access_control_plane`
-19. `service_intent_control_plane`
-20. `integration_control_plane`
-21. `ui_list_projection`
-22. `ui_bulk_actions`
-23. `ui_display_formatting`
-24. `ui_action_forms`
-25. `ui_semantic_presentation`
-26. `vpn_remote_access`
-27. `geospatial`
-28. `sales_referrals`
+12. `workforce_operations`
+13. `support_operations`
+14. `ai_advisory`
+15. `provisioning_operations`
+16. `feature_control_plane`
+17. `authorization_control_plane`
+18. `scheduler_control_plane`
+19. `network_access_control_plane`
+20. `service_intent_control_plane`
+21. `integration_control_plane`
+22. `ui_list_projection`
+23. `ui_bulk_actions`
+24. `ui_display_formatting`
+25. `ui_action_forms`
+26. `ui_semantic_presentation`
+27. `vpn_remote_access`
+28. `geospatial`
+29. `sales_referrals`
 
 Rule: each change should finish one coherent domain boundary: define the owner
 service, migrate the highest-risk callers, and add focused tests. Avoid broad
@@ -354,6 +355,11 @@ do not hand-edit these rows.
 | `runtime.realtime_projection` | reconnect and no-replay refresh contract | `policy` | real-time schema contract ← `runtime.realtime_projection`<br>Redis delivery availability observation ← `external:redis` | `not_applicable` | `complete` | platform runtime | `docs/REALTIME_PLATFORM.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_realtime_platform.py`<br>`tests/test_realtime_subscriptions.py`<br>`tests/architecture/test_realtime_platform_boundary.py` |
 | `observability.database_diagnostics` | redacted database schema-error correlation | `resolver` | database driver failure observation ← `runtime.db_sessions`<br>request correlation context ← `observability.recording` | `not_applicable` | `native` | platform operations | `docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_operational_evidence_followup.py` |
 | `observability.database_diagnostics` | redacted idle-transaction failure correlation | `resolver` | database driver failure observation ← `runtime.db_sessions`<br>request correlation context ← `observability.recording` | `not_applicable` | `native` | platform operations | `docs/designs/OPERATIONAL_EVIDENCE_AND_RETRY.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_operational_evidence_followup.py` |
+| `operations.service_team_lifecycle` | service-team lifecycle | `authoritative_record` | typed service-team command ← `operations.service_team_lifecycle`<br>active staff authentication principal ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry`<br>current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
+| `operations.service_team_lifecycle` | service-team membership lifecycle | `authoritative_record` | typed service-team command ← `operations.service_team_lifecycle`<br>active staff authentication principal ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry`<br>current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
+| `operations.service_team_lifecycle` | staff service-team resolution | `resolver` | active staff authentication principal ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry`<br>current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
+| `operations.service_team_lifecycle` | active service-team selector projection | `resolver` | current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
+| `operations.service_team_lifecycle` | service-team administration projection | `resolver` | active staff authentication principal ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry`<br>current native service-team state ← `operations.service_team_lifecycle` | `owner_managed` | `cutover_ready` | operations administration | `docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_service_team_lifecycle.py`<br>`tests/test_service_team_web.py`<br>`tests/architecture/test_service_team_lifecycle_boundary.py` |
 | `support.ticket_assignment_rule_configuration` | ticket assignment-rule configuration | `authoritative_record` | typed assignment-rule command ← `support.ticket_assignment_rule_configuration`<br>assignment rules ← `support.ticket_assignment_rule_configuration` | `owner_managed` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ticket_assignment_engine.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
 | `support.ticket_assignment_evaluation` | ticket assignment-rule evaluation | `policy` | canonical assignment rules ← `support.ticket_assignment_rule_configuration`<br>ticket assignment facts ← `support.ticket_lifecycle` | `participant` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ticket_assignment_engine.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |
 | `support.ticket_assignment_evaluation` | ticket assignment round-robin cursor | `authoritative_record` | canonical assignment rules ← `support.ticket_assignment_rule_configuration`<br>assignment cursor state ← `support.ticket_assignment_evaluation` | `participant` | `complete` | support operations | `docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ticket_assignment_engine.py`<br>`tests/architecture/test_support_ticket_sot_boundary.py` |

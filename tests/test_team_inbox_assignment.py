@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
     InboxAgentPresence,
@@ -12,6 +10,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
 )
 from app.services import team_inbox_assignment
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str = "Support") -> ServiceTeam:
@@ -28,9 +27,10 @@ def _member(
     status: str = InboxAgentPresenceStatus.online.value,
     max_concurrent: int | None = None,
 ):
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
+    person_id = user.id
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
     db_session.add(
         InboxAgentPresence(

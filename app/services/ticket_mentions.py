@@ -120,11 +120,17 @@ def resolve_mentioned_person_ids(
 
     if group_ids:
         rows = (
-            db.query(ServiceTeamMember.person_id)
+            db.query(SystemUser.id)
+            .select_from(ServiceTeamMember)
             .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+            .join(
+                SystemUser,
+                SystemUser.person_party_id == ServiceTeamMember.person_id,
+            )
             .filter(ServiceTeam.is_active.is_(True))
             .filter(ServiceTeamMember.is_active.is_(True))
             .filter(ServiceTeamMember.team_id.in_(group_ids))
+            .filter(SystemUser.is_active.is_(True))
             .all()
         )
         person_ids.extend(row[0] for row in rows if row[0])

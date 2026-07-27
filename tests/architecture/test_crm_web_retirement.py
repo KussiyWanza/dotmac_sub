@@ -163,7 +163,7 @@ def test_module_cannot_retire_before_all_of_its_routes() -> None:
     assert f"module {module['file']} still has routes that are not retired" in errors
 
 
-def test_reviewed_target_gaps_keep_exact_slice_and_owner_state() -> None:
+def test_reviewed_target_slices_keep_exact_owner_state() -> None:
     ledger = crm_web_retirement.load_ledger()
     defaults = ledger["tracking_defaults"]["module"]
     modules = {
@@ -175,12 +175,16 @@ def test_reviewed_target_gaps_keep_exact_slice_and_owner_state() -> None:
     }
 
     service_teams = modules["app/web/admin/service_teams.py"]
-    assert service_teams["assessment_state"] == "assessed"
+    assert service_teams["assessment_state"] == "cutover_ready"
     assert (
         service_teams["decision"]["owner_service"]
         == "operations.service_team_lifecycle"
     )
-    assert service_teams["decision"]["state"] == "in_progress"
+    assert service_teams["decision"]["state"] == "verified"
+    assert (
+        service_teams["target_slice"]
+        == "service-team-production-cutover-and-crm-retirement"
+    )
 
     workqueue = modules["app/web/agent/workqueue.py"]
     assert workqueue["assessment_state"] == "assessed"
@@ -191,6 +195,40 @@ def test_reviewed_target_gaps_keep_exact_slice_and_owner_state() -> None:
     assert projects["assessment_state"] == "implementation_in_progress"
     assert projects["decision"]["owner_service"] == "operations.project_lifecycle"
     assert projects["decision"]["state"] == "verified"
+
+
+def test_service_team_routes_record_native_replacements_without_retirement() -> None:
+    ledger = crm_web_retirement.load_ledger()
+    defaults = ledger["tracking_defaults"]["route"]
+    routes = {
+        route["source"]["handler"]: crm_web_retirement._deep_merge(
+            defaults,
+            route["tracking"],
+        )
+        for route in ledger["routes"]
+        if route["source"]["file"] == "app/web/admin/service_teams.py"
+    }
+
+    assert set(routes) == set(crm_web_retirement.SERVICE_TEAM_ROUTE_REPLACEMENTS)
+    assert {route["assessment_state"] for route in routes.values()} == {"cutover_ready"}
+    assert {route["replacement"]["owner_service"] for route in routes.values()} == {
+        "operations.service_team_lifecycle"
+    }
+    assert routes["service_team_delete"]["replacement"]["kind"] == "explicit_removal"
+    assert all(
+        route["migration"]["callers"]["state"] == "verified"
+        and route["migration"]["data"]["state"] == "in_progress"
+        and route["migration"]["cutover"]["state"] == "in_progress"
+        and "alembic/versions/426_service_team_lifecycle.py"
+        in route["migration"]["data"]["evidence"]
+        and "tests/playwright/e2e/test_service_teams.py"
+        in route["parity"]["behavior"]["evidence"]
+        and "tests/playwright/e2e/test_service_teams.py"
+        in route["parity"]["permissions"]["evidence"]
+        and route["retirement"]["zero_traffic"]["state"] == "unassessed"
+        and route["retirement"]["crm_route_deleted"]["state"] == "unassessed"
+        for route in routes.values()
+    )
 
 
 def test_reviewed_inbox_modules_are_not_mistaken_for_retired() -> None:

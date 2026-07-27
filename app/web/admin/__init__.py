@@ -97,6 +97,7 @@ from app.web.admin.service_change_reconciliation import (
     router as service_change_reconciliation_router,
 )
 from app.web.admin.service_requests_queue import router as service_requests_queue_router
+from app.web.admin.service_teams import router as service_teams_router
 from app.web.admin.support_assignment_rules import (
     router as support_assignment_rules_router,
 )
@@ -398,6 +399,7 @@ router.include_router(
 )
 router.include_router(resellers_router)
 router.include_router(service_requests_queue_router)
+router.include_router(service_teams_router)
 router.include_router(alerts_router)
 router.include_router(drift_router)
 router.include_router(

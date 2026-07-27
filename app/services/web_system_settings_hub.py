@@ -85,6 +85,12 @@ SETTINGS_CATEGORIES: list[dict] = [
                 "url": "/admin/system/ticket-settings",
                 "description": "Support ticket statuses, priorities, and types",
             },
+            {
+                "name": "Service Teams",
+                "url": "/admin/system/service-teams",
+                "description": "Operational team identity, lifecycle, and membership",
+                "permission": "operations:service_team:read",
+            },
         ],
     },
     {

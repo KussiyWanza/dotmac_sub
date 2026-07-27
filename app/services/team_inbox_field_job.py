@@ -36,7 +36,6 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from app.models.dispatch import TechnicianProfile
-from app.models.service_team import ServiceTeamMember
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -46,6 +45,7 @@ from app.models.team_inbox import (
     InboxTeamSource,
 )
 from app.models.work_order import WorkOrder
+from app.services import service_team_lifecycle
 from app.services.team_inbox_assignment import assign_conversation_to_agent
 
 FIELD_JOB_CHANNEL = InboxChannelType.field_job.value
@@ -87,19 +87,20 @@ def is_open(conversation: InboxConversation) -> bool:
     return conversation.status != InboxConversationStatus.resolved.value
 
 
-def _service_team_id(db: Session, person_id: uuid.UUID) -> uuid.UUID | None:
+def _service_team_id(db: Session, system_user_id: uuid.UUID) -> uuid.UUID | None:
     """The technician's team, which the assignment row requires (NOT NULL).
 
-    Technicians carry no team on their profile; membership is the only link.
+    Technician profiles carry a staff-principal identifier while canonical
+    memberships are Party-backed. The lifecycle owner resolves that boundary
+    and fails closed on missing or ambiguous membership.
     """
-    member = (
-        db.query(ServiceTeamMember)
-        .filter(ServiceTeamMember.person_id == person_id)
-        .filter(ServiceTeamMember.is_active.is_(True))
-        .order_by(ServiceTeamMember.created_at.asc())
-        .first()
+    resolution = service_team_lifecycle.resolve_staff_service_team(
+        db,
+        system_user_id,
     )
-    return member.team_id if member is not None else None
+    if resolution.kind is not service_team_lifecycle.ServiceTeamResolutionKind.resolved:
+        return None
+    return resolution.team_id
 
 
 def _open_conversations_for_technician(

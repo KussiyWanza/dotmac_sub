@@ -96,7 +96,7 @@ from app.services.audit_helpers import (
     build_audit_activities_for_types,
     log_audit_event,
 )
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import load_permission_keys, require_permission
 from app.services.brand_theme import (
     DEFAULT_HEX,
     DEFAULT_SECONDARY_HEX,
@@ -4456,6 +4456,9 @@ def _config_context(request: Request, db: Session, extra: dict) -> dict:
 # --- Settings Hub ---
 @router.get("/settings-hub", response_class=HTMLResponse)
 def settings_hub(request: Request, db: Session = Depends(get_db)):
+    auth = getattr(request.state, "auth", None)
+    if isinstance(auth, dict):
+        load_permission_keys(auth, db)
     data = web_system_settings_hub_service.build_settings_hub_context(db)
     valid_category_ids = {str(cat.get("id")) for cat in data.get("categories", [])}
     selected_category = str(request.query_params.get("category") or "").strip()
@@ -4517,9 +4520,6 @@ def ticket_settings_page(request: Request, db: Session = Depends(get_db)):
             db
         ),
         "routing_rules": support_ticket_settings_service.region_assignment_rules(db),
-        "service_team_members": support_ticket_settings_service.service_team_members(
-            db
-        ),
         "sla_policy": support_ticket_settings_service.sla_policy(db),
         "ticket_type_sla_policy": support_ticket_settings_service.ticket_type_sla_policy(
             db
@@ -4557,8 +4557,6 @@ def ticket_settings_update(
     priorities = form.getlist("priority_values")
     ticket_types = form.getlist("ticket_type_values")
     regions = form.getlist("region_values")
-    service_team_ids = form.getlist("service_team_ids")
-    service_team_labels = form.getlist("service_team_labels")
     routing_regions = form.getlist("routing_regions")
     routing_ticket_manager_person_ids = form.getlist(
         "routing_ticket_manager_person_ids"
@@ -4569,8 +4567,6 @@ def ticket_settings_update(
     routing_technician_person_ids = form.getlist("routing_technician_person_ids")
     routing_service_team_ids = form.getlist("routing_service_team_ids")
     routing_assignee_person_ids = form.getlist("routing_assignee_person_ids")
-    team_member_team_ids = form.getlist("team_member_team_ids")
-    team_member_person_ids = form.getlist("team_member_person_ids")
     sla_priorities = form.getlist("sla_priorities")
     sla_response_hours = form.getlist("sla_response_hours")
     sla_resolution_hours = form.getlist("sla_resolution_hours")
@@ -4586,8 +4582,6 @@ def ticket_settings_update(
             priorities=priorities,
             ticket_types=ticket_types,
             regions=regions,
-            service_team_ids=service_team_ids,
-            service_team_labels=service_team_labels,
             auto_assign=form.get("auto_assign_enabled") == "1",
             auto_assign_max_open_tickets=form.get("auto_assign_max_open_tickets"),
             routing_regions=routing_regions,
@@ -4596,8 +4590,6 @@ def ticket_settings_update(
             routing_technician_person_ids=routing_technician_person_ids,
             routing_service_team_ids=routing_service_team_ids,
             routing_assignee_person_ids=routing_assignee_person_ids,
-            team_member_team_ids=team_member_team_ids,
-            team_member_person_ids=team_member_person_ids,
             sla_priorities=sla_priorities,
             sla_response_hours=sla_response_hours,
             sla_resolution_hours=sla_resolution_hours,
@@ -4639,9 +4631,6 @@ def ticket_settings_update(
                     db
                 ),
                 "routing_rules": support_ticket_settings_service.region_assignment_rules(
-                    db
-                ),
-                "service_team_members": support_ticket_settings_service.service_team_members(
                     db
                 ),
                 "sla_policy": support_ticket_settings_service.sla_policy(db),

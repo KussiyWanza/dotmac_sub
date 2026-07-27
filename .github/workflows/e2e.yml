@@ -10,6 +10,15 @@ on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Browser suite to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - service-teams
 
 env:
   PYTHON_VERSION: "3.12"
@@ -37,7 +46,8 @@ jobs:
         run: |
           docker network create e2e-net
           docker run -d --name e2e-db --network e2e-net \
-            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -p 127.0.0.1:55432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
             -e POSTGRES_DB=dotmac_sub_e2e \
             --health-cmd "pg_isready -U postgres" --health-interval 5s \
             --health-retries 10 postgis/postgis:16-3.4
@@ -50,7 +60,7 @@ jobs:
       - name: Migrate + seed
         run: |
           COMMON="--network e2e-net \
-            -e DATABASE_URL=postgresql+psycopg://postgres:postgres@e2e-db:5432/dotmac_sub_e2e \
+            -e DATABASE_URL=postgresql+psycopg://postgres@e2e-db:5432/dotmac_sub_e2e \
             -e SECRET_KEY=e2e-test-secret-key-not-for-production \
             -e REDIS_URL=redis://e2e-redis:6379/0"
           docker run --rm $COMMON dotmac-sub:e2e alembic upgrade head
@@ -61,9 +71,11 @@ jobs:
 
       - name: Start application
         run: |
+          E2E_JWT_SECRET="$(openssl rand -hex 32)"
           docker run -d --name e2e-app --network e2e-net -p 8001:8001 \
-            -e DATABASE_URL=postgresql+psycopg://postgres:postgres@e2e-db:5432/dotmac_sub_e2e \
+            -e DATABASE_URL=postgresql+psycopg://postgres@e2e-db:5432/dotmac_sub_e2e \
             -e SECRET_KEY=e2e-test-secret-key-not-for-production \
+            -e JWT_SECRET="$E2E_JWT_SECRET" \
             -e REDIS_URL=redis://e2e-redis:6379/0 \
             -e CELERY_BROKER_URL=redis://e2e-redis:6379/0 \
             dotmac-sub:e2e
@@ -89,9 +101,18 @@ jobs:
       - name: Run Playwright suite
         env:
           PLAYWRIGHT_BASE_URL: "http://localhost:8001"
+          PLAYWRIGHT_BROWSER: "chromium"
+          E2E_SUITE: ${{ inputs.suite || 'all' }}
+          TEST_DATABASE_URL: "postgresql+psycopg://postgres@127.0.0.1:55432/dotmac_sub_e2e"
           E2E_ADMIN_USERNAME: "e2e.admin@example.com"
           E2E_ADMIN_PASSWORD: "E2eAdminPass123!"
-        run: poetry run pytest tests/playwright/ -v --tb=short -o "addopts="
+        run: |
+          if [ "$E2E_SUITE" = "service-teams" ]; then
+            poetry run pytest tests/playwright/e2e/test_service_teams.py \
+              -v --tb=short -o "addopts="
+          else
+            poetry run pytest tests/playwright/ -v --tb=short -o "addopts="
+          fi
 
       - name: App logs on failure
         if: failure()

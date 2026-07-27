@@ -4,9 +4,11 @@ from uuid import uuid4
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.support import Ticket, TicketAssignee, TicketStatus
+from app.models.system_user import SystemUser
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.services.ticket_assignment.engine import auto_assign_ticket
 from app.services.ticket_assignment.selectors import list_team_candidate_person_ids
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str = "Dispatch") -> ServiceTeam:
@@ -17,12 +19,12 @@ def _team(db_session, name: str = "Dispatch") -> ServiceTeam:
 
 
 def _member(db_session, team: ServiceTeam):
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
     db_session.flush()
-    return person_id
+    return user.id
 
 
 def _ticket(
@@ -158,8 +160,9 @@ def test_ticket_assignment_candidates_ignore_inactive_members(db_session):
     team = _team(db_session, "Partial support")
     inactive_person_id = _member(db_session, team)
     active_person_id = _member(db_session, team)
+    inactive_party_id = db_session.get(SystemUser, inactive_person_id).person_party_id
     for member in team.members:
-        if member.person_id == inactive_person_id:
+        if member.person_id == inactive_party_id:
             member.is_active = False
     db_session.commit()
 

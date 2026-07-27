@@ -6,8 +6,10 @@ from dotenv import load_dotenv
 
 from app.db import SessionLocal
 from app.models.auth import AuthProvider, UserCredential
+from app.models.party import PartyDataClassification, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.system_user import SystemUser
+from app.services import party as party_service
 from app.services.auth_flow import hash_password
 
 
@@ -119,6 +121,22 @@ def seed_admin_user(
                 scope_id="",
                 source="local",
             )
+        )
+
+    if system_user.person_party_id is None:
+        person_party = party_service.create_party(
+            db,
+            party_type=PartyType.person,
+            display_name=system_user.display_name or system_user.email,
+            data_classification=PartyDataClassification.production,
+            metadata={"bootstrap": "admin_seeder"},
+        )
+        party_service.bind_system_user_principal(
+            db,
+            system_user_id=system_user.id,
+            person_party_id=person_party.id,
+            source="admin_seeder",
+            reason="Operator-seeded local administrator identity",
         )
 
     db.commit()

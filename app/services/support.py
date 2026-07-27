@@ -246,7 +246,6 @@ CUSTOMER_NOTIFIED_TICKET_STATUSES: dict[str, dict[str, str]] = {
 SUPPORT_NOTIFICATION_TOGGLE_KEY = "support_ticket_notifications_enabled"
 SUPPORT_AUTO_ASSIGN_ENABLED_KEY = "support_ticket_auto_assign_enabled"
 SUPPORT_REGION_ASSIGNMENT_RULES_KEY = "support_region_assignment_rules"
-SUPPORT_SERVICE_TEAM_MEMBERS_KEY = "support_service_team_members"
 
 
 def _now() -> datetime:
@@ -982,9 +981,11 @@ class Tickets:
             else []
         )
         if ticket.service_team_id:
-            members = support_ticket_settings_service.service_team_members(db).get(
-                str(ticket.service_team_id), []
+            from app.services.ticket_assignment.selectors import (
+                list_team_candidate_person_ids,
             )
+
+            members = list_team_candidate_person_ids(db, str(ticket.service_team_id))
             if members:
                 current = set(assignee_ids)
                 assignee_ids = [
@@ -1161,19 +1162,17 @@ class Tickets:
         recipients.update(str(row.person_id) for row in assignee_rows)
 
         if ticket.service_team_id:
-            team_map = _read_json_setting(
-                db, SettingDomain.workflow, SUPPORT_SERVICE_TEAM_MEMBERS_KEY
+            from app.services.ticket_assignment.selectors import (
+                list_team_candidate_person_ids,
             )
-            team_members = (
-                team_map.get(str(ticket.service_team_id))
-                if isinstance(team_map, dict)
-                else None
+
+            team_members = list_team_candidate_person_ids(
+                db, str(ticket.service_team_id)
             )
-            if isinstance(team_members, list):
-                for member in team_members:
-                    member_uuid = _coerce_uuid(str(member))
-                    if member_uuid:
-                        recipients.add(str(member_uuid))
+            for member in team_members:
+                member_uuid = _coerce_uuid(str(member))
+                if member_uuid:
+                    recipients.add(str(member_uuid))
 
         if actor_id:
             recipients.discard(str(actor_id))

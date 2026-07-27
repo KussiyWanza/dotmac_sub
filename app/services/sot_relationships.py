@@ -13091,6 +13091,293 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         ),
     ),
     DomainSOT(
+        domain="workforce_operations",
+        services=(
+            SOTService(
+                name="operations.service_team_lifecycle",
+                module="app.services.service_team_lifecycle",
+                owns=(
+                    "service-team lifecycle",
+                    "service-team membership lifecycle",
+                    "staff service-team resolution",
+                    "active service-team selector projection",
+                    "service-team administration projection",
+                ),
+                depends_on=(
+                    "party.registry",
+                    "auth.staff_provisioning",
+                    "events.store",
+                    "observability.audit_log",
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="service-team lifecycle",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "typed service-team command",
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                            canonical_writer="operations.service_team_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="service-team membership lifecycle",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "typed service-team command",
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                            canonical_writer="operations.service_team_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="staff service-team resolution",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="active service-team selector projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("current native service-team state",),
+                        ),
+                        ConcernContract(
+                            name="service-team administration projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed service-team command",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed create, update, activation, membership, and role "
+                                "commands with CommandContext and expected state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active staff authentication principal",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser staff login and authorization principal"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Person Party identity",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active Person Party and reviewed "
+                                "SystemUser.person_party_id identity binding"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current native service-team state",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ServiceTeam and ServiceTeamMember rows",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each public mutation enters execute_owner_command once on a "
+                            "transaction-free session; audit, outbox, team, and membership changes "
+                            "flush inside that root transaction."
+                        ),
+                        locking=(
+                            "Teams are selected by UUID, followed by staff-principal and Person "
+                            "Party identity then membership locks; case-insensitive team-name "
+                            "and team/person constraints arbitrate concurrent writes."
+                        ),
+                        idempotency=(
+                            "Create binds a caller-supplied team UUID; equivalent desired-state "
+                            "updates, activation changes, and membership commands replay while a "
+                            "deactivated row or changed evidence under one create identity fails "
+                            "closed."
+                        ),
+                        retries=(
+                            "Adapters retry the complete owner command only after full rollback "
+                            "and refetch current updated_at evidence after a stale rejection."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "service_team_invalid",
+                            "service_team_not_found",
+                            "service_team_staff_not_found",
+                            "service_team_staff_identity_unbound",
+                            "service_team_staff_identity_invalid",
+                            "service_team_name_conflict",
+                            "service_team_identity_collision",
+                            "service_team_stale",
+                            "service_team_reason_required",
+                            "service_team_inactive",
+                            "service_team_has_active_members",
+                            "service_team_member_not_found",
+                            "service_team_member_inactive",
+                            *owner_command_boundary_error_codes(
+                                "operations.service_team_lifecycle"
+                            ),
+                        ),
+                        mapping_owner="service-team web and API adapters",
+                        fail_closed_on=(
+                            "unknown, inactive, or Party-unbound selected staff identity",
+                            "reactivation or role change with retired staff identity",
+                            "stale lifecycle evidence",
+                            "team identity collision",
+                            "deactivation with active members",
+                            "zero or multiple active memberships during staff-team resolution",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "service_team.changed",
+                            "service_team.membership_changed",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.store",
+                        compatibility=(
+                            "Version 1 carries team, command/correlation, operation, member, "
+                            "role, and actor identifiers without private staff payloads."
+                        ),
+                        replay=(
+                            "Native team/member rows plus transactional event and audit evidence "
+                            "reconstruct the lifecycle without workflow-setting mirrors."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="staff service-team resolution",
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                            writer="operations.service_team_lifecycle",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Return identity-unavailable, no-membership, or ambiguous; "
+                                "never select by row age or compare principal IDs to Party IDs."
+                            ),
+                            drift_signal=(
+                                "An active staff principal has zero or multiple matching active "
+                                "Party-backed memberships for a caller requiring one team."
+                            ),
+                            rebuild_operation=(
+                                "Requery the reviewed SystemUser-to-Party binding and native "
+                                "active memberships."
+                            ),
+                            repair_owner="operations.service_team_lifecycle",
+                        ),
+                        ProjectionContract(
+                            name="active service-team selector projection",
+                            input_names=("current native service-team state",),
+                            writer="operations.service_team_lifecycle",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Fail the request rather than use workflow-setting fallback."
+                            ),
+                            drift_signal=(
+                                "Legacy workflow-setting team/member keys exist or differ from "
+                                "native row identity and active membership."
+                            ),
+                            rebuild_operation=(
+                                "Requery native ServiceTeam and ServiceTeamMember rows."
+                            ),
+                            repair_owner="operations.service_team_lifecycle",
+                        ),
+                        ProjectionContract(
+                            name="service-team administration projection",
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                            writer="operations.service_team_lifecycle",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Render an explicit error; never fall back to retired settings."
+                            ),
+                            drift_signal=(
+                                "Membership references an absent staff principal or a duplicate "
+                                "case-insensitive team name exists."
+                            ),
+                            rebuild_operation=(
+                                "Recompose team, membership, and staff labels from native rows."
+                            ),
+                            repair_owner="operations.service_team_lifecycle",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "support.ticket_configuration workflow-setting team/member payloads "
+                            "and their settings-to-native mirror"
+                        ),
+                        new_owner="operations.service_team_lifecycle",
+                        verification=(
+                            "service-team owner behavior, migration, admin-surface, caller, and "
+                            "architecture tests"
+                        ),
+                        cutover_gate=(
+                            "settings payloads are backfilled and verified; every caller reads "
+                            "native projections; only this owner writes team/member rows"
+                        ),
+                        fallback_retirement=(
+                            "support_service_teams/support_service_team_members keys, ticket-"
+                            "settings editors, mirror helper, CRM hard-delete path, and direct "
+                            "team/member writers, including the old provider direct writer and "
+                            "email-matching agent projection, are absent"
+                        ),
+                    ),
+                    steward="operations administration",
+                    design_refs=(
+                        "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_service_team_lifecycle.py",
+                        "tests/test_service_team_web.py",
+                        "tests/architecture/test_service_team_lifecycle_boundary.py",
+                    ),
+                ),
+            ),
+        ),
+        entrypoints=(
+            "app.web.admin.service_teams",
+            "app.services.support_ticket_settings",
+            "app.services.team_inbox_*",
+            "app.services.workqueue.*",
+            "app.services.ticket_assignment.*",
+            "app.services.ticket_work_order_handoff",
+            "app.services.operational_escalation_delivery",
+            "app.services.projects",
+            "app.services.dispatch",
+        ),
+        rule=(
+            "Party and staff-principal owners supply identity; the service-team "
+            "owner supplies shared team topology and membership. Consumers "
+            "translate Party membership to their current principal-facing "
+            "identifiers through the owner's resolver and never write team rows "
+            "or restore settings mirrors."
+        ),
+    ),
+    DomainSOT(
         domain="support_operations",
         services=(
             SOTService(

@@ -138,6 +138,22 @@ def test_settings_hub_includes_ticket_settings_link(db_session):
     assert ticket_settings_link["name"] == "Ticket Settings"
 
 
+def test_settings_hub_service_team_link_declares_read_permission(db_session):
+    context = web_system_settings_hub.build_settings_hub_context(db_session)
+
+    system_category = next(
+        category for category in context["categories"] if category["id"] == "system"
+    )
+    service_team_link = next(
+        link
+        for link in system_category["links"]
+        if link["url"] == "/admin/system/service-teams"
+    )
+
+    assert service_team_link["name"] == "Service Teams"
+    assert service_team_link["permission"] == "operations:service_team:read"
+
+
 def test_settings_hub_includes_bulk_notification_setup_link(db_session):
     context = web_system_settings_hub.build_settings_hub_context(db_session)
 

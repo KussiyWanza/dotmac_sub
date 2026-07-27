@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
+from app.models.system_user import SystemUser
 from app.services.common import coerce_uuid
 
 
@@ -20,11 +21,17 @@ def list_team_candidate_person_ids(
     if not team_id:
         return []
     rows = (
-        db.query(ServiceTeamMember.person_id)
+        db.query(SystemUser.id)
+        .select_from(ServiceTeamMember)
         .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+        .join(
+            SystemUser,
+            SystemUser.person_party_id == ServiceTeamMember.person_id,
+        )
         .filter(ServiceTeamMember.team_id == coerce_uuid(team_id))
         .filter(ServiceTeam.is_active.is_(True))
         .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(SystemUser.is_active.is_(True))
         .all()
     )
     candidates = sorted({str(row[0]) for row in rows if row[0] is not None})

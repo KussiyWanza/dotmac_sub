@@ -23,6 +23,12 @@ from fastapi.testclient import TestClient
 from app.api.field import router
 from app.db import get_db
 from app.models.dispatch import TechnicianProfile
+from app.models.party import (
+    Party,
+    PartyDataClassification,
+    PartyIdentityStatus,
+    PartyType,
+)
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
@@ -44,12 +50,24 @@ from app.services.field.chat import field_job_chat
 
 
 def _user(db_session, name: str = "Chat") -> SystemUser:
+    person = Party(
+        party_type=PartyType.person.value,
+        display_name=f"{name} Tech",
+        status=PartyIdentityStatus.active.value,
+        data_classification=PartyDataClassification.test.value,
+    )
+    db_session.add(person)
+    db_session.flush()
     user = SystemUser(
         first_name=name,
         last_name="Tech",
         display_name=f"{name} Tech",
         email=f"{name.lower()}-{uuid4().hex[:8]}@example.com",
         user_type=UserType.system_user,
+        person_party_id=person.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="field-job-chat-test",
+        party_binding_reason="Reviewed field-job staff fixture",
     )
     db_session.add(user)
     db_session.flush()
@@ -102,7 +120,8 @@ def _profile(
     db_session.add(profile)
     db_session.flush()
     if with_team:
-        _team_member(db_session, user.id)
+        assert user.person_party_id is not None
+        _team_member(db_session, user.person_party_id)
     return profile
 
 
@@ -173,6 +192,25 @@ def test_departure_opens_the_chat(db_session):
     assert conversation.channel_type == InboxChannelType.field_job.value
     assert conversation.external_thread_id == "wo-depart"
     assert conversation.subscriber_id == subscriber.id
+
+
+def test_departure_fails_closed_when_staff_has_multiple_active_teams(db_session):
+    user = _user(db_session, "Ambiguous")
+    profile = _profile(db_session, user)
+    assert user.person_party_id is not None
+    _team_member(db_session, user.person_party_id)
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-ambiguous-team",
+    )
+    db_session.commit()
+
+    conversation, outcome = _depart(db_session, work_order, profile)
+
+    assert conversation is None
+    assert outcome == team_inbox_field_job.NO_TEAM
 
 
 def test_the_departing_technician_holds_the_conversation(db_session):

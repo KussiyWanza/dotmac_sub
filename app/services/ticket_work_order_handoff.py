@@ -21,6 +21,7 @@ from app.models.audit import AuditActorType, AuditEvent
 from app.models.project import ProjectTask
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
+from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.schemas.dispatch import WorkOrderHeaderCreate
 from app.schemas.support import TicketWorkOrderIssueRequest
@@ -154,9 +155,14 @@ def _validate_issue_eligibility(
     actor_uuid = _normalize_actor(actor_id)
     member = (
         db.query(ServiceTeamMember)
+        .join(
+            SystemUser,
+            SystemUser.person_party_id == ServiceTeamMember.person_id,
+        )
         .filter(ServiceTeamMember.team_id == ticket.service_team_id)
-        .filter(ServiceTeamMember.person_id == actor_uuid)
         .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(SystemUser.id == actor_uuid)
+        .filter(SystemUser.is_active.is_(True))
         .one_or_none()
     )
     if member is None:

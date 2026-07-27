@@ -47,6 +47,7 @@ from app.services.workqueue.providers import all_providers, register
 from app.services.workqueue.providers.conversations import conversation_provider
 from app.services.workqueue.providers.tickets import ticket_provider
 from app.services.workqueue.providers.work_orders import work_order_provider
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 CONFIG = WorkqueueScoringConfig()
@@ -86,7 +87,8 @@ def _member(
     *,
     role: str = ServiceTeamMemberRole.member.value,
 ) -> ServiceTeamMember:
-    member = ServiceTeamMember(team_id=team.id, person_id=person_id, role=role)
+    _user, person = add_bound_staff_user(db, system_user_id=person_id)
+    member = ServiceTeamMember(team_id=team.id, person_id=person.id, role=role)
     db.add(member)
     db.flush()
     return member

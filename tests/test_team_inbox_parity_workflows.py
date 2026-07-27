@@ -17,6 +17,7 @@ from app.models.team_inbox import (
 )
 from app.services import team_inbox_operations, team_inbox_read
 from app.web.admin import inbox as inbox_web
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _request() -> Request:
@@ -34,18 +35,18 @@ def _team(db_session, name: str = "Support") -> ServiceTeam:
 
 
 def _member(db_session, team: ServiceTeam):
-    person_id = uuid.uuid4()
+    user, person = add_bound_staff_user(db_session)
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
     db_session.add(
         InboxAgentPresence(
-            person_id=person_id,
+            person_id=user.id,
             status=InboxAgentPresenceStatus.online.value,
         )
     )
     db_session.flush()
-    return person_id
+    return user.id
 
 
 def _conversation(db_session, *, subject: str = "Need help") -> InboxConversation:

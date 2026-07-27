@@ -20,6 +20,7 @@ from app.models.team_inbox import (
     InboxConversationStatus,
 )
 from app.services import team_inbox_commands, team_inbox_read
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
@@ -37,8 +38,16 @@ def _team(db_session, name="Support", *, member_id=None):
     db_session.flush()
     captured = team.id
     if member_id is not None:
+        _user, person = add_bound_staff_user(
+            db_session,
+            system_user_id=member_id,
+        )
         db_session.add(
-            ServiceTeamMember(team_id=captured, person_id=member_id, is_active=True)
+            ServiceTeamMember(
+                team_id=captured,
+                person_id=person.id,
+                is_active=True,
+            )
         )
     db_session.commit()
     return captured

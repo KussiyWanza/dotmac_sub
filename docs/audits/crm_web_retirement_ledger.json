@@ -1190,13 +1190,13 @@
         "admin/system/service_teams/index.html"
       ],
       "tracking": {
-        "assessment_state": "assessed",
+        "assessment_state": "cutover_ready",
         "decision": {
-          "notes": "Sub Party/SystemUser identity is canonical. The missing decision is the shared service-team topology and membership lifecycle owner: support ticket settings still mirrors configuration payloads into ServiceTeam rows consumed across Inbox, workqueue, dispatch, projects, and support. The proposed operations.service_team_lifecycle owner is not registered or cut over on the reviewed target revision.",
+          "notes": "This slice registers operations.service_team_lifecycle as the native owner, adds its admin surface, moves ServiceTeam person references to reviewed Party identity, removes the ticket-settings mirror writer, cuts reviewed application callers over to the owner contract, and adds authenticated browser lifecycle, CSRF, and permission coverage. Production migration apply evidence, traffic cutover, fallback removal, zero traffic, and CRM source deletion remain.",
           "owner_service": "operations.service_team_lifecycle",
-          "state": "in_progress"
+          "state": "verified"
         },
-        "target_slice": "service-team-lifecycle-and-admin-surface"
+        "target_slice": "service-team-production-cutover-and-crm-retirement"
       }
     },
     {
@@ -11111,7 +11111,92 @@
           "admin/system/service_teams/index.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team list and active role/region projection",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "GET /admin/system/service-teams"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_new:GET:/admin/system/teams/new:b40b907a87d3",
@@ -11128,7 +11213,92 @@
           "admin/system/service_teams/form.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team creation form",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "GET /admin/system/service-teams/new"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_create:POST:/admin/system/teams/new:ce747bed6843",
@@ -11143,7 +11313,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team creation",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_detail:GET:/admin/system/teams/{team_id}:1b5fdb58c758",
@@ -11160,7 +11418,92 @@
           "admin/system/service_teams/detail.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team detail and membership projection",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "GET /admin/system/service-teams/{team_id}"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_edit:GET:/admin/system/teams/{team_id}/edit:8bc89028b6b2",
@@ -11177,7 +11520,92 @@
           "admin/system/service_teams/form.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET capability is replaced by a query-only native adapter; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team edit form",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "GET /admin/system/service-teams/{team_id}/edit"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_update:POST:/admin/system/teams/{team_id}/edit:3f5e225eee47",
@@ -11192,7 +11620,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team metadata and manager update",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_activate:POST:/admin/system/teams/{team_id}/activate:047b0d348b2d",
@@ -11207,7 +11723,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team activation",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}/active"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_deactivate:POST:/admin/system/teams/{team_id}/deactivate:388912ee7587",
@@ -11222,7 +11826,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team deactivation",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}/active"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_delete:POST:/admin/system/teams/{team_id}/delete:af875f7b6199",
@@ -11237,7 +11929,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Hard delete removed; audited deactivation preserves operational history",
+          "kind": "explicit_removal",
+          "notes": "Hard delete is intentionally removed by the native retention policy; audited deactivation is the replacement. Authenticated browser coverage verifies that no delete action is exposed. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}/active"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_add_member:POST:/admin/system/teams/{team_id}/members/add:a396dab1c6e7",
@@ -11252,7 +12032,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team membership add",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}/members"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.service_teams:service_team_remove_member:POST:/admin/system/teams/{team_id}/members/{member_id}/remove:0d3392bae5de",
@@ -11267,7 +12135,95 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_support_ticket_settings.py",
+              "tests/test_field_job_chat.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native code cutover and authenticated browser parity are complete in this slice; production migration and CRM traffic cutover remain pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "alembic/versions/426_service_team_lifecycle.py",
+              "tests/test_service_team_lifecycle_migration.py"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "Migration 425 is forward-only; the design requires a reviewed pre-cutover backup before production apply."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "app/web/admin/service_teams.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_service_team_lifecycle.py",
+              "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/architecture/test_service_team_lifecycle_boundary.py",
+              "tests/test_service_team_web.py",
+              "tests/playwright/e2e/test_service_teams.py",
+              "scripts/seed/seed_rbac.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Service-team membership removal",
+          "kind": "native_web_route",
+          "notes": "The native owner and thin admin surface are implemented in this slice. Authenticated browser lifecycle, CSRF, and permission parity is covered. Production migration, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.service_team_lifecycle",
+          "surfaces": [
+            "POST /admin/system/service-teams/{team_id}/members/{member_id}/remove"
+          ]
+        }
+      }
     },
     {
       "id": "app.web.admin.storage:get_object:GET:/admin/storage/{bucket}/{key:path}:6ff7cea737c0",
@@ -15643,10 +16599,15 @@
       1621,
       1623,
       1624,
-      1625
+      1625,
+      1626,
+      1629,
+      1631,
+      1632,
+      1633
     ],
     "repository": "dotmac_sub",
-    "revision": "680a9ca2a9ec1ca2097a6841f47700df1a114539"
+    "revision": "0fbff5c1c2e52b495e50e9c081f31692c02112b3"
   },
   "tracking_defaults": {
     "module": {

@@ -15,14 +15,17 @@ from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamT
 from app.models.subscriber import Reseller, ResellerUser, Subscriber, SubscriberStatus
 from app.models.system_user import SystemUser
 from app.services import operational_escalation, operational_escalation_delivery
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team_with_member(db_session, *, email: str = "noc@example.com") -> ServiceTeam:
     team = ServiceTeam(name="NOC", team_type=ServiceTeamType.operations.value)
-    user = SystemUser(first_name="Noc", last_name="Lead", email=email)
-    db_session.add_all([team, user])
+    user, person = add_bound_staff_user(db_session, email=email)
+    user.first_name = "Noc"
+    user.last_name = "Lead"
+    db_session.add(team)
     db_session.flush()
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=user.id))
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
     db_session.flush()
     return team
 

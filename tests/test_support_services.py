@@ -43,6 +43,7 @@ from app.services.customer_identity_resolution import (
 )
 from app.services.customer_support_links import ticket_customer_any_link_filter
 from app.services.domain_errors import DomainError
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _ticket_payload(subscriber_id):
@@ -138,19 +139,36 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
     team_id = uuid4()
     technician_id = uuid4()
     member_id = uuid4()
+    team = ServiceTeam(
+        id=team_id,
+        name="Field Operations",
+        team_type=ServiceTeamType.field_service.value,
+    )
+    member, person = add_bound_staff_user(
+        db_session,
+        system_user_id=member_id,
+    )
+    db_session.add_all(
+        [
+            team,
+            ServiceTeamMember(
+                team_id=team_id,
+                person_id=person.id,
+                is_active=True,
+            ),
+        ]
+    )
+    db_session.commit()
+    assert member.id == member_id
     support_ticket_settings_service.update_options(
         db_session,
         statuses=["open", "closed", "merged"],
         priorities=["normal"],
         ticket_types=["incident"],
         regions=["north"],
-        service_team_ids=[str(team_id)],
-        service_team_labels=["Field Operations"],
         routing_regions=["north"],
         routing_technician_person_ids=[str(technician_id)],
         routing_service_team_ids=[str(team_id)],
-        team_member_team_ids=[str(team_id)],
-        team_member_person_ids=[str(member_id)],
         sla_priorities=["normal"],
         sla_response_hours=["1"],
         sla_resolution_hours=["8"],
@@ -199,14 +217,20 @@ def test_ticket_auto_assignment_respects_configured_open_limit(db_session, subsc
     db_session.flush()
     loaded_person_id = uuid4()
     free_person_id = uuid4()
+    _loaded_user, loaded_party = add_bound_staff_user(
+        db_session,
+        system_user_id=loaded_person_id,
+    )
+    _free_user, free_party = add_bound_staff_user(
+        db_session,
+        system_user_id=free_person_id,
+    )
     db_session.add_all(
         [
             ServiceTeamMember(
-                team_id=team.id, person_id=loaded_person_id, is_active=True
+                team_id=team.id, person_id=loaded_party.id, is_active=True
             ),
-            ServiceTeamMember(
-                team_id=team.id, person_id=free_person_id, is_active=True
-            ),
+            ServiceTeamMember(team_id=team.id, person_id=free_party.id, is_active=True),
             TicketAssignmentRule(
                 name="Support default",
                 priority=100,

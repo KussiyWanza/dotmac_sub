@@ -7,7 +7,6 @@ import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
-from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationLabel,
@@ -22,6 +21,7 @@ from app.services import (
     team_inbox_projection,
     team_inbox_read,
 )
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _conversation(db_session) -> uuid.UUID:
@@ -76,16 +76,17 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
 
 
 def test_projection_supplies_live_agent_and_assignment_options(db_session):
-    user = SystemUser(
-        first_name="Ada",
-        last_name="Agent",
-        display_name="Ada Agent",
+    user, person = add_bound_staff_user(
+        db_session,
         email="ada-agent@example.test",
     )
+    user.first_name = "Ada"
+    user.last_name = "Agent"
+    user.display_name = "Ada Agent"
     team = ServiceTeam(name="Support", team_type=ServiceTeamType.support.value)
     db_session.add_all([user, team])
     db_session.flush()
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=user.id))
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
     conversation = InboxConversation(
         channel_type="email",
         subject="Help",

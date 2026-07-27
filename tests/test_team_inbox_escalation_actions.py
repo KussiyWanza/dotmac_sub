@@ -17,6 +17,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
 )
 from app.schemas.team_inbox import InboxConversationEscalateRequest
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str = "Support") -> ServiceTeam:
@@ -32,13 +33,13 @@ def _member(
     *,
     status: str = InboxAgentPresenceStatus.online.value,
 ):
-    person_id = uuid4()
+    user, person = add_bound_staff_user(db_session)
     db_session.add(
-        ServiceTeamMember(team_id=team.id, person_id=person_id, is_active=True)
+        ServiceTeamMember(team_id=team.id, person_id=person.id, is_active=True)
     )
-    db_session.add(InboxAgentPresence(person_id=person_id, status=status))
+    db_session.add(InboxAgentPresence(person_id=user.id, status=status))
     db_session.flush()
-    return person_id
+    return user.id
 
 
 def _conversation(db_session, *, status: str = InboxConversationStatus.open.value):

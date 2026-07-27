@@ -14,9 +14,16 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: vendor project intake evidence (425) chains onto
-    # proposed-route review evidence (424).
-    assert script.get_heads() == ["425_vendor_project_intake_evidence"]
+    # Single linear head: service-team lifecycle (426) chains through vendor
+    # project intake evidence (425), proposed-route review evidence (424),
+    # prepaid opening-funding reconciliation (423), conversation handoff (422),
+    # service-extension activity (421), billing-run evidence (420), and
+    # customer WHT (419).
+    assert script.get_heads() == ["426_service_team_lifecycle"]
+    assert (
+        script.get_revision("426_service_team_lifecycle").down_revision
+        == "425_vendor_project_intake_evidence"
+    )
     assert (
         script.get_revision("425_vendor_project_intake_evidence").down_revision
         == "424_proposed_route_review_evidence"
@@ -24,6 +31,10 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     assert (
         script.get_revision("424_proposed_route_review_evidence").down_revision
         == "423_prepaid_opening_funding_reconciliation"
+    )
+    assert (
+        script.get_revision("423_prepaid_opening_funding_reconciliation").down_revision
+        == "422_conversation_ticket_handoff"
     )
     assert (
         script.get_revision("422_conversation_ticket_handoff").down_revision

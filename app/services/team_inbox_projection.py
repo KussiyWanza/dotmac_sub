@@ -244,7 +244,10 @@ def _initials(first_name: str, last_name: str, display_name: str | None) -> str:
 def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
     rows = (
         db.query(SystemUser)
-        .join(ServiceTeamMember, ServiceTeamMember.person_id == SystemUser.id)
+        .join(
+            ServiceTeamMember,
+            ServiceTeamMember.person_id == SystemUser.person_party_id,
+        )
         .filter(SystemUser.is_active.is_(True))
         .filter(ServiceTeamMember.is_active.is_(True))
         .distinct()
@@ -287,7 +290,12 @@ def _assignment_counts(
         team_ids = [
             row[0]
             for row in db.query(ServiceTeamMember.team_id)
-            .filter(ServiceTeamMember.person_id == actor_person_id)
+            .join(
+                SystemUser,
+                SystemUser.person_party_id == ServiceTeamMember.person_id,
+            )
+            .filter(SystemUser.id == actor_person_id)
+            .filter(SystemUser.is_active.is_(True))
             .filter(ServiceTeamMember.is_active.is_(True))
             .all()
         ]

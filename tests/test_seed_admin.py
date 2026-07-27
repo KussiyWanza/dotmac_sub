@@ -1,6 +1,7 @@
 import pytest
 
 from app.models.auth import AuthProvider, UserCredential
+from app.models.party import Party, PartyDataClassification, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
@@ -49,6 +50,16 @@ def test_seed_admin_user_creates_canonical_system_user(db_session):
     assert message == "Admin user created."
     assert system_user.display_name == "Admin User"
     assert system_user.is_active is True
+    assert system_user.person_party_id is not None
+    person_party = db_session.get(Party, system_user.person_party_id)
+    assert person_party is not None
+    assert person_party.party_type == PartyType.person.value
+    assert person_party.data_classification == PartyDataClassification.production.value
+    assert system_user.party_binding_source == "admin_seeder"
+    assert (
+        system_user.party_binding_reason
+        == "Operator-seeded local administrator identity"
+    )
     assert credential.username == "admin"
     assert credential.subscriber_id is None
     assert verify_password("AdminPass123!", credential.password_hash) is True
@@ -105,6 +116,8 @@ def test_seed_admin_user_updates_existing_system_user_and_role(db_session):
     assert system_user.last_name == "Admin"
     assert system_user.display_name == "New Admin"
     assert system_user.is_active is True
+    assert system_user.person_party_id is not None
+    assert system_user.party_binding_source == "admin_seeder"
     assert existing.username == "admin"
     assert verify_password("NewAdminPass123!", existing.password_hash) is True
     assert existing.password_updated_at is not None

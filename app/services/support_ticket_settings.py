@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
-from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.service_team import ServiceTeam
 from app.models.subscription_engine import SettingValueType
 from app.models.support import TicketStatus
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
+from app.services import service_team_lifecycle
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
@@ -27,12 +28,10 @@ from app.services.owner_commands import (
 STATUS_OPTIONS_KEY = "support_ticket_status_options"
 PRIORITY_OPTIONS_KEY = "support_ticket_priority_options"
 TYPE_OPTIONS_KEY = "support_ticket_type_options"
-SERVICE_TEAMS_KEY = "support_service_teams"
 REGION_OPTIONS_KEY = "support_ticket_region_options"
 AUTO_ASSIGN_ENABLED_KEY = "support_ticket_auto_assign_enabled"
 AUTO_ASSIGN_MAX_OPEN_TICKETS_KEY = "support_ticket_auto_assign_max_open_tickets"
 REGION_ASSIGNMENT_RULES_KEY = "support_region_assignment_rules"
-SERVICE_TEAM_MEMBERS_KEY = "support_service_team_members"
 SLA_POLICY_KEY = "support_ticket_sla_policy"
 TYPE_SLA_POLICY_KEY = "support_ticket_type_sla_policy"
 SETTINGS_DOMAIN = SettingDomain.workflow
@@ -304,75 +303,6 @@ def _normalize_optional_non_negative_int(value: object | None) -> int | None:
     return _normalize_non_negative_int(value)
 
 
-def _team_type_for_label(label: str) -> str:
-    normalized = normalize_system_value(label)
-    if "field" in normalized:
-        return ServiceTeamType.field_service.value
-    if "operation" in normalized or "ops" in normalized:
-        return ServiceTeamType.operations.value
-    return ServiceTeamType.support.value
-
-
-def _sync_service_team_tables(
-    db: Session,
-    *,
-    teams: list[dict[str, str]],
-    members: dict[str, list[str]] | None = None,
-) -> None:
-    """Mirror settings-page teams into the native assignment tables.
-
-    The old settings payload remains the display/config source for the existing
-    support UI, while the CRM-style assignment engine reads the real
-    ``service_teams`` and ``service_team_members`` tables. Keeping both in sync
-    lets admins configure rules before ticket write cutover.
-    """
-    member_map = members or {}
-    for item in teams:
-        team_id = _normalize_uuid(item.get("id"))
-        label = str(item.get("label") or "").strip()
-        if not team_id or not label:
-            continue
-        team = db.get(ServiceTeam, UUID(team_id))
-        if team is None:
-            team = ServiceTeam(
-                id=UUID(team_id),
-                name=label,
-                team_type=_team_type_for_label(label),
-                is_active=True,
-            )
-            db.add(team)
-        else:
-            team.name = label
-            team.team_type = team.team_type or _team_type_for_label(label)
-            team.is_active = True
-
-        configured_members = {
-            UUID(member_id)
-            for member_id in member_map.get(team_id, [])
-            if _normalize_uuid(member_id)
-        }
-        existing_members = (
-            db.query(ServiceTeamMember)
-            .filter(ServiceTeamMember.team_id == UUID(team_id))
-            .all()
-        )
-        by_person = {row.person_id: row for row in existing_members}
-        for row in existing_members:
-            row.is_active = row.person_id in configured_members
-        for person_id in configured_members:
-            member_row = by_person.get(person_id)
-            if member_row is None:
-                db.add(
-                    ServiceTeamMember(
-                        team_id=UUID(team_id),
-                        person_id=person_id,
-                        is_active=True,
-                    )
-                )
-            else:
-                member_row.is_active = True
-
-
 def list_assignment_rules(db: Session) -> list[dict[str, Any]]:
     team_lookup = {str(team.id): team.name for team in db.query(ServiceTeam).all()}
     rows = (
@@ -508,20 +438,12 @@ def list_region_options(db: Session) -> list[str]:
 
 
 def list_service_teams(db: Session) -> list[dict[str, str]]:
-    raw = _read_raw_setting(db, SERVICE_TEAMS_KEY)
-    teams = raw if isinstance(raw, list) else []
-    normalized: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in teams:
-        if not isinstance(item, dict):
-            continue
-        team_id = _normalize_uuid(item.get("id"))
-        label = str(item.get("label") or "").strip()
-        if not team_id or not label or team_id in seen:
-            continue
-        seen.add(team_id)
-        normalized.append({"id": team_id, "label": label})
-    return normalized
+    """Project active shared teams; ticket settings does not own team identity."""
+
+    return [
+        {"id": str(team_id), "label": label}
+        for team_id, label in service_team_lifecycle.list_active_team_options(db)
+    ]
 
 
 def auto_assign_enabled(db: Session) -> bool:
@@ -561,21 +483,6 @@ def region_assignment_rules(db: Session) -> dict[str, dict[str, Any]]:
                 if uid
             ],
         }
-    return normalized
-
-
-def service_team_members(db: Session) -> dict[str, list[str]]:
-    raw = _read_raw_setting(db, SERVICE_TEAM_MEMBERS_KEY)
-    teams = raw if isinstance(raw, dict) else {}
-    normalized: dict[str, list[str]] = {}
-    for team_id, members in teams.items():
-        uid = _normalize_uuid(team_id)
-        if not uid:
-            continue
-        values = members if isinstance(members, list) else []
-        normalized[uid] = [
-            member for member in (_normalize_uuid(item) for item in values) if member
-        ]
     return normalized
 
 
@@ -632,8 +539,6 @@ def update_options(
     priorities: list[str],
     ticket_types: list[str],
     regions: list[str] | None = None,
-    service_team_ids: list[str] | None = None,
-    service_team_labels: list[str] | None = None,
     auto_assign: bool | None = None,
     auto_assign_max_open_tickets: str | int | None = None,
     routing_regions: list[str] | None = None,
@@ -642,8 +547,6 @@ def update_options(
     routing_technician_person_ids: list[str] | None = None,
     routing_service_team_ids: list[str] | None = None,
     routing_assignee_person_ids: list[str] | None = None,
-    team_member_team_ids: list[str] | None = None,
-    team_member_person_ids: list[str] | None = None,
     sla_priorities: list[str] | None = None,
     sla_response_hours: list[str] | None = None,
     sla_resolution_hours: list[str] | None = None,
@@ -685,25 +588,6 @@ def update_options(
                 normalizer=normalize_system_value,
             ),
         )
-    if service_team_labels is not None:
-        teams: list[dict[str, str]] = []
-        seen: set[str] = set()
-        ids = service_team_ids or []
-        for index, label_raw in enumerate(service_team_labels):
-            label = str(label_raw or "").strip()
-            if not label:
-                continue
-            team_id = _normalize_uuid(
-                ids[index] if index < len(ids) else None,
-                allow_generate=True,
-            )
-            if not team_id or team_id in seen:
-                continue
-            seen.add(team_id)
-            teams.append({"id": team_id, "label": label})
-        _write_json(db, key=SERVICE_TEAMS_KEY, value=teams)
-    else:
-        teams = list_service_teams(db)
     if auto_assign is not None:
         _write_bool(db, key=AUTO_ASSIGN_ENABLED_KEY, value=auto_assign)
     if auto_assign_max_open_tickets is not None:
@@ -715,6 +599,7 @@ def update_options(
             return values[index] if values and index < len(values) else None
 
         rules: dict[str, dict[str, Any]] = {}
+        active_team_ids = {item["id"] for item in list_service_teams(db)}
         for index, region_raw in enumerate(routing_regions):
             region = normalize_system_value(region_raw)
             if not region:
@@ -729,6 +614,11 @@ def update_options(
                 )
                 if uid
             ]
+            service_team_id = _normalize_uuid(indexed(routing_service_team_ids, index))
+            if service_team_id and service_team_id not in active_team_ids:
+                raise ValueError(
+                    "Routing service team must reference an active native team."
+                )
             rules[region] = {
                 "ticket_manager_person_id": _normalize_uuid(
                     indexed(routing_ticket_manager_person_ids, index)
@@ -739,30 +629,10 @@ def update_options(
                 "technician_person_id": _normalize_uuid(
                     indexed(routing_technician_person_ids, index)
                 ),
-                "service_team_id": _normalize_uuid(
-                    indexed(routing_service_team_ids, index)
-                ),
+                "service_team_id": service_team_id,
                 "assignee_person_ids": assignees,
             }
         _write_json(db, key=REGION_ASSIGNMENT_RULES_KEY, value=rules)
-    if team_member_team_ids is not None:
-        members: dict[str, list[str]] = {}
-        person_ids = team_member_person_ids or []
-        for index, team_raw in enumerate(team_member_team_ids):
-            team_id = _normalize_uuid(team_raw)
-            person_id = _normalize_uuid(
-                person_ids[index] if index < len(person_ids) else None
-            )
-            if not team_id or not person_id:
-                continue
-            members.setdefault(team_id, [])
-            if person_id not in members[team_id]:
-                members[team_id].append(person_id)
-        _write_json(db, key=SERVICE_TEAM_MEMBERS_KEY, value=members)
-    else:
-        members = service_team_members(db)
-    _sync_service_team_tables(db, teams=teams, members=members)
-    db.flush()
     if sla_priorities is not None:
         policy: dict[str, dict[str, int]] = {}
         for index, priority_raw in enumerate(sla_priorities):

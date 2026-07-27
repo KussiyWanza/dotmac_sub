@@ -1,13 +1,25 @@
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
-from app.models.service_team import ServiceTeam, ServiceTeamMember
+from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.ticket_workflow import TicketAssignmentRule
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services import web_support_tickets as web_support_tickets_service
+
+
+def _native_team(db_session, *, name: str, team_id=None) -> ServiceTeam:
+    team = ServiceTeam(
+        id=team_id or uuid4(),
+        name=name,
+        team_type=ServiceTeamType.support.value,
+        is_active=True,
+    )
+    db_session.add(team)
+    db_session.commit()
+    return team
 
 
 def test_ticket_settings_defaults_loaded_without_db_rows(db_session):
@@ -20,15 +32,14 @@ def test_ticket_settings_defaults_loaded_without_db_rows(db_session):
 
 
 def test_ticket_settings_drive_support_ticket_form_context(db_session):
-    team_id = str(uuid4())
+    team = _native_team(db_session, name="Field Ops")
+    team_id = str(team.id)
     support_ticket_settings_service.update_options(
         db_session,
         statuses=["open", "pending"],
         priorities=["normal", "critical"],
         ticket_types=["incident", "network audit"],
         regions=["lagos", "abuja"],
-        service_team_ids=[team_id],
-        service_team_labels=["Field Ops"],
     )
 
     context = web_support_tickets_service.build_ticket_form_context(db_session)
@@ -56,7 +67,8 @@ def test_ticket_settings_reject_statuses_outside_lifecycle_vocabulary(db_session
 
 
 def test_ticket_settings_persist_routing_and_sla(db_session):
-    team_id = str(uuid4())
+    team = _native_team(db_session, name="Core Network")
+    team_id = str(team.id)
     tech_id = str(uuid4())
     support_ticket_settings_service.update_options(
         db_session,
@@ -64,8 +76,6 @@ def test_ticket_settings_persist_routing_and_sla(db_session):
         priorities=["normal"],
         ticket_types=["incident", "core link disconnection"],
         regions=["north"],
-        service_team_ids=[team_id],
-        service_team_labels=["Core Network"],
         auto_assign=True,
         auto_assign_max_open_tickets="3",
         routing_regions=["north"],
@@ -112,47 +122,20 @@ def test_ticket_settings_persist_routing_and_sla(db_session):
     )
 
 
-def test_ticket_settings_sync_service_teams_to_assignment_tables(db_session):
-    team_id = str(uuid4())
-    member_id = str(uuid4())
+def test_ticket_settings_projects_active_native_teams_without_writing_them(db_session):
+    active = _native_team(db_session, name="Field Operations")
+    inactive = _native_team(db_session, name="Retired Team")
+    inactive.is_active = False
+    db_session.commit()
 
-    support_ticket_settings_service.update_options(
-        db_session,
-        statuses=["open"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        service_team_ids=[team_id],
-        service_team_labels=["Field Operations"],
-        team_member_team_ids=[team_id],
-        team_member_person_ids=[member_id],
-    )
-
-    team = db_session.get(ServiceTeam, UUID(team_id))
-    assert team is not None
-    assert team.name == "Field Operations"
-    assert team.is_active is True
-    assert (
-        db_session.query(ServiceTeamMember)
-        .filter(
-            ServiceTeamMember.team_id == team.id,
-            ServiceTeamMember.person_id == UUID(member_id),
-            ServiceTeamMember.is_active.is_(True),
-        )
-        .count()
-        == 1
-    )
+    assert support_ticket_settings_service.list_service_teams(db_session) == [
+        {"id": str(active.id), "label": "Field Operations"}
+    ]
 
 
 def test_assignment_rule_create_and_delete(db_session):
-    team_id = str(uuid4())
-    support_ticket_settings_service.update_options(
-        db_session,
-        statuses=["open"],
-        priorities=["normal"],
-        ticket_types=["incident"],
-        service_team_ids=[team_id],
-        service_team_labels=["Support"],
-    )
+    team = _native_team(db_session, name="Support")
+    team_id = str(team.id)
 
     rule = support_ticket_settings_service.create_assignment_rule(
         db_session,

@@ -14,6 +14,7 @@ from app.schemas.dispatch import WorkOrderHeaderCreate, WorkOrderHeaderUpdate
 from app.schemas.support import TicketWorkOrderIssueRequest
 from app.services import ticket_work_order_handoff
 from app.services.owner_commands import CommandContext
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _subscriber(db_session, label: str = "Handoff") -> Subscriber:
@@ -29,7 +30,8 @@ def _subscriber(db_session, label: str = "Handoff") -> Subscriber:
 
 def _ticket_with_team(db_session):
     subscriber = _subscriber(db_session)
-    actor_id = uuid4()
+    actor, person = add_bound_staff_user(db_session)
+    actor_id = actor.id
     team = ServiceTeam(
         name="Field Response",
         team_type=ServiceTeamType.field_service.value,
@@ -40,7 +42,7 @@ def _ticket_with_team(db_session):
     db_session.add(
         ServiceTeamMember(
             team_id=team.id,
-            person_id=actor_id,
+            person_id=person.id,
             is_active=True,
         )
     )

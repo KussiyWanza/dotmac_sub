@@ -18,6 +18,7 @@ from app.models.service_team import (
     ServiceTeamMember,
     ServiceTeamMemberRole,
 )
+from app.models.system_user import SystemUser
 from app.services.workqueue.permissions import (
     WorkqueuePermissionError,
     WorkqueuePrincipal,
@@ -93,7 +94,12 @@ class WorkqueueScope:
 def _memberships(db: Session, person_id: UUID) -> list[ServiceTeamMember]:
     return (
         db.query(ServiceTeamMember)
-        .filter(ServiceTeamMember.person_id == person_id)
+        .join(
+            SystemUser,
+            SystemUser.person_party_id == ServiceTeamMember.person_id,
+        )
+        .filter(SystemUser.id == person_id)
+        .filter(SystemUser.is_active.is_(True))
         .filter(ServiceTeamMember.is_active.is_(True))
         .all()
     )
@@ -102,7 +108,12 @@ def _memberships(db: Session, person_id: UUID) -> list[ServiceTeamMember]:
 def _managed_team_ids(db: Session, person_id: UUID) -> set[UUID]:
     rows = (
         db.query(ServiceTeam.id)
-        .filter(ServiceTeam.manager_person_id == person_id)
+        .join(
+            SystemUser,
+            SystemUser.person_party_id == ServiceTeam.manager_person_id,
+        )
+        .filter(SystemUser.id == person_id)
+        .filter(SystemUser.is_active.is_(True))
         .filter(ServiceTeam.is_active.is_(True))
         .all()
     )
@@ -113,9 +124,14 @@ def _team_member_person_ids(db: Session, team_ids: frozenset[UUID]) -> set[UUID]
     if not team_ids:
         return set()
     rows = (
-        db.query(ServiceTeamMember.person_id)
+        db.query(SystemUser.id)
+        .join(
+            ServiceTeamMember,
+            ServiceTeamMember.person_id == SystemUser.person_party_id,
+        )
         .filter(ServiceTeamMember.team_id.in_(team_ids))
         .filter(ServiceTeamMember.is_active.is_(True))
+        .filter(SystemUser.is_active.is_(True))
         .all()
     )
     return {row[0] for row in rows}

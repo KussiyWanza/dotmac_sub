@@ -207,6 +207,19 @@ def settings() -> E2ESettings:
     return settings
 
 
+@pytest.fixture()
+def e2e_db():
+    """Open the explicitly configured disposable E2E database for test setup."""
+
+    if not _e2e_database_url:
+        pytest.skip("Set TEST_DATABASE_URL for E2E fixtures that prepare DB state.")
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 @pytest.fixture(scope="session")
 def playwright_instance():
     with sync_playwright() as playwright:

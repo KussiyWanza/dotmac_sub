@@ -45,6 +45,7 @@ from app.models.team_inbox import (
     InboxMessage,
 )
 from app.services import team_inbox_commands, team_inbox_read
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 ROUTES_SOURCE = Path("app/web/admin/inbox.py").read_text()
 DRAWER = Path("templates/admin/inbox/_contact_drawer.html").read_text()
@@ -198,12 +199,22 @@ def test_a_status_change_records_the_actor_in_workflow_history(db_session, actor
 
 
 def test_an_assignment_records_who_assigned_it(db_session, actor):
-    agent = uuid.uuid4()
+    agent, agent_person = add_bound_staff_user(
+        db_session,
+        email="readiness-agent@example.test",
+    )
     team = ServiceTeam(name="Readiness", team_type=ServiceTeamType.support.value)
     db_session.add(team)
     db_session.flush()
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=agent, is_active=True))
+    db_session.add(
+        ServiceTeamMember(
+            team_id=team.id,
+            person_id=agent_person.id,
+            is_active=True,
+        )
+    )
     team_id = team.id
+    agent_id = agent.id
     db_session.commit()
     conversation_id = _conversation_id(db_session, team_id=team_id)
 
@@ -211,7 +222,7 @@ def test_an_assignment_records_who_assigned_it(db_session, actor):
         db_session,
         conversation_id=conversation_id,
         service_team_id=team_id,
-        person_id=agent,
+        person_id=agent_id,
         actor_person_id=actor,
     )
 
@@ -220,7 +231,7 @@ def test_an_assignment_records_who_assigned_it(db_session, actor):
         .filter(InboxConversationAssignment.is_active.is_(True))
         .one()
     )
-    assert assignment.person_id == agent
+    assert assignment.person_id == agent_id
     assert assignment.assigned_by_person_id == actor
 
 

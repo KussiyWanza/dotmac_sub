@@ -11,18 +11,18 @@ from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamT
 from app.models.system_user import SystemUser
 from app.services import ticket_mentions
 from app.services.web_support_tickets import _parse_mentions_payload
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _system_user(db_session, *, email: str, active: bool = True) -> SystemUser:
-    user = SystemUser(
-        first_name=email.split("@", 1)[0],
-        last_name="Agent",
-        display_name=email.split("@", 1)[0].title(),
+    user, _person = add_bound_staff_user(
+        db_session,
         email=email,
         is_active=active,
     )
-    db_session.add(user)
-    db_session.flush()
+    user.first_name = email.split("@", 1)[0]
+    user.last_name = "Agent"
+    user.display_name = email.split("@", 1)[0].title()
     return user
 
 
@@ -33,8 +33,10 @@ def test_list_ticket_mention_users_includes_active_users_and_groups(db_session):
     team = ServiceTeam(name="Field Ops", team_type=ServiceTeamType.support.value)
     db_session.add(team)
     db_session.flush()
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=user.id))
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=inactive.id))
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=user.person_party_id))
+    db_session.add(
+        ServiceTeamMember(team_id=team.id, person_id=inactive.person_party_id)
+    )
     db_session.commit()
 
     items = ticket_mentions.list_ticket_mention_users(db_session)
@@ -51,8 +53,10 @@ def test_resolve_mentions_expands_groups_and_filters_inactive(db_session):
     team = ServiceTeam(name="Dispatch", team_type=ServiceTeamType.support.value)
     db_session.add(team)
     db_session.flush()
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=active.id))
-    db_session.add(ServiceTeamMember(team_id=team.id, person_id=inactive.id))
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=active.person_party_id))
+    db_session.add(
+        ServiceTeamMember(team_id=team.id, person_id=inactive.person_party_id)
+    )
     db_session.commit()
 
     resolved = ticket_mentions.resolve_mentioned_person_ids(
