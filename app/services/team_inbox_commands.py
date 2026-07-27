@@ -31,6 +31,7 @@ from app.services import (
     team_inbox_media,
     team_inbox_operations,
     team_inbox_outbound,
+    team_inbox_participants,
     team_inbox_routing,
 )
 from app.services.audit_adapter import stage_audit_event
@@ -1080,6 +1081,32 @@ def _recipient_is_on_record(
     return normalized in {value for value in known if value}
 
 
+def _recipient_seen_on_thread(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    recipient: str,
+) -> bool:
+    """Whether this address was ever observed in the thread's own headers.
+
+    `recipient_on_record` is measured against a scalar `contact_address`, so a
+    genuine participant — a colleague on the Cc line, a vendor who replied —
+    scores false and reads as an exception. Counting those as exceptions would
+    overstate how often operators export outside the conversation, and a
+    restriction policy judged on that figure would be judged on the wrong
+    number.
+    """
+    normalized = team_inbox_routing.normalize_email_address(recipient)
+    if not normalized:
+        return False
+    return team_inbox_participants.endpoint_is_participant(
+        db,
+        conversation_id=conversation.id,
+        channel_type=conversation.channel_type,
+        endpoint=normalized,
+    )
+
+
 def email_transcript(
     db: Session,
     *,
@@ -1140,6 +1167,9 @@ def email_transcript(
                 "owner": OWNER,
                 "recipient": clean_recipient,
                 "recipient_on_record": _recipient_is_on_record(
+                    db, conversation=conversation, recipient=clean_recipient
+                ),
+                "recipient_seen_on_thread": _recipient_seen_on_thread(
                     db, conversation=conversation, recipient=clean_recipient
                 ),
                 "channel_type": conversation.channel_type,

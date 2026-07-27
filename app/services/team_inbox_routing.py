@@ -66,6 +66,38 @@ def _coerce_uuid(value: str | UUID | None) -> str | None:
         return None
 
 
+def owned_mailbox_addresses(db: Session) -> frozenset[str]:
+    """Every normalized address that belongs to us rather than to a customer.
+
+    The routing table is the register of our mailboxes, so this owner answers
+    "is this one of ours?" — a participant projection must not admit our own
+    support address as a party to the conversation, and neither should any
+    later reply-to or recipient rule.
+
+    Includes deactivated routes deliberately: a mailbox we have retired is
+    still not a customer, and old messages carry it in their headers.
+    """
+    routed = {
+        str(address).strip().lower()
+        for (address,) in db.query(TeamInboxEmailRoute.email_address).all()
+        if str(address or "").strip()
+    }
+    from app.config import settings
+
+    configured = {
+        normalized
+        for normalized in (
+            normalize_email_address(value)
+            for value in settings.team_inbox_smtp_inbound_recipients.split(",")
+        )
+        if normalized
+    }
+    probe = normalize_email_address(settings.team_inbox_smtp_probe_recipient)
+    if probe:
+        configured.add(probe)
+    return frozenset(routed | configured)
+
+
 def default_service_team_id(db: Session) -> str | None:
     """Owning team for inbound traffic that carries no address to route on.
 

@@ -22,6 +22,7 @@ from app.models.team_inbox import (
 from app.services import (
     team_inbox_media,
     team_inbox_operations,
+    team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
 )
@@ -460,6 +461,12 @@ def receive_inbound_channel(
     )
     db.add(message)
     db.flush()
+    # Shadow projection: record which endpoints took part. Nothing reads it for
+    # a threading or export decision yet, so a failure here must not cost us an
+    # ingested message.
+    team_inbox_participants.record_message_participants(
+        db, conversation=conversation, message=message
+    )
     team_inbox_media.promote_message_attachments(
         db,
         message=message,

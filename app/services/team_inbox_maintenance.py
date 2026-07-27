@@ -104,6 +104,41 @@ def auto_resolve_stale(
 
 
 @dataclass(frozen=True, slots=True)
+class BackfillParticipantsCommand:
+    context: CommandContext
+    limit: int = 200
+
+
+def backfill_participants(
+    db: Session, command: BackfillParticipantsCommand
+) -> MaintenanceOutcome:
+    """Project participants for conversations that have none yet.
+
+    Walks oldest-first over unprojected conversations, so repeated runs move
+    forward rather than re-treading the same head. Idempotent: it admits only
+    missing endpoints, so a completed conversation is untouched and a partial
+    one is finished.
+    """
+    from app.services import team_inbox_participants
+
+    def operation() -> MaintenanceOutcome:
+        result = team_inbox_participants.backfill_conversations(
+            db, limit=max(1, command.limit)
+        )
+        return MaintenanceOutcome(
+            changed=int(result.get("participants") or 0),
+            skipped=int(result.get("conversations") or 0),
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class WakeDueSnoozedCommand:
     context: CommandContext
     limit: int = 200

@@ -135,3 +135,26 @@ def wake_due_snoozed_conversations(*, limit: int = 200) -> dict[str, int]:
             extra={"event": "team_inbox_snooze_wake", **payload},
         )
         return payload
+
+
+@celery_app.task(name="app.tasks.team_inbox.backfill_conversation_participants")
+def backfill_conversation_participants(*, limit: int = 200) -> dict[str, int]:
+    """Project participants for conversations that do not have them yet."""
+    with db_session_adapter.session() as session:
+        result = team_inbox_maintenance.backfill_participants(
+            session,
+            team_inbox_maintenance.BackfillParticipantsCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-participant-backfill",
+                    scope="team-inbox:maintenance",
+                    reason="project conversation participants from stored headers",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {"participants": result.changed, "conversations": result.skipped}
+        logger.info(
+            "team inbox participant backfill complete",
+            extra={"event": "team_inbox_participant_backfill", **payload},
+        )
+        return payload

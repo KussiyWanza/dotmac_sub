@@ -20,7 +20,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # (424), prepaid opening-funding reconciliation (423), conversation handoff
     # (422), service-extension activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["428_vendor_material_release_and_advances"]
+    assert script.get_heads() == ["429_inbox_conversation_participants"]
+    assert (
+        script.get_revision("429_inbox_conversation_participants").down_revision
+        == "428_vendor_material_release_and_advances"
+    )
     assert (
         script.get_revision("428_vendor_material_release_and_advances").down_revision
         == "427_vendor_principal_user_type"

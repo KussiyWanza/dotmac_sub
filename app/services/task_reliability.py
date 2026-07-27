@@ -588,6 +588,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Resolves stale conversations only when the latest customer-visible "
         "message does not require an inbound response.",
     ),
+    "app.tasks.team_inbox.backfill_conversation_participants": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Projects conversation participants from stored message headers; only "
+        "missing endpoints are admitted, so a re-run over an already-projected "
+        "conversation changes nothing.",
+    ),
     "app.tasks.team_inbox.wake_due_snoozed_conversations": _c(
         "support",
         SWEEP,

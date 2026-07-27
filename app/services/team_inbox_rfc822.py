@@ -106,6 +106,40 @@ def extract_attachments(message: Message) -> list[dict[str, Any]]:
     return attachments
 
 
+# Retained verbatim, interpreted nowhere. Admission policy for inbound email
+# is undecided, but the evidence it will need is only present at ingestion:
+# nothing can recover an SPF or DKIM result for a message already accepted.
+# Deferring the decision is fine; deferring capture would make every message
+# received in the meantime permanently un-adjudicable.
+_AUTHENTICATION_HEADERS = (
+    "Authentication-Results",
+    "ARC-Authentication-Results",
+    "Received-SPF",
+    "DKIM-Signature",
+    "ARC-Seal",
+)
+_MAX_RECEIVED_HOPS = 12
+
+
+def _authentication_headers(message: Message) -> dict[str, Any]:
+    """Transport-authentication evidence, stored raw for a later policy.
+
+    Kept as the provider wrote it rather than parsed into a verdict: a verdict
+    embeds an interpretation, and which interpretation is correct is exactly
+    what has not been decided.
+    """
+    captured: dict[str, Any] = {}
+    for header in _AUTHENTICATION_HEADERS:
+        values = [str(value) for value in message.get_all(header, []) if value]
+        if values:
+            captured[header.lower()] = values
+    # The relay chain is what tells you where a claim entered our perimeter.
+    received = [str(value) for value in message.get_all("Received", []) if value]
+    if received:
+        captured["received"] = received[:_MAX_RECEIVED_HOPS]
+    return captured
+
+
 def _parse_received_at(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -147,6 +181,9 @@ def parse_rfc822_email(
         "reply_to": parse_address_headers(message.get_all("Reply-To", [])),
         "recipients": list(rcpt_to or []),
     }
+    authentication = _authentication_headers(message)
+    if authentication:
+        metadata["authentication"] = authentication
     smtp_probe = decode_header_value(message.get("X-Dotmac-Probe"))
     if smtp_probe:
         metadata["smtp_probe"] = smtp_probe

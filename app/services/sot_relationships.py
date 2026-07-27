@@ -12024,6 +12024,43 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="communications.team_inbox_participants",
+                module="app.services.team_inbox_participants",
+                owns=("conversation participant endpoint projection",),
+                depends_on=("communications.team_inbox_routing",),
+                contract=_team_inbox_contract(
+                    service_name="communications.team_inbox_participants",
+                    concerns=(
+                        (
+                            "conversation participant endpoint projection",
+                            OwnerRole.PROJECTION_WRITER,
+                        ),
+                    ),
+                    inputs=(
+                        AuthorityInput(
+                            name="stored conversation message headers",
+                            owner="communications.team_inbox_threads",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Persisted InboxMessage from, to and cc endpoints for one conversation.",
+                        ),
+                        AuthorityInput(
+                            name="owned mailbox register",
+                            owner="communications.team_inbox_routing",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Configured team inbox email routes and intake recipients, so our own mailboxes are never admitted as participants.",
+                        ),
+                    ),
+                    transaction_mode=TransactionMode.PARTICIPANT,
+                    projections=("inbox_conversation_participants",),
+                    design_refs=("docs/designs/INBOX_CONVERSATION_PARTICIPANTS.md",),
+                    test_refs=(
+                        "tests/test_team_inbox_participants.py",
+                        "tests/architecture/test_team_inbox_boundaries.py",
+                        "tests/architecture/test_team_inbox_sot_contracts.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="communications.team_inbox_observations",
                 module="app.services.team_inbox_observations",
                 owns=("normalized inbound provider observation ledger",),

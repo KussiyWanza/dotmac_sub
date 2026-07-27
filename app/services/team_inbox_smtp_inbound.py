@@ -126,6 +126,7 @@ def handle_smtp_message(
                         (payload.metadata or {}).get("smtp_probe")
                         == SMTP_PROBE_HEADER_VALUE
                     ),
+                    authentication=(payload.metadata or {}).get("authentication"),
                     fallback_service_team_id=coerce_uuid(
                         payload.fallback_service_team_id
                     ),

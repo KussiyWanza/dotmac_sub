@@ -26,6 +26,7 @@ OWNERS = {
     "communications.team_inbox_smtp_transport": TransactionMode.NOT_APPLICABLE,
     "communications.team_inbox_health": TransactionMode.OWNER_MANAGED,
     "communications.team_inbox_campaigns": TransactionMode.PARTICIPANT,
+    "communications.team_inbox_participants": TransactionMode.PARTICIPANT,
 }
 
 

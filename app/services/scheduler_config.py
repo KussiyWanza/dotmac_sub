@@ -1133,6 +1133,16 @@ def build_beat_schedule() -> dict:
             # coarser and the operator's chosen moment is visibly wrong.
             interval_seconds=60,
         )
+        # Shadow participant projection. Nothing reads it for a decision yet;
+        # it runs so the projection is populated and measurable before any
+        # threading or export rule is allowed to depend on it.
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_participant_backfill",
+            task_name="app.tasks.team_inbox.backfill_conversation_participants",
+            enabled=True,
+            interval_seconds=900,
+        )
         _sync_scheduled_task(
             session,
             name="team_inbox_snooze_waker",
