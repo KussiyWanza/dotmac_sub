@@ -8883,6 +8883,131 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.as_built_plant_projection",
+                module="app.services.network.as_built_plant_projection",
+                owns=("fiber segment projection of accepted vendor as-built evidence",),
+                depends_on=("operations.vendor_project_records",),
+                notes=(
+                    "Accepted as-built geometry previously never reached the "
+                    "network record. This reconciler owns exactly one derived "
+                    "thing: the FiberSegment an accepted as-built represents and "
+                    "the as_built_routes.fiber_segment_id link. The evidence "
+                    "stays authoritative with operations.vendor_project_records, "
+                    "so a lost segment rebuilds from the accepted rows alone. It "
+                    "creates cable inactive: fiber_segments requires bound "
+                    "endpoints on an active row, and binding them into the graph "
+                    "is network.fiber_topology's decision. It never retires "
+                    "plant, never binds endpoints, and never deactivates a "
+                    "segment topology has since activated."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "fiber segment projection of accepted vendor "
+                                "as-built evidence"
+                            ),
+                            role=OwnerRole.RECONCILER,
+                            input_names=("accepted vendor as-built evidence",),
+                            canonical_writer="network.as_built_plant_projection",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="accepted vendor as-built evidence",
+                            owner="operations.vendor_project_records",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the accepted AsBuiltRoute, its route geometry, "
+                                "measured length, and line-item cable type and "
+                                "fiber count"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "The acceptance decision owns the transaction; the "
+                            "projection stages the segment inside it. The repair "
+                            "sweep owns its own commit."
+                        ),
+                        locking=(
+                            "The accepted as-built row is already locked by the "
+                            "review decision that triggers the projection."
+                        ),
+                        idempotency=(
+                            "fiber_segment_id makes a replay refresh the same "
+                            "segment rather than mint a second cable."
+                        ),
+                        retries=(
+                            "Safe to re-run: reconcile_accepted_as_builts is a "
+                            "no-op for evidence already projected."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.as_built_plant_projection.as_built_not_found",
+                        ),
+                        mapping_owner="app.services.vendor_project_records",
+                    ),
+                    events=EventContract(
+                        event_types=("vendor_as_built.accepted",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Consumes the acceptance event emitted by "
+                            "operations.vendor_project_records; this owner emits "
+                            "none of its own, because a derived segment is not a "
+                            "new fact about the world."
+                        ),
+                        replay=(
+                            "Replaying an acceptance refreshes the same segment "
+                            "through fiber_segment_id rather than creating one."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "fiber segment projection of accepted vendor "
+                                "as-built evidence"
+                            ),
+                            input_names=("accepted vendor as-built evidence",),
+                            writer="network.as_built_plant_projection",
+                            freshness=(
+                                "Written in the accepting transaction, so the "
+                                "fiber map cannot lag an acceptance already "
+                                "committed."
+                            ),
+                            stale_behavior=(
+                                "An unprojected acceptance leaves the segment "
+                                "absent rather than wrong; the map shows no "
+                                "cable instead of a stale route."
+                            ),
+                            drift_signal=(
+                                "An accepted as-built with NULL fiber_segment_id, "
+                                "reported by the dry-run reconcile."
+                            ),
+                            rebuild_operation=(
+                                "reconcile_accepted_as_builts(apply=True)"
+                            ),
+                            repair_owner="network.as_built_plant_projection",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.as_built_plant_projection",
+                        verification=(
+                            "Projection, idempotency, variation-refresh, "
+                            "unaccepted-evidence, missing-attribute, "
+                            "endpoint-abstention, and repair-sweep tests."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_as_built_plant_projection.py",),
+                ),
+            ),
+            SOTService(
                 name="network.fiber_plant_integrity",
                 module="app.services.network.fiber_plant_integrity",
                 owns=(

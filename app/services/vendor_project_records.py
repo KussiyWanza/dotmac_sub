@@ -623,4 +623,17 @@ def stage_as_built_review(
     result["review_event_id"] = str(evidence.id)
     result["domain_event_id"] = str(domain_event.event_id)
     result["reviewed_at"] = domain_event.occurred_at
+    if command.action == "accept":
+        # Accepting as-built evidence is what makes it a record of the network,
+        # so the plant projection shares this transaction: the fiber map cannot
+        # silently lag behind an acceptance staff already committed. The
+        # reconciler repairs anything this path misses; it never decides the
+        # review outcome, and a projection skip never blocks the decision.
+        from dataclasses import asdict
+
+        from app.services.network import as_built_plant_projection
+
+        result["plant_projection"] = asdict(
+            as_built_plant_projection.project_accepted_as_built(db, str(row.id))
+        )
     return result

@@ -296,6 +296,7 @@ do not hand-edit these rows.
 | `financial.payment_reconciliation` | scheduled top-up reconciliation execution | `application_coordinator` | canonical top-up reconciliation policy ← `control.settings_spec`<br>canonical pending top-up intent ← `financial.topup_intents`<br>external gateway verification observation ← `external:payment_provider` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`docs/runbooks/PAYSTACK_AUTOMATIC_POSTING.md`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_reconcile_honours_invoice_intent.py`<br>`tests/architecture/test_payment_reconciliation_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py` |
 | `financial.payment_reconciliation` | verified provider settlement then allocation orchestration | `application_coordinator` | canonical pending top-up intent ← `financial.topup_intents`<br>external gateway verification observation ← `external:payment_provider`<br>canonical account-credit deposit protocol ← `financial.account_credit_deposits`<br>canonical provider-event settlement protocol ← `financial.payment_provider_events`<br>canonical top-up completion protocol ← `financial.topup_intents` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`docs/runbooks/PAYSTACK_AUTOMATIC_POSTING.md`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_reconcile_honours_invoice_intent.py`<br>`tests/architecture/test_payment_reconciliation_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py` |
 | `financial.payment_reconciliation` | top-up reconciliation backlog projection | `resolver` | canonical top-up reconciliation policy ← `control.settings_spec`<br>canonical pending top-up intent ← `financial.topup_intents` | `coordinator_managed` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`docs/runbooks/PAYSTACK_AUTOMATIC_POSTING.md`<br>`tests/test_payment_webhook_settlement.py`<br>`tests/test_reconcile_honours_invoice_intent.py`<br>`tests/architecture/test_payment_reconciliation_ownership.py`<br>`tests/architecture/test_payment_settlement_participants.py` |
+| `network.as_built_plant_projection` | fiber segment projection of accepted vendor as-built evidence | `reconciler` | accepted vendor as-built evidence ← `operations.vendor_project_records` | `participant` | `native` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_as_built_plant_projection.py` |
 | `network.radius_sessions` | online-now session state | `resolver` | canonical live RADIUS observations ← `sessions.radius_reconciliation`<br>canonical subscription cohort ← `access.subscription_lifecycle` | `read_only` | `complete` | network operations | `docs/designs/PORTAL_ACCOUNT_SERVICE_HEALTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_portal_account_health.py` |
 | `network.radius_sessions` | active-session NAS observation evidence | `resolver` | canonical live RADIUS observations ← `sessions.radius_reconciliation`<br>canonical network identities ← `network.identity` | `read_only` | `complete` | network operations | `docs/designs/PORTAL_ACCOUNT_SERVICE_HEALTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_portal_account_health.py` |
 | `network.radius_sessions` | bounded historical NAS evidence | `resolver` | canonical RADIUS history ← `sessions.radius_reconciliation` | `read_only` | `complete` | network operations | `docs/designs/PORTAL_ACCOUNT_SERVICE_HEALTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_sot_services.py`<br>`tests/test_portal_account_health.py` |
@@ -3351,6 +3352,23 @@ Dependency order:
    evidence plus `vendor_as_built.accepted` or `vendor_as_built.rejected`.
    Rejection requires a reason. An evidence decision never implicitly verifies
    or reworks the project, approves an invoice, or infers ERP payment.
+
+   Accepting as-built evidence is also what makes it a record of the network.
+   `network.as_built_plant_projection` owns that one derived thing — the
+   `FiberSegment` an accepted as-built represents and the
+   `as_built_routes.fiber_segment_id` link — and stages it inside the accepting
+   transaction, so the fiber map cannot lag an acceptance already committed.
+   The evidence stays authoritative here, so a lost segment rebuilds from the
+   accepted rows alone; the projection is never the only copy of the truth.
+   It creates cable **inactive**: `fiber_segments` requires bound, distinct
+   endpoints on an active row, which is the schema stating that unconnected
+   cable is not operational plant. Binding endpoints and activating is
+   `network.fiber_topology`'s decision — a vendor drawing a line does not
+   decide what it splices into. The projection never retires plant, never binds
+   endpoints, and never deactivates a segment topology has since activated.
+   Cable type comes from the accepted line items and is left unset when the
+   vendor's wording is unrecognised, because a wrong cable type in the plant
+   record is worse than a missing one.
    Proposed-route review follows the same separation:
    `operations.vendor_project_workspace` owns accept/reject eligibility and the
    exact impact snapshot, while `operations.vendor_project_records` owns the
