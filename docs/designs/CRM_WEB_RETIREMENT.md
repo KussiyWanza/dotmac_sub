@@ -113,6 +113,18 @@ Work proceeds in coherent domain slices:
 8. delete the corresponding CRM routes, templates, services, jobs, and finally
    the CRM deployment.
 
+### Temporary portal-chat authority exception
+
+ADR 0006 temporarily pauses the portal-chat portion of CRM retirement. Until
+the staffed Inbox cutover gate is ready, CRM owns customer and reseller portal
+live chat through the typed `crm.chat_session.v1` transport capability.
+Selfcare does not mirror messages in this mode, and its native widget command
+fails closed for old and new tokens. The bounded history import and reversal
+gates are defined in
+`docs/runbooks/TEMPORARY_CRM_CHAT_AUTHORITY.md`. This exception does not advance
+any ledger route to `retired`; final CRM removal still requires reconciliation,
+traffic evidence, capability cutover, fallback retirement, and source deletion.
+
 Each slice updates the ledger, the owning design and relationship-map entries,
 the executable SOT registry when an owner changes, behavior tests, architecture
 guards, and operator guidance together.

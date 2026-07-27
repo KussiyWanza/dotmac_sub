@@ -690,6 +690,30 @@ class CRMClient:
         )
         return data if isinstance(data, dict) else {}
 
+    def create_widget_session(
+        self,
+        *,
+        config_id: str,
+        email: str,
+        name: str | None,
+        crm_subscriber_id: str | None,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Mint an identified CRM widget session for an authenticated portal."""
+        payload: dict[str, Any] = {
+            "config_id": config_id,
+            "email": email,
+            "metadata": metadata,
+        }
+        if name:
+            payload["name"] = name
+        if crm_subscriber_id:
+            payload["crm_subscriber_id"] = crm_subscriber_id
+        data = self._request(
+            "POST", "/api/v1/widget/internal/session", json_data=payload
+        )
+        return data if isinstance(data, dict) else {}
+
     def _portal_token(
         self, crm_subscriber_id: str, scopes: list[str], actor: str = "subscriber"
     ) -> str:

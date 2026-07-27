@@ -111,6 +111,114 @@ def _paystack_manifest(
     )
 
 
+def _dotmac_crm_manifest(
+    *,
+    version: str,
+    include_chat_session: bool,
+) -> ConnectorManifest:
+    """Build the current CRM manifest and its bounded pre-chat predecessor."""
+
+    capabilities = [
+        CapabilityManifest(
+            id="crm.subscriber_observation.v1",
+            modes=(
+                CapabilityMode.scheduled,
+                CapabilityMode.manual,
+                CapabilityMode.reconcile,
+            ),
+        ),
+        CapabilityManifest(
+            id="crm.ticket_observation.v1",
+            modes=(
+                CapabilityMode.scheduled,
+                CapabilityMode.manual,
+                CapabilityMode.reconcile,
+            ),
+        ),
+        CapabilityManifest(
+            id="crm.operational_observation.v1",
+            modes=(
+                CapabilityMode.scheduled,
+                CapabilityMode.interactive,
+                CapabilityMode.reconcile,
+            ),
+        ),
+        CapabilityManifest(
+            id="crm.portal_session.v1",
+            modes=(CapabilityMode.interactive,),
+        ),
+    ]
+    if include_chat_session:
+        capabilities.append(
+            CapabilityManifest(
+                id="crm.chat_session.v1",
+                modes=(CapabilityMode.interactive,),
+            )
+        )
+    capabilities.extend(
+        (
+            CapabilityManifest(
+                id="crm.quote_command.v1",
+                modes=(CapabilityMode.interactive,),
+            ),
+            CapabilityManifest(
+                id="crm.events.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        )
+    )
+    properties: dict[str, dict[str, object]] = {
+        "base_url": {"type": "string"},
+        "timeout_seconds": {"type": "number"},
+        "public_portal_api_base": {"type": "string"},
+    }
+    if include_chat_session:
+        properties.update(
+            {
+                "chat_widget_config_id": {"type": "string"},
+                "chat_ws_url": {"type": "string"},
+            }
+        )
+    return ConnectorManifest(
+        key="dotmac.crm",
+        name="DotMac CRM",
+        version=version,
+        connector_type="crm",
+        description="First-party CRM observations, commands, sessions, and inbound events.",
+        catalogue_visible=False,
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.dotmac_crm",
+        ),
+        capabilities=tuple(capabilities),
+        config_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["base_url"],
+            "additionalProperties": False,
+        },
+        secrets=(
+            SecretBindingManifest(name="service_credentials"),
+            SecretBindingManifest(name="webhook_signing_secret", required=False),
+        ),
+        data_access=DataAccessManifest(
+            reads=(
+                "subscriber.external_identity",
+                "portal.command_request",
+                *(("portal.chat_session_request",) if include_chat_session else ()),
+            ),
+            emits=(
+                "crm.external_observation",
+                "crm.inbound_event_observation",
+                *(("crm.chat_session",) if include_chat_session else ()),
+            ),
+            classifications=("customer_contact", "support_content", "operations"),
+        ),
+        egress=EgressManifest(hosts=("crm.dotmac.io",)),
+        health=HealthManifest(operation="connection.validate.v1"),
+    )
+
+
 _DEFINITIONS: tuple[ConnectorManifest, ...] = (
     ConnectorManifest(
         key="lead.capture.http",
@@ -192,76 +300,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         egress=EgressManifest(allow_installation_hosts=True),
         health=HealthManifest(operation="connection.validate.v1"),
     ),
-    ConnectorManifest(
-        key="dotmac.crm",
-        name="DotMac CRM",
-        version="1.0.0",
-        connector_type="crm",
-        description="First-party CRM observations, commands, sessions, and inbound events.",
-        catalogue_visible=False,
-        runtime=RuntimeManifest(
-            type=ConnectorRuntimeType.builtin_worker,
-            module="app.services.integrations.connectors.dotmac_crm",
-        ),
-        capabilities=(
-            CapabilityManifest(
-                id="crm.subscriber_observation.v1",
-                modes=(
-                    CapabilityMode.scheduled,
-                    CapabilityMode.manual,
-                    CapabilityMode.reconcile,
-                ),
-            ),
-            CapabilityManifest(
-                id="crm.ticket_observation.v1",
-                modes=(
-                    CapabilityMode.scheduled,
-                    CapabilityMode.manual,
-                    CapabilityMode.reconcile,
-                ),
-            ),
-            CapabilityManifest(
-                id="crm.operational_observation.v1",
-                modes=(
-                    CapabilityMode.scheduled,
-                    CapabilityMode.interactive,
-                    CapabilityMode.reconcile,
-                ),
-            ),
-            CapabilityManifest(
-                id="crm.portal_session.v1",
-                modes=(CapabilityMode.interactive,),
-            ),
-            CapabilityManifest(
-                id="crm.quote_command.v1",
-                modes=(CapabilityMode.interactive,),
-            ),
-            CapabilityManifest(
-                id="crm.events.receive.v1",
-                modes=(CapabilityMode.inbound,),
-            ),
-        ),
-        config_schema={
-            "type": "object",
-            "properties": {
-                "base_url": {"type": "string"},
-                "timeout_seconds": {"type": "number"},
-                "public_portal_api_base": {"type": "string"},
-            },
-            "required": ["base_url"],
-            "additionalProperties": False,
-        },
-        secrets=(
-            SecretBindingManifest(name="service_credentials"),
-            SecretBindingManifest(name="webhook_signing_secret", required=False),
-        ),
-        data_access=DataAccessManifest(
-            reads=("subscriber.external_identity", "portal.command_request"),
-            emits=("crm.external_observation", "crm.inbound_event_observation"),
-            classifications=("customer_contact", "support_content", "operations"),
-        ),
-        egress=EgressManifest(hosts=("crm.dotmac.io",)),
-        health=HealthManifest(operation="connection.validate.v1"),
+    _dotmac_crm_manifest(
+        version="1.1.0",
+        include_chat_session=True,
     ),
     ConnectorManifest(
         key="whatsapp",
@@ -449,6 +490,9 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
 )
 
 _HISTORICAL_DEFINITIONS: tuple[ConnectorManifest, ...] = (
+    # CRM 1.0.0 remains executable while production adopts the explicit
+    # temporary chat-session capability in 1.1.0.
+    _dotmac_crm_manifest(version="1.0.0", include_chat_session=False),
     # Pre-#1567 Paystack 1.0.0. Production installations created before the
     # payment control-plane cutover pin this exact digest.
     _paystack_manifest(

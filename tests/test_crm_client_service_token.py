@@ -78,3 +78,35 @@ def test_global_settings_factory_is_removed():
     from app.services import crm_client as mod
 
     assert not hasattr(mod, "get_crm_client")
+
+
+def test_create_widget_session_uses_trusted_internal_endpoint():
+    client = CRMClient("https://crm.example", service_token="svc-key-123")
+    with patch.object(
+        client,
+        "_request",
+        return_value={
+            "session_id": "session-1",
+            "visitor_token": "opaque",
+        },
+    ) as request:
+        result = client.create_widget_session(
+            config_id="config-1",
+            email="customer@example.com",
+            name="Customer",
+            crm_subscriber_id="subscriber-1",
+            metadata={"source": "dotmac_sub_portal"},
+        )
+
+    assert result["visitor_token"] == "opaque"
+    request.assert_called_once_with(
+        "POST",
+        "/api/v1/widget/internal/session",
+        json_data={
+            "config_id": "config-1",
+            "email": "customer@example.com",
+            "name": "Customer",
+            "crm_subscriber_id": "subscriber-1",
+            "metadata": {"source": "dotmac_sub_portal"},
+        },
+    )

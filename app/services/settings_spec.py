@@ -3230,6 +3230,15 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.comms,
+        key="chat_session_authority",
+        env_var="CHAT_SESSION_AUTHORITY",
+        value_type=SettingValueType.string,
+        default="selfcare",
+        allowed={"selfcare", "crm"},
+        label="Live chat authority",
+    ),
+    SettingSpec(
+        domain=SettingDomain.comms,
         key="campaign_processing_enabled",
         env_var="CAMPAIGN_PROCESSING_ENABLED",
         value_type=SettingValueType.boolean,

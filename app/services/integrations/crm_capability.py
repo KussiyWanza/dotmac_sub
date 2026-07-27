@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.services.crm_client import CRMClientError
 from app.services.integrations import installations
 from app.services.integrations.connectors.dotmac_crm import (
+    CRM_CHAT_SESSION_CAPABILITY,
     CRM_EVENT_RECEIVE_CAPABILITY,
     CRM_OPERATIONAL_OBSERVATION_CAPABILITY,
     CRM_PORTAL_SESSION_CAPABILITY,
@@ -226,6 +227,35 @@ class CrmCapabilityClient:
                 },
                 trigger=OperationTrigger.interactive,
                 correlation_id=f"crm-portal-session:{actor}:{crm_subscriber_id}",
+            ).get("item")
+            or {}
+        )
+
+    def create_widget_session(
+        self,
+        *,
+        config_id: str,
+        email: str,
+        name: str | None,
+        crm_subscriber_id: str | None,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        return dict(
+            self._execute(
+                CRM_CHAT_SESSION_CAPABILITY,
+                "create_widget_session",
+                {
+                    "config_id": config_id,
+                    "email": email,
+                    "name": name,
+                    "crm_subscriber_id": crm_subscriber_id,
+                    "metadata": metadata,
+                },
+                trigger=OperationTrigger.interactive,
+                correlation_id=(
+                    f"crm-chat-session:{metadata.get('surface', 'portal')}:"
+                    f"{metadata.get('subscriber_id') or metadata.get('reseller_id') or 'principal'}"
+                ),
             ).get("item")
             or {}
         )

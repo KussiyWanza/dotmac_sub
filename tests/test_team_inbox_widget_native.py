@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxChannelType,
@@ -66,26 +67,58 @@ def test_widget_token_lists_and_sends_messages(db_session):
     sub = _subscriber(db_session)
     with _chat_enabled():
         session = team_inbox_widget.broker_customer_session(db_session, str(sub.id))
-    principal = team_inbox_widget.decode_widget_token(
-        db_session,
-        str(session["visitor_token"]),
-    )
+        principal = team_inbox_widget.decode_widget_token(
+            db_session,
+            str(session["visitor_token"]),
+        )
 
-    sent = team_inbox_widget.add_visitor_message(
-        db_session,
-        principal=principal,
-        body="My router is down",
-        client_message_id="client-1",
-    )
-    messages = team_inbox_widget.list_session_messages(
-        db_session,
-        principal=principal,
-    )
+        sent = team_inbox_widget.add_visitor_message(
+            db_session,
+            principal=principal,
+            body="My router is down",
+            client_message_id="client-1",
+        )
+        messages = team_inbox_widget.list_session_messages(
+            db_session,
+            principal=principal,
+        )
 
     assert sent["client_message_id"] == "client-1"
     assert sent["direction"] == InboxMessageDirection.inbound.value
     assert messages["messages"][0]["body"] == "My router is down"
     assert messages["messages"][0]["sender_type"] == "visitor"
+
+
+def test_existing_native_token_cannot_write_after_crm_authority_cutover(db_session):
+    from app.services.settings_cache import SettingsCache
+
+    sub = _subscriber(db_session)
+    with _chat_enabled():
+        session = team_inbox_widget.broker_customer_session(db_session, str(sub.id))
+        principal = team_inbox_widget.decode_widget_token(
+            db_session,
+            str(session["visitor_token"]),
+        )
+        db_session.add(
+            DomainSetting(
+                domain=SettingDomain.comms,
+                key="chat_session_authority",
+                value_text="crm",
+                is_active=True,
+            )
+        )
+        db_session.commit()
+        SettingsCache.invalidate(SettingDomain.comms.value, "chat_session_authority")
+
+        with pytest.raises(team_inbox_widget.TeamInboxWidgetError) as exc:
+            team_inbox_widget.add_visitor_message(
+                db_session,
+                principal=principal,
+                body="Must not be stored locally",
+            )
+
+    assert exc.value.code == "communications.team_inbox_widget.authority_external"
+    assert db_session.query(InboxMessage).count() == 0
 
 
 def test_widget_satisfaction_requires_resolved_conversation(db_session):

@@ -12061,6 +12061,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "customer.identity_scope",
                     "communications.team_inbox_threads",
+                    "control.settings_spec",
+                ),
+                notes=(
+                    "ADR 0006 temporarily assigns portal live-chat authority to CRM "
+                    "when comms.chat_session_authority=crm. This native command owner "
+                    "then fails closed for both new and previously issued widget tokens; "
+                    "it never mirrors or falls back to a local write."
                 ),
                 contract=_team_inbox_contract(
                     service_name="communications.team_inbox_widget",
@@ -12083,11 +12090,34 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="Native chat-widget conversation and message chronology.",
                         ),
+                        AuthorityInput(
+                            name="live-chat authority selection",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Database-authoritative "
+                                "comms.chat_session_authority control; native commands "
+                                "are accepted only when the value resolves to selfcare."
+                            ),
+                        ),
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
                     event_types=(
                         "team_inbox.widget_message_recorded.v1",
                         "team_inbox.widget_read_state_changed.v1",
+                    ),
+                    design_refs=(
+                        "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                        "docs/adr/0006-temporary-crm-chat-authority.md",
+                        "docs/runbooks/TEMPORARY_CRM_CHAT_AUTHORITY.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_chat_session.py",
+                        "tests/test_team_inbox_widget_native.py",
+                        "tests/architecture/test_team_inbox_boundaries.py",
+                        "tests/architecture/test_team_inbox_sot_contracts.py",
                     ),
                 ),
             ),

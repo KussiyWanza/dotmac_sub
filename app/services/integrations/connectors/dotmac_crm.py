@@ -20,6 +20,7 @@ CRM_SUBSCRIBER_OBSERVATION_CAPABILITY = "crm.subscriber_observation.v1"
 CRM_TICKET_OBSERVATION_CAPABILITY = "crm.ticket_observation.v1"
 CRM_OPERATIONAL_OBSERVATION_CAPABILITY = "crm.operational_observation.v1"
 CRM_PORTAL_SESSION_CAPABILITY = "crm.portal_session.v1"
+CRM_CHAT_SESSION_CAPABILITY = "crm.chat_session.v1"
 CRM_QUOTE_COMMAND_CAPABILITY = "crm.quote_command.v1"
 CRM_EVENT_RECEIVE_CAPABILITY = "crm.events.receive.v1"
 
@@ -55,6 +56,15 @@ class CrmTransport(Protocol):
         crm_subscriber_id: str,
         actor: str = "subscriber",
         scopes: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+    def create_widget_session(
+        self,
+        *,
+        config_id: str,
+        email: str,
+        name: str | None,
+        crm_subscriber_id: str | None,
+        metadata: dict[str, Any],
     ) -> dict[str, Any]: ...
     def get_portal_referrals(self, crm_subscriber_id: str) -> dict[str, Any]: ...
     def get_portal_quotes(self, crm_subscriber_id: str) -> dict[str, Any]: ...
@@ -99,6 +109,7 @@ _ACTIONS_BY_CAPABILITY = {
         "get_portal_quotes",
     },
     CRM_PORTAL_SESSION_CAPABILITY: {"create_portal_session"},
+    CRM_CHAT_SESSION_CAPABILITY: {"create_widget_session"},
     CRM_QUOTE_COMMAND_CAPABILITY: {
         "request_portal_quote",
         "accept_portal_quote",
@@ -272,6 +283,20 @@ class DotmacCrmRunner:
                     crm_subscriber_id=str(params["crm_subscriber_id"]),
                     actor=str(params.get("actor") or "subscriber"),
                     scopes=list(params.get("scopes") or []),
+                )
+            }
+        if action == "create_widget_session":
+            return {
+                "item": client.create_widget_session(
+                    config_id=str(params["config_id"]),
+                    email=str(params["email"]),
+                    name=str(params["name"]) if params.get("name") else None,
+                    crm_subscriber_id=(
+                        str(params["crm_subscriber_id"])
+                        if params.get("crm_subscriber_id")
+                        else None
+                    ),
+                    metadata=dict(params.get("metadata") or {}),
                 )
             }
         if action == "get_portal_referrals":

@@ -20,6 +20,10 @@ from app.models.team_inbox import (
 )
 from app.services import auth_flow as auth_flow_service
 from app.services import team_inbox_realtime
+from app.services.chat_session_authority import (
+    ChatSessionAuthority,
+    resolve_chat_session_authority,
+)
 from app.services.common import coerce_uuid
 from app.services.customer_support_links import (
     ticket_customer_link_filter,
@@ -72,9 +76,14 @@ class WidgetPrincipal:
     reseller_id: str | None = None
 
 
-def _require_enabled() -> None:
+def _require_enabled(db: Session) -> None:
     if not settings.chat_live_enabled:
         raise _error("disabled", "Live chat is not enabled.")
+    if resolve_chat_session_authority(db).authority != ChatSessionAuthority.SELFCARE:
+        raise _error(
+            "authority_external",
+            "Live chat is currently handled by the CRM.",
+        )
 
 
 def _jwt_payload(
@@ -226,6 +235,36 @@ def _reseller_context(
     return ticket_id, project_id
 
 
+def resolve_customer_context(
+    db: Session,
+    subscriber_id: uuid.UUID,
+    *,
+    ticket_id: str | None,
+    project_id: str | None,
+) -> tuple[str | None, str | None]:
+    return _customer_context(
+        db,
+        subscriber_id,
+        ticket_id=ticket_id,
+        project_id=project_id,
+    )
+
+
+def resolve_reseller_context(
+    db: Session,
+    reseller_id: uuid.UUID,
+    *,
+    ticket_id: str | None,
+    project_id: str | None,
+) -> tuple[str | None, str | None]:
+    return _reseller_context(
+        db,
+        reseller_id,
+        ticket_id=ticket_id,
+        project_id=project_id,
+    )
+
+
 def _conversation(
     db: Session,
     *,
@@ -324,7 +363,7 @@ def broker_customer_session(
     ticket_id: str | None = None,
     project_id: str | None = None,
 ) -> dict[str, str | None]:
-    _require_enabled()
+    _require_enabled(db)
     sub = db.get(Subscriber, coerce_uuid(subscriber_id))
     if sub is None:
         raise _error("subscriber_not_found", "Subscriber not found.")
@@ -395,7 +434,7 @@ def broker_reseller_session(
     ticket_id: str | None = None,
     project_id: str | None = None,
 ) -> dict[str, str | None]:
-    _require_enabled()
+    _require_enabled(db)
     reseller = db.get(Reseller, coerce_uuid(reseller_id))
     if reseller is None:
         raise _error("reseller_not_found", "Reseller not found.")
@@ -502,6 +541,7 @@ def add_visitor_message(
     body: str,
     client_message_id: str | None = None,
 ) -> dict[str, Any]:
+    _require_enabled(db)
     clean_body = str(body or "").strip()
     if not clean_body:
         raise _error("message_required", "Message body is required.")

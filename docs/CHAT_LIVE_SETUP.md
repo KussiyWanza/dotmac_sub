@@ -1,48 +1,65 @@
-# Live chat setup
+# Live chat setup and temporary CRM authority
 
-Live chat is owned by Sub's native Team Inbox. Customer and reseller sessions
-are authenticated and minted by Sub; browsers and mobile clients receive an
-opaque visitor token that is valid only for the native widget API and inbox
-WebSocket. CRM is not the chat transport or session authority.
+Live chat has one selected authority at a time. The database-authoritative
+`comms.chat_session_authority` setting selects `selfcare` or `crm`; its default
+is `selfcare`. `CHAT_LIVE_ENABLED` remains the outer availability gate.
 
-## Components
+## Selfcare authority
 
-| Owner | Surface |
+With `chat_session_authority=selfcare`, authenticated customer and reseller
+sessions use Sub's native Team Inbox:
+
+- session broker: `/api/v1/me/chat/session`, `/api/v1/reseller/chat/session`,
+  and `/portal/chat/session`;
+- visitor REST: `/widget`;
+- real time: `/ws/inbox`;
+- authoritative conversation/message state: `InboxConversation` and
+  `InboxMessage`.
+
+## Temporary CRM authority
+
+With `chat_session_authority=crm`, the same Sub broker endpoints authenticate
+the portal principal and invoke the enabled `crm.chat_session.v1` capability.
+CRM returns an opaque visitor token, and the browser talks directly to CRM's
+`/widget` REST API and `/ws/widget` WebSocket. Sub does not create or mirror an
+Inbox conversation or message in this mode.
+
+The enabled `dotmac.crm` installation must use manifest version 1.1.0 and
+configure:
+
+| Field | Meaning |
 | --- | --- |
-| Sub | `POST /api/v1/me/chat/session` and `POST /api/v1/reseller/chat/session` |
-| Sub | `POST /portal/chat/session` for the browser-authenticated customer portal |
-| Sub | `/widget` REST API and `/ws/inbox` real-time channel |
-| Sub | Team Inbox conversation/message state and agent workspace |
-| CRM integration | Optional verified `message.outbound` observation at `POST /webhooks/crm/chat` for push notification only |
+| `base_url` | CRM origin, normally `https://crm.dotmac.io` |
+| `chat_widget_config_id` | Active CRM `DotMac Self-care` widget UUID |
+| `chat_ws_url` | Optional WebSocket override; otherwise derived from `base_url` |
+| `service_credentials` | Existing secret reference for the trusted CRM service principal |
 
-## Configuration
+Bind and enable `crm.chat_session.v1`. CRM independently restricts
+`POST /api/v1/widget/internal/session` to `CHAT_MINT_SERVICE_ACCOUNTS`.
 
-Set `CHAT_LIVE_ENABLED=true` to enable session minting and render the portal
-widget. No CRM chat URL, widget ID, username, password, or direct WebSocket
-setting is read by Sub.
+The native visitor-message command rechecks the authority setting. Switching to
+CRM therefore blocks writes from already-issued native tokens immediately;
+there is no eight-hour token grace window.
 
-If CRM `message.outbound` notifications are used, configure a `dotmac.crm`
-installation through the integration admin surface:
+## Historical reconciliation
 
-- configuration: `base_url`, optional `timeout_seconds`, and optional
-  `public_portal_api_base`;
-- secret references: required `service_credentials` and optional
-  `webhook_signing_secret`;
-- enabled binding: `crm.events.receive.v1`.
+The temporary rollback does not dual-write history. Use the reviewed,
+idempotent operator workflow:
 
-The signing secret remains in the approved secret store. Configure the CRM
-webhook sender with the matching secret reference value and the Sub endpoint;
-do not place the value in this file or another tracked configuration file.
+1. Export populated native chats with
+   `scripts/one_off/export_native_chat_for_crm.py`.
+2. Transfer the private export over the approved SSH channel.
+3. Run CRM's `scripts/import_selfcare_chat_history.py` without `--apply`.
+4. Apply only when every source subscriber resolves to exactly one active CRM
+   Person.
+5. Run the importer again and require a zero-create/all-reused result.
+6. Compare counts and verify that no new native Selfcare messages appeared
+   after authority switched to CRM.
+7. Remove both temporary export files.
 
-## Verification
+The CRM importer preserves timestamps and stable source IDs and deliberately
+does not emit live `message.inbound` events. Imported history therefore does
+not trigger auto-assignment or automated customer delivery.
 
-1. Enable live chat and open a customer or reseller portal.
-2. Start a chat and verify the returned URLs are `/widget` and `/ws/inbox`.
-3. Send a message and confirm it appears once in the native Team Inbox.
-4. Reply from the agent workspace and confirm real-time delivery to the portal.
-5. If CRM push observations are enabled, send a signed `message.outbound` event
-   twice with the same delivery ID and confirm one inbox consequence and an
-   idempotent replay response.
-
-Ticket and project context is accepted only after Sub verifies that the current
-subscriber or reseller owns the referenced record.
+Full cutover and reversal steps are in
+`docs/runbooks/TEMPORARY_CRM_CHAT_AUTHORITY.md` and ADR 0006.

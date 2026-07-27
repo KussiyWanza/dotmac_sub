@@ -14,6 +14,7 @@ import hmac
 import json
 import threading
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,7 @@ from fastapi import HTTPException
 
 from app.api.crm_webhooks import receive_crm_chat_event
 from app.config import settings
+from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.subscriber import Reseller, ResellerUser, Subscriber
 from tests.integration_platform_helpers import enable_crm_inbound
 
@@ -57,6 +59,21 @@ def _make_subscriber(db_session):
     return sub
 
 
+def _set_chat_authority(db_session, authority: str) -> None:
+    from app.services.settings_cache import SettingsCache
+
+    db_session.add(
+        DomainSetting(
+            domain=SettingDomain.comms,
+            key="chat_session_authority",
+            value_text=authority,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    SettingsCache.invalidate(SettingDomain.comms.value, "chat_session_authority")
+
+
 def test_customer_session_disabled_returns_503(db_session):
     from app.services import chat_session, team_inbox_widget
 
@@ -83,6 +100,72 @@ def test_customer_session_happy_path(db_session):
     assert result["api_base"] == "/widget"
     assert conversation.metadata_["surface"] == "customer"
     assert conversation.metadata_["subscriber_id"] == str(sub.id)
+
+
+def test_customer_session_uses_crm_when_temporary_authority_is_enabled(
+    db_session, monkeypatch
+):
+    from app.models.team_inbox import InboxConversation
+    from app.services import chat_session, crm_chat_session
+
+    sub = _make_subscriber(db_session)
+    _set_chat_authority(db_session, "crm")
+    mint = SimpleNamespace(
+        create_widget_session=lambda **kwargs: {
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "visitor_token": "opaque",
+            "conversation_id": None,
+        }
+    )
+    monkeypatch.setattr(crm_chat_session, "capability_client", lambda _db: mint)
+    monkeypatch.setattr(
+        crm_chat_session,
+        "active_config",
+        lambda _db, _capability: {
+            "base_url": "https://crm.example.test",
+            "chat_widget_config_id": "22222222-2222-2222-2222-222222222222",
+        },
+    )
+    monkeypatch.setattr(
+        crm_chat_session,
+        "resolve_crm_subscriber_id",
+        lambda _db, _subscriber_id: "33333333-3333-3333-3333-333333333333",
+    )
+
+    with _chat_settings():
+        result = chat_session.broker_customer_session(db_session, str(sub.id))
+
+    assert result == {
+        "session_id": "11111111-1111-1111-1111-111111111111",
+        "visitor_token": "opaque",
+        "conversation_id": None,
+        "ws_url": "wss://crm.example.test/ws/widget",
+        "api_base": "https://crm.example.test/widget",
+    }
+    assert db_session.query(InboxConversation).count() == 0
+
+
+def test_customer_session_fails_closed_when_crm_binding_is_not_ready(
+    db_session, monkeypatch
+):
+    from app.services import chat_session, crm_chat_session, team_inbox_widget
+    from app.services.integrations.installations import InstallationError
+
+    sub = _make_subscriber(db_session)
+    _set_chat_authority(db_session, "crm")
+    monkeypatch.setattr(
+        crm_chat_session,
+        "active_config",
+        lambda _db, _capability: (_ for _ in ()).throw(
+            InstallationError("binding disabled")
+        ),
+    )
+
+    with _chat_settings():
+        with pytest.raises(team_inbox_widget.TeamInboxWidgetError) as exc:
+            chat_session.broker_customer_session(db_session, str(sub.id))
+
+    assert exc.value.code == "communications.chat_session.not_configured"
 
 
 def test_customer_session_carries_owned_ticket_context(db_session):
