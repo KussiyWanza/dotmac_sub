@@ -45,10 +45,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Column, String, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.network import IPAssignment, IPv4Address, IPVersion
+from app.models.subscriber import Subscriber
 from app.services.radius import (
     _active_external_sync_configs,
     _external_radius_table,
@@ -88,30 +89,33 @@ def _chunked(values: list[str], size: int = _CHUNK):
 
 
 def _active_assignment_ips(db: Session) -> dict[str, str]:
-    """Active ipv4 IPAssignment address keyed by subscriber_id.
+    """One unambiguous active IPv4 assignment keyed by exact subscription.
 
-    Keyed by subscriber, not subscription, on purpose: IPAssignment is
-    subscriber-scoped, and prod's ``ip_assignments`` table has no
-    ``subscription_id`` column (migration 153 stamped-not-applied — the alembic
-    wedge documented in the design doc). Subscriber-level keying is both
-    correct for the IPAM model and resilient to that drift."""
-    by_subscriber: dict[str, str] = {}
+    Legacy subscriber-level inference is intentionally excluded. A missing
+    exact bridge or multiple exact assignments is drift to adjudicate, not a
+    reason to select an arbitrary sibling-service address.
+    """
+    candidates: dict[str, list[str]] = {}
     rows = db.execute(
         select(
-            IPAssignment.subscriber_id,
+            IPAssignment.subscription_id,
             IPv4Address.address,
         )
         .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
         .where(IPAssignment.is_active.is_(True))
         .where(IPAssignment.ip_version == IPVersion.ipv4)
+        .where(IPAssignment.subscription_id.is_not(None))
     ).all()
-    for subscriber_id, address in rows:
+    for subscription_id, address in rows:
         norm = _norm(address)
-        if not norm:
+        if not norm or subscription_id is None:
             continue
-        if subscriber_id is not None:
-            by_subscriber.setdefault(str(subscriber_id), norm)
-    return by_subscriber
+        candidates.setdefault(str(subscription_id), []).append(norm)
+    return {
+        subscription_id: values[0]
+        for subscription_id, values in candidates.items()
+        if len(values) == 1
+    }
 
 
 def _external_ip_state(
@@ -182,34 +186,46 @@ def audit_ip_consistency(db: Session) -> dict[str, Any]:
     for kind in _DRIFT_KINDS:
         result[kind] = []
 
-    by_subscriber_assign = _active_assignment_ips(db)
+    by_subscription_assign = _active_assignment_ips(db)
 
-    active = db.execute(
-        select(
-            Subscription.id,
-            Subscription.login,
-            Subscription.ipv4_address,
-            Subscription.subscriber_id,
-        ).where(Subscription.status == SubscriptionStatus.active)
-    ).all()
+    active_subscriptions = (
+        db.execute(
+            select(Subscription)
+            .options(
+                joinedload(Subscription.subscriber).joinedload(Subscriber.reseller)
+            )
+            .where(Subscription.status == SubscriptionStatus.active)
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    from app.services.radius_projection_planner import plan_login_radius_projections
+
+    desired_radius = plan_login_radius_projections(db, active_subscriptions)
 
     # First pass: resolve column + assignment IPs, decide who needs a radreply
     # lookup. A sub is in-population if any of the (so far two) sources is set;
     # radreply is added below.
     candidates: list[dict[str, Any]] = []
     logins: set[str] = set()
-    for sub_id, login, col_ip_raw, subscriber_id in active:
-        col_ip = _norm(col_ip_raw)
-        assign_ip = (
-            by_subscriber_assign.get(str(subscriber_id)) if subscriber_id else None
-        ) or ""
-        login = (login or "").strip()
+    for subscription in active_subscriptions:
+        sub_id = subscription.id
+        col_ip = _norm(subscription.ipv4_address)
+        assign_ip = by_subscription_assign.get(str(sub_id), "")
+        login = (subscription.login or "").strip()
+        radius_projection = desired_radius.get(login) if login else None
         candidates.append(
             {
                 "sub_id": str(sub_id),
                 "login": login,
                 "col_ip": col_ip,
                 "assign_ip": assign_ip,
+                "write_radreply": bool(
+                    radius_projection is not None
+                    and radius_projection.subscription_id == str(sub_id)
+                    and radius_projection.plan.write_radreply
+                ),
             }
         )
         if login:
@@ -240,7 +256,7 @@ def audit_ip_consistency(db: Session) -> dict[str, Any]:
         # Column vs external radreply (only meaningful when the login maps and
         # is actually provisioned — else radreply_missing would false-positive
         # on dynamic/unprovisioned logins).
-        if login and login in provisioned:
+        if c["write_radreply"] and login and login in provisioned:
             if col_ip and not radreply_ip:
                 drift["radreply_missing"].add(tag)
             elif col_ip and radreply_ip and col_ip != radreply_ip:

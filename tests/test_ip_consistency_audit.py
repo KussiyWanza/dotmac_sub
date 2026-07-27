@@ -10,6 +10,7 @@ docs/FINANCIAL_ACCESS_ENFORCEMENT.md.
 from __future__ import annotations
 
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.models.catalog import Subscription, SubscriptionStatus
@@ -171,6 +172,32 @@ class TestIpConsistencyAudit:
         result = _run(db_session, db_path)
         assert result["counts"]["radreply_missing"] == 1
 
+    def test_intentional_reject_does_not_require_radreply(
+        self, db_session, tmp_path, catalog_offer
+    ):
+        db_path = tmp_path / "radius.db"
+        _seed_radius_sqlite(
+            db_path,
+            radcheck=[("user-reject", "Auth-Type", "Reject")],
+        )
+        sub = _seed_sub(
+            db_session,
+            login="user-reject",
+            offer=catalog_offer,
+            col_ip="10.0.0.18",
+            assign_ip="10.0.0.18",
+        )
+        projection = SimpleNamespace(
+            subscription_id=str(sub.id),
+            plan=SimpleNamespace(write_radreply=False),
+        )
+        with patch(
+            "app.services.radius_projection_planner.plan_login_radius_projections",
+            return_value={"user-reject": projection},
+        ):
+            result = _run(db_session, db_path)
+        assert result["counts"]["radreply_missing"] == 0
+
     def test_radreply_mismatch(self, db_session, tmp_path, catalog_offer):
         db_path = tmp_path / "radius.db"
         _seed_radius_sqlite(
@@ -217,6 +244,59 @@ class TestIpConsistencyAudit:
         result = _run(db_session, db_path)
         assert result["population"] == 0
         assert result["ok"] is True
+
+    def test_sibling_assignment_cannot_create_subscriber_level_false_mismatch(
+        self, db_session, tmp_path, catalog_offer
+    ):
+        db_path = tmp_path / "radius.db"
+        _seed_radius_sqlite(
+            db_path,
+            radcheck=[("sibling-a", "Cleartext-Password", "pw")],
+            radreply=[("sibling-a", "Framed-IP-Address", "10.0.0.21")],
+        )
+        subscriber = Subscriber(
+            first_name="Sibling",
+            last_name="Audit",
+            email="sibling-audit@example.com",
+        )
+        db_session.add(subscriber)
+        db_session.flush()
+        first = Subscription(
+            subscriber_id=subscriber.id,
+            offer_id=catalog_offer.id,
+            status=SubscriptionStatus.active,
+            login="sibling-a",
+            ipv4_address="10.0.0.21",
+        )
+        second = Subscription(
+            subscriber_id=subscriber.id,
+            offer_id=catalog_offer.id,
+            status=SubscriptionStatus.active,
+            login="sibling-b",
+            ipv4_address="10.0.0.22",
+        )
+        db_session.add_all([first, second])
+        db_session.flush()
+        for subscription, address_value in (
+            (first, "10.0.0.21"),
+            (second, "10.0.0.22"),
+        ):
+            address = IPv4Address(address=address_value)
+            db_session.add(address)
+            db_session.flush()
+            db_session.add(
+                IPAssignment(
+                    subscriber_id=subscriber.id,
+                    subscription_id=subscription.id,
+                    ip_version=IPVersion.ipv4,
+                    ipv4_address_id=address.id,
+                    is_active=True,
+                )
+            )
+        db_session.commit()
+
+        result = _run(db_session, db_path)
+        assert result["counts"]["assignment_mismatch"] == 0
 
     def test_no_external_config_reports_error(
         self, db_session, tmp_path, catalog_offer

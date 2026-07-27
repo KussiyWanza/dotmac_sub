@@ -10237,20 +10237,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "exact service ownership of active IPv4 assignments",
                     "reviewed exact-service IPv4 assignment lifecycle repair",
+                    "reviewed exact-service IPv4 served projection repair",
                 ),
                 depends_on=(
+                    "access.radius_projection",
+                    "access.session_enforcement",
                     "access.subscription_lifecycle",
                     "events.dispatcher",
                     "network.identity",
                     "observability.audit_log",
+                    "sessions.radius_reconciliation",
                 ),
                 notes=(
                     "IPAssignment remains the desired-address authority. This "
                     "shadowing owner retains the safe ownership-only backfill and "
-                    "adds fingerprinted exact-service create/link/deactivate repair. "
-                    "It never writes Subscription.ipv4_address, RADIUS, or sessions; "
-                    "normal provisioning writers remain declared migration debt "
-                    "until the later runtime cutover."
+                    "fingerprinted exact-service create/link/deactivate repair. The "
+                    "reviewed projection command may converge only the exact "
+                    "Subscription.ipv4_address copy; its durable event delegates "
+                    "RADIUS and old-IP session consequences to their owners. Normal "
+                    "provisioning writers remain declared migration debt until the "
+                    "later runtime cutover."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10275,6 +10281,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical active subscription identity",
                                 "serviceable IPv4 address inventory",
                                 "reviewed lifecycle repair command",
+                            ),
+                            canonical_writer="network.ip_assignment_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "reviewed exact-service IPv4 served projection repair"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical active IPv4 assignment",
+                                "canonical active subscription identity",
+                                "served IPv4 compatibility projection",
+                                "observed RADIUS IPv4 projection",
+                                "active RADIUS session observation",
+                                "reviewed served projection repair command",
                             ),
                             canonical_writer="network.ip_assignment_lifecycle",
                         ),
@@ -10337,20 +10358,49 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "and idempotency key"
                             ),
                         ),
+                        AuthorityInput(
+                            name="observed RADIUS IPv4 projection",
+                            owner="access.radius_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "DB-configured external radcheck and radreply state "
+                                "for the exact selected service login"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active RADIUS session observation",
+                            owner="sessions.radius_reconciliation",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "active exact-subscription session identities and "
+                                "their currently framed IPv4 addresses"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="reviewed served projection repair command",
+                            owner="network.ip_assignment_lifecycle",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "exact subscription and assignment identifiers, "
+                                "preview SHA-256, actor, reason, and idempotency key"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Each public ownership or lifecycle command enters "
+                            "Each public ownership, lifecycle, or served-projection "
+                            "command enters "
                             "execute_owner_command once on a transaction-free "
                             "session; the operator adapter owns session lifecycle."
                         ),
                         locking=(
-                            "The exact Subscription, Subscriber, desired IPv4Address, "
-                            "desired IpPool, and all relevant IPAssignment rows are "
-                            "locked; PostgreSQL also holds routed-block and device-IP "
-                            "inventories in SHARE mode before complete evidence is "
-                            "recomputed."
+                            "The exact Subscription, Subscriber, selected "
+                            "IPAssignment, desired IPv4Address, desired IpPool, and "
+                            "all relevant assignment rows are locked. PostgreSQL "
+                            "also holds routed-block and device-IP inventories in "
+                            "SHARE mode for ledger repair; every command recomputes "
+                            "its complete evidence before mutation."
                         ),
                         idempotency=(
                             "A durable audit row binds the idempotency key to the "
@@ -10377,6 +10427,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "network.ip_assignment_lifecycle.stale_preview",
                             "network.ip_assignment_lifecycle.subscriber_not_found",
                             "network.ip_assignment_lifecycle.subscription_not_found",
+                            "network.ip_assignment_lifecycle.unsafe_projection_repair",
                             "network.ip_assignment_lifecycle.unsafe_repair",
                             "network.ip_assignment_lifecycle.unsafe_cohort",
                         ),
@@ -10388,19 +10439,23 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "cross-service deactivation or address ownership",
                             "reserved, management, routed, or inactive-pool address",
                             "changed preview evidence",
+                            "RADIUS or session observation disagreement",
+                            "shared-login selection disagreement",
                         ),
                     ),
                     events=EventContract(
                         event_types=(
                             "ip_assignment.service_ownership_reconciled",
                             "ip_assignment.lifecycle_repaired",
+                            "ip_assignment.served_projection_repaired",
                         ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
                             "Version 1 events carry exact assignment identifiers, "
-                            "subscription identity, preview fingerprint, and bounded "
-                            "mutation counts without customer identity data."
+                            "subscription identity, preview fingerprint, bounded "
+                            "mutation counts, and old/new address consequence "
+                            "evidence without customer identity data."
                         ),
                         replay=(
                             "The durable batch audit row and item audit rows "
@@ -10436,6 +10491,39 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             repair_owner=("network.ip_assignment_lifecycle"),
                         ),
+                        ProjectionContract(
+                            name="exact-service served IPv4 compatibility projection",
+                            input_names=(
+                                "canonical active IPv4 assignment",
+                                "canonical active subscription identity",
+                                "served IPv4 compatibility projection",
+                                "observed RADIUS IPv4 projection",
+                                "active RADIUS session observation",
+                                "reviewed served projection repair command",
+                            ),
+                            writer="network.ip_assignment_lifecycle",
+                            freshness=(
+                                "Subscription.ipv4_address is current only while it "
+                                "equals the single active exact-service assignment; "
+                                "RADIUS and session observations are checked at each "
+                                "preview and again under the command lock."
+                            ),
+                            stale_behavior=(
+                                "Missing, multiple, shared-login, RADIUS-disagreed, "
+                                "or session-conflicted evidence fails closed."
+                            ),
+                            drift_signal=(
+                                "The exact-service IP consistency audit compares one "
+                                "unambiguous assignment to served and policy-aware "
+                                "RADIUS projections."
+                            ),
+                            rebuild_operation=(
+                                "Run the dry-run exact-service projection adapter, "
+                                "apply its exact fingerprint, then let the durable "
+                                "event reconcile RADIUS and old-IP sessions."
+                            ),
+                            repair_owner="network.ip_assignment_lifecycle",
+                        ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.SHADOWING,
@@ -10446,15 +10534,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="network.ip_assignment_lifecycle",
                         verification=(
-                            "Full-fleet classification and exact-service lifecycle "
-                            "previews plus focused contract, stale-preview, "
-                            "idempotency, and no-projection-write tests."
+                            "Full-fleet classification, exact-service ledger and "
+                            "served-projection previews, and focused contract, "
+                            "stale-preview, consequence, and idempotency tests."
                         ),
                         cutover_gate=(
                             "Every active assignment has an exact service link or "
-                            "reviewed quarantine reason; reviewed repair can converge "
-                            "the IPAM ledger; projection drift is near zero before "
-                            "exact-service runtime cutover."
+                            "reviewed quarantine reason; reviewed repair converges "
+                            "the IPAM ledger and served/RADIUS/session projections; "
+                            "remaining projection drift is near zero before "
+                            "unconditional exact-service runtime cutover."
                         ),
                         fallback_retirement=(
                             "Normal provisioning, admin assignment, terminal release, "

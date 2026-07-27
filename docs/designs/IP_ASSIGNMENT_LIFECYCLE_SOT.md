@@ -11,7 +11,7 @@ Owner: `network.ip_assignment_lifecycle`
 sessions are projections or observations. They cannot create, move, reclaim, or
 release an allocation.
 
-The first lifecycle slice owns reviewed IPv4 ledger repair:
+The lifecycle owner owns reviewed IPv4 ledger repair:
 
 - keep or create one desired assignment for an exact service;
 - link a legacy subscriber assignment to an explicitly selected service;
@@ -19,8 +19,15 @@ The first lifecycle slice owns reviewed IPv4 ledger repair:
   assignments; and
 - release exact assignments only for a terminal service.
 
-It never changes the subscription served-IP projection, external RADIUS, or a
-live session. Those consequences remain a separate projection-repair slice.
+The ledger command never changes the subscription served-IP projection,
+external RADIUS, or a live session.
+
+The reviewed projection command is separate. It may update
+`Subscription.ipv4_address` only when one active assignment is linked to that
+exact service and the served-IP, policy-selected RADIUS projection, and active
+session observations agree with the fingerprinted preview. Its transactional
+event delegates external RADIUS repair and old-IP-only session
+reauthentication to their canonical owners after commit.
 
 ## Command contract
 
@@ -86,19 +93,28 @@ removes subscriber-grain inference and helper transaction completion.
 
 ## Projection cutover
 
-After the ledger is repaired and remaining ambiguity is quarantined, the next
-slice will:
+After the ledger is repaired and remaining ambiguity is quarantined, the
+reviewed projection slice:
 
 1. preview exact IPAM versus `Subscription.ipv4_address`, external RADIUS, and
    authoritative session observations;
-2. change the served-IP projection through its owner in bounded batches;
-3. request `access.radius_projection` for only the affected identities;
-4. reauthenticate only identities whose effective IP changed; and
+2. changes the served-IP projection through
+   `network.ip_assignment_lifecycle` in one fingerprint-bound owner command;
+3. emits `ip_assignment.served_projection_repaired` transactionally;
+4. lets the durable handler request `access.radius_projection` for the exact
+   identity and reauthenticate only sessions still framed with the old IP; and
 5. verify reconnect, accounting freshness, and traffic.
 
-The final cutover removes `trust_ipam`, makes exact-service IPAM the
-unconditional RADIUS address input, retires legacy subscriber fallback, and
-enables permanent idempotent drift repair.
+The projection command fails closed on a missing or multiple exact assignment,
+cross-subscriber ownership, non-active service, shared-login selection,
+unavailable or already-divergent RADIUS evidence, conflicting session
+observations, and stale fingerprints. Event retries are safe because session
+enforcement targets only the old framed IP; a session that has reauthenticated
+onto the desired IP is not disconnected again.
+
+The final runtime cutover still removes `trust_ipam`, makes exact-service IPAM
+the unconditional RADIUS address input, retires legacy subscriber fallback,
+and enables permanent idempotent drift repair.
 
 ## Operator flow
 
@@ -109,10 +125,20 @@ and reason. A fresh production backup, named target, reviewed cohort, and
 post-state verification are operational gates; historical previews are not
 authorization.
 
+Served projection repair uses
+`python -m scripts.one_off.repair_service_ipv4_projection` with the exact
+subscription and assignment identifiers. It is also dry-run by default and
+requires the exact preview fingerprint, idempotency key, actor, and reason.
+
 ## Verification
 
 - `tests/test_ip_assignment_lifecycle.py` proves create, link, deactivate,
-  release, stale-preview, idempotency, and fail-closed safety.
+  release, served projection, stale-preview, idempotency, and fail-closed
+  safety.
+- `tests/test_ip_assignment_projection_handler.py` proves RADIUS is projected
+  before old-IP-only session enforcement.
+- `tests/test_ip_consistency_audit.py` proves exact-service assignment lookup
+  and policy-aware RADIUS reply expectations.
 - `tests/test_ip_assignment_repair.py` preserves the ownership-only migration
   behavior under the same owner.
 - `tests/architecture/test_ip_assignment_service_ownership.py` verifies the

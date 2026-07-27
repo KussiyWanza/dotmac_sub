@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OWNER = ROOT / "app/services/ip_assignment_lifecycle.py"
 SCRIPT = ROOT / "scripts/one_off/repair_ipam_to_served.py"
 LIFECYCLE_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_assignment.py"
+PROJECTION_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_projection.py"
 
 # The complete set of modules allowed to construct an IPAssignment while the
 # lifecycle owner is in its SHADOWING phase. Everything other than the owner is
@@ -56,6 +57,7 @@ def test_ipam_ownership_owner_has_complete_transaction_contract() -> None:
     assert service.contract.migration.state is AuthorityMigrationState.SHADOWING
     assert service.contract.concerns[0].role is OwnerRole.RECONCILER
     assert service.contract.concerns[1].role is OwnerRole.COMMAND_WRITER
+    assert service.contract.concerns[2].role is OwnerRole.COMMAND_WRITER
 
 
 def test_legacy_projection_authority_and_partial_commit_paths_are_retired() -> None:
@@ -67,7 +69,7 @@ def test_legacy_projection_authority_and_partial_commit_paths_are_retired() -> N
     assert "db.commit()" not in source
     assert "db.rollback()" not in source
     assert "execute_owner_command(" in source
-    assert "subscription.ipv4_address =" not in source
+    assert source.count("subscription.ipv4_address =") == 1
 
 
 def test_operator_adapter_is_dry_run_first_and_fingerprint_gated() -> None:
@@ -90,6 +92,18 @@ def test_lifecycle_operator_adapter_is_dry_run_first_and_fingerprint_gated() -> 
     assert '"--deactivate-assignment-id"' in source
     assert "preview_service_ipv4_assignment_repair(" in source
     assert "repair_service_ipv4_assignment(" in source
+    assert ".commit(" not in source
+
+
+def test_projection_operator_adapter_is_dry_run_first_and_fingerprint_gated() -> None:
+    source = PROJECTION_SCRIPT.read_text(encoding="utf-8")
+
+    assert '"--apply"' in source
+    assert '"--fingerprint"' in source
+    assert '"--idempotency-key"' in source
+    assert '"--assignment-id"' in source
+    assert "preview_service_ipv4_projection_repair(" in source
+    assert "repair_service_ipv4_projection(" in source
     assert ".commit(" not in source
 
 

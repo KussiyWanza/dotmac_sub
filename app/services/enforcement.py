@@ -918,19 +918,28 @@ def _nas_device_by_ip(db: Session, nas_ip: str) -> NasDevice | None:
 
 
 def disconnect_subscription_sessions(
-    db: Session, subscription_id: str, reason: str | None = None
+    db: Session,
+    subscription_id: str,
+    reason: str | None = None,
+    *,
+    framed_ip_address: str | None = None,
+    require_terminal: bool = False,
 ) -> int:
     subscription = db.get(Subscription, coerce_uuid(subscription_id))
     if not subscription:
         raise HTTPException(status_code=404, detail="Subscription not found")
 
     login = (subscription.login or "").strip()
+    expected_framed_ip = str(framed_ip_address or "").strip()
 
     # Primary source: open radacct sessions by login. Keyed by session_id
     # to dedupe against the legacy app-side rows added below.
     targets: dict[str, tuple[Any, str | None, str, str | None]] = {}
     found = 0
     for sess in _open_radacct_sessions_for_username(db, login):
+        observed_framed_ip = str(sess["framed_ip"] or "").strip()
+        if expected_framed_ip and observed_framed_ip != expected_framed_ip:
+            continue
         found += 1
         nas_device = _nas_device_by_ip(db, sess["nas_ip"])
         if not nas_device:
@@ -960,6 +969,9 @@ def disconnect_subscription_sessions(
     for session in legacy_sessions:
         if session.session_id in targets:
             continue
+        observed_framed_ip = str(session.framed_ip_address or "").strip()
+        if expected_framed_ip and observed_framed_ip != expected_framed_ip:
+            continue
         found += 1
         nas_device = _resolve_nas_device(db, session)
         if not nas_device:
@@ -976,7 +988,7 @@ def disconnect_subscription_sessions(
             nas_device,
             username,
             session.session_id,
-            subscription.ipv4_address,
+            session.framed_ip_address,
         )
 
     if not targets:
@@ -987,6 +999,10 @@ def disconnect_subscription_sessions(
                 found,
                 subscription_id,
             )
+            if require_terminal:
+                raise RuntimeError(
+                    "Targeted RADIUS sessions have no resolvable NAS device."
+                )
         return 0
 
     # Group sessions by NAS so we open at most one SSH connection per device
@@ -1085,6 +1101,17 @@ def disconnect_subscription_sessions(
             found,
             subscription_id,
         )
+    if require_terminal:
+        remaining_sessions = [
+            session
+            for session in _open_radacct_sessions_for_username(db, login)
+            if not expected_framed_ip
+            or str(session["framed_ip"] or "").strip() == expected_framed_ip
+        ]
+        if remaining_sessions:
+            raise RuntimeError(
+                "One or more targeted RADIUS sessions remain active after disconnect."
+            )
     return count
 
 

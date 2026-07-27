@@ -1,8 +1,10 @@
-"""Exact-service IPv4 assignment lifecycle and migration repair.
+"""Exact-service IPv4 assignment lifecycle and projection repair.
 
 ``IPAssignment`` is the desired-address authority. This owner contains both the
 safe legacy ownership-link migration and the reviewed exact-service assignment
-repair command. Neither command edits the served IPv4, RADIUS, or live sessions.
+repair command. A separate fingerprinted command converges the served IPv4
+projection after the ledger is exact; its durable event requests RADIUS and
+old-IP session consequences after commit.
 
 Preview is exhaustive and read-only.  Confirmation is limited to rows where:
 
@@ -28,7 +30,7 @@ from typing import NoReturn
 from uuid import UUID
 
 from sqlalchemy import or_, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.audit import AuditActorType, AuditEvent
 from app.models.catalog import NasDevice, Subscription, SubscriptionStatus
@@ -42,6 +44,7 @@ from app.models.network import (
 )
 from app.models.network_monitoring import NetworkDevice
 from app.models.radius import RadiusClient
+from app.models.radius_active_session import RadiusActiveSession
 from app.models.router_management import Router
 from app.models.subscriber import Subscriber
 from app.services.audit_adapter import stage_audit_event
@@ -66,10 +69,17 @@ _LIFECYCLE_COMMAND = OwnerCommandDefinition(
     concern=_LIFECYCLE_CONCERN,
     name="repair_service_ipv4_assignment",
 )
+_PROJECTION_CONCERN = "reviewed exact-service IPv4 served projection repair"
+_PROJECTION_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_PROJECTION_CONCERN,
+    name="repair_service_ipv4_projection",
+)
 _ITEM_AUDIT_ACTION = "network.ip_assignment.service_ownership_linked"
 _BATCH_AUDIT_ACTION = "network.ip_assignment.service_ownership_reconciled"
 _LIFECYCLE_ITEM_AUDIT_ACTION = "network.ip_assignment.lifecycle_item_changed"
 _LIFECYCLE_BATCH_AUDIT_ACTION = "network.ip_assignment.lifecycle_repaired"
+_PROJECTION_BATCH_AUDIT_ACTION = "network.ip_assignment.served_projection_repaired"
 _RETAINING_STATUSES = frozenset(
     {
         SubscriptionStatus.active,
@@ -132,6 +142,21 @@ class IPv4AssignmentLifecycleError(DomainError):
     """Stable fail-closed exact-service IPv4 assignment lifecycle error."""
 
 
+class IPv4ServedProjectionDecision(StrEnum):
+    ready = "ready"
+    noop = "noop"
+    subscription_not_found = "subscription_not_found"
+    subscription_not_active = "subscription_not_active"
+    missing_exact_assignment = "missing_exact_assignment"
+    multiple_exact_assignments = "multiple_exact_assignments"
+    assignment_subscriber_mismatch = "assignment_subscriber_mismatch"
+    missing_login = "missing_login"
+    shared_login_not_selected = "shared_login_not_selected"
+    radius_observation_unavailable = "radius_observation_unavailable"
+    radius_projection_not_aligned = "radius_projection_not_aligned"
+    session_observation_conflict = "session_observation_conflict"
+
+
 @dataclass(frozen=True, slots=True)
 class ActiveIPv4AssignmentEvidence:
     assignment_id: UUID
@@ -178,6 +203,44 @@ class ServiceIPv4AssignmentRepairOutcome:
     linked_count: int
     created_count: int
     deactivated_count: int
+    preview_fingerprint: str
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceIPv4ProjectionPreview:
+    subscription_id: UUID
+    subscriber_id: UUID | None
+    assignment_id: UUID | None
+    served_address: str | None
+    desired_address: str | None
+    radius_mode: str | None
+    observed_radius_address: str | None
+    active_session_count: int
+    old_address_session_count: int
+    decision: IPv4ServedProjectionDecision
+    fingerprint: str
+
+    @property
+    def applicable(self) -> bool:
+        return self.decision is IPv4ServedProjectionDecision.ready
+
+
+@dataclass(frozen=True, slots=True)
+class RepairServiceIPv4ProjectionCommand:
+    context: CommandContext
+    subscription_id: UUID
+    assignment_id: UUID
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceIPv4ProjectionOutcome:
+    subscription_id: UUID
+    assignment_id: UUID
+    previous_address: str
+    desired_address: str
+    observed_active_sessions: int
     preview_fingerprint: str
     replayed: bool
 
@@ -701,6 +764,187 @@ def preview_service_ipv4_assignment_repair(
     )
 
 
+def _projection_preview_payload(
+    *,
+    subscription_id: UUID,
+    subscriber_id: UUID | None,
+    assignment_id: UUID | None,
+    served_address: str | None,
+    desired_address: str | None,
+    radius_mode: str | None,
+    observed_radius_address: str | None,
+    active_session_count: int,
+    old_address_session_count: int,
+    decision: IPv4ServedProjectionDecision,
+) -> dict[str, object]:
+    return {
+        "subscription_id": str(subscription_id),
+        "subscriber_id": str(subscriber_id) if subscriber_id is not None else None,
+        "assignment_id": str(assignment_id) if assignment_id is not None else None,
+        "served_address": served_address,
+        "desired_address": desired_address,
+        "radius_mode": radius_mode,
+        "observed_radius_address": observed_radius_address,
+        "active_session_count": active_session_count,
+        "old_address_session_count": old_address_session_count,
+        "decision": decision.value,
+    }
+
+
+def preview_service_ipv4_projection_repair(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    assignment_id: UUID,
+) -> ServiceIPv4ProjectionPreview:
+    """Preview one exact-service served-IP projection repair without writes."""
+
+    from app.services.ip_consistency_audit import _external_ip_state, _norm
+    from app.services.radius_access_state import ACTIVE_STATUSES, BLOCKED_STATUSES
+    from app.services.radius_projection_planner import plan_login_radius_projections
+
+    subscription = db.get(Subscription, subscription_id)
+    subscriber_id = subscription.subscriber_id if subscription is not None else None
+    served_address = (
+        _norm(subscription.ipv4_address) or None if subscription is not None else None
+    )
+    desired_address: str | None = None
+    radius_mode: str | None = None
+    observed_radius_address: str | None = None
+    active_session_count = 0
+    old_address_session_count = 0
+    decision = IPv4ServedProjectionDecision.subscription_not_found
+
+    exact_rows = list(
+        db.execute(
+            select(IPAssignment, IPv4Address.address)
+            .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
+            .where(
+                IPAssignment.subscription_id == subscription_id,
+                IPAssignment.is_active.is_(True),
+                IPAssignment.ip_version == IPVersion.ipv4,
+            )
+            .order_by(IPAssignment.id)
+        ).all()
+    )
+    selected = next(
+        (
+            (assignment, address)
+            for assignment, address in exact_rows
+            if assignment.id == assignment_id
+        ),
+        None,
+    )
+    if selected is not None:
+        desired_address = _norm(selected[1]) or None
+
+    session_addresses = [
+        _norm(value) or None
+        for value in db.scalars(
+            select(RadiusActiveSession.framed_ip_address).where(
+                RadiusActiveSession.subscription_id == subscription_id
+            )
+        ).all()
+    ]
+    active_session_count = len(session_addresses)
+    if served_address is not None:
+        old_address_session_count = sum(
+            value == served_address for value in session_addresses
+        )
+
+    if subscription is None:
+        pass
+    elif subscription.status is not SubscriptionStatus.active:
+        decision = IPv4ServedProjectionDecision.subscription_not_active
+    elif len(exact_rows) == 0:
+        decision = IPv4ServedProjectionDecision.missing_exact_assignment
+    elif len(exact_rows) > 1:
+        decision = IPv4ServedProjectionDecision.multiple_exact_assignments
+    elif selected is None:
+        decision = IPv4ServedProjectionDecision.missing_exact_assignment
+    elif selected[0].subscriber_id != subscription.subscriber_id:
+        decision = IPv4ServedProjectionDecision.assignment_subscriber_mismatch
+    else:
+        login = str(subscription.login or "").strip()
+        if not login:
+            decision = IPv4ServedProjectionDecision.missing_login
+        else:
+            login_candidates = (
+                db.execute(
+                    select(Subscription)
+                    .options(
+                        joinedload(Subscription.subscriber).joinedload(
+                            Subscriber.reseller
+                        )
+                    )
+                    .where(
+                        Subscription.login == login,
+                        Subscription.status.in_(ACTIVE_STATUSES | BLOCKED_STATUSES),
+                    )
+                )
+                .unique()
+                .scalars()
+                .all()
+            )
+            projection = plan_login_radius_projections(db, login_candidates).get(login)
+            if projection is None or projection.subscription_id != str(subscription.id):
+                decision = IPv4ServedProjectionDecision.shared_login_not_selected
+            else:
+                radius_mode = projection.plan.mode
+                framed, provisioned, errors = _external_ip_state(db, [login])
+                observed_radius_address = _norm(framed.get(login)) or None
+                if errors:
+                    decision = (
+                        IPv4ServedProjectionDecision.radius_observation_unavailable
+                    )
+                elif served_address == desired_address:
+                    decision = IPv4ServedProjectionDecision.noop
+                elif projection.plan.write_radreply and (
+                    login not in provisioned
+                    or observed_radius_address != served_address
+                ):
+                    decision = (
+                        IPv4ServedProjectionDecision.radius_projection_not_aligned
+                    )
+                elif not projection.plan.write_radreply and observed_radius_address:
+                    decision = (
+                        IPv4ServedProjectionDecision.radius_projection_not_aligned
+                    )
+                elif any(
+                    value not in {served_address, desired_address}
+                    for value in session_addresses
+                ):
+                    decision = IPv4ServedProjectionDecision.session_observation_conflict
+                else:
+                    decision = IPv4ServedProjectionDecision.ready
+
+    payload = _projection_preview_payload(
+        subscription_id=subscription_id,
+        subscriber_id=subscriber_id,
+        assignment_id=selected[0].id if selected is not None else None,
+        served_address=served_address,
+        desired_address=desired_address,
+        radius_mode=radius_mode,
+        observed_radius_address=observed_radius_address,
+        active_session_count=active_session_count,
+        old_address_session_count=old_address_session_count,
+        decision=decision,
+    )
+    return ServiceIPv4ProjectionPreview(
+        subscription_id=subscription_id,
+        subscriber_id=subscriber_id,
+        assignment_id=selected[0].id if selected is not None else None,
+        served_address=served_address,
+        desired_address=desired_address,
+        radius_mode=radius_mode,
+        observed_radius_address=observed_radius_address,
+        active_session_count=active_session_count,
+        old_address_session_count=old_address_session_count,
+        decision=decision,
+        fingerprint=_repair_fingerprint(payload),
+    )
+
+
 def _prior_outcome(
     db: Session,
     *,
@@ -904,6 +1148,39 @@ def _prior_lifecycle_outcome(
         linked_count=int(metadata.get("linked_count") or 0),
         created_count=int(metadata.get("created_count") or 0),
         deactivated_count=int(metadata.get("deactivated_count") or 0),
+        preview_fingerprint=prior_fingerprint,
+        replayed=True,
+    )
+
+
+def _prior_projection_outcome(
+    db: Session,
+    *,
+    idempotency_key: str,
+    preview_fingerprint: str,
+) -> ServiceIPv4ProjectionOutcome | None:
+    prior = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.action == _PROJECTION_BATCH_AUDIT_ACTION,
+            AuditEvent.entity_type == "ip_assignment_served_projection",
+            AuditEvent.entity_id == idempotency_key,
+        )
+    )
+    if prior is None:
+        return None
+    metadata = prior.metadata_ if isinstance(prior.metadata_, dict) else {}
+    prior_fingerprint = str(metadata.get("preview_fingerprint") or "")
+    if not secrets.compare_digest(prior_fingerprint, preview_fingerprint):
+        _lifecycle_error(
+            "idempotency_conflict",
+            "The idempotency key was already used for different projection evidence.",
+        )
+    return ServiceIPv4ProjectionOutcome(
+        subscription_id=UUID(str(metadata["subscription_id"])),
+        assignment_id=UUID(str(metadata["assignment_id"])),
+        previous_address=str(metadata["previous_address"]),
+        desired_address=str(metadata["desired_address"]),
+        observed_active_sessions=int(metadata.get("observed_active_sessions") or 0),
         preview_fingerprint=prior_fingerprint,
         replayed=True,
     )
@@ -1190,6 +1467,140 @@ def _repair_service_ipv4_assignment(
     )
 
 
+def _repair_service_ipv4_projection(
+    db: Session,
+    command: RepairServiceIPv4ProjectionCommand,
+) -> ServiceIPv4ProjectionOutcome:
+    idempotency_key = (command.context.idempotency_key or "").strip()
+    if not idempotency_key:
+        _lifecycle_error("missing_idempotency_key", "An idempotency key is required.")
+    prior = _prior_projection_outcome(
+        db,
+        idempotency_key=idempotency_key,
+        preview_fingerprint=command.preview_fingerprint,
+    )
+    if prior is not None:
+        return prior
+
+    subscription = db.scalar(
+        select(Subscription)
+        .where(Subscription.id == command.subscription_id)
+        .with_for_update()
+    )
+    if subscription is None:
+        _lifecycle_error(
+            "subscription_not_found",
+            "The reviewed subscription no longer exists.",
+        )
+    assignment = db.scalar(
+        select(IPAssignment)
+        .where(IPAssignment.id == command.assignment_id)
+        .with_for_update()
+    )
+    if assignment is None:
+        _lifecycle_error(
+            "assignment_not_found",
+            "The reviewed IP assignment no longer exists.",
+        )
+    if assignment.ipv4_address_id is not None:
+        db.scalar(
+            select(IPv4Address)
+            .where(IPv4Address.id == assignment.ipv4_address_id)
+            .with_for_update()
+        )
+
+    prior = _prior_projection_outcome(
+        db,
+        idempotency_key=idempotency_key,
+        preview_fingerprint=command.preview_fingerprint,
+    )
+    if prior is not None:
+        return prior
+    current = preview_service_ipv4_projection_repair(
+        db,
+        subscription_id=command.subscription_id,
+        assignment_id=command.assignment_id,
+    )
+    if not secrets.compare_digest(current.fingerprint, command.preview_fingerprint):
+        _lifecycle_error(
+            "stale_preview",
+            "IPv4 projection evidence changed after preview; preview again.",
+            current_fingerprint=current.fingerprint,
+        )
+    if not current.applicable:
+        _lifecycle_error(
+            "unsafe_projection_repair",
+            "The reviewed IPv4 projection repair is no longer safe to apply.",
+            decision=current.decision.value,
+        )
+    if (
+        current.assignment_id is None
+        or current.served_address is None
+        or current.desired_address is None
+    ):
+        _lifecycle_error(
+            "incomplete_projection_evidence",
+            "The reviewed IPv4 projection evidence is incomplete.",
+        )
+
+    from app.services.connectivity_reconciler import (
+        note_connectivity_write,
+        reconciler_write_scope,
+    )
+
+    with reconciler_write_scope():
+        subscription.ipv4_address = current.desired_address
+        note_connectivity_write(
+            "subscription.ipv4_address",
+            "ip_assignment_lifecycle",
+        )
+
+    stage_audit_event(
+        db,
+        action=_PROJECTION_BATCH_AUDIT_ACTION,
+        entity_type="ip_assignment_served_projection",
+        entity_id=idempotency_key,
+        actor_type=AuditActorType.service,
+        actor_id=command.context.actor,
+        metadata={
+            "subscription_id": str(subscription.id),
+            "assignment_id": str(current.assignment_id),
+            "previous_address": current.served_address,
+            "desired_address": current.desired_address,
+            "radius_mode": current.radius_mode,
+            "observed_active_sessions": current.active_session_count,
+            "old_address_sessions": current.old_address_session_count,
+            "preview_fingerprint": current.fingerprint,
+            "reason": command.context.reason,
+        },
+    )
+    emit_event(
+        db,
+        EventType.ip_assignment_served_projection_repaired,
+        {
+            "schema_version": 1,
+            "subscription_id": str(subscription.id),
+            "assignment_id": str(current.assignment_id),
+            "previous_address": current.served_address,
+            "desired_address": current.desired_address,
+            "preview_fingerprint": current.fingerprint,
+        },
+        actor=command.context.actor,
+        subscriber_id=subscription.subscriber_id,
+        subscription_id=subscription.id,
+    )
+    db.flush()
+    return ServiceIPv4ProjectionOutcome(
+        subscription_id=subscription.id,
+        assignment_id=current.assignment_id,
+        previous_address=current.served_address,
+        desired_address=current.desired_address,
+        observed_active_sessions=current.active_session_count,
+        preview_fingerprint=current.fingerprint,
+        replayed=False,
+    )
+
+
 def reconcile_ip_assignment_service_ownership(
     db: Session,
     command: ReconcileIPAssignmentOwnershipCommand,
@@ -1218,6 +1629,20 @@ def repair_service_ipv4_assignment(
     )
 
 
+def repair_service_ipv4_projection(
+    db: Session,
+    command: RepairServiceIPv4ProjectionCommand,
+) -> ServiceIPv4ProjectionOutcome:
+    """Converge one exact-service served-IP projection after reviewed preview."""
+
+    return execute_owner_command(
+        db,
+        definition=_PROJECTION_COMMAND,
+        context=command.context,
+        operation=lambda: _repair_service_ipv4_projection(db, command),
+    )
+
+
 __all__ = [
     "ActiveIPv4AssignmentEvidence",
     "IPAssignmentOwnershipDecision",
@@ -1227,12 +1652,18 @@ __all__ = [
     "IPAssignmentOwnershipPreview",
     "IPv4AssignmentLifecycleError",
     "IPv4AssignmentRepairDecision",
+    "IPv4ServedProjectionDecision",
     "ReconcileIPAssignmentOwnershipCommand",
     "RepairServiceIPv4AssignmentCommand",
+    "RepairServiceIPv4ProjectionCommand",
     "ServiceIPv4AssignmentRepairOutcome",
     "ServiceIPv4AssignmentRepairPreview",
+    "ServiceIPv4ProjectionOutcome",
+    "ServiceIPv4ProjectionPreview",
     "preview_ip_assignment_service_ownership",
     "preview_service_ipv4_assignment_repair",
+    "preview_service_ipv4_projection_repair",
     "reconcile_ip_assignment_service_ownership",
     "repair_service_ipv4_assignment",
+    "repair_service_ipv4_projection",
 ]

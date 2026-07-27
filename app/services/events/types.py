@@ -99,6 +99,9 @@ class EventType(enum.Enum):
         "ip_assignment.service_ownership_reconciled"
     )
     ip_assignment_lifecycle_repaired = "ip_assignment.lifecycle_repaired"
+    ip_assignment_served_projection_repaired = (
+        "ip_assignment.served_projection_repaired"
+    )
 
     # Billing - Outage compensation
     service_extension_created = "billing.service_extension_created"

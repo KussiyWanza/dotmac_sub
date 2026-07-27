@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 
 from app.models.audit import AuditEvent
 from app.models.catalog import Subscription, SubscriptionStatus
+from app.models.event_store import EventStore
 from app.models.network import (
     IPAssignment,
     IpPool,
@@ -22,9 +23,13 @@ from app.models.subscriber import Subscriber
 from app.services.ip_assignment_lifecycle import (
     IPv4AssignmentLifecycleError,
     IPv4AssignmentRepairDecision,
+    IPv4ServedProjectionDecision,
     RepairServiceIPv4AssignmentCommand,
+    RepairServiceIPv4ProjectionCommand,
     preview_service_ipv4_assignment_repair,
+    preview_service_ipv4_projection_repair,
     repair_service_ipv4_assignment,
+    repair_service_ipv4_projection,
 )
 from app.services.owner_commands import CommandContext
 
@@ -133,6 +138,26 @@ def _command(
         subscription_id=subscription_id,
         desired_address_id=desired_address_id,
         deactivate_assignment_ids=deactivate_assignment_ids,
+        preview_fingerprint=fingerprint,
+    )
+
+
+def _projection_command(
+    *,
+    subscription_id: UUID,
+    assignment_id: UUID,
+    fingerprint: str,
+    key: str = "ipam-projection-test-1",
+) -> RepairServiceIPv4ProjectionCommand:
+    return RepairServiceIPv4ProjectionCommand(
+        context=CommandContext.system(
+            actor="test-operator",
+            scope="ip_assignment_projection_repair",
+            reason="Reviewed exact-service served IPv4 projection evidence",
+            idempotency_key=key,
+        ),
+        subscription_id=subscription_id,
+        assignment_id=assignment_id,
         preview_fingerprint=fingerprint,
     )
 
@@ -696,3 +721,128 @@ def test_release_requires_terminal_subscription_and_exact_assignments(
     db_session.refresh(subscription)
     assert assignment.is_active is False
     assert subscription.ipv4_address == "10.30.0.90"
+
+
+def test_projection_repair_converges_exact_service_and_stages_consequence(
+    db_session,
+    catalog_offer,
+) -> None:
+    subscriber = _subscriber(db_session, "projection")
+    subscription = _subscription(
+        db_session,
+        subscriber,
+        catalog_offer,
+        served_ip="10.30.0.100",
+    )
+    pool = _pool(db_session, "projection")
+    desired = _address(db_session, pool, "10.30.0.101")
+    assignment = _assignment(
+        db_session,
+        subscriber,
+        desired,
+        subscription=subscription,
+    )
+    subscription_id = subscription.id
+    assignment_id = assignment.id
+    login = str(subscription.login)
+    db_session.commit()
+
+    with patch(
+        "app.services.ip_consistency_audit._external_ip_state",
+        return_value=({login: "10.30.0.100"}, {login}, 0),
+    ):
+        preview = preview_service_ipv4_projection_repair(
+            db_session,
+            subscription_id=subscription_id,
+            assignment_id=assignment_id,
+        )
+        assert preview.decision is IPv4ServedProjectionDecision.ready
+        db_session.commit()
+        command = _projection_command(
+            subscription_id=subscription_id,
+            assignment_id=assignment_id,
+            fingerprint=preview.fingerprint,
+        )
+        outcome = repair_service_ipv4_projection(db_session, command)
+        replay = repair_service_ipv4_projection(db_session, command)
+
+    db_session.refresh(subscription)
+    assert subscription.ipv4_address == "10.30.0.101"
+    assert outcome.previous_address == "10.30.0.100"
+    assert outcome.desired_address == "10.30.0.101"
+    assert outcome.replayed is False
+    assert replay.replayed is True
+    assert (
+        db_session.scalar(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.action == "network.ip_assignment.served_projection_repaired",
+                AuditEvent.entity_id == "ipam-projection-test-1",
+            )
+        )
+        == 1
+    )
+    assert (
+        db_session.scalar(
+            select(func.count(EventStore.id)).where(
+                EventStore.event_type == "ip_assignment.served_projection_repaired"
+            )
+        )
+        == 1
+    )
+
+
+def test_projection_repair_rejects_stale_served_evidence(
+    db_session,
+    catalog_offer,
+) -> None:
+    subscriber = _subscriber(db_session, "projection-stale")
+    subscription = _subscription(
+        db_session,
+        subscriber,
+        catalog_offer,
+        served_ip="10.30.0.110",
+    )
+    pool = _pool(db_session, "projection-stale")
+    desired = _address(db_session, pool, "10.30.0.111")
+    assignment = _assignment(
+        db_session,
+        subscriber,
+        desired,
+        subscription=subscription,
+    )
+    subscription_id = subscription.id
+    assignment_id = assignment.id
+    login = str(subscription.login)
+    db_session.commit()
+
+    with patch(
+        "app.services.ip_consistency_audit._external_ip_state",
+        return_value=({login: "10.30.0.110"}, {login}, 0),
+    ):
+        preview = preview_service_ipv4_projection_repair(
+            db_session,
+            subscription_id=subscription_id,
+            assignment_id=assignment_id,
+        )
+    subscription = db_session.get(Subscription, subscription_id)
+    assert subscription is not None
+    subscription.ipv4_address = "10.30.0.112"
+    db_session.commit()
+
+    with (
+        patch(
+            "app.services.ip_consistency_audit._external_ip_state",
+            return_value=({login: "10.30.0.112"}, {login}, 0),
+        ),
+        pytest.raises(IPv4AssignmentLifecycleError) as exc_info,
+    ):
+        repair_service_ipv4_projection(
+            db_session,
+            _projection_command(
+                subscription_id=subscription_id,
+                assignment_id=assignment_id,
+                fingerprint=preview.fingerprint,
+                key="ipam-projection-stale",
+            ),
+        )
+    assert exc_info.value.code.endswith(".stale_preview")
