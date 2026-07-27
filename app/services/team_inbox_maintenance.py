@@ -104,6 +104,27 @@ def auto_resolve_stale(
 
 
 @dataclass(frozen=True, slots=True)
+class WakeDueSnoozedCommand:
+    context: CommandContext
+    limit: int = 200
+
+
+def wake_due_snoozed(db: Session, command: WakeDueSnoozedCommand) -> MaintenanceOutcome:
+    """Return conversations whose chosen wake time has passed to the open queue."""
+
+    return execute_owner_command(
+        db,
+        definition=_MAINTENANCE_COMMAND,
+        context=command.context,
+        operation=lambda: MaintenanceOutcome(
+            changed=team_inbox_operations.wake_due_snoozed_conversations(
+                db, limit=max(1, command.limit)
+            )
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseScheduledRepliesCommand:
     context: CommandContext
     limit: int = 50

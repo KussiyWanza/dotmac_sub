@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.service_team import ServiceTeam
@@ -160,6 +160,69 @@ def _optional_uuid(value: str | UUID | None) -> UUID | None:
 
 def _message_time(message: InboxMessage) -> datetime:
     return message.received_at or message.sent_at or message.created_at
+
+
+def _message_time_column():
+    """SQL twin of :func:`_message_time`, so filters and rows agree on "latest"."""
+    return func.coalesce(
+        InboxMessage.received_at, InboxMessage.sent_at, InboxMessage.created_at
+    )
+
+
+def currently_snoozed_clause():
+    """Asleep right now: a wake time still ahead, or waiting on a reply.
+
+    ``team_inbox_operations.snooze_until_reply`` deliberately stores no wake
+    time, so a snooze test that only looked at ``snoozed_until`` reported those
+    conversations as awake while the workspace showed them snoozed.
+    """
+    from app.services.team_inbox_operations import SNOOZE_UNTIL_REPLY_KEY
+
+    # A bound Python moment rather than `func.now()`: the wake time is stored
+    # tz-aware and SQLite renders `now()` as a bare string, which would compare
+    # lexically against a timestamp.
+    return or_(
+        and_(
+            InboxConversation.snoozed_until.isnot(None),
+            InboxConversation.snoozed_until > datetime.now(UTC),
+        ),
+        InboxConversation.metadata_[SNOOZE_UNTIL_REPLY_KEY].as_boolean().is_(True),
+    )
+
+
+def _is_currently_snoozed(conversation: InboxConversation) -> bool:
+    """Python twin of :func:`currently_snoozed_clause`, for row projection."""
+    from app.services.team_inbox_operations import SNOOZE_UNTIL_REPLY_KEY
+
+    if (conversation.metadata_ or {}).get(SNOOZE_UNTIL_REPLY_KEY) is True:
+        return True
+    wake_at = conversation.snoozed_until
+    if wake_at is None:
+        return False
+    return (wake_at if wake_at.tzinfo else wake_at.replace(tzinfo=UTC)) > datetime.now(
+        UTC
+    )
+
+
+def _latest_visible_direction():
+    """Direction of the newest non-internal message, correlated per conversation.
+
+    Internal notes are excluded for the same reason the row projection excludes
+    them: an agent's private note is not an answer to the customer.
+    """
+    return (
+        select(InboxMessage.direction)
+        .where(InboxMessage.conversation_id == InboxConversation.id)
+        .where(InboxMessage.direction != InboxMessageDirection.internal.value)
+        .order_by(
+            _message_time_column().desc(),
+            InboxMessage.created_at.desc(),
+            InboxMessage.id.desc(),
+        )
+        .limit(1)
+        .correlate(InboxConversation)
+        .scalar_subquery()
+    )
 
 
 def _latest_messages_by_conversation(
@@ -347,10 +410,14 @@ def list_conversations(
     if muted is not None:
         query = query.filter(InboxConversation.is_muted.is_(bool(muted)))
     if snoozed is not None:
-        if snoozed:
-            query = query.filter(InboxConversation.snoozed_until.isnot(None))
-        else:
-            query = query.filter(InboxConversation.snoozed_until.is_(None))
+        # "Snoozed" means asleep *now*, not "was snoozed at some point". The
+        # bare NOT NULL test kept a conversation snoozed until Tuesday filed as
+        # snoozed forever, and disagreed with the workqueue provider, which has
+        # always read a passed wake time as awake. The scheduled waker settles
+        # the durable status; this keeps the queue right in between its runs.
+        query = query.filter(
+            currently_snoozed_clause() if snoozed else ~currently_snoozed_clause()
+        )
 
     # Customer-scoped read: the conversation carries the resolved subscriber, so
     # the customer record can project its own communications without joining
@@ -362,18 +429,26 @@ def list_conversations(
     # Multi-team scope for "my team": an agent may belong to several teams and
     # the my_team count already spans all of them, so the filter must too or the
     # badge and the list disagree.
+    #
+    # Membership is tested with a subquery, not a join. Joining the one-to-many
+    # team link returned a conversation once per matching team, so a thread
+    # shared by two of the operator's teams appeared twice and `count()`
+    # double-counted it — the exact disagreement this scope exists to prevent.
+    # A second join on the same relation (single-team filter set as well) also
+    # made SQLAlchemy refuse the query outright.
     team_uuids = [
         value
         for value in (_optional_uuid(item) for item in (service_team_ids or ()))
         if value is not None
     ]
     if team_uuids:
-        query = query.join(
-            InboxConversationTeam,
-            InboxConversationTeam.conversation_id == InboxConversation.id,
-        ).filter(
-            InboxConversationTeam.service_team_id.in_(team_uuids),
-            InboxConversationTeam.is_active.is_(True),
+        query = query.filter(
+            InboxConversation.id.in_(
+                select(InboxConversationTeam.conversation_id).where(
+                    InboxConversationTeam.service_team_id.in_(team_uuids),
+                    InboxConversationTeam.is_active.is_(True),
+                )
+            )
         )
 
     # Conversations an AI agent is handling, so a human can either stay out of
@@ -407,28 +482,55 @@ def list_conversations(
 
     team_uuid = _optional_uuid(service_team_id)
     if team_uuid is not None:
-        query = query.join(
-            InboxConversationTeam,
-            InboxConversationTeam.conversation_id == InboxConversation.id,
-        ).filter(
-            InboxConversationTeam.service_team_id == team_uuid,
-            InboxConversationTeam.is_active.is_(True),
+        query = query.filter(
+            InboxConversation.id.in_(
+                select(InboxConversationTeam.conversation_id).where(
+                    InboxConversationTeam.service_team_id == team_uuid,
+                    InboxConversationTeam.is_active.is_(True),
+                )
+            )
         )
 
     assignee_uuid = _optional_uuid(assigned_person_id)
     if assignee_uuid is not None:
-        query = query.join(
-            InboxConversationAssignment,
-            InboxConversationAssignment.conversation_id == InboxConversation.id,
-        ).filter(
-            InboxConversationAssignment.person_id == assignee_uuid,
-            InboxConversationAssignment.is_active.is_(True),
+        query = query.filter(
+            InboxConversation.id.in_(
+                select(InboxConversationAssignment.conversation_id).where(
+                    InboxConversationAssignment.person_id == assignee_uuid,
+                    InboxConversationAssignment.is_active.is_(True),
+                )
+            )
         )
     if unassigned:
         assigned_conversation_ids = select(
             InboxConversationAssignment.conversation_id
         ).where(InboxConversationAssignment.is_active.is_(True))
         query = query.filter(~InboxConversation.id.in_(assigned_conversation_ids))
+
+    # The next three used to be applied in Python, which meant the whole
+    # filtered set was loaded, every message for it fetched, and one unread
+    # query issued per conversation before a single page could be sliced.
+    # `needs_response` is the default "Unreplied" cohort, so that was the
+    # ordinary path. They are correlated subqueries now and the database keeps
+    # both the filter and the pagination.
+    if needs_response:
+        query = query.filter(InboxConversation.status != "resolved").filter(
+            _latest_visible_direction() == InboxMessageDirection.inbound.value
+        )
+    if contact_resolution_status:
+        query = query.filter(
+            InboxConversation.metadata_["contact_resolution"]["status"].as_string()
+            == contact_resolution_status
+        )
+    if unread_only:
+        # The unread rule stays with its owner; this only asks for it in SQL.
+        # Without an operator nothing can be unread, and an empty page is the
+        # honest answer rather than the whole queue.
+        query = query.filter(
+            team_inbox_read_state.unread_conversation_clause(operator_person_id)
+            if operator_person_id is not None
+            else false()
+        )
 
     # order_by=None (default) or "priority" keeps the urgency composite so the
     # default queue is untouched; last_message_at / created_at sort by that one
@@ -460,17 +562,17 @@ def list_conversations(
             InboxConversation.id.asc(),
         )
     total = query.count()
-    needs_python_filter = bool(
-        needs_response or contact_resolution_status or unread_only
-    )
-    rows = (
-        ordered_query.all()
-        if needs_python_filter
-        else ordered_query.limit(limit).offset(offset).all()
-    )
+    rows = ordered_query.limit(limit).offset(offset).all()
     conversations = [conversation for conversation, _team in rows]
     conversation_ids = [conversation.id for conversation in conversations]
     latest_messages = _latest_messages_by_conversation(db, conversation_ids)
+    unread_ids = (
+        team_inbox_read_state.unread_conversation_ids(
+            db, conversation_ids=conversation_ids, person_id=operator_person_id
+        )
+        if operator_person_id is not None
+        else set()
+    )
     active_assignments = (
         {
             assignment.conversation_id: assignment
@@ -527,21 +629,7 @@ def list_conversations(
             and latest.direction == InboxMessageDirection.inbound.value
             and conversation.status != "resolved"
         )
-        if needs_response and not row_needs_response:
-            continue
-        if contact_resolution_status and resolution_status != contact_resolution_status:
-            continue
-        row_is_unread = (
-            team_inbox_read_state.conversation_is_unread(
-                db,
-                conversation_id=conversation.id,
-                person_id=operator_person_id,
-            )
-            if operator_person_id is not None
-            else False
-        )
-        if unread_only and not row_is_unread:
-            continue
+        row_is_unread = conversation.id in unread_ids
         items.append(
             InboxConversationListRow(
                 id=str(conversation.id),
@@ -558,7 +646,7 @@ def list_conversations(
                 priority=conversation.priority,
                 is_muted=conversation.is_muted,
                 snoozed_until=conversation.snoozed_until,
-                is_snoozed=conversation.snoozed_until is not None,
+                is_snoozed=_is_currently_snoozed(conversation),
                 subject=conversation.subject,
                 contact_address=conversation.contact_address,
                 first_message_at=conversation.first_message_at,
@@ -580,11 +668,9 @@ def list_conversations(
                 labels=tuple(labels_by_conversation.get(conversation.id, [])),
             )
         )
-    filtered_count = len(items) if needs_python_filter else total
-    page_items = items[offset : offset + limit] if needs_python_filter else items
     return InboxConversationListResult(
-        items=page_items,
-        count=filtered_count,
+        items=items,
+        count=total,
         limit=limit,
         offset=offset,
     )

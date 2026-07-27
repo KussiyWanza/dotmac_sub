@@ -66,6 +66,29 @@ def _coerce_uuid(value: str | UUID | None) -> str | None:
         return None
 
 
+def default_service_team_id(db: Session) -> str | None:
+    """Owning team for inbound traffic that carries no address to route on.
+
+    Email routes on the recipient mailbox; WhatsApp and the Meta social
+    channels have no equivalent, so without a declared default they arrive
+    owned by nobody. This reads the one setting and confirms the team is still
+    active — it does not invent a second routing authority beside
+    ``TeamInboxEmailRoute``.
+    """
+    from app.config import settings
+    from app.models.service_team import ServiceTeam
+
+    configured = _coerce_uuid(
+        settings.team_inbox_channel_fallback_service_team_id or None
+    )
+    if configured is None:
+        return None
+    team = db.get(ServiceTeam, UUID(configured))
+    if team is None or not team.is_active:
+        return None
+    return configured
+
+
 def build_email_team_routing_plan(
     db: Session,
     *,

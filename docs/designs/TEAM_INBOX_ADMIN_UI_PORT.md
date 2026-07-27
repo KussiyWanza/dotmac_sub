@@ -304,16 +304,22 @@ nothing claiming to belong to a message. Initiation reuses the inbound contact
 resolver, so an operator-started thread resolves like an inbound one; an
 unmatched address still opens a thread and says so.
 
-**Still open, each needing new domain work rather than an adapter:**
+**Also delivered since:** until-next-reply snooze (`wake_on_inbound`, called
+from every inbound path), scheduled send (`schedule_inbox_reply` +
+`release_scheduled_replies`) and the email transcript.
 
-- **Until-next-reply snooze.** Needs the ingestion path to clear the snooze on
-  the next inbound message. That is a change to `team_inbox_channel_receive`
-  affecting *every* inbound message, so it wants its own change and its own
-  regression cover — not a rider on a UI slice.
-- **Scheduled send.** Needs a queued-send model and a scheduler entry; the
-  composer's `scheduledAt` is currently local state only.
-- **Email transcript.** Render the thread and deliver through the canonical
-  notification point.
+> **Scheduled send shipped half-built, and this section said which half.** It
+> called for "a queued-send model **and a scheduler entry**". The model landed;
+> the scheduler entry did not, and neither did one for any of the other four
+> `app.tasks.team_inbox.*` tasks — they were registered with reliability
+> policies and no schedule at all. So the composer accepted a send time, the
+> route reported "Reply scheduled", and the message was never sent. Fixed in
+> `fix/inbox-e2e-journeys`, which also adds the snooze waker the durable
+> `status='snoozed'` always needed. A task with a reliability policy and no
+> beat entry reads as wired; check both.
+
+**Still open, needing new domain work rather than an adapter:**
+
 - **Real AI draft — blocked.** Sub has **no LLM client**. `ai_operations` stores
   insights with provider/model/token provenance fields for a caller to populate,
   but nothing generates. Making this real means introducing an external AI

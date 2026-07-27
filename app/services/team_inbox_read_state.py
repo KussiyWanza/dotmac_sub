@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.team_inbox import (
@@ -197,13 +198,102 @@ def conversation_is_unread(
     return state is None or _utc(state.last_read_at) < _utc(last_inbound_at)
 
 
+def _last_inbound_at_clause():
+    return (
+        select(func.max(InboxMessage.received_at))
+        .where(InboxMessage.conversation_id == InboxConversation.id)
+        .where(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .correlate(InboxConversation)
+        .scalar_subquery()
+    )
+
+
+def _read_cursor_clause(person_id: UUID):
+    return (
+        select(InboxConversationReadState.last_read_at)
+        .where(InboxConversationReadState.conversation_id == InboxConversation.id)
+        .where(InboxConversationReadState.person_id == person_id)
+        .correlate(InboxConversation)
+        .scalar_subquery()
+    )
+
+
+def unread_conversation_clause(person_id: UUID):
+    """The unread rule as a SQL predicate correlated to ``InboxConversation``.
+
+    Callers that need to *filter* on unread ask for this instead of restating
+    the rule, so the queue's "Unread" cohort and this owner's own count cannot
+    drift apart.
+    """
+    last_inbound_at = _last_inbound_at_clause()
+    read_cursor_at = _read_cursor_clause(person_id)
+    return and_(
+        last_inbound_at.isnot(None),
+        or_(read_cursor_at.is_(None), read_cursor_at < last_inbound_at),
+    )
+
+
+def unread_conversation_ids(
+    db: Session,
+    *,
+    conversation_ids: Sequence[UUID],
+    person_id: UUID,
+) -> set[UUID]:
+    """Which of these conversations this operator has not caught up on.
+
+    Two queries for a whole page. Callers previously asked
+    :func:`conversation_is_unread` once per row, and that issues two of its own
+    each time — fifty round trips to render one twenty-five row page.
+    """
+    ids = list(conversation_ids)
+    if not ids:
+        return set()
+    last_inbound = {
+        conversation_id: _utc(received_at)
+        for conversation_id, received_at in db.execute(
+            select(InboxMessage.conversation_id, func.max(InboxMessage.received_at))
+            .where(InboxMessage.conversation_id.in_(ids))
+            .where(InboxMessage.direction == InboxMessageDirection.inbound.value)
+            .group_by(InboxMessage.conversation_id)
+        ).all()
+        if received_at is not None
+    }
+    read_cursors = {
+        conversation_id: _utc(last_read_at)
+        for conversation_id, last_read_at in db.execute(
+            select(
+                InboxConversationReadState.conversation_id,
+                InboxConversationReadState.last_read_at,
+            )
+            .where(InboxConversationReadState.conversation_id.in_(ids))
+            .where(InboxConversationReadState.person_id == person_id)
+        ).all()
+    }
+    return {
+        conversation_id
+        for conversation_id in ids
+        if conversation_id in last_inbound
+        and (
+            read_cursors.get(conversation_id) is None
+            or read_cursors[conversation_id] < last_inbound[conversation_id]
+        )
+    }
+
+
 def unread_conversation_count(db: Session, *, person_id: UUID) -> int:
-    conversation_ids = db.scalars(
-        select(InboxConversation.id).where(InboxConversation.is_active.is_(True))
-    ).all()
-    return sum(
-        conversation_is_unread(db, conversation_id=conversation_id, person_id=person_id)
-        for conversation_id in conversation_ids
+    """How many active conversations this operator has not caught up on.
+
+    One aggregate. This used to select every active conversation id and then
+    issue two queries per id, so the badge alone cost tens of thousands of
+    round trips on a production-sized inbox — on every page load.
+    """
+    return int(
+        db.scalar(
+            select(func.count(InboxConversation.id))
+            .where(InboxConversation.is_active.is_(True))
+            .where(unread_conversation_clause(person_id))
+        )
+        or 0
     )
 
 

@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
+from app.models.audit import AuditActorType
 from app.services import (
     conversation_ticket_handoff,
     team_inbox_commands,
@@ -113,8 +114,12 @@ def team_inbox_queue(
     open_only: bool = Query(default=False),
     unassigned: bool = Query(default=False),
     unread: bool = Query(default=False),
-    ai_handling: str | None = Query(default=None),
-    has_ticket: str | None = Query(default=None),
+    # Declared `bool | None` like `muted`/`snoozed`, not `str | None`: these ride
+    # `_query_optional_bool`, which keeps only real booleans. Typed as strings the
+    # checkbox value "true" was discarded at the adapter and neither filter ever
+    # reached the read model.
+    ai_handling: bool | None = Query(default=None),
+    has_ticket: bool | None = Query(default=None),
     activity_from: str | None = Query(default=None),
     activity_to: str | None = Query(default=None),
     sort_by: str | None = Query(default=None, alias="sort"),
@@ -349,6 +354,19 @@ def _actor_uuid_from_request(request: Request) -> UUID | None:
         return UUID(actor_id) if actor_id else None
     except ValueError:
         return None
+
+
+def _audit_actor_type(principal_type: str) -> AuditActorType:
+    """Map the transport principal onto the audit actor vocabulary.
+
+    Same mapping `conversation_ticket_handoff` uses: a staff principal audits
+    as `user`, because the audit vocabulary has no `system_user` member.
+    """
+    if principal_type == "api_key":
+        return AuditActorType.api_key
+    if principal_type == "service":
+        return AuditActorType.service
+    return AuditActorType.user
 
 
 @router.post(
@@ -1401,14 +1419,22 @@ def team_inbox_email_transcript(
     recipient: str = Form(...),
     db: Session = Depends(get_db),
 ):
-    """Email a transcript of this conversation."""
+    """Email a transcript of this conversation.
+
+    Exporting a conversation is audited by the command owner; this only
+    translates the transport principal into the audit actor vocabulary, the
+    same way the ticket handoff route does.
+    """
     _prepare_mutation(db)
+    auth = getattr(request.state, "auth", None) or {}
     try:
         sent_to = team_inbox_commands.email_transcript(
             db,
             conversation_id=conversation_id,
             recipient=recipient,
             actor_person_id=_actor_id_from_request(request),
+            actor_type=_audit_actor_type(str(auth.get("principal_type") or "")),
+            request_id=getattr(request.state, "request_id", None),
         )
     except team_inbox_commands.ConversationNotFoundError:
         return RedirectResponse(

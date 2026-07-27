@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.services.realtime_platform import (
+    STAFF_AUDIENCE_TOPIC,
     EventType,
     conversation_topic,
     publish_topic_event,
@@ -78,6 +79,36 @@ def publish_conversation_event(
             )
         except Exception:
             logger.debug("team_inbox_realtime_publish_failed", exc_info=True)
+
+    run_after_commit(db, publish)
+
+
+def publish_queue_event(
+    db: Session,
+    *,
+    conversation_id: str,
+    created: bool,
+) -> None:
+    """Tell every connected operator that the queue changed.
+
+    Conversation topics only reach clients already subscribed to that thread,
+    and a client subscribes to what is on screen — so a brand-new conversation
+    had no subscriber and reached nobody. The staff audience topic is
+    subscribed at connection time, which is what makes newly arrived work
+    visible without a reload.
+    """
+
+    payload = {"conversation_id": conversation_id, "created": created}
+
+    def publish(_callback_db: Session) -> None:
+        try:
+            publish_topic_event(
+                STAFF_AUDIENCE_TOPIC,
+                event_type=EventType.CONVERSATION_UPDATED,
+                payload=payload,
+            )
+        except Exception:
+            logger.debug("team_inbox_queue_publish_failed", exc_info=True)
 
     run_after_commit(db, publish)
 

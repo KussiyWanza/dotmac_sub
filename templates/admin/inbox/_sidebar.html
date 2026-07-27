@@ -79,9 +79,6 @@
                         <span>{{ item[0] }}</span><span class="tabular-nums">{{ item[2] }}</span>
                     </button>
                     {% endfor %}
-                    <button type="button" @click="showDemoNotice('Sent-to-ticket filtering')" class="flex min-h-10 items-center justify-between rounded-lg border border-dashed border-slate-300 px-2.5 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-400" title="Awaiting ticket-link query API">
-                        <span>Sent to ticket</span><span aria-hidden="true">—</span>
-                    </button>
                 </div>
             </fieldset>
 
@@ -103,7 +100,7 @@
                     <button type="button" @click="applyTeamFilter()" class="flex min-h-10 w-full items-center justify-between rounded-lg px-2.5 text-xs font-medium text-slate-600 hover:bg-amber-50 dark:text-slate-300 dark:hover:bg-slate-800">
                         <span>My team</span><span class="tabular-nums text-slate-400">{{ assignment_counts.my_team }}</span>
                     </button>
-                    <button type="button" @click="showDemoNotice('AI handling filter')" class="flex min-h-10 w-full items-center justify-between rounded-lg px-2.5 text-xs font-medium text-slate-600 hover:bg-amber-50 dark:text-slate-300 dark:hover:bg-slate-800">
+                    <button type="button" @click="navigateFilter({ ai_handling: 'true' })" class="flex min-h-10 w-full items-center justify-between rounded-lg px-2.5 text-xs font-medium {% if ai_handling %}bg-amber-50 text-amber-800 dark:bg-slate-800 dark:text-amber-200{% else %}text-slate-600 hover:bg-amber-50 dark:text-slate-300 dark:hover:bg-slate-800{% endif %}">
                         <span>AI handling</span><span class="tabular-nums text-slate-400">{{ assignment_counts.ai_handling }}</span>
                     </button>
                 </div>
@@ -133,8 +130,6 @@
                         <option value="">Choose agent</option>
                         {% for agent in agent_options %}<option value="{{ agent.id }}" {% if agent.id|string == assigned_person_id %}selected{% endif %}>{{ agent.name }}</option>{% endfor %}
                     </select>
-                    <label class="text-[11px] text-slate-500">From<input type="date" data-demo-field class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950"></label>
-                    <label class="text-[11px] text-slate-500">To<input type="date" data-demo-field class="mt-1 h-10 w-full rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950"></label>
                     <button type="submit" class="col-span-2 min-h-10 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-white hover:bg-amber-600">Apply agent</button>
                 </div>
             </div>

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from textwrap import dedent
+from uuid import UUID
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.team_inbox import InboxMessage, TeamInboxEmailRoute
-from app.services import team_inbox_rfc822
+from app.services import team_inbox_rfc822, team_inbox_smtp_inbound
 
 
 def _team(db_session, name: str, team_type: str) -> ServiceTeam:
@@ -76,7 +77,13 @@ def test_parse_rfc822_email_falls_back_to_envelope_recipients():
     assert parsed.payload.body == "Hello."
 
 
-def test_receive_rfc822_email_routes_and_stores_attachment_metadata(db_session):
+def test_smtp_intake_routes_and_stores_attachment_metadata(db_session):
+    """Same coverage, now over the path production actually uses.
+
+    ``receive_rfc822_email`` was a second ingestion route that bypassed the
+    observation ledger entirely; it had no caller outside this file and has
+    been removed. These two cases move onto ``handle_smtp_message``.
+    """
     support = _team(db_session, "Support", ServiceTeamType.support.value)
     _route(db_session, support, "support@dotmac.io")
     db_session.commit()
@@ -102,23 +109,24 @@ def test_receive_rfc822_email_routes_and_stores_attachment_metadata(db_session):
         """
     ).replace("\n", "\r\n")
 
-    result = team_inbox_rfc822.receive_rfc822_email(
+    result = team_inbox_smtp_inbound.handle_smtp_message(
         db_session,
-        raw.encode("utf-8"),
-        source="smtp",
+        mail_from="customer@example.com",
+        rcpt_to=["support@dotmac.io"],
+        data=raw.encode("utf-8"),
     )
     db_session.commit()
 
-    message = db_session.get(InboxMessage, result.message_id)
+    message = db_session.get(InboxMessage, UUID(result.message_id))
 
     assert result.kind == "received"
     assert message.body == "See attached."
-    assert message.metadata_["attachments"][0]["file_name"] == "note.txt"
+    assert message.metadata_["attachments"][0]["filename"] == "note.txt"
     assert message.metadata_["attachments"][0]["mime_type"] == "text/plain"
     assert message.conversation.primary_service_team_id == support.id
 
 
-def test_receive_rfc822_email_deduplicates_message_id(db_session):
+def test_smtp_intake_deduplicates_message_id(db_session):
     support = _team(db_session, "Support", ServiceTeamType.support.value)
     _route(db_session, support, "support@dotmac.io")
     db_session.commit()
@@ -134,8 +142,19 @@ def test_receive_rfc822_email_deduplicates_message_id(db_session):
         """
     ).replace("\n", "\r\n")
 
-    first = team_inbox_rfc822.receive_rfc822_email(db_session, raw.encode("utf-8"))
-    second = team_inbox_rfc822.receive_rfc822_email(db_session, raw.encode("utf-8"))
+    first = team_inbox_smtp_inbound.handle_smtp_message(
+        db_session,
+        mail_from="customer@example.com",
+        rcpt_to=["support@dotmac.io"],
+        data=raw.encode("utf-8"),
+    )
+    db_session.commit()
+    second = team_inbox_smtp_inbound.handle_smtp_message(
+        db_session,
+        mail_from="customer@example.com",
+        rcpt_to=["support@dotmac.io"],
+        data=raw.encode("utf-8"),
+    )
     db_session.commit()
 
     assert first.kind == "received"

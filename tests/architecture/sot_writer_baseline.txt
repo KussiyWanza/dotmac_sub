@@ -168,7 +168,6 @@ app.services.table_config
 app.services.team_inbox_channel_receive
 app.services.team_inbox_media
 app.services.team_inbox_operations
-app.services.team_inbox_rfc822
 app.services.team_inbox_routing
 app.services.topology.availability_log
 app.services.topology.live_status

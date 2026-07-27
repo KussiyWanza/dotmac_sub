@@ -253,14 +253,34 @@ def test_message_attribution_is_only_in_metadata_not_a_column():
     assert '"actor_id": str(actor_person_id)' in operations
 
 
-def test_the_absence_of_a_central_audit_trail_is_deliberate_and_visible():
-    """Pins the split so a reviewer sees it rather than assuming coverage."""
+def test_the_audit_trail_covers_egress_and_ownership_crossings_only():
+    """Pins which operator actions are audited, so nobody assumes coverage.
+
+    This gate previously asserted that ``team_inbox_commands`` staged *no*
+    audit events at all. That remains true of the everyday operator commands —
+    replies, labels, notes, status and workflow changes record provenance in
+    row metadata, not the audit log, which is the limitation the gate above
+    describes.
+
+    Two actions are audited, for two distinct reasons:
+
+    - the conversation → ticket handoff, because it crosses an ownership line
+      into ``support.ticket_lifecycle``;
+    - a transcript export, because it sends an entire customer conversation to
+      an arbitrary address on the ordinary ``support:ticket:update``
+      permission, which is the widest data-egress path in this module.
+
+    A third entry here should be a decision, not drift.
+    """
     commands = Path("app/services/team_inbox_commands.py").read_text()
     handoff = Path("app/services/conversation_ticket_handoff.py").read_text()
 
-    assert "stage_audit_event" not in commands
-    # The cross-domain handoff does audit, because it crosses an ownership line.
     assert "stage_audit_event" in handoff
+    assert commands.count("stage_audit_event(") == 1
+    assert "TRANSCRIPT_AUDIT_ACTION" in commands
+    for command in ("def reply(", "def apply_label(", "def update_status("):
+        body = commands.split(command, 1)[1].split("\ndef ", 1)[0]
+        assert "stage_audit_event" not in body, command
 
 
 # --- 3. Representative volume -------------------------------------------

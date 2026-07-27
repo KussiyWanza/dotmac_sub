@@ -303,6 +303,17 @@
           "open_only",
           "page",
         ].forEach((key) => url.searchParams.delete(key));
+        // The two team params scope the same relation, so only one may be live
+        // at a time. Setting either clears the other; leaving both in the URL
+        // asked the server for two team filters at once, which it cannot
+        // answer. The team scope is otherwise independent of the assignment
+        // cohort above and is deliberately preserved across those clicks.
+        if (changes && "service_team_ids" in changes) {
+          url.searchParams.delete("service_team_id");
+        }
+        if (changes && "service_team_id" in changes) {
+          url.searchParams.delete("service_team_ids");
+        }
         Object.entries(changes || {}).forEach(([key, value]) => {
           if (value !== null && value !== undefined && value !== "") {
             url.searchParams.set(key, value);
@@ -585,10 +596,20 @@
         }
       },
 
+      // Polling never stops entirely, it only slows down. A healthy socket used
+      // to switch it off completely, and the socket cannot be trusted to
+      // announce work the client has not already subscribed to — so a
+      // connected agent was the one who stopped seeing new conversations
+      // arrive. The staff-audience event covers the normal case; this is the
+      // backstop for a dropped publish.
       startFallbackPolling() {
         window.clearInterval(this.pollTimer);
+        let ticks = 0;
         this.pollTimer = window.setInterval(() => {
-          if (!this.realtimeConnected && document.visibilityState === "visible") {
+          if (document.visibilityState !== "visible") return;
+          ticks += 1;
+          const dueWhileConnected = ticks % 6 === 0;
+          if (!this.realtimeConnected || dueWhileConnected) {
             this.refreshSidebar();
           }
         }, 5000);

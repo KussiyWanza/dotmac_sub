@@ -95,6 +95,13 @@ class Settings:
         max(10, int(os.getenv("TEAM_INBOX_SMTP_PROBE_TIMEOUT_SECONDS", "120"))),
     )
     team_inbox_smtp_log_level: str = os.getenv("TEAM_INBOX_SMTP_LOG_LEVEL", "INFO")
+    # Owning team for inbound traffic that carries no address to route on —
+    # WhatsApp, Messenger and Instagram. Email has the routing table instead.
+    # Unset means those threads arrive team-less, which is what they did before
+    # this knob existed.
+    team_inbox_channel_fallback_service_team_id: str = os.getenv(
+        "TEAM_INBOX_CHANNEL_FALLBACK_SERVICE_TEAM_ID", ""
+    ).strip()
 
     # Avatar settings
     avatar_upload_dir: str = os.getenv("AVATAR_UPLOAD_DIR", "static/avatars")

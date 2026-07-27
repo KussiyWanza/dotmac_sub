@@ -5,6 +5,7 @@ See docs/designs/TEAM_INBOX_ADMIN_UI_PORT.md §5, slice 4.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -349,13 +350,13 @@ def test_a_transcript_contains_the_exchanged_messages(db_session):
     )
     db_session.flush()
 
-    subject, html = team_inbox_operations.render_conversation_transcript(
+    transcript = team_inbox_operations.render_conversation_transcript(
         db_session, conversation=conversation
     )
 
-    assert "Line fault" in subject
-    assert "My line is down." in html
-    assert "An engineer is on the way." in html
+    assert "Line fault" in transcript.subject
+    assert "My line is down." in transcript.html
+    assert "An engineer is on the way." in transcript.html
 
 
 def test_a_transcript_excludes_internal_notes(db_session):
@@ -379,12 +380,12 @@ def test_a_transcript_excludes_internal_notes(db_session):
     )
     db_session.flush()
 
-    _subject, html = team_inbox_operations.render_conversation_transcript(
+    transcript = team_inbox_operations.render_conversation_transcript(
         db_session, conversation=conversation
     )
 
-    assert "Customer says hello." in html
-    assert "arrears" not in html
+    assert "Customer says hello." in transcript.html
+    assert "arrears" not in transcript.html
 
 
 def test_a_transcript_excludes_a_reply_that_has_not_been_sent(db_session):
@@ -401,11 +402,11 @@ def test_a_transcript_excludes_a_reply_that_has_not_been_sent(db_session):
     )
     db_session.flush()
 
-    _subject, html = team_inbox_operations.render_conversation_transcript(
+    transcript = team_inbox_operations.render_conversation_transcript(
         db_session, conversation=conversation
     )
 
-    assert "Queued for tomorrow." not in html
+    assert "Queued for tomorrow." not in transcript.html
 
 
 def test_a_transcript_escapes_message_bodies(db_session):
@@ -420,12 +421,12 @@ def test_a_transcript_escapes_message_bodies(db_session):
     )
     db_session.flush()
 
-    _subject, html = team_inbox_operations.render_conversation_transcript(
+    transcript = team_inbox_operations.render_conversation_transcript(
         db_session, conversation=conversation
     )
 
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
+    assert "<script>" not in transcript.html
+    assert "&lt;script&gt;" in transcript.html
 
 
 def test_an_invalid_recipient_is_refused(db_session):
@@ -435,6 +436,81 @@ def test_an_invalid_recipient_is_refused(db_session):
         team_inbox_commands.email_transcript(
             db_session, conversation_id=conversation_id, recipient="not-an-address"
         )
+
+
+def _transcript_audits(db_session):
+    from app.models.audit import AuditEvent
+
+    return (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == team_inbox_commands.TRANSCRIPT_AUDIT_ACTION)
+        .all()
+    )
+
+
+def test_exporting_a_transcript_is_audited(db_session):
+    """Exporting a whole conversation is the widest egress path in this module.
+
+    It rides the ordinary `support:ticket:update` permission, so every export
+    is recorded: who, which conversation, where to, and how much left.
+    """
+    conversation_id = _conversation_id(db_session)
+    actor = uuid.uuid4()
+
+    team_inbox_commands.email_transcript(
+        db_session,
+        conversation_id=conversation_id,
+        recipient="auditor@example.org",
+        actor_person_id=actor,
+    )
+
+    events = _transcript_audits(db_session)
+    assert len(events) == 1
+    assert events[0].entity_type == "inbox_conversation"
+    assert events[0].entity_id == str(conversation_id)
+    assert events[0].actor_id == str(actor)
+    assert events[0].metadata_["recipient"] == "auditor@example.org"
+
+
+def test_the_audit_records_whether_the_recipient_was_already_on_the_record(db_session):
+    """The field that decides whether a recipient restriction is affordable.
+
+    Nothing recorded where operators actually send transcripts, so the tighter
+    controls could not be judged. This answers it from real use.
+    """
+    conversation_id = _conversation_id(db_session)
+    conversation = db_session.get(InboxConversation, conversation_id)
+    conversation.contact_address = "customer@example.com"
+    db_session.commit()
+
+    team_inbox_commands.email_transcript(
+        db_session,
+        conversation_id=conversation_id,
+        recipient="Customer <customer@example.com>",
+    )
+    team_inbox_commands.email_transcript(
+        db_session,
+        conversation_id=conversation_id,
+        recipient="someone-else@elsewhere.test",
+    )
+
+    flags = sorted(
+        event.metadata_["recipient_on_record"]
+        for event in _transcript_audits(db_session)
+    )
+    assert flags == [False, True]
+
+
+def test_a_refused_export_leaves_no_audit(db_session):
+    """The audit stages inside the command, so it commits with the send."""
+    conversation_id = _conversation_id(db_session)
+
+    with pytest.raises(team_inbox_commands.InboxCommandError):
+        team_inbox_commands.email_transcript(
+            db_session, conversation_id=conversation_id, recipient="not-an-address"
+        )
+
+    assert _transcript_audits(db_session) == []
 
 
 def test_the_transcript_control_is_a_real_form():

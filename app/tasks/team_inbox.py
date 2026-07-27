@@ -112,3 +112,26 @@ def release_scheduled_replies(*, limit: int = 50) -> dict[str, int]:
             extra={"event": "team_inbox_scheduled_release", **payload},
         )
         return payload
+
+
+@celery_app.task(name="app.tasks.team_inbox.wake_due_snoozed_conversations")
+def wake_due_snoozed_conversations(*, limit: int = 200) -> dict[str, int]:
+    """Return conversations whose snooze has expired to the open queue."""
+    with db_session_adapter.session() as session:
+        result = team_inbox_maintenance.wake_due_snoozed(
+            session,
+            team_inbox_maintenance.WakeDueSnoozedCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-snooze-waker",
+                    scope="team-inbox:maintenance",
+                    reason="settle conversations whose snooze expired",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {"woken": result.changed}
+        logger.info(
+            "team inbox snooze wake complete",
+            extra={"event": "team_inbox_snooze_wake", **payload},
+        )
+        return payload

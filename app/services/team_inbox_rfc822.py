@@ -10,10 +10,7 @@ from email.message import Message
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
-
-from app.models.team_inbox import InboxMessage
-from app.services import team_inbox_media, team_inbox_receive
+from app.services import team_inbox_receive
 
 
 @dataclass(frozen=True)
@@ -174,33 +171,10 @@ def parse_rfc822_email(
     )
 
 
-def receive_rfc822_email(
-    db: Session,
-    data: bytes,
-    *,
-    mail_from: str | None = None,
-    rcpt_to: list[str] | None = None,
-    source: str = "rfc822",
-    fallback_service_team_id: str | None = None,
-) -> team_inbox_receive.InboundEmailReceiveResult:
-    parsed = parse_rfc822_email(
-        data,
-        mail_from=mail_from,
-        rcpt_to=rcpt_to,
-        source=source,
-        fallback_service_team_id=fallback_service_team_id,
-    )
-    result = team_inbox_receive.receive_inbound_email(db, parsed.payload)
-    if parsed.attachments:
-        message = db.get(InboxMessage, result.message_id)
-        if message is not None:
-            metadata = dict(message.metadata_ or {})
-            metadata["attachments"] = parsed.attachments
-            message.metadata_ = metadata
-            team_inbox_media.promote_message_attachments(
-                db,
-                message=message,
-                provider=source,
-            )
-            db.flush()
-    return result
+# `receive_rfc822_email` used to live here: a second way into the inbox that
+# skipped the observation ledger, inlined base64 attachment bytes into message
+# metadata, and looked a message up by a string primary key. It had no caller
+# outside its own tests. SMTP intake now has one path —
+# `team_inbox_smtp_inbound.handle_smtp_message` records the observation first
+# and `team_inbox_processing` resolves it — so what arrived is always durable
+# before anything is derived from it.

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.team_inbox import (
@@ -989,28 +989,29 @@ def retry_failed_outbound_batch(
 
 
 def queue_metrics(db: Session) -> InboxQueueMetrics:
+    """Sidebar counts, as aggregates.
+
+    Every one of these used to be a Python ``sum`` over every open
+    conversation loaded into memory, on each page load. They are counted in
+    the database now.
+    """
     from app.services import team_inbox_read
 
-    open_rows = (
-        db.query(InboxConversation)
-        .filter(InboxConversation.is_active.is_(True))
-        .filter(InboxConversation.status != "resolved")
-        .all()
-    )
-    open_ids = [row.id for row in open_rows]
-    active_assignment_ids = (
-        {
-            row[0]
-            for row in db.query(InboxConversationAssignment.conversation_id)
-            .filter(InboxConversationAssignment.conversation_id.in_(open_ids))
-            .filter(InboxConversationAssignment.is_active.is_(True))
-            .all()
-        }
-        if open_ids
-        else set()
-    )
+    def count_open(*clauses) -> int:
+        query = (
+            db.query(func.count(InboxConversation.id))
+            .filter(InboxConversation.is_active.is_(True))
+            .filter(InboxConversation.status != "resolved")
+        )
+        for clause in clauses:
+            query = query.filter(clause)
+        return int(query.scalar() or 0)
+
+    assigned_conversation_ids = select(
+        InboxConversationAssignment.conversation_id
+    ).where(InboxConversationAssignment.is_active.is_(True))
     return InboxQueueMetrics(
-        total_open=len(open_rows),
+        total_open=count_open(),
         needs_response=team_inbox_read.list_conversations(
             db, needs_response=True, limit=1
         ).count,
@@ -1021,15 +1022,14 @@ def queue_metrics(db: Session) -> InboxQueueMetrics:
             .scalar()
             or 0
         ),
-        unassigned_open=sum(
-            1
-            for conversation in open_rows
-            if conversation.id not in active_assignment_ids
+        unassigned_open=count_open(
+            ~InboxConversation.id.in_(assigned_conversation_ids)
         ),
-        muted_open=sum(1 for conversation in open_rows if conversation.is_muted),
-        snoozed_open=sum(
-            1 for conversation in open_rows if conversation.snoozed_until is not None
-        ),
+        muted_open=count_open(InboxConversation.is_muted.is_(True)),
+        # "Asleep now", matching the queue's snoozed filter. Counting every row
+        # with a wake time meant the badge kept counting conversations that had
+        # already woken.
+        snoozed_open=count_open(team_inbox_read.currently_snoozed_clause()),
     )
 
 
@@ -1151,6 +1151,65 @@ def snooze_until_reply(
     return conversation
 
 
+def wake_due_snoozed_conversations(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    limit: int = 200,
+) -> int:
+    """Settle conversations whose chosen wake time has passed.
+
+    Snoozing wrote a durable ``status='snoozed'`` and a ``snoozed_until``, and
+    nothing ever cleared them — so a conversation snoozed until Tuesday was
+    still filed as snoozed the following month, and absent from the Open
+    cohort. The workqueue provider already read the wake time as expiry
+    (``snoozed_until <= now`` means awake), so the two disagreed about the same
+    column.
+
+    Idempotent and repair-shaped: it recomputes from ``snoozed_until`` alone,
+    so re-running it changes nothing and a missed run is caught by the next.
+    """
+    moment = now or datetime.now(UTC)
+    due = (
+        db.query(InboxConversation)
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.snoozed_until.isnot(None))
+        .filter(InboxConversation.snoozed_until <= moment)
+        .order_by(InboxConversation.snoozed_until.asc())
+        .limit(max(1, limit))
+        .all()
+    )
+    woken = 0
+    for conversation in due:
+        metadata = dict(conversation.metadata_ or {})
+        history = metadata.get("workflow_history")
+        if not isinstance(history, list):
+            history = []
+        history.append(
+            {
+                "at": _now_iso(),
+                "actor_id": None,
+                "source": "team_inbox_snooze_expiry",
+                "snoozed_until": {
+                    "from": conversation.snoozed_until.isoformat()
+                    if conversation.snoozed_until
+                    else None,
+                    "to": None,
+                },
+            }
+        )
+        metadata["workflow_history"] = history[-50:]
+        conversation.metadata_ = metadata
+        conversation.snoozed_until = None
+        # A conversation resolved while asleep stays resolved: the wake time
+        # passing is not a reason to reopen closed work.
+        if conversation.status == "snoozed":
+            conversation.status = "open"
+        woken += 1
+    db.flush()
+    return woken
+
+
 def wake_on_inbound(db: Session, *, conversation: InboxConversation) -> bool:
     """Wake a conversation that was snoozed until the customer replied.
 
@@ -1186,10 +1245,20 @@ def wake_on_inbound(db: Session, *, conversation: InboxConversation) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class RenderedTranscript:
+    subject: str
+    html: str
+    # How many messages actually left with the export. The audit records it,
+    # and deriving it here rather than in the caller keeps it honest: the
+    # renderer already decides what is included.
+    message_count: int
+
+
 def render_conversation_transcript(
     db: Session, *, conversation: InboxConversation
-) -> tuple[str, str]:
-    """Render a conversation as (subject, html) for emailing.
+) -> RenderedTranscript:
+    """Render a conversation for emailing.
 
     Internal notes and comments are deliberately excluded: a transcript is
     often forwarded to the customer or a third party, and internal
@@ -1226,11 +1295,12 @@ def render_conversation_transcript(
             f"<span style='color:#64748b'>{when}</span><br>{body}</p>"
         )
 
+    message_count = len(rows)
     if not rows:
         rows.append("<p><em>No messages were exchanged.</em></p>")
 
     html = f"<h2 style='margin:0 0 16px'>{_escape(subject)}</h2>" + "".join(rows)
-    return subject, html
+    return RenderedTranscript(subject=subject, html=html, message_count=message_count)
 
 
 # Kept as a module constant so the transcript filter cannot drift from the

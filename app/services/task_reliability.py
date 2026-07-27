@@ -588,6 +588,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Resolves stale conversations only when the latest customer-visible "
         "message does not require an inbound response.",
     ),
+    "app.tasks.team_inbox.wake_due_snoozed_conversations": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Clears snoozed_until once the chosen wake time has passed and returns "
+        "the conversation to open; recomputed from the wake time alone, so a "
+        "re-run changes nothing and a missed run is caught by the next.",
+    ),
     "app.tasks.topology_lldp.run_lldp_topology_poll": _c(
         "network", SWEEP, IDEMP, HEALTH
     ),

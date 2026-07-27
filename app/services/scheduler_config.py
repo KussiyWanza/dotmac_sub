@@ -1119,6 +1119,50 @@ def build_beat_schedule() -> dict:
             enabled=oauth_refresh_enabled,
             interval_seconds=oauth_refresh_interval_seconds,
         )
+        # Team Inbox maintenance. These tasks and their reliability policies
+        # already existed but were registered with no schedule at all, so none
+        # of them ever ran: a reply the composer reported as "scheduled" was
+        # never sent, a failed outbound message never retried itself, and an
+        # expired snooze never returned its conversation to the queue.
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_scheduled_reply_release",
+            task_name="app.tasks.team_inbox.release_scheduled_replies",
+            enabled=True,
+            # A send-later reply should leave within a minute of its time; any
+            # coarser and the operator's chosen moment is visibly wrong.
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_snooze_waker",
+            task_name="app.tasks.team_inbox.wake_due_snoozed_conversations",
+            enabled=True,
+            interval_seconds=300,
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_failed_outbound_retry",
+            task_name="app.tasks.team_inbox.retry_failed_outbound_messages",
+            enabled=True,
+            interval_seconds=900,
+        )
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_media_asset_promotion",
+            task_name="app.tasks.team_inbox.promote_message_media_assets",
+            enabled=True,
+            interval_seconds=900,
+        )
+        # Auto-resolve is a policy that closes customer conversations, so it
+        # stays off until it is deliberately turned on for a tenant.
+        _sync_scheduled_task(
+            session,
+            name="team_inbox_stale_auto_resolve",
+            task_name="app.tasks.team_inbox.auto_resolve_stale_conversations",
+            enabled=False,
+            interval_seconds=3600,
+        )
         integration_jobs = integration_service.list_interval_jobs(session)
         if not integration_jobs:
             logger.info("EMAIL_POLL_EXIT reason=no_jobs")

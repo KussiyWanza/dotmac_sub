@@ -16,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.audit import AuditActorType
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -32,6 +33,7 @@ from app.services import (
     team_inbox_outbound,
     team_inbox_routing,
 )
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
@@ -982,6 +984,24 @@ def start_conversation(
         db.add(conversation)
         db.flush()
 
+        # Give the thread an owning team link, not just a primary id. An
+        # operator-started conversation used to have no `InboxConversationTeam`
+        # row at all, so it was invisible to every team filter and to "My team"
+        # the moment it was created — including to the operator who started it.
+        team_inbox_routing.apply_email_routing_plan(
+            db,
+            conversation=conversation,
+            plan=team_inbox_routing.build_email_team_routing_plan(
+                db,
+                to_addresses=[],
+                cc_addresses=[],
+                fallback_service_team_id=(
+                    coerce_uuid(service_team_id)
+                    or team_inbox_routing.default_service_team_id(db)
+                ),
+            ),
+        )
+
         body_html = (
             "<p>"
             + "<br>".join(escape(line) for line in str(body_text).splitlines())
@@ -1025,12 +1045,43 @@ def start_conversation(
     return _commit(db, action)
 
 
+TRANSCRIPT_AUDIT_ACTION = "conversation.transcript_exported"
+
+
+def _recipient_is_on_record(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    recipient: str,
+) -> bool:
+    """Whether this address already appears on the conversation or its customer.
+
+    The decisive field in the export audit. Restricting transcripts to
+    addresses already on the record is the tightest available control, but
+    whether it is affordable depends on how often operators send elsewhere —
+    and nothing recorded that. This answers it from real use.
+    """
+    normalized = team_inbox_routing.normalize_email_address(recipient)
+    if not normalized:
+        return False
+    known = {team_inbox_routing.normalize_email_address(conversation.contact_address)}
+    if conversation.subscriber_id is not None:
+        from app.models.subscriber import Subscriber
+
+        subscriber = db.get(Subscriber, conversation.subscriber_id)
+        if subscriber is not None:
+            known.add(team_inbox_routing.normalize_email_address(subscriber.email))
+    return normalized in {value for value in known if value}
+
+
 def email_transcript(
     db: Session,
     *,
     conversation_id: str | UUID,
     recipient: str,
     actor_person_id: str | UUID | None = None,
+    actor_type: AuditActorType = AuditActorType.user,
+    request_id: str | None = None,
 ) -> str:
     """Email a conversation transcript to a chosen address.
 
@@ -1038,6 +1089,13 @@ def email_transcript(
     inherits the team's sender and delivery handling rather than inventing a
     second way to send mail. Internal notes and comments are excluded by the
     renderer — a transcript is often forwarded onward.
+
+    Exporting a whole customer conversation to an arbitrary address is the
+    widest data-egress path in this module and rides the ordinary
+    ``support:ticket:update`` permission, so every export is audited. The audit
+    records rather than prevents; whether this also needs its own permission or
+    a recipient restriction is a policy decision the recorded evidence is meant
+    to inform.
     """
 
     def action() -> str:
@@ -1046,15 +1104,15 @@ def email_transcript(
         if "@" not in clean_recipient:
             raise InboxCommandError("Enter a valid email address.")
 
-        subject, html = team_inbox_operations.render_conversation_transcript(
+        transcript = team_inbox_operations.render_conversation_transcript(
             db, conversation=conversation
         )
         result = team_inbox_outbound.send_transcript(
             db,
             conversation=conversation,
             recipient=clean_recipient,
-            subject=subject,
-            body_html=html,
+            subject=transcript.subject,
+            body_html=transcript.html,
             sent_by_person_id=actor_person_id,
         )
         if result.kind not in {"sent", "queued"}:
@@ -1062,6 +1120,29 @@ def email_transcript(
                 result.reason or "Could not send the transcript.",
                 conversation_id=conversation.id,
             )
+        # Staged inside the command, so the record commits with the send or not
+        # at all — an export can never leave without its audit row.
+        stage_audit_event(
+            db,
+            action=TRANSCRIPT_AUDIT_ACTION,
+            entity_type="inbox_conversation",
+            entity_id=str(conversation.id),
+            actor_type=actor_type,
+            actor_id=str(actor_person_id) if actor_person_id else None,
+            request_id=request_id,
+            metadata={
+                "owner": OWNER,
+                "recipient": clean_recipient,
+                "recipient_on_record": _recipient_is_on_record(
+                    db, conversation=conversation, recipient=clean_recipient
+                ),
+                "channel_type": conversation.channel_type,
+                "subscriber_id": str(conversation.subscriber_id)
+                if conversation.subscriber_id
+                else None,
+                "message_count": transcript.message_count,
+            },
+        )
         return clean_recipient
 
     return _commit(db, action)

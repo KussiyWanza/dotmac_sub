@@ -18,9 +18,12 @@ from app.models.team_inbox import (
 )
 from app.services import (
     team_inbox_assignment,
+    team_inbox_channel_receive,
     team_inbox_operations,
+    team_inbox_realtime,
     team_inbox_routing,
 )
+from app.services.realtime_platform import EventType
 
 _MESSAGE_ID_RE = re.compile(r"<[^<>]+>")
 _AUTO_ASSIGN_METADATA_KEYS = (
@@ -52,6 +55,12 @@ class InboundEmailReceiveResult:
     conversation_id: str
     message_id: str
     duplicate: bool
+    # Same shape the channel result carries, so the observation coordinator
+    # records what an email actually resolved to instead of reading these off a
+    # result that never had them and storing "unmatched" for every mailbox.
+    subscriber_id: str | None = None
+    reseller_id: str | None = None
+    resolution_status: str = "unmatched"
 
 
 def _coerce_uuid(value: str | UUID | None) -> UUID | None:
@@ -112,12 +121,28 @@ def _find_thread_conversation(
     *,
     message_ids: list[str],
 ) -> InboxConversation | None:
+    """The live conversation a referenced Message-ID belongs to, if any.
+
+    Only a live thread is joinable. The referenced message used to be matched
+    with no conditions on its conversation at all, so a reply could attach to a
+    soft-deleted thread, or to a resolved one — and since inbound email never
+    changes status, a resolved thread did not reopen either, so the message
+    landed where nobody was looking.
+
+    This mirrors the channel path's ``_find_open_conversation``, which has
+    always required an active, unresolved conversation. A reply that finds no
+    live thread opens a new one, exactly as a WhatsApp reply after resolution
+    already does.
+    """
     if not message_ids:
         return None
     message = (
         db.query(InboxMessage)
+        .join(InboxConversation, InboxConversation.id == InboxMessage.conversation_id)
         .filter(InboxMessage.channel_type == InboxChannelType.email.value)
         .filter(InboxMessage.external_message_id.in_(message_ids))
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .order_by(InboxMessage.created_at.desc())
         .first()
     )
@@ -189,13 +214,29 @@ def receive_inbound_email(
     normalized_to = team_inbox_routing.normalize_email_addresses(payload.to_addresses)
     normalized_cc = team_inbox_routing.normalize_email_addresses(payload.cc_addresses)
     received_at = payload.received_at or datetime.now(UTC)
+
+    # Email resolves its sender exactly like every other channel. It used to
+    # carry only whatever `subscriber_id` the caller supplied — and no caller
+    # supplies one — so every inbound email landed with a null subscriber and
+    # no `contact_resolution`, invisible to the contact filter and to the
+    # customer record's communications section.
+    # The already-parsed address, not the raw `From:` header — a header carries
+    # a display name ("Ada <ada@example.com>") and the channel normalizer does
+    # not strip one, so passing it raw resolved nobody.
+    resolution = team_inbox_channel_receive.resolve_contact_context(
+        db,
+        channel_type=InboxChannelType.email.value,
+        contact_address=normalized_from or payload.from_address,
+        subscriber_id=payload.subscriber_id,
+    )
+
     thread_message_ids = _extract_message_ids(payload.in_reply_to, payload.references)
     conversation = _find_thread_conversation(db, message_ids=thread_message_ids)
     created_conversation = conversation is None
 
     if conversation is None:
         conversation = InboxConversation(
-            subscriber_id=_coerce_uuid(payload.subscriber_id),
+            subscriber_id=resolution.subscriber_id,
             channel_type=InboxChannelType.email.value,
             status=InboxConversationStatus.open.value,
             subject=_trim_subject(payload.subject),
@@ -205,7 +246,7 @@ def receive_inbound_email(
             else external_message_id,
             first_message_at=received_at,
             last_message_at=received_at,
-            metadata_={},
+            metadata_={"contact_resolution": resolution.as_metadata()},
         )
         db.add(conversation)
         db.flush()
@@ -213,8 +254,11 @@ def receive_inbound_email(
         conversation.last_message_at = received_at
         if normalized_from and not conversation.contact_address:
             conversation.contact_address = normalized_from
-        if payload.subscriber_id and not conversation.subscriber_id:
-            conversation.subscriber_id = _coerce_uuid(payload.subscriber_id)
+        if resolution.subscriber_id and not conversation.subscriber_id:
+            conversation.subscriber_id = resolution.subscriber_id
+        metadata = dict(conversation.metadata_ or {})
+        metadata["contact_resolution"] = resolution.as_metadata()
+        conversation.metadata_ = metadata
 
     routing_plan = team_inbox_routing.build_email_team_routing_plan(
         db,
@@ -244,6 +288,7 @@ def receive_inbound_email(
     metadata = dict(payload.metadata or {})
     metadata["in_reply_to"] = payload.in_reply_to
     metadata["references"] = payload.references
+    metadata["contact_resolution"] = resolution.as_metadata()
     metadata["routing"] = {
         "primary_service_team_id": routing_plan.primary_service_team_id,
         "participant_service_team_ids": routing_plan.participant_service_team_ids,
@@ -271,9 +316,35 @@ def receive_inbound_email(
     team_inbox_operations.wake_on_inbound(db, conversation=conversation)
     if conversation.first_message_at is None:
         conversation.first_message_at = received_at
+    # Same liveness signal as the channel path. Without it an inbound email was
+    # the one arrival an operator with a healthy socket never saw.
+    team_inbox_realtime.publish_conversation_event(
+        db,
+        str(conversation.id),
+        event_type=EventType.MESSAGE_NEW,
+        payload=team_inbox_realtime.message_event_payload(
+            conversation_id=str(conversation.id),
+            message_id=str(message.id),
+            body=message.body,
+            direction=message.direction,
+            channel_type=message.channel_type,
+            created_at=message.created_at,
+            extra={"sender_type": "visitor", "from_customer": True},
+        ),
+    )
+    team_inbox_realtime.publish_queue_event(
+        db,
+        conversation_id=str(conversation.id),
+        created=created_conversation,
+    )
     return InboundEmailReceiveResult(
         kind="received",
         conversation_id=str(conversation.id),
         message_id=str(message.id),
         duplicate=False,
+        subscriber_id=str(resolution.subscriber_id)
+        if resolution.subscriber_id
+        else None,
+        reseller_id=str(resolution.reseller_id) if resolution.reseller_id else None,
+        resolution_status=resolution.status,
     )

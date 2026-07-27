@@ -53,6 +53,10 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("channel_type", "Channel", filterable=True),
         ListFieldDefinition("service_team_id", "Team", filterable=True),
+        # Declared so the multi-team "My team" scope survives a canonical
+        # redirect; undeclared, the redirect silently widened the queue back to
+        # every team.
+        ListFieldDefinition("service_team_ids", "Teams", filterable=True),
         ListFieldDefinition("assigned_person_id", "Assignee", filterable=True),
         ListFieldDefinition("contact_resolution_status", "Contact", filterable=True),
         ListFieldDefinition("needs_response", "Needs response", filterable=True),
@@ -415,6 +419,68 @@ def get_conversation_projection(
     )
 
 
+ACTIVITY_INPUT_FORMAT = "%Y-%m-%dT%H:%M"
+
+
+def _tristate(value: bool | None) -> str | None:
+    return ("true" if value else "false") if value is not None else None
+
+
+def _activity_param(value: datetime | None) -> str | None:
+    return value.strftime(ACTIVITY_INPUT_FORMAT) if value is not None else None
+
+
+def _filter_params(
+    *,
+    status: str | None,
+    channel_type: str | None,
+    service_team_id: str | None,
+    service_team_ids: tuple[str, ...],
+    assigned_person_id: str | None,
+    contact_resolution_status: str | None,
+    needs_response: bool,
+    ai_handling: bool | None,
+    has_ticket: bool | None,
+    activity_from: datetime | None,
+    activity_to: datetime | None,
+    muted: bool | None,
+    snoozed: bool | None,
+    open_only: bool,
+    unassigned: bool,
+    unread: bool,
+    priority_at_most: int | None,
+) -> dict[str, str | None]:
+    """One filter contract for the query, the canonical URL and the redirect check.
+
+    These three were previously spelled out separately, and the newest filters
+    reached only the read model — so any canonical redirect dropped
+    ``ai_handling``, ``has_ticket``, the activity window and the multi-team
+    scope, silently widening the operator's queue.
+    """
+
+    return {
+        "status": status,
+        "channel_type": channel_type,
+        "service_team_id": service_team_id,
+        "service_team_ids": ",".join(service_team_ids) or None,
+        "assigned_person_id": assigned_person_id,
+        "contact_resolution_status": contact_resolution_status,
+        "needs_response": "true" if needs_response else None,
+        "ai_handling": _tristate(ai_handling),
+        "has_ticket": _tristate(has_ticket),
+        "activity_from": _activity_param(activity_from),
+        "activity_to": _activity_param(activity_to),
+        "muted": _tristate(muted),
+        "snoozed": _tristate(snoozed),
+        "open_only": "true" if open_only else None,
+        "unassigned": "true" if unassigned else None,
+        "unread": "true" if unread else None,
+        "priority_at_most": str(priority_at_most)
+        if priority_at_most is not None
+        else None,
+    }
+
+
 def build_queue_projection(
     db: Session,
     request: InboxQueueRequest,
@@ -451,6 +517,16 @@ def build_queue_projection(
         if raw_channel in {item.value for item in InboxChannelType}
         else None
     )
+    # Ill-formed team ids are dropped here rather than passed down, so the
+    # echoed filter state and the canonical URL carry what was actually
+    # applied. The single-team dropdown and the multi-team "My team" cohort
+    # now intersect cleanly in the read model — they used to be two joins on
+    # the same relation, which SQLAlchemy refuses.
+    team_id_scope = tuple(
+        str(value)
+        for value in (_uuid(item) for item in request.service_team_ids)
+        if value is not None
+    )
     team_id = _uuid(raw_team_id)
     assignee_id = _uuid(raw_assignee_id)
     contact_status = str(raw_contact_status or "").strip() or None
@@ -472,24 +548,28 @@ def build_queue_projection(
         if raw_per_page in INBOX_LIST_DEFINITION.per_page_options
         else INBOX_LIST_DEFINITION.default_per_page
     )
+    normalized_filters = _filter_params(
+        status=status,
+        channel_type=channel,
+        service_team_id=str(team_id) if team_id else None,
+        service_team_ids=team_id_scope,
+        assigned_person_id=str(assignee_id) if assignee_id else None,
+        contact_resolution_status=contact_status,
+        needs_response=needs_response,
+        ai_handling=request.ai_handling,
+        has_ticket=request.has_ticket,
+        activity_from=request.activity_from,
+        activity_to=request.activity_to,
+        muted=muted,
+        snoozed=snoozed,
+        open_only=open_only,
+        unassigned=unassigned,
+        unread=unread,
+        priority_at_most=priority,
+    )
     requested_query = INBOX_LIST_DEFINITION.build_query(
         search=search,
-        filters={
-            "status": status,
-            "channel_type": channel,
-            "service_team_id": str(team_id) if team_id else None,
-            "assigned_person_id": str(assignee_id) if assignee_id else None,
-            "contact_resolution_status": contact_status,
-            "needs_response": "true" if needs_response else None,
-            "muted": ("true" if muted else "false") if muted is not None else None,
-            "snoozed": ("true" if snoozed else "false")
-            if snoozed is not None
-            else None,
-            "open_only": "true" if open_only else None,
-            "unassigned": "true" if unassigned else None,
-            "unread": "true" if unread else None,
-            "priority_at_most": str(priority) if priority is not None else None,
-        },
+        filters=normalized_filters,
         sort_by=sort,
         sort_dir=direction,
         page=max(1, raw_page),
@@ -503,7 +583,7 @@ def build_queue_projection(
             status=status,
             channel_type=channel,
             service_team_id=team_id,
-            service_team_ids=request.service_team_ids,
+            service_team_ids=team_id_scope,
             ai_handling=request.ai_handling,
             has_ticket=request.has_ticket,
             activity_from=request.activity_from,
@@ -534,22 +614,25 @@ def build_queue_projection(
     if request_needs_canonicalization(
         list_query,
         search=search,
-        filters={
-            "status": raw_status,
-            "channel_type": raw_channel,
-            "service_team_id": raw_team_text,
-            "assigned_person_id": raw_assignee_text,
-            "contact_resolution_status": raw_contact_status,
-            "needs_response": "true" if needs_response else None,
-            "muted": ("true" if muted else "false") if muted is not None else None,
-            "snoozed": ("true" if snoozed else "false")
-            if snoozed is not None
-            else None,
-            "open_only": "true" if open_only else None,
-            "unassigned": "true" if unassigned else None,
-            "unread": "true" if unread else None,
-            "priority_at_most": str(raw_priority) if raw_priority is not None else None,
-        },
+        filters=_filter_params(
+            status=raw_status,
+            channel_type=raw_channel,
+            service_team_id=raw_team_text,
+            service_team_ids=team_id_scope,
+            assigned_person_id=raw_assignee_text,
+            contact_resolution_status=raw_contact_status,
+            needs_response=needs_response,
+            ai_handling=request.ai_handling,
+            has_ticket=request.has_ticket,
+            activity_from=request.activity_from,
+            activity_to=request.activity_to,
+            muted=muted,
+            snoozed=snoozed,
+            open_only=open_only,
+            unassigned=unassigned,
+            unread=unread,
+            priority_at_most=raw_priority,
+        ),
         sort_by=raw_sort,
         sort_dir=raw_direction,
         page=raw_page,
@@ -597,12 +680,8 @@ def build_queue_projection(
         unread=unread,
         ai_handling=request.ai_handling,
         has_ticket=request.has_ticket,
-        activity_from=request.activity_from.strftime("%Y-%m-%dT%H:%M")
-        if request.activity_from
-        else None,
-        activity_to=request.activity_to.strftime("%Y-%m-%dT%H:%M")
-        if request.activity_to
-        else None,
+        activity_from=_activity_param(request.activity_from),
+        activity_to=_activity_param(request.activity_to),
         service_team_options=tuple(
             InboxServiceTeamOption(id=team.id, name=team.name) for team in service_teams
         ),
