@@ -21,6 +21,7 @@ from app.models.vendor_routes import (
     ProjectQuote,
     ProposedRouteRevision,
 )
+from app.services.common import coerce_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,83 @@ def build_as_built_route_geojson(db: Session, as_built_id: str) -> dict:
             }
         ],
     }
+
+
+def build_vendor_project_route_geojson(
+    db: Session,
+    project_id: str,
+    vendor_id: str,
+) -> dict:
+    """Vendor-scoped proposed and as-built route context for one project.
+
+    Bidding vendors may only see route revisions attached to their own quote.
+    As-built evidence is visible only when the project is assigned to the same
+    vendor. Admin route views continue to use ``build_project_route_geojson``.
+    """
+
+    project_uuid = coerce_uuid(project_id)
+    vendor_uuid = coerce_uuid(vendor_id)
+    features: list[dict] = []
+
+    revisions = (
+        db.query(ProposedRouteRevision)
+        .join(ProjectQuote, ProposedRouteRevision.quote_id == ProjectQuote.id)
+        .filter(ProjectQuote.project_id == project_uuid)
+        .filter(ProjectQuote.vendor_id == vendor_uuid)
+        .filter(ProjectQuote.is_active.is_(True))
+        .order_by(ProposedRouteRevision.revision_number.asc())
+        .all()
+    )
+    for revision in revisions:
+        geometry = _geom_to_geojson(db, revision.route_geom)
+        if geometry is None:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "id": str(revision.id),
+                    "kind": "proposed",
+                    "quote_id": str(revision.quote_id),
+                    "revision_number": revision.revision_number,
+                    "status": revision.status,
+                    "length_meters": revision.length_meters,
+                },
+            }
+        )
+
+    as_builts = (
+        db.query(AsBuiltRoute)
+        .join(
+            InstallationProject,
+            AsBuiltRoute.project_id == InstallationProject.id,
+        )
+        .filter(AsBuiltRoute.project_id == project_uuid)
+        .filter(InstallationProject.assigned_vendor_id == vendor_uuid)
+        .order_by(AsBuiltRoute.version.asc())
+        .all()
+    )
+    for as_built in as_builts:
+        geometry = _geom_to_geojson(db, as_built.route_geom)
+        if geometry is None:
+            continue
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "id": str(as_built.id),
+                    "kind": "as_built",
+                    "status": as_built.status,
+                    "version": as_built.version,
+                    "length_meters": as_built.actual_length_meters,
+                    "variation_type": as_built.variation_type,
+                },
+            }
+        )
+
+    return {"type": "FeatureCollection", "features": features}
 
 
 def get_route_project(db: Session, project_id: str) -> dict | None:

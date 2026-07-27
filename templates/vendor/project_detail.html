@@ -50,6 +50,80 @@
       {% endif %}{% endif %}
     </section>
     <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+      <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-bold">Proposed route revisions</h2>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Draw the route you propose to build. Save it as a draft, then submit the revision for staff review.</p>
+        </div>
+        {% if quote and action_permitted(request, quote.route_authoring.create_action) %}
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <button type="button" id="route-author-locate" class="rounded-md bg-primary-600 px-3 py-1.5 font-semibold text-white hover:bg-primary-700">Add my location</button>
+          <button type="button" id="route-author-undo" class="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200" disabled>Undo</button>
+          <button type="button" id="route-author-clear" class="rounded-md border border-slate-300 px-3 py-1.5 font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200" disabled>Clear</button>
+        </div>
+        {% endif %}
+      </div>
+      {% if not quote %}
+      <div class="rounded-md border border-dashed border-slate-300 px-4 py-6 text-center dark:border-slate-700">
+        <p class="text-sm font-semibold">Start a quote before drawing a proposed route.</p>
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Each route revision belongs to your quote for this project.</p>
+      </div>
+      {% else %}
+      <p class="mb-3 text-xs text-slate-500 dark:text-slate-400">Tap the map to add route points, or use <strong>Add my location</strong> while walking the proposed route. Purple dashed lines are your saved revisions; green dashed lines are prior as-built context where available.</p>
+      <div id="route-author-map" class="mb-4 h-80 w-full rounded-md border border-slate-200 dark:border-slate-800" role="region" aria-label="Proposed route authoring map"></div>
+      <form method="post" action="/vendor/projects/{{ project.id }}/quotes/{{ quote.id }}/route-revisions" id="route-author-form" class="space-y-3">
+        {% include "components/forms/csrf_input.html" %}
+        <input type="hidden" name="geojson" id="route-author-geojson">
+        <div class="flex flex-wrap items-end gap-3">
+          <label class="text-xs text-slate-500 dark:text-slate-400">Length (m)
+            <input name="length_meters" id="route-author-length" type="number" step="0.1" min="0" placeholder="auto" class="mt-1 block w-32 rounded-md border-slate-300">
+          </label>
+          <button type="submit" id="route-author-submit" class="rounded-md bg-primary-600 px-4 py-2 font-semibold text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50" disabled>{{ quote.route_authoring.create_action.label }}</button>
+        </div>
+        <p id="route-author-hint" class="text-xs text-slate-500 dark:text-slate-400" role="status" aria-live="polite">Add at least 2 points to save a route draft.</p>
+        <p id="route-author-error" class="hidden text-sm font-medium text-red-700 dark:text-red-300" role="alert"></p>
+      </form>
+      <div class="mt-5 border-t border-slate-200 pt-4 dark:border-slate-800">
+        <h3 class="text-sm font-bold">Saved revisions</h3>
+        {% if quote.route_authoring.revisions %}
+        <ol class="mt-3 space-y-3">
+          {% for revision in quote.route_authoring.revisions %}
+          <li class="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+            <div class="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p class="text-sm font-semibold">Revision {{ revision.revision_number }}</p>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ revision.length_label }}</p>
+              </div>
+              {{ status_presentation_badge(revision.status, size="sm") }}
+            </div>
+            {% if revision.review_notes %}
+            <p class="mt-2 text-sm text-slate-700 dark:text-slate-200"><strong>Staff review:</strong> {{ revision.review_notes }}</p>
+            {% endif %}
+            <div class="mt-3 flex flex-wrap items-center gap-3">
+              <button type="button" data-route-focus="{{ revision.id }}" class="text-sm font-semibold text-primary-700 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-300">View on map</button>
+              {% if action_permitted(request, revision.submit_action) %}
+              <form method="post" action="/vendor/projects/{{ project.id }}/route-revisions/{{ revision.id }}/submit">
+                {% include "components/forms/csrf_input.html" %}
+                <button type="submit" class="rounded-md border border-primary-600 px-3 py-1.5 text-sm font-semibold text-primary-700 hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-950">{{ revision.submit_action.label }}</button>
+              </form>
+              {% elif revision.submit_action.reason %}
+              <span class="text-xs text-slate-500 dark:text-slate-400">{{ revision.submit_action.reason }}</span>
+              {% endif %}
+            </div>
+          </li>
+          {% endfor %}
+        </ol>
+        {% else %}
+        <div class="mt-3 rounded-md border border-dashed border-slate-300 px-4 py-5 text-center dark:border-slate-700">
+          <p class="text-sm font-semibold">No proposed route revisions yet.</p>
+          <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Draw at least two points on the map to save the first draft.</p>
+        </div>
+        {% endif %}
+        <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">Submitting locks that revision for review. To propose a change, save a new revision.</p>
+      </div>
+      {% endif %}
+    </section>
+    <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 class="text-lg font-bold">As-built route</h2>
         {% if action_permitted(request, project.as_built_action) %}
@@ -134,6 +208,25 @@
 {% block scripts %}
 <script src="/static/vendor/leaflet/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/static/js/vendor-route-authoring.js"></script>
+{% if quote %}
+<script>
+window.VendorRouteAuthoring.mount({
+  mapId: "route-author-map",
+  formId: "route-author-form",
+  geojsonId: "route-author-geojson",
+  lengthId: "route-author-length",
+  submitId: "route-author-submit",
+  hintId: "route-author-hint",
+  errorId: "route-author-error",
+  locateId: "route-author-locate",
+  undoId: "route-author-undo",
+  clearId: "route-author-clear",
+  quoteId: {{ quote.id | string | tojson | safe }},
+  contextGeojson: {{ route_geojson | tojson | safe }}
+});
+</script>
+{% endif %}
 <script>
 (function () {
   var routeGeojson = {{ route_geojson | tojson | safe }};

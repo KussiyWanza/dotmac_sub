@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TypeVar
+from uuid import UUID
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -23,6 +24,7 @@ from app.models.vendor_routes import (
     ProposedRouteRevisionStatus,
 )
 from app.models.work_order import WorkOrder
+from app.schemas.status_presentation import StatusPresentation
 from app.schemas.vendor_portal import (
     VendorAsBuiltCreate,
     VendorQuoteCreate,
@@ -38,6 +40,9 @@ from app.services.owner_commands import (
     execute_owner_command,
 )
 from app.services.settings_spec import resolve_value
+from app.services.status_presentation import (
+    proposed_route_revision_status_presentation,
+)
 from app.services.ui_contracts import Action
 from app.services.vendor_portal_errors import (
     VendorPortalOperationError,
@@ -153,6 +158,23 @@ class SubmitVendorRouteRevisionCommand:
     revision_id: str
     vendor_id: str
     user_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRouteRevisionItem:
+    id: UUID
+    revision_number: int
+    status: StatusPresentation
+    length_meters: float | None
+    length_label: str
+    review_notes: str | None
+    submit_action: Action
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRouteAuthoringProjection:
+    create_action: Action
+    revisions: tuple[VendorRouteRevisionItem, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -543,6 +565,39 @@ def _serialize_project(
 
 def _serialize_quote(row: ProjectQuote) -> dict:
     editable = row.status in _EDITABLE_QUOTES
+    route_revisions = tuple(
+        VendorRouteRevisionItem(
+            id=revision.id,
+            revision_number=revision.revision_number,
+            status=proposed_route_revision_status_presentation(revision.status),
+            length_meters=revision.length_meters,
+            length_label=(
+                f"{revision.length_meters:,.1f} m"
+                if revision.length_meters is not None
+                else "Length unavailable"
+            ),
+            review_notes=revision.review_notes,
+            submit_action=Action(
+                key="submit_route_revision",
+                label="Submit for review",
+                allowed=revision.status == ProposedRouteRevisionStatus.draft.value,
+                reason=(
+                    None
+                    if revision.status == ProposedRouteRevisionStatus.draft.value
+                    else (
+                        "Only a draft route revision can be submitted "
+                        f"(currently {revision.status.replace('_', ' ')})"
+                    )
+                ),
+                affected=1,
+            ),
+        )
+        for revision in sorted(
+            getattr(row, "route_revisions", ()),
+            key=lambda item: (item.revision_number, str(item.id)),
+            reverse=True,
+        )
+    )
     reviewable = row.status in {
         ProjectQuoteStatus.submitted.value,
         ProjectQuoteStatus.under_review.value,
@@ -579,6 +634,15 @@ def _serialize_quote(row: ProjectQuote) -> dict:
         "reviewed_at": row.reviewed_at,
         "review_notes": row.review_notes,
         "line_items": [item for item in row.line_items if item.is_active],
+        "route_authoring": VendorRouteAuthoringProjection(
+            create_action=Action(
+                key="create_route_revision",
+                label="Save route draft",
+                allowed=True,
+                affected=1,
+            ),
+            revisions=route_revisions,
+        ),
         "route_revisions": [
             _serialize_route_revision_review(revision)
             for revision in sorted(

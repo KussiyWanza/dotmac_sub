@@ -16,15 +16,24 @@ from app.models.vendor_routes import (
     InstallationProjectStatus,
     ProjectQuote,
     ProjectQuoteStatus,
+    ProposedRouteRevision,
+    ProposedRouteRevisionStatus,
     Vendor,
 )
-from app.schemas.vendor_portal import VendorQuoteCreate, VendorQuoteLineCreate
+from app.schemas.vendor_portal import (
+    VendorQuoteCreate,
+    VendorQuoteLineCreate,
+    VendorRouteRevisionCreate,
+)
+from app.services import vendor_project_records
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.vendor_portal_operations import (
     AddVendorQuoteLineCommand,
     CreateVendorQuoteCommand,
+    CreateVendorRouteRevisionCommand,
     ReviewVendorQuoteCommand,
+    SubmitVendorRouteRevisionCommand,
     VendorProjectWorkspaceError,
     vendor_portal_operations,
 )
@@ -282,6 +291,73 @@ def test_rejected_quote_edit_rolls_back_the_owner_transaction(db_session):
     assert exc.value.code.endswith(".quote_not_editable")
     assert db_session.in_transaction() is False
     assert db_session.query(EventStore).count() == 0
+
+
+def test_route_revision_commands_create_then_submit_owned_evidence(
+    db_session,
+    monkeypatch,
+):
+    installation, vendor, user = _chain(db_session)
+    quote = ProjectQuote(
+        project_id=installation.id,
+        vendor_id=vendor.id,
+    )
+    db_session.add(quote)
+    db_session.commit()
+    monkeypatch.setattr(vendor_project_records, "_geom", lambda _geojson: None)
+    vendor_id = str(vendor.id)
+    user_id = str(user.id)
+    quote_id = str(quote.id)
+
+    db_session_adapter.release_read_transaction(db_session)
+    created = vendor_portal_operations.create_route_revision(
+        db_session,
+        CreateVendorRouteRevisionCommand(
+            context=_context(
+                actor=user_id,
+                scope=vendor_id,
+                reason="test route revision creation",
+            ),
+            quote_id=quote_id,
+            payload=VendorRouteRevisionCreate(
+                geojson={
+                    "type": "LineString",
+                    "coordinates": [[7.4, 9.0], [7.5, 9.1]],
+                },
+                length_meters=125.5,
+            ),
+            vendor_id=vendor_id,
+        ),
+    )
+
+    assert db_session.in_transaction() is False
+    assert created["status"] == ProposedRouteRevisionStatus.draft.value
+
+    submitted = vendor_portal_operations.submit_route_revision(
+        db_session,
+        SubmitVendorRouteRevisionCommand(
+            context=_context(
+                actor=user_id,
+                scope=vendor_id,
+                reason="test route revision submission",
+            ),
+            revision_id=str(created["id"]),
+            vendor_id=vendor_id,
+            user_id=user_id,
+        ),
+    )
+
+    assert db_session.in_transaction() is False
+    assert submitted["status"] == ProposedRouteRevisionStatus.submitted.value
+    persisted = db_session.get(ProposedRouteRevision, created["id"])
+    assert persisted is not None
+    assert persisted.submitted_by_person_id == user.id
+    events = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "vendor_route_revision.changed")
+        .all()
+    )
+    assert [event.payload["action"] for event in events] == ["created", "submitted"]
 
 
 def test_quote_review_updates_project_in_the_same_transaction(db_session):

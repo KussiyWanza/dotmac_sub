@@ -78,5 +78,5 @@ def test_detail_route_feeds_proposed_route_context():
     # ownership-based, so it does not call the admin route API).
     source = inspect.getsource(vendor_portal.vendor_project_detail)
     assert "route_geojson" in source
-    assert "build_project_route_geojson" in source
+    assert "build_vendor_project_route_geojson" in source
     assert "route_geojson" in TEMPLATE  # and the template consumes it

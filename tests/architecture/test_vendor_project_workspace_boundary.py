@@ -187,6 +187,10 @@ def test_public_adapters_construct_typed_workspace_commands_on_clean_sessions() 
         "SubmitVendorRouteRevisionCommand(",
     ):
         assert command in combined
+    assert "CreateVendorRouteRevisionCommand(" in web
+    assert "SubmitVendorRouteRevisionCommand(" in web
+    assert '"/projects/{project_id}/quotes/{quote_id}/route-revisions"' in web
+    assert '"/projects/{project_id}/route-revisions/{revision_id}/submit"' in web
     assert combined.count("release_read_transaction(db)") >= 11
     assert ".commit(" not in combined
     assert ".rollback(" not in combined

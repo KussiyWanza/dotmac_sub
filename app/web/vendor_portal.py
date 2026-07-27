@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -16,6 +17,7 @@ from app.schemas.vendor_portal import (
     VendorAsBuiltCreate,
     VendorQuoteCreate,
     VendorQuoteLineCreate,
+    VendorRouteRevisionCreate,
 )
 from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceCreate,
@@ -30,6 +32,8 @@ from app.services.owner_commands import CommandContext
 from app.services.vendor_portal_operations import (
     AddVendorQuoteLineCommand,
     CreateVendorQuoteCommand,
+    CreateVendorRouteRevisionCommand,
+    SubmitVendorRouteRevisionCommand,
     vendor_portal_operations,
 )
 from app.services.vendor_purchase_invoices import (
@@ -38,7 +42,7 @@ from app.services.vendor_purchase_invoices import (
     UploadVendorPurchaseInvoiceAttachmentCommand,
     vendor_purchase_invoices,
 )
-from app.services.vendor_routes_api import build_project_route_geojson
+from app.services.vendor_routes_api import build_vendor_project_route_geojson
 from app.services.vendor_submission_proposals import (
     ConfirmVendorSubmissionCommand,
 )
@@ -75,6 +79,8 @@ def _submission_http_error(exc: DomainError) -> HTTPException:
         "quote_not_submittable": 409,
         "quote_not_reviewable": 409,
         "quote_line_required": 422,
+        "route_revision_not_found": 404,
+        "route_revision_not_draft": 409,
         "as_built_evidence_required": 422,
         "invalid_as_built_route": 422,
         "invoice_not_found": 404,
@@ -120,6 +126,23 @@ def _context(auth: dict, db: Session) -> dict:
 def _redirect(project_id: str, message: str | None = None) -> RedirectResponse:
     suffix = f"?message={message}" if message else ""
     return RedirectResponse(f"/vendor/projects/{project_id}{suffix}", status_code=303)
+
+
+def _route_revision_payload(
+    geojson: str,
+    length_meters: float | None,
+) -> VendorRouteRevisionCreate:
+    try:
+        geometry = json.loads(geojson)
+        return VendorRouteRevisionCreate(
+            geojson=geometry,
+            length_meters=length_meters,
+        )
+    except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Trace a valid route with at least two map points.",
+        ) from exc
 
 
 @router.get("", response_class=HTMLResponse)
@@ -186,7 +209,11 @@ def vendor_project_detail(
     # the planned route as tracing context. Rendered server-side rather than a
     # client fetch — the vendor portal authenticates by ownership, not the
     # admin route API.
-    route_geojson = build_project_route_geojson(db, str(project["id"]))
+    route_geojson = build_vendor_project_route_geojson(
+        db,
+        str(project["id"]),
+        vendor_id,
+    )
     return templates.TemplateResponse(
         "vendor/project_detail.html",
         {
@@ -350,6 +377,70 @@ def vendor_submit_quote(
             "proposal": proposal,
         },
     )
+
+
+@router.post("/projects/{project_id}/quotes/{quote_id}/route-revisions")
+def vendor_create_route_revision(
+    project_id: str,
+    quote_id: str,
+    geojson: str = Form(...),
+    length_meters: float | None = Form(default=None),
+    auth: dict = Depends(require_web_auth),
+    db: Session = Depends(get_db),
+):
+    context = _context(auth, db)
+    vendor_id = str(context["native_vendor_id"])
+    payload = _route_revision_payload(geojson, length_meters)
+    command_context = _command_context(
+        auth,
+        vendor_id=vendor_id,
+        reason="vendor_route_revision_creation",
+    )
+    db_session_adapter.release_read_transaction(db)
+    result = _submission_call(
+        lambda: vendor_portal_operations.create_route_revision(
+            db,
+            CreateVendorRouteRevisionCommand(
+                context=command_context,
+                quote_id=quote_id,
+                payload=payload,
+                vendor_id=vendor_id,
+            ),
+        )
+    )
+    return _redirect(
+        project_id,
+        f"Route revision {result['revision_number']} saved as draft",
+    )
+
+
+@router.post("/projects/{project_id}/route-revisions/{revision_id}/submit")
+def vendor_submit_route_revision(
+    project_id: str,
+    revision_id: str,
+    auth: dict = Depends(require_web_auth),
+    db: Session = Depends(get_db),
+):
+    context = _context(auth, db)
+    vendor_id = str(context["native_vendor_id"])
+    command_context = _command_context(
+        auth,
+        vendor_id=vendor_id,
+        reason="vendor_route_revision_submission",
+    )
+    db_session_adapter.release_read_transaction(db)
+    _submission_call(
+        lambda: vendor_portal_operations.submit_route_revision(
+            db,
+            SubmitVendorRouteRevisionCommand(
+                context=command_context,
+                revision_id=revision_id,
+                vendor_id=vendor_id,
+                user_id=str(auth["principal_id"]),
+            ),
+        )
+    )
+    return _redirect(project_id, "Route revision submitted for review")
 
 
 @router.post("/projects/{project_id}/as-built")
