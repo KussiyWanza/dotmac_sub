@@ -1,46 +1,357 @@
-<div x-show="newConversationOpen" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 p-4" @click.self="closeOverlays()" role="presentation">
-    <section x-ref="newConversationDialog" x-trap.noscroll.inert="newConversationOpen" role="dialog" aria-modal="true" aria-labelledby="new-conversation-title" class="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-        <header class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-            <div>
-                <h2 id="new-conversation-title" class="font-display text-lg font-semibold text-slate-950 dark:text-white">New conversation</h2>
-                <p class="text-xs text-slate-500">The first message sends immediately; the thread opens on it.</p>
+<div x-show="newConversationOpen"
+     x-cloak
+     x-transition:enter="transition-opacity duration-200"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition-opacity duration-200"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 px-4 py-8 backdrop-blur-sm"
+     @click.self="closeNewConversation()"
+     role="presentation">
+    <section x-ref="newConversationDialog"
+             x-trap.noscroll.inert="newConversationOpen"
+             x-transition:enter="transition duration-200 ease-out"
+             x-transition:enter-start="scale-95 opacity-0"
+             x-transition:enter-end="scale-100 opacity-100"
+             x-transition:leave="transition duration-150 ease-in"
+             x-transition:leave-start="scale-100 opacity-100"
+             x-transition:leave-end="scale-95 opacity-0"
+             role="dialog"
+             aria-modal="true"
+             aria-labelledby="new-conversation-title"
+             class="flex max-h-[calc(100vh-4rem)] w-full max-w-[672px] flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-6 shadow-2xl dark:border-slate-700/60 dark:bg-slate-900">
+        <header class="flex shrink-0 items-center justify-between gap-4">
+            <div class="flex min-w-0 items-center gap-3">
+                <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white" aria-hidden="true">
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                </span>
+                <div class="min-w-0">
+                    <h2 id="new-conversation-title" class="font-display text-lg font-bold text-slate-900 dark:text-white">New conversation</h2>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">Choose a channel and send the first message.</p>
+                </div>
             </div>
-            <button type="button" @click="newConversationOpen = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:bg-slate-800" aria-label="Close new conversation">
+            <button type="button"
+                    @click="closeNewConversation()"
+                    class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                    aria-label="Close new conversation">
                 <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
         </header>
-        <form method="post" action="/admin/inbox/conversations" class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+
+        <form method="post"
+              action="/admin/inbox/conversations"
+              enctype="multipart/form-data"
+              class="mt-6 min-h-0 flex-1 space-y-4 overflow-y-auto"
+              @submit="prepareNewConversation()">
             {% include "components/forms/csrf_input.html" %}
-            <div class="grid gap-4 sm:grid-cols-2">
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Channel
-                    <select name="channel_type" required class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-950">
-                        <option value="email">Email</option><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option><option value="telegram">Telegram</option>
+                    <select name="channel_type"
+                            required
+                            x-model="newConversation.channel"
+                            class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        <option value="email">Email</option>
+                        <option value="whatsapp">WhatsApp</option>
+                        <option value="facebook_messenger">Facebook Messenger</option>
+                        <option value="instagram_dm">Instagram</option>
                     </select>
                 </label>
-                <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Owning team
-                    <select name="service_team_id" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-950">
+                <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Team
+                    <select name="service_team_id"
+                            class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         <option value="">Unassigned</option>
                         {% for team in service_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
                     </select>
                 </label>
             </div>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Contact
-                <input name="contact_address" required placeholder="Email address or phone number" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-950">
-                <span class="mt-1 block font-normal text-slate-400">Resolved against existing customers the same way an inbound message would be. An unknown address still opens a thread you can link later.</span>
-            </label>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Subject
-                <input name="subject" maxlength="200" class="mt-1 h-11 w-full rounded-lg border-slate-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-950">
-            </label>
-            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">First message
-                <textarea name="body_text" rows="6" required class="mt-1 w-full rounded-lg border-slate-300 text-sm focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-950"></textarea>
-            </label>
-            <div class="flex justify-end gap-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-                <button type="button" @click="newConversationOpen = false" class="min-h-11 rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-200">Cancel</button>
-                <button type="submit" class="min-h-11 rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-5 text-sm font-semibold text-white hover:from-amber-600 hover:to-orange-700">Send and open</button>
+
+            <div x-show="newConversation.channel === 'email'" class="space-y-4">
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Contact name
+                        <input name="contact_name"
+                               x-model="newConversation.contactName"
+                               :disabled="newConversation.channel !== 'email'"
+                               placeholder="Customer name"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Email address
+                        <input name="contact_address"
+                               type="email"
+                               x-model="newConversation.recipient"
+                               :required="newConversation.channel === 'email'"
+                               :disabled="newConversation.channel !== 'email'"
+                               placeholder="customer@example.com"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                </div>
+                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Subject
+                    <input name="subject"
+                           maxlength="200"
+                           x-model="newConversation.subject"
+                           :disabled="newConversation.channel !== 'email'"
+                           placeholder="What is this conversation about?"
+                           class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                </label>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">CC
+                        <input name="cc"
+                               type="email"
+                               x-model="newConversation.cc"
+                               :disabled="newConversation.channel !== 'email'"
+                               placeholder="Optional copy recipient"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">BCC
+                        <input name="bcc"
+                               type="email"
+                               x-model="newConversation.bcc"
+                               :disabled="newConversation.channel !== 'email'"
+                               placeholder="Optional hidden recipient"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                </div>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400">CC and BCC delivery is not connected to the notification transport yet; leave these fields blank to start the conversation.</p>
             </div>
+
+            <div x-show="newConversation.channel === 'whatsapp'" x-cloak class="space-y-4">
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Contact search
+                        <input name="contact_name"
+                               type="search"
+                               x-model="newConversation.contactName"
+                               :disabled="newConversation.channel !== 'whatsapp'"
+                               placeholder="Search or enter a contact"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Phone number with country code
+                        <input name="contact_address"
+                               type="tel"
+                               x-model="newConversation.recipient"
+                               :required="newConversation.channel === 'whatsapp'"
+                               :disabled="newConversation.channel !== 'whatsapp'"
+                               placeholder="+234..."
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                </div>
+                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Approved template
+                    <select name="template_id"
+                            x-model="newConversation.template"
+                            :disabled="newConversation.channel !== 'whatsapp'"
+                            @change="selectNewConversationTemplate($event)"
+                            class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        <option value="">Choose a template</option>
+                        {% for template in new_conversation_template_options if template.channel_type in ['whatsapp', 'any'] %}
+                        <option value="{{ template.id }}" data-body="{{ template.body_text | e }}" data-subject="{{ (template.subject or '') | e }}">{{ template.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Template values
+                    <textarea name="template_values"
+                              rows="2"
+                              x-model="newConversation.templateValues"
+                              :disabled="newConversation.channel !== 'whatsapp'"
+                              placeholder="Enter one value per line when the approved template requires variables"
+                              class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500"></textarea>
+                </label>
+            </div>
+
+            <div x-show="['facebook_messenger', 'instagram_dm'].includes(newConversation.channel)" x-cloak>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Contact name
+                        <input name="contact_name"
+                               x-model="newConversation.contactName"
+                               :disabled="!['facebook_messenger', 'instagram_dm'].includes(newConversation.channel)"
+                               placeholder="Customer name"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                    <label class="text-xs font-semibold text-slate-700 dark:text-slate-200">Recipient ID
+                        <input name="contact_address"
+                               x-model="newConversation.recipient"
+                               :required="['facebook_messenger', 'instagram_dm'].includes(newConversation.channel)"
+                               :disabled="!['facebook_messenger', 'instagram_dm'].includes(newConversation.channel)"
+                               placeholder="Platform recipient ID"
+                               class="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500">
+                    </label>
+                </div>
+            </div>
+
+            <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                If the recipient does not match a known contact, this still opens a thread you can link later.
+            </p>
+
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Message
+                <textarea name="body_text"
+                          rows="5"
+                          required
+                          x-model="newConversation.body"
+                          placeholder="Write the first message..."
+                          class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500"></textarea>
+            </label>
+
+            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-200">Attachments
+                <input name="files"
+                       type="file"
+                       multiple
+                       @change="stageNewConversationFiles($event)"
+                       class="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50/50 text-sm text-slate-600 file:mr-3 file:border-0 file:bg-amber-50 file:px-3 file:py-2.5 file:font-semibold file:text-amber-700 hover:file:bg-amber-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:file:bg-amber-500/10 dark:file:text-amber-300">
+                <span x-show="newConversation.files.length" x-cloak class="mt-1 block font-normal text-slate-500" x-text="`${newConversation.files.length} file${newConversation.files.length === 1 ? '' : 's'} selected`"></span>
+            </label>
+
+            <footer class="flex justify-end gap-2 border-t border-slate-200 pt-4 dark:border-slate-700">
+                <button type="button"
+                        @click="closeNewConversation()"
+                        :disabled="newConversationSubmitting"
+                        class="min-h-11 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800">
+                    Cancel
+                </button>
+                <button type="submit"
+                        :disabled="newConversationSubmitting"
+                        class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#FE9A00] to-[#E17100] px-5 text-sm font-semibold text-white shadow-lg shadow-amber-500/20 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0">
+                    <svg x-show="newConversationSubmitting" x-cloak class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"/><path class="opacity-75" fill="currentColor" d="M21 12a9 9 0 00-9-9v3a6 6 0 016 6h3z"/></svg>
+                    <span x-text="newConversationSubmitting ? 'Starting\u2026' : 'Start conversation'">Start conversation</span>
+                </button>
+            </footer>
         </form>
     </section>
 </div>
+
+{% if can_manage_inbox and manager_dashboard %}
+<aside id="inbox-manager-dashboard"
+       x-show="managerDashboardOpen"
+       x-cloak
+       x-transition:enter="transition duration-200 ease-out"
+       x-transition:enter-start="translate-y-2 scale-95 opacity-0"
+       x-transition:enter-end="translate-y-0 scale-100 opacity-100"
+       x-transition:leave="transition duration-150 ease-in"
+       x-transition:leave-start="translate-y-0 scale-100 opacity-100"
+       x-transition:leave-end="translate-y-2 scale-95 opacity-0"
+       @click.outside="managerDashboardOpen = false"
+       @keydown.escape.window="managerDashboardOpen = false"
+       class="fixed inset-x-4 top-20 z-50 flex h-[calc(100vh-6rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.28)] sm:left-auto sm:w-[448px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-[0_24px_70px_rgba(0,0,0,0.55)]"
+       role="dialog"
+       aria-modal="false"
+       aria-labelledby="manager-dashboard-title">
+    <header class="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+        <div>
+            <h2 id="manager-dashboard-title" class="font-display text-base font-bold text-slate-900 dark:text-white">Manager Dashboard</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400">Live workload and team coverage</p>
+        </div>
+        <button type="button"
+                @click="managerDashboardOpen = false"
+                class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                aria-label="Close manager dashboard">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </header>
+
+    <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <section class="grid grid-cols-2 gap-3" aria-label="Team workload">
+            <a href="/admin/inbox?open_only=true"
+               class="rounded-xl border border-emerald-200 bg-emerald-50 p-3 hover:border-amber-300 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+                <span class="block text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">Online Agents</span>
+                <strong class="mt-1 block text-2xl font-bold tabular-nums text-emerald-900 dark:text-emerald-100">{{ manager_dashboard.online_agents }}</strong>
+            </a>
+            <a href="/admin/inbox?open_only=true"
+               class="rounded-xl border border-amber-200 bg-amber-50 p-3 hover:border-amber-300 dark:border-amber-500/30 dark:bg-amber-500/10">
+                <span class="block text-[11px] font-semibold text-amber-700 dark:text-amber-300">Chats With Online Agents</span>
+                <strong class="mt-1 block text-2xl font-bold tabular-nums text-amber-900 dark:text-amber-100">{{ manager_dashboard.chats_with_online_agents }}</strong>
+            </a>
+            <a href="/admin/inbox?open_only=true&amp;unassigned=true"
+               class="rounded-xl border border-slate-200 bg-slate-50 p-3 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800">
+                <span class="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">Unassigned</span>
+                <strong class="mt-1 block text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{{ manager_dashboard.unassigned }}</strong>
+            </a>
+            <a href="/admin/inbox?needs_attention=true"
+               class="rounded-xl border border-rose-200 bg-rose-50 p-3 hover:border-amber-300 dark:border-rose-500/30 dark:bg-rose-500/10">
+                <span class="block text-[11px] font-semibold text-rose-700 dark:text-rose-300">Needs Attention</span>
+                <strong class="mt-1 block text-2xl font-bold tabular-nums text-rose-900 dark:text-rose-100">{{ manager_dashboard.needs_attention }}</strong>
+            </a>
+        </section>
+
+        <section class="grid grid-cols-3 gap-2" aria-label="Conversation status">
+            <a href="/admin/inbox?status=open" class="rounded-xl border border-slate-200 bg-white p-3 text-center hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                <strong class="block text-lg font-bold tabular-nums text-slate-900 dark:text-white">{{ manager_dashboard.open }}</strong>
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Open</span>
+            </a>
+            <a href="/admin/inbox?status=pending" class="rounded-xl border border-slate-200 bg-white p-3 text-center hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                <strong class="block text-lg font-bold tabular-nums text-amber-700 dark:text-amber-300">{{ manager_dashboard.pending }}</strong>
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Pending</span>
+            </a>
+            <a href="/admin/inbox?status=resolved" class="rounded-xl border border-slate-200 bg-white p-3 text-center hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                <strong class="block text-lg font-bold tabular-nums text-emerald-700 dark:text-emerald-300">{{ manager_dashboard.resolved_today }}</strong>
+                <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Resolved Today</span>
+            </a>
+        </section>
+
+        <section aria-labelledby="manager-agents-title">
+            <h3 id="manager-agents-title" class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Agents</h3>
+            <div class="space-y-2">
+                {% for agent in manager_dashboard.agents %}
+                <details class="group rounded-xl border border-slate-200 bg-white open:border-amber-300 open:bg-amber-50/60 dark:border-slate-700 dark:bg-slate-800 dark:open:border-amber-500/40 dark:open:bg-amber-500/10">
+                    <summary class="flex cursor-pointer list-none items-center gap-3 rounded-xl p-3 hover:bg-amber-50 dark:hover:bg-amber-500/10">
+                        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] font-bold text-slate-600 dark:bg-slate-700 dark:text-slate-200">{{ agent.initials }}</span>
+                        <span class="min-w-0 flex-1">
+                            <span class="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{{ agent.name }}</span>
+                            <span class="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+                                <span class="h-1.5 w-1.5 rounded-full {{ 'bg-emerald-500' if agent.presence_status == 'online' else 'bg-slate-400' }}"></span>
+                                {{ agent.presence_status | replace('_', ' ') | title }}
+                            </span>
+                        </span>
+                        <span class="text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{{ agent.active_chats }} chats</span>
+                        <svg class="h-4 w-4 text-slate-400 group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </summary>
+                    <div class="border-t border-amber-200/60 px-3 py-2 text-xs text-slate-600 dark:border-amber-500/20 dark:text-slate-300">
+                        Current load: {{ agent.active_chats }}{% if agent.max_concurrent_conversations %} of {{ agent.max_concurrent_conversations }} conversations{% else %} active conversations{% endif %}.
+                    </div>
+                </details>
+                {% else %}
+                <p class="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700">No active team agents are configured.</p>
+                {% endfor %}
+            </div>
+        </section>
+
+        <section aria-labelledby="manager-channel-title">
+            <h3 id="manager-channel-title" class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Channel Split</h3>
+            <div class="grid grid-cols-5 gap-1">
+                {% for channel in manager_dashboard.channel_split %}
+                <a href="{{ '/admin/inbox?open_only=true' if channel.key == 'other' else '/admin/inbox?open_only=true&channel_type=' ~ channel.key }}"
+                   class="min-w-0 rounded-lg border border-slate-200 bg-white px-1 py-2 text-center hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                    <strong class="block text-sm font-bold tabular-nums text-slate-800 dark:text-white">{{ channel.count }}</strong>
+                    <span class="block truncate text-[9px] font-semibold text-slate-500" title="{{ channel.label }}">{{ channel.label }}</span>
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <section aria-labelledby="manager-active-title">
+            <h3 id="manager-active-title" class="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Active Chats</h3>
+            <div class="space-y-1.5">
+                {% for conversation in manager_dashboard.active_chats %}
+                <a href="/admin/inbox?conversation_id={{ conversation.id }}"
+                   class="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                    <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-xs font-bold uppercase text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{{ conversation.channel_type[:2] }}</span>
+                    <span class="min-w-0 flex-1">
+                        <span class="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{{ conversation.subject or conversation.contact_address or 'Unknown contact' }}</span>
+                        <span class="block truncate text-[11px] text-slate-500 dark:text-slate-400">{{ conversation.latest_message_body or 'No message preview' }}</span>
+                    </span>
+                    {% if conversation.needs_attention %}<span class="h-2 w-2 shrink-0 rounded-full bg-rose-500" title="Needs attention"></span>{% endif %}
+                </a>
+                {% else %}
+                <p class="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-700">No active conversations.</p>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+
+    <footer class="grid shrink-0 grid-cols-2 gap-2 border-t border-slate-200 bg-slate-50 p-3 sm:grid-cols-4 dark:border-slate-700 dark:bg-slate-900">
+        <a href="/admin/inbox?open_only=true" class="rounded-lg border border-slate-200 bg-white px-2 py-2 text-center text-[11px] font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">All chats</a>
+        <a href="/admin/inbox?open_only=true&amp;unassigned=true" class="rounded-lg border border-slate-200 bg-white px-2 py-2 text-center text-[11px] font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">Unassigned</a>
+        <a href="/admin/inbox?needs_response=true" class="rounded-lg border border-slate-200 bg-white px-2 py-2 text-center text-[11px] font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">Unreplied</a>
+        <a href="/admin/inbox?needs_attention=true" class="rounded-lg border border-slate-200 bg-white px-2 py-2 text-center text-[11px] font-semibold text-slate-700 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">Attention</a>
+    </footer>
+</aside>
+{% endif %}
 
 <div x-show="ticketPanelOpen" x-cloak class="fixed inset-0 z-[55] bg-slate-950/40" @click.self="ticketPanelOpen = false">
     <section x-trap.noscroll="ticketPanelOpen" role="dialog" aria-modal="true" aria-labelledby="ticket-panel-title" class="absolute inset-y-0 right-0 flex w-[min(100vw,480px)] flex-col bg-white shadow-2xl dark:bg-slate-900">

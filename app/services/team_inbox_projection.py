@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -14,8 +15,10 @@ from sqlalchemy.orm import Session
 from app.models.service_team import ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
+    InboxAgentPresence,
     InboxChannelType,
     InboxConversation,
+    InboxConversationAssignment,
     InboxConversationStatus,
     InboxConversationTeam,
 )
@@ -59,7 +62,8 @@ INBOX_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("service_team_ids", "Teams", filterable=True),
         ListFieldDefinition("assigned_person_id", "Assignee", filterable=True),
         ListFieldDefinition("contact_resolution_status", "Contact", filterable=True),
-        ListFieldDefinition("needs_response", "Needs response", filterable=True),
+        ListFieldDefinition("needs_response", "Unreplied", filterable=True),
+        ListFieldDefinition("needs_attention", "Needs attention", filterable=True),
         ListFieldDefinition("ai_handling", "AI handling", filterable=True),
         ListFieldDefinition("has_ticket", "Sent to ticket", filterable=True),
         ListFieldDefinition("activity_from", "Active from", filterable=True),
@@ -92,6 +96,7 @@ class InboxQueueRequest:
     service_team_ids: tuple[str, ...] = ()
     assigned_person_id: str | UUID | None = None
     needs_response: bool = False
+    needs_attention: bool = False
     contact_resolution_status: str | None = None
     priority_at_most: int | None = None
     muted: bool | None = None
@@ -176,6 +181,37 @@ class InboxAgentOption:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxManagerAgent:
+    id: UUID
+    name: str
+    initials: str
+    presence_status: str
+    active_chats: int
+    max_concurrent_conversations: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class InboxManagerChannelCount:
+    key: str
+    label: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class InboxManagerDashboardProjection:
+    online_agents: int
+    chats_with_online_agents: int
+    unassigned: int
+    needs_attention: int
+    open: int
+    pending: int
+    resolved_today: int
+    agents: tuple[InboxManagerAgent, ...]
+    channel_split: tuple[InboxManagerChannelCount, ...]
+    active_chats: tuple[team_inbox_read.InboxConversationListRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class InboxAssignmentCounts:
     all: int
     assigned_to_me: int
@@ -185,10 +221,8 @@ class InboxAssignmentCounts:
     # The teams the actor belongs to, so the "My team" filter can select exactly
     # the cohort my_team counted rather than approximating it.
     my_team_ids: tuple[str, ...]
-    # One cohort, one name. This was previously also exposed as `needs_attention`
-    # with an identical value, which rendered as two sidebar filters that always
-    # showed the same count and applied the same `needs_response=true` filter.
     unreplied: int
+    needs_attention: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +238,7 @@ class InboxQueueProjection:
     service_team_id: str
     assigned_person_id: str
     needs_response: bool
+    needs_attention: bool
     contact_resolution_status: str
     priority_at_most: int | None
     muted: bool | None
@@ -265,6 +300,182 @@ def list_agent_options(db: Session) -> tuple[InboxAgentOption, ...]:
             initials=_initials(row.first_name, row.last_name, row.display_name),
         )
         for row in rows
+    )
+
+
+def _resolved_today_count(
+    db: Session,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Count today's authoritative status transitions to resolved.
+
+    Conversation ``updated_at`` can change for unrelated reasons, so the
+    status-history observation written by the command owner is the reliable
+    input for this dashboard projection.
+    """
+
+    today = (now or datetime.now(UTC)).astimezone(UTC).date()
+    count = 0
+    rows = (
+        db.query(InboxConversation.metadata_)
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status == InboxConversationStatus.resolved.value)
+        .all()
+    )
+    for (metadata,) in rows:
+        history = metadata.get("status_history") if isinstance(metadata, dict) else None
+        if not isinstance(history, list):
+            continue
+        for event in reversed(history):
+            if not isinstance(event, dict) or event.get("to") != "resolved":
+                continue
+            try:
+                occurred_at = datetime.fromisoformat(str(event.get("at") or ""))
+            except ValueError:
+                break
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.replace(tzinfo=UTC)
+            if occurred_at.astimezone(UTC).date() == today:
+                count += 1
+            break
+    return count
+
+
+def build_manager_dashboard_projection(
+    db: Session,
+    *,
+    queue_metrics: team_inbox_operations.InboxQueueMetrics,
+    needs_attention: int,
+) -> InboxManagerDashboardProjection:
+    """Build the read-only manager panel from Inbox-owned observations."""
+
+    agent_options = list_agent_options(db)
+    person_ids = [agent.id for agent in agent_options]
+    presence_rows = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id.in_(person_ids))
+        .all()
+        if person_ids
+        else []
+    )
+    presence_by_person = {row.person_id: row for row in presence_rows}
+    online_person_ids = {
+        row.person_id
+        for row in presence_rows
+        if (row.manual_override_status or row.status) == "online"
+    }
+
+    active_assignments = (
+        db.query(InboxConversationAssignment)
+        .join(
+            InboxConversation,
+            InboxConversation.id == InboxConversationAssignment.conversation_id,
+        )
+        .filter(InboxConversationAssignment.is_active.is_(True))
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .all()
+    )
+    chat_counts = Counter(row.person_id for row in active_assignments)
+    chats_with_online_agents = len(
+        {
+            row.conversation_id
+            for row in active_assignments
+            if row.person_id in online_person_ids
+        }
+    )
+    agent_rows: list[InboxManagerAgent] = []
+    for agent in agent_options:
+        presence = presence_by_person.get(agent.id)
+        agent_rows.append(
+            InboxManagerAgent(
+                id=agent.id,
+                name=agent.name,
+                initials=agent.initials,
+                presence_status=(
+                    (presence.manual_override_status or presence.status)
+                    if presence is not None
+                    else "offline"
+                ),
+                active_chats=chat_counts[agent.id],
+                max_concurrent_conversations=(
+                    presence.max_concurrent_conversations
+                    if presence is not None
+                    else None
+                ),
+            )
+        )
+    agents = tuple(agent_rows)
+
+    raw_channel_counts = {
+        channel: int(count)
+        for channel, count in (
+            db.query(InboxConversation.channel_type, func.count(InboxConversation.id))
+            .filter(InboxConversation.is_active.is_(True))
+            .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+            .group_by(InboxConversation.channel_type)
+            .all()
+        )
+    }
+    declared_channels = (
+        ("email", "Email"),
+        ("whatsapp", "WhatsApp"),
+        ("facebook_messenger", "Facebook"),
+        ("instagram_dm", "Instagram"),
+    )
+    known_keys = {key for key, _label in declared_channels}
+    channel_split = tuple(
+        InboxManagerChannelCount(
+            key=key,
+            label=label,
+            count=raw_channel_counts.get(key, 0),
+        )
+        for key, label in declared_channels
+    ) + (
+        InboxManagerChannelCount(
+            key="other",
+            label="Other",
+            count=sum(
+                count
+                for key, count in raw_channel_counts.items()
+                if key not in known_keys
+            ),
+        ),
+    )
+
+    open_count = int(
+        db.query(func.count(InboxConversation.id))
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status == InboxConversationStatus.open.value)
+        .scalar()
+        or 0
+    )
+    pending_count = int(
+        db.query(func.count(InboxConversation.id))
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status == InboxConversationStatus.pending.value)
+        .scalar()
+        or 0
+    )
+    active_chats = tuple(
+        team_inbox_read.list_conversations(
+            db,
+            open_only=True,
+            limit=8,
+        ).items
+    )
+    return InboxManagerDashboardProjection(
+        online_agents=len(online_person_ids),
+        chats_with_online_agents=chats_with_online_agents,
+        unassigned=queue_metrics.unassigned_open,
+        needs_attention=needs_attention,
+        open=open_count,
+        pending=pending_count,
+        resolved_today=_resolved_today_count(db),
+        agents=agents,
+        channel_split=channel_split,
+        active_chats=active_chats,
     )
 
 
@@ -331,6 +542,11 @@ def _assignment_counts(
         my_team_ids=my_team_ids,
         unassigned=queue_metrics.unassigned_open,
         unreplied=queue_metrics.needs_response,
+        needs_attention=team_inbox_read.list_conversations(
+            db,
+            needs_attention=True,
+            limit=1,
+        ).count,
     )
 
 
@@ -447,6 +663,7 @@ def _filter_params(
     assigned_person_id: str | None,
     contact_resolution_status: str | None,
     needs_response: bool,
+    needs_attention: bool,
     ai_handling: bool | None,
     has_ticket: bool | None,
     activity_from: datetime | None,
@@ -474,6 +691,7 @@ def _filter_params(
         "assigned_person_id": assigned_person_id,
         "contact_resolution_status": contact_resolution_status,
         "needs_response": "true" if needs_response else None,
+        "needs_attention": "true" if needs_attention else None,
         "ai_handling": _tristate(ai_handling),
         "has_ticket": _tristate(has_ticket),
         "activity_from": _activity_param(activity_from),
@@ -503,6 +721,7 @@ def build_queue_projection(
     raw_team_text = str(raw_team_id) if raw_team_id is not None else None
     raw_assignee_text = str(raw_assignee_id) if raw_assignee_id is not None else None
     needs_response = request.needs_response
+    needs_attention = request.needs_attention
     raw_contact_status = request.contact_resolution_status
     raw_priority = request.priority_at_most
     muted = request.muted
@@ -564,6 +783,7 @@ def build_queue_projection(
         assigned_person_id=str(assignee_id) if assignee_id else None,
         contact_resolution_status=contact_status,
         needs_response=needs_response,
+        needs_attention=needs_attention,
         ai_handling=request.ai_handling,
         has_ticket=request.has_ticket,
         activity_from=request.activity_from,
@@ -598,6 +818,7 @@ def build_queue_projection(
             activity_to=request.activity_to,
             assigned_person_id=assignee_id,
             needs_response=needs_response,
+            needs_attention=needs_attention,
             contact_resolution_status=contact_status,
             priority_at_most=priority,
             muted=muted,
@@ -630,6 +851,7 @@ def build_queue_projection(
             assigned_person_id=raw_assignee_text,
             contact_resolution_status=raw_contact_status,
             needs_response=needs_response,
+            needs_attention=needs_attention,
             ai_handling=request.ai_handling,
             has_ticket=request.has_ticket,
             activity_from=request.activity_from,
@@ -679,6 +901,7 @@ def build_queue_projection(
         service_team_id=str(team_id) if team_id else "",
         assigned_person_id=str(assignee_id) if assignee_id else "",
         needs_response=needs_response,
+        needs_attention=needs_attention,
         contact_resolution_status=contact_status or "",
         priority_at_most=priority,
         muted=muted,

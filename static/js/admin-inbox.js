@@ -38,9 +38,13 @@
         288,
         448,
       ),
+      resizingSidebar: false,
       filtersOpen: parseStoredBoolean(KEYS.filtersOpen, false),
-      byAgentOpen: false,
-      savedViewOpen: false,
+      byAgentOpen: Boolean(
+        new URLSearchParams(window.location.search).get("assigned_person_id") ||
+          new URLSearchParams(window.location.search).get("activity_from") ||
+          new URLSearchParams(window.location.search).get("activity_to"),
+      ),
       savedViewName: "",
       selectedIds: [],
       bulkAction: "status",
@@ -48,12 +52,15 @@
       realtimeConnected: false,
       contactOpen: false,
       newConversationOpen: false,
+      newConversationSubmitting: false,
+      managerDashboardOpen: false,
       ticketPanelOpen: false,
       commandPaletteOpen: false,
       shortcutHelpOpen: false,
       commandQuery: "",
       presenceText: "",
       newMessagesAvailable: false,
+      newListActivityAvailable: false,
       toastMessage: "",
       socket: null,
       reconnectTimer: null,
@@ -63,12 +70,13 @@
       inFlight: new Set(),
       newConversation: {
         channel: "email",
-        inbox: "support",
+        contactName: "",
         recipient: "",
         subject: "",
         cc: "",
         bcc: "",
         template: "",
+        templateValues: "",
         body: "",
         files: [],
         error: "",
@@ -100,11 +108,23 @@
       },
 
       startSidebarResize(event) {
-        if (window.innerWidth < 768) return;
-        event.currentTarget.setPointerCapture?.(event.pointerId);
+        if (window.innerWidth <= 639) return;
+        event.preventDefault();
+        const handle = event.currentTarget;
+        const pointerId = event.pointerId;
+        handle.setPointerCapture?.(pointerId);
         const startX = event.clientX;
         const startWidth = this.sidebarWidth;
+        const previousBodyCursor = document.body.style.cursor;
+        const previousBodyUserSelect = document.body.style.userSelect;
+        const previousRootCursor = document.documentElement.style.cursor;
+        this.resizingSidebar = true;
+        document.body.style.cursor = "ew-resize";
+        document.body.style.userSelect = "none";
+        document.documentElement.style.cursor = "ew-resize";
         const move = (moveEvent) => {
+          if (moveEvent.pointerId !== pointerId) return;
+          moveEvent.preventDefault();
           this.sidebarWidth = clamp(
             startWidth + moveEvent.clientX - startX,
             288,
@@ -115,15 +135,30 @@
             `${this.sidebarWidth}px`,
           );
         };
-        const stop = () => {
+        const stop = (stopEvent) => {
+          if (
+            stopEvent?.pointerId !== undefined &&
+            stopEvent.pointerId !== pointerId
+          ) {
+            return;
+          }
           localStorage.setItem(KEYS.sidebarWidth, String(this.sidebarWidth));
+          this.resizingSidebar = false;
+          document.body.style.cursor = previousBodyCursor;
+          document.body.style.userSelect = previousBodyUserSelect;
+          document.documentElement.style.cursor = previousRootCursor;
+          if (handle.hasPointerCapture?.(pointerId)) {
+            handle.releasePointerCapture(pointerId);
+          }
           window.removeEventListener("pointermove", move);
           window.removeEventListener("pointerup", stop);
           window.removeEventListener("pointercancel", stop);
+          window.removeEventListener("blur", stop);
         };
         window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", stop, { once: true });
-        window.addEventListener("pointercancel", stop, { once: true });
+        window.addEventListener("pointerup", stop);
+        window.addEventListener("pointercancel", stop);
+        window.addEventListener("blur", stop);
       },
 
       persistFilters() {
@@ -198,7 +233,10 @@
               }
             }
           }
-          if (target.id === "inbox-sidebar-content") {
+          if (
+            target.id === "inbox-sidebar-content" ||
+            target.id === "inbox-conversation-queue"
+          ) {
             this.syncSelectedCheckboxes();
             this.updateSelectedHighlight();
             this.subscribeVisibleTopics();
@@ -243,6 +281,7 @@
 
       filterRequestStarted() {
         this.newMessagesAvailable = false;
+        this.newListActivityAvailable = false;
       },
 
       showList() {
@@ -265,9 +304,9 @@
       updateSelectedHighlight() {
         document.querySelectorAll(".conversation-item").forEach((row) => {
           const selected = row.dataset.conversationId === this.selectedId;
-          row.classList.toggle("border-l-amber-500", selected);
-          row.classList.toggle("bg-amber-50", selected);
-          row.querySelector("a")?.toggleAttribute("aria-current", selected);
+          row
+            .querySelector("[data-conversation-link]")
+            ?.toggleAttribute("aria-current", selected);
         });
       },
 
@@ -293,16 +332,36 @@
           });
       },
 
-      navigateFilter(changes) {
+      navigateFilter(changes, clearAll = false) {
         const url = new URL(window.location.href);
-        [
+        const assignmentKeys = [
           "status",
           "assigned_person_id",
+          "service_team_ids",
           "unassigned",
           "needs_response",
+          "needs_attention",
+          "ai_handling",
+          "activity_from",
+          "activity_to",
           "open_only",
+          "has_ticket",
           "page",
-        ].forEach((key) => url.searchParams.delete(key));
+        ];
+        const savedViewKeys = [
+          ...assignmentKeys,
+          "search",
+          "channel_type",
+          "service_team_id",
+          "contact_resolution_status",
+          "priority_at_most",
+          "muted",
+          "snoozed",
+          "unread",
+        ];
+        (clearAll ? savedViewKeys : assignmentKeys).forEach((key) =>
+          url.searchParams.delete(key),
+        );
         // The two team params scope the same relation, so only one may be live
         // at a time. Setting either clears the other; leaving both in the URL
         // asked the server for two team filters at once, which it cannot
@@ -319,6 +378,22 @@
             url.searchParams.set(key, value);
           }
         });
+        if (this.selectedId) {
+          url.searchParams.set("conversation_id", this.selectedId);
+        }
+        history.pushState({}, "", url);
+        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+          target: "#inbox-sidebar-content",
+          swap: "innerHTML",
+        });
+      },
+
+      searchConversations(value) {
+        const url = new URL(window.location.href);
+        const search = String(value || "").trim();
+        if (search) url.searchParams.set("search", search);
+        else url.searchParams.delete("search");
+        url.searchParams.delete("page");
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
@@ -351,11 +426,50 @@
           this.navigateFilter({ open_only: "true", unassigned: "true" });
         } else if (value === "unreplied") {
           this.navigateFilter({ needs_response: "true" });
+        } else if (value === "attention") {
+          this.navigateFilter({ needs_attention: "true" });
+        } else if (value === "ai") {
+          this.navigateFilter({ ai_handling: "true" });
         } else if (value) {
           this.navigateFilter({ assigned_person_id: value });
         } else {
           this.navigateFilter({});
         }
+      },
+
+      assignmentFilterActive(value) {
+        const filters = new URLSearchParams(window.location.search);
+        const assignee = filters.get("assigned_person_id") || "";
+        if (value === "mine") return Boolean(this.actorId) && assignee === this.actorId;
+        if (value === "agent") {
+          return (
+            (Boolean(assignee) && assignee !== this.actorId) ||
+            filters.has("activity_from") ||
+            filters.has("activity_to")
+          );
+        }
+        if (value === "team") {
+          return (
+            Boolean(this.myTeamIds) &&
+            filters.get("service_team_ids") === this.myTeamIds
+          );
+        }
+        if (value === "ai") return filters.get("ai_handling") === "true";
+        if (value === "unassigned") return filters.get("unassigned") === "true";
+        if (value === "unreplied") return filters.get("needs_response") === "true";
+        if (value === "attention") {
+          return filters.get("needs_attention") === "true";
+        }
+        return ![
+          "assigned_person_id",
+          "service_team_ids",
+          "unassigned",
+          "needs_response",
+          "needs_attention",
+          "ai_handling",
+          "activity_from",
+          "activity_to",
+        ].some((key) => filters.has(key));
       },
 
       // Scopes the queue to every team the operator belongs to — the same set
@@ -374,7 +488,40 @@
           if (value === true) changes[key] = "true";
           else if (value !== false && value !== null && value !== "") changes[key] = value;
         });
-        this.navigateFilter(changes);
+        this.navigateFilter(changes, true);
+      },
+
+      savedViewIsActive(payload) {
+        const filters = new URLSearchParams(window.location.search);
+        const keys = [
+          "status",
+          "search",
+          "channel_type",
+          "service_team_id",
+          "service_team_ids",
+          "assigned_person_id",
+          "needs_response",
+          "needs_attention",
+          "contact_resolution_status",
+          "priority_at_most",
+          "muted",
+          "snoozed",
+          "open_only",
+          "unassigned",
+          "unread",
+          "ai_handling",
+          "has_ticket",
+          "activity_from",
+          "activity_to",
+        ];
+        const normalized = (value) => {
+          if (value === true) return "true";
+          if (value === false || value === null || value === undefined) return "";
+          return String(value);
+        };
+        return keys.every(
+          (key) => (filters.get(key) || "") === normalized((payload || {})[key]),
+        );
       },
 
       async saveCurrentView() {
@@ -391,13 +538,21 @@
           search: "search",
           channel_type: "channel_type",
           service_team_id: "service_team_id",
+          service_team_ids: "service_team_ids",
+          assigned_person_id: "assigned_person_id",
           needs_response: "needs_response",
+          needs_attention: "needs_attention",
           contact_resolution_status: "contact_resolution_status",
           priority_at_most: "priority_at_most",
           muted: "muted",
           snoozed: "snoozed",
           open_only: "open_only",
           unassigned: "unassigned",
+          unread: "unread",
+          ai_handling: "ai_handling",
+          has_ticket: "has_ticket",
+          activity_from: "activity_from",
+          activity_to: "activity_to",
         };
         Object.entries(mapping).forEach(([queryKey, formKey]) => {
           if (source.has(queryKey)) data.set(formKey, source.get(queryKey));
@@ -410,7 +565,6 @@
           });
           if (!response.ok) throw new Error("Unable to save view");
           this.savedViewName = "";
-          this.savedViewOpen = false;
           this.showToast("Saved view created.");
           this.refreshSidebar();
         } catch (error) {
@@ -426,16 +580,43 @@
         this.contactOpen = false;
       },
       openNewConversation() {
+        this.managerDashboardOpen = false;
+        this.newConversationSubmitting = false;
         this.newConversationOpen = true;
         this.$nextTick(() =>
           this.$refs.newConversationDialog?.querySelector("select, input")?.focus(),
         );
+      },
+      closeNewConversation() {
+        if (this.newConversationSubmitting) return;
+        this.newConversationOpen = false;
+      },
+      prepareNewConversation() {
+        this.newConversationSubmitting = true;
+      },
+      selectNewConversationTemplate(event) {
+        const option = event.target.selectedOptions?.[0];
+        if (!option) return;
+        const body = option.dataset.body || "";
+        if (body) this.newConversation.body = body;
+        const subject = option.dataset.subject || "";
+        if (subject && !this.newConversation.subject) {
+          this.newConversation.subject = subject;
+        }
+      },
+      toggleManagerDashboard() {
+        this.managerDashboardOpen = !this.managerDashboardOpen;
+        if (this.managerDashboardOpen) {
+          this.newConversationOpen = false;
+        }
       },
       openTicketPanel() {
         this.ticketPanelOpen = true;
       },
       closeOverlays() {
         this.newConversationOpen = false;
+        this.newConversationSubmitting = false;
+        this.managerDashboardOpen = false;
         this.ticketPanelOpen = false;
         this.commandPaletteOpen = false;
         this.shortcutHelpOpen = false;
@@ -497,6 +678,19 @@
         window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
           target: "#inbox-sidebar-content",
           swap: "innerHTML",
+        });
+      },
+
+      refreshConversationList() {
+        const url = new URL(window.location.href);
+        if (this.selectedId) {
+          url.searchParams.set("conversation_id", this.selectedId);
+        }
+        this.newListActivityAvailable = false;
+        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+          target: "#inbox-conversation-queue",
+          select: "#inbox-conversation-queue",
+          swap: "outerHTML",
         });
       },
 
@@ -583,7 +777,7 @@
             "inbox_updated",
           ].includes(eventType)
         ) {
-          this.refreshSidebar();
+          this.newListActivityAvailable = true;
           if (data.conversation_id === this.selectedId) {
             if (this.composerFocused()) this.newMessagesAvailable = true;
             else this.refreshThread(this.selectedId);

@@ -66,6 +66,27 @@ def test_admin_route_delegates_query_contract_and_transactions() -> None:
     assert ".rollback(" not in route
 
 
+def test_projection_owns_response_cohorts_from_authoritative_inputs() -> None:
+    service = service_relationship("communications.team_inbox_projection")
+    assert service.contract is not None
+    input_owners = {
+        item.name: item.owner for item in service.contract.authoritative_inputs
+    }
+    assert input_owners["conversation records"] == ("communications.team_inbox_threads")
+    assert input_owners["delivery projection"] == (
+        "communications.team_inbox_delivery_receipts"
+    )
+    assert input_owners["ticket handoff provenance"] == (
+        "communications.conversation_ticket_handoff"
+    )
+
+    model = (ROOT / "app/models/team_inbox.py").read_text(encoding="utf-8")
+    projection = (ROOT / "app/services/team_inbox_read.py").read_text(encoding="utf-8")
+    assert "needs_attention" not in model
+    assert "class InboxResponseCohort" in projection
+    assert "def response_cohort" in projection
+
+
 def test_inbox_services_have_no_transport_errors_or_direct_completion() -> None:
     offenders: list[str] = []
     for path in (ROOT / "app/services").glob("team_inbox_*.py"):

@@ -41,6 +41,7 @@ from app.web.admin.drift import router as drift_router
 from app.web.admin.field_maps import router as field_maps_router
 from app.web.admin.gis import router as gis_router
 from app.web.admin.inbox import router as inbox_router
+from app.web.admin.inbox import settings_router as inbox_settings_router
 from app.web.admin.integrations import router as integrations_router
 from app.web.admin.legal import router as legal_router
 from app.web.admin.nas import router as nas_router
@@ -259,6 +260,7 @@ router.include_router(
 )
 router.include_router(inbox_router)
 router.include_router(workqueue_router)
+router.include_router(inbox_settings_router)
 router.include_router(system_router)
 router.include_router(system_whats_new_router)
 router.include_router(

@@ -28,6 +28,7 @@ from app.services.auth_dependencies import can, require_permission
 from app.services.owner_commands import CommandContext
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
+settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
 
 
@@ -107,6 +108,7 @@ def team_inbox_queue(
     service_team_ids: str | None = Query(default=None),
     assigned_person_id: str | None = Query(default=None),
     needs_response: bool = Query(default=False),
+    needs_attention: bool = Query(default=False),
     contact_resolution_status: str | None = Query(default=None),
     priority_at_most: int | None = Query(default=None),
     muted: bool | None = Query(default=None),
@@ -149,6 +151,7 @@ def team_inbox_queue(
             ),
             assigned_person_id=_query_text(assigned_person_id),
             needs_response=_query_bool(needs_response),
+            needs_attention=_query_bool(needs_attention),
             contact_resolution_status=_query_text(contact_resolution_status),
             priority_at_most=_query_int(priority_at_most),
             muted=_query_optional_bool(muted),
@@ -170,6 +173,16 @@ def team_inbox_queue(
     )
     if projection.canonical_url is not None:
         return RedirectResponse(url=projection.canonical_url, status_code=307)
+    can_manage_inbox = can(request, "support:ticket:update")
+    manager_dashboard = (
+        team_inbox_projection.build_manager_dashboard_projection(
+            db,
+            queue_metrics=projection.queue_metrics,
+            needs_attention=projection.assignment_counts.needs_attention,
+        )
+        if can_manage_inbox
+        else None
+    )
     context = _ctx(request, db)
     context.update(
         {
@@ -189,6 +202,7 @@ def team_inbox_queue(
             "service_team_id": projection.service_team_id,
             "assigned_person_id": projection.assigned_person_id,
             "needs_response": projection.needs_response,
+            "needs_attention": projection.needs_attention,
             "contact_resolution_status": projection.contact_resolution_status,
             "priority_at_most": projection.priority_at_most,
             "muted": projection.muted,
@@ -207,6 +221,11 @@ def team_inbox_queue(
             "channel_options": projection.channel_options,
             "label_options": projection.label_options,
             "saved_filters": projection.saved_filters,
+            "new_conversation_template_options": tuple(
+                team_inbox_operations.list_templates(db)
+            ),
+            "can_manage_inbox": can_manage_inbox,
+            "manager_dashboard": manager_dashboard,
             "selected": (
                 projection.selected.timeline
                 if projection.selected is not None
@@ -742,13 +761,21 @@ def team_inbox_saved_filter_create(
     status_value: str | None = Form(default=None),
     channel_type: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
+    service_team_ids: str | None = Form(default=None),
+    assigned_person_id: str | None = Form(default=None),
     needs_response: bool = Form(default=False),
+    needs_attention: bool = Form(default=False),
     contact_resolution_status: str | None = Form(default=None),
     priority_at_most: int | None = Form(default=None),
     muted: bool | None = Form(default=None),
     snoozed: bool | None = Form(default=None),
     open_only: bool = Form(default=False),
     unassigned: bool = Form(default=False),
+    unread: bool = Form(default=False),
+    ai_handling: bool = Form(default=False),
+    has_ticket: bool = Form(default=False),
+    activity_from: str | None = Form(default=None),
+    activity_to: str | None = Form(default=None),
     is_shared: bool = Form(default=False),
     db: Session = Depends(get_db),
 ):
@@ -764,13 +791,21 @@ def team_inbox_saved_filter_create(
                 "status": status_value,
                 "channel_type": channel_type,
                 "service_team_id": service_team_id,
+                "service_team_ids": service_team_ids,
+                "assigned_person_id": assigned_person_id,
                 "needs_response": needs_response,
+                "needs_attention": needs_attention,
                 "contact_resolution_status": contact_resolution_status,
                 "priority_at_most": priority_at_most,
                 "muted": muted,
                 "snoozed": snoozed,
                 "open_only": clean_open_only,
                 "unassigned": clean_unassigned,
+                "unread": unread,
+                "ai_handling": ai_handling,
+                "has_ticket": has_ticket,
+                "activity_from": activity_from,
+                "activity_to": activity_to,
             },
             actor_person_id=_actor_id_from_request(request),
             is_shared=is_shared,
@@ -1258,6 +1293,29 @@ def team_inbox_email_routes(
     return templates.TemplateResponse("admin/inbox/email_routes.html", context)
 
 
+@settings_router.get(
+    "/settings",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_settings_entrypoint(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Render mailbox routing at the requested CRM-shaped settings URL."""
+
+    context = _ctx(request, db)
+    context.update(
+        {
+            "email_routes": team_inbox_routing.list_email_routes(db),
+            "service_team_options": team_inbox_metrics.active_service_team_options(db),
+            "notice_status": None,
+            "notice_message": None,
+        }
+    )
+    return templates.TemplateResponse("admin/inbox/email_routes.html", context)
+
+
 def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
     return RedirectResponse(
         url=(
@@ -1373,16 +1431,34 @@ async def team_inbox_stage_attachments(
     "/conversations",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
-def team_inbox_start_conversation(
+async def team_inbox_start_conversation(
     request: Request,
     channel_type: str = Form(...),
     contact_address: str = Form(...),
     body_text: str = Form(...),
     subject: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
+    contact_name: str | None = Form(default=None),
+    template_id: str | None = Form(default=None),
+    template_values: str | None = Form(default=None),
+    cc: str | None = Form(default=None),
+    bcc: str | None = Form(default=None),
+    files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ):
     """Open a new conversation and send its first message."""
+    if (_query_text(cc) or "").strip() or (_query_text(bcc) or "").strip():
+        return RedirectResponse(
+            url=(
+                "/admin/inbox?status=error&message="
+                "CC%20and%20BCC%20delivery%20is%20not%20available%20yet."
+            ),
+            status_code=303,
+        )
+    uploads: list[tuple[str, str | None, bytes]] = []
+    for upload in files:
+        data = await upload.read()
+        uploads.append((upload.filename or "attachment", upload.content_type, data))
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.start_conversation(
@@ -1393,10 +1469,20 @@ def team_inbox_start_conversation(
             subject=_query_text(subject),
             service_team_id=_query_text(service_team_id),
             actor_person_id=_actor_id_from_request(request),
+            contact_name=_query_text(contact_name),
+            template_id=_query_text(template_id),
+            template_values=tuple(
+                value.strip()
+                for value in (_query_text(template_values) or "").splitlines()
+                if value.strip()
+            ),
+            uploads=tuple(uploads),
         )
     except (
         team_inbox_commands.InboxCommandError,
+        team_inbox_media.MediaUploadError,
         team_inbox_operations.InboxOperationError,
+        ValueError,
     ) as exc:
         return RedirectResponse(
             url=f"/admin/inbox?status=error&message={quote_plus(str(exc))}",

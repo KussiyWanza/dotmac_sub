@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
+    InboxAgentPresence,
     InboxConversation,
+    InboxConversationAssignment,
     InboxConversationLabel,
     InboxConversationStatus,
     InboxLabel,
     InboxMessage,
+    InboxMessageTemplate,
     InboxSavedFilter,
 )
 from app.services import (
     team_inbox_commands,
+    team_inbox_operations,
     team_inbox_outbound,
     team_inbox_projection,
     team_inbox_read,
@@ -104,6 +110,108 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
     assert projection.agent_options[0].initials == "AA"
     assert projection.assignment_counts.all == 1
     assert projection.assignment_counts.unassigned == 1
+
+
+def test_queue_row_projects_real_contact_name_and_unread_message_count(db_session):
+    actor_id = uuid.uuid4()
+    conversation = InboxConversation(
+        channel_type="email",
+        subject="Account help",
+        contact_address="customer@example.test",
+        metadata_={"contact_name": "Amina Customer"},
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    for minute in (1, 2):
+        db_session.add(
+            InboxMessage(
+                conversation_id=conversation.id,
+                channel_type="email",
+                direction="inbound",
+                body=f"Message {minute}",
+                received_at=datetime(2026, 7, 27, 10, minute, tzinfo=UTC),
+            )
+        )
+    db_session.commit()
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(actor_person_id=actor_id),
+    )
+
+    assert projection.rows[0].contact_name == "Amina Customer"
+    assert projection.rows[0].is_unread is True
+    assert projection.rows[0].unread_count == 2
+
+
+def test_manager_dashboard_projects_presence_load_status_and_channels(db_session):
+    user, person = add_bound_staff_user(
+        db_session,
+        email="maya-manager@example.test",
+    )
+    user.first_name = "Maya"
+    user.last_name = "Manager"
+    user.display_name = "Maya Manager"
+    team = ServiceTeam(name="Support", team_type=ServiceTeamType.support.value)
+    db_session.add_all([user, team])
+    db_session.flush()
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
+    assigned = InboxConversation(
+        channel_type="whatsapp",
+        status=InboxConversationStatus.open.value,
+        primary_service_team_id=team.id,
+        subject="Connection help",
+        contact_address="+2348000000000",
+    )
+    pending = InboxConversation(
+        channel_type="email",
+        status=InboxConversationStatus.pending.value,
+        subject="Awaiting customer",
+        contact_address="customer@example.test",
+    )
+    resolved = InboxConversation(
+        channel_type="email",
+        status=InboxConversationStatus.resolved.value,
+        subject="Completed",
+        contact_address="resolved@example.test",
+        metadata_={
+            "status_history": [
+                {
+                    "from": "open",
+                    "to": "resolved",
+                    "at": datetime.now(UTC).isoformat(),
+                }
+            ]
+        },
+    )
+    db_session.add_all([assigned, pending, resolved])
+    db_session.flush()
+    db_session.add_all(
+        [
+            InboxAgentPresence(person_id=user.id, status="online"),
+            InboxConversationAssignment(
+                conversation_id=assigned.id,
+                service_team_id=team.id,
+                person_id=user.id,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    dashboard = team_inbox_projection.build_manager_dashboard_projection(
+        db_session,
+        queue_metrics=team_inbox_operations.queue_metrics(db_session),
+        needs_attention=2,
+    )
+
+    assert dashboard.online_agents == 1
+    assert dashboard.chats_with_online_agents == 1
+    assert dashboard.open == 1
+    assert dashboard.pending == 1
+    assert dashboard.resolved_today == 1
+    assert dashboard.needs_attention == 2
+    assert dashboard.agents[0].active_chats == 1
+    assert {row.key: row.count for row in dashboard.channel_split}["whatsapp"] == 1
 
 
 def test_projection_keeps_direct_conversation_link_when_page_is_canonicalized(
@@ -265,6 +373,87 @@ def test_reply_idempotency_key_rejects_changed_body(db_session, monkeypatch):
             actor_person_id=uuid.uuid4(),
             idempotency_key="send-key-2",
         )
+
+
+def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
+    db_session,
+    monkeypatch,
+):
+    template = InboxMessageTemplate(
+        name="Welcome",
+        channel_type="whatsapp",
+        body_text="Hello {{1}}",
+        metadata_={
+            "provider_template_name": "welcome_customer",
+            "provider_template_language": "en",
+        },
+    )
+    db_session.add(template)
+    db_session.commit()
+    captured: dict[str, object] = {}
+    asset_id = uuid.uuid4()
+
+    def fake_stage(db, *, conversation, file_name, content_type, data, uploaded_by):
+        captured["upload"] = (file_name, content_type, data, uploaded_by)
+        return SimpleNamespace(id=asset_id)
+
+    def fake_bind(db, *, message, asset_ids):
+        captured["asset_ids"] = tuple(asset_ids)
+        return []
+
+    def fake_send(db, *, conversation, payload, record_failure):
+        captured["payload"] = payload
+        message = InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="whatsapp",
+            direction="outbound",
+            body=payload.body_text,
+            metadata_={"delivery_status": "queued"},
+        )
+        db.add(message)
+        db.flush()
+        return team_inbox_outbound.InboxReplyResult(
+            kind="queued",
+            conversation_id=str(conversation.id),
+            message_id=str(message.id),
+        )
+
+    monkeypatch.setattr(
+        team_inbox_commands.team_inbox_media,
+        "stage_outbound_attachment",
+        fake_stage,
+    )
+    monkeypatch.setattr(
+        team_inbox_commands.team_inbox_media,
+        "bind_assets_to_message",
+        fake_bind,
+    )
+    monkeypatch.setattr(
+        team_inbox_commands.team_inbox_outbound,
+        "send_inbox_reply",
+        fake_send,
+    )
+
+    team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="whatsapp",
+        contact_address="+2348000000000",
+        body_text="",
+        template_id=template.id,
+        template_values=("Ada",),
+        uploads=(("proof.png", "image/png", b"png"),),
+        actor_person_id=uuid.uuid4(),
+    )
+
+    payload = captured["payload"]
+    assert payload.body_text == "Hello {{1}}"
+    assert payload.metadata["whatsapp_template"] == {
+        "name": "welcome_customer",
+        "language": "en",
+        "variables": {"1": "Ada"},
+        "inbox_template_id": str(template.id),
+    }
+    assert captured["asset_ids"] == (str(asset_id),)
 
 
 def test_only_saved_view_owner_can_delete(db_session):

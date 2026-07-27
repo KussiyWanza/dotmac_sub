@@ -169,33 +169,58 @@ def mark_conversation_read(
     )
 
 
+def conversation_unread_message_counts(
+    db: Session,
+    *,
+    conversation_ids: Sequence[UUID],
+    person_id: UUID,
+) -> dict[UUID, int]:
+    """Count inbound messages after one operator's authoritative read cursor."""
+
+    requested_ids = tuple(dict.fromkeys(conversation_ids))
+    if not requested_ids:
+        return {}
+    states = {
+        state.conversation_id: state
+        for state in db.scalars(
+            select(InboxConversationReadState).where(
+                InboxConversationReadState.conversation_id.in_(requested_ids),
+                InboxConversationReadState.person_id == person_id,
+            )
+        ).all()
+    }
+    counts = dict.fromkeys(requested_ids, 0)
+    messages = db.scalars(
+        select(InboxMessage).where(
+            InboxMessage.conversation_id.in_(requested_ids),
+            InboxMessage.direction == InboxMessageDirection.inbound.value,
+            InboxMessage.received_at.is_not(None),
+        )
+    ).all()
+    for message in messages:
+        received_at = message.received_at
+        if received_at is None:
+            continue
+        state = states.get(message.conversation_id)
+        if state is None or _utc(state.last_read_at) < _utc(received_at):
+            counts[message.conversation_id] += 1
+    return counts
+
+
 def conversation_is_unread(
     db: Session,
     *,
     conversation_id: UUID,
     person_id: UUID,
 ) -> bool:
-    last_inbound_at = db.execute(
-        select(InboxMessage.received_at)
-        .where(
-            InboxMessage.conversation_id == conversation_id,
-            InboxMessage.direction == InboxMessageDirection.inbound.value,
-        )
-        .order_by(
-            InboxMessage.received_at.desc().nullslast(),
-            InboxMessage.created_at.desc(),
-        )
-        .limit(1)
-    ).scalar_one_or_none()
-    if last_inbound_at is None:
-        return False
-    state = db.execute(
-        select(InboxConversationReadState).where(
-            InboxConversationReadState.conversation_id == conversation_id,
-            InboxConversationReadState.person_id == person_id,
-        )
-    ).scalar_one_or_none()
-    return state is None or _utc(state.last_read_at) < _utc(last_inbound_at)
+    return (
+        conversation_unread_message_counts(
+            db,
+            conversation_ids=(conversation_id,),
+            person_id=person_id,
+        ).get(conversation_id, 0)
+        > 0
+    )
 
 
 def _last_inbound_at_clause():

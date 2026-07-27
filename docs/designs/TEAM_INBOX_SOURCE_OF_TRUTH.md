@@ -76,13 +76,19 @@ notification delivery point. SMTP, WhatsApp, and social integrations translate
 the intent and later return normalized receipt observations; they cannot change
 conversation or ticket lifecycle state.
 
+Operator-initiated conversations use the same command boundary. The opening
+message retains approved WhatsApp template identity and submitted provider
+variables, and uploaded attachments are staged against the new conversation
+then bound only after the opening outbound intent succeeds. A failed opening
+send rolls the conversation and staged attachment facts back together.
+
 ## Derived state and repair
 
 | Projection | Inputs | Canonical writer | Repair |
 | --- | --- | --- | --- |
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply the reviewed link; ambiguity remains explicit |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | `rebuild_operator_read_state` removes impossible cross-conversation cursors |
-| Queue metrics | Current conversation, assignment, message and receipt state | projection query owner | Recompute on every query; no independent counter is authoritative |
+| Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
 
@@ -97,8 +103,29 @@ stale. Realtime has no replay authority.
 - Information owner: `communications.team_inbox_projection` returns the list
   definition, normalized filters, canonical URL, page bounds, KPIs, unread
   state, detail composition, and action eligibility.
-- Filters: search, status, channel, team, assignee, needs-response, contact
-  resolution, priority, mute, snooze, open, unassigned, and unread.
+- Filters: search, status, channel, team, assignee, Unreplied, Needs Attention,
+  AI handling, ticket handoff, activity window, contact resolution, priority,
+  mute, snooze, open, unassigned, and unread.
+- Response cohorts are derived from the ordered message history. `Unreplied`
+  means the latest customer message has no earlier valid customer/agent
+  exchange. `Needs Attention` means a customer message was followed by a
+  successful human-agent reply and then a later customer follow-up without a
+  subsequent successful human-agent reply.
+- A successful reply has an agent provenance identifier and a current delivery
+  state of queued, accepted, sent, delivered, read, or retried. Failed,
+  scheduled, AI-intake, and explicitly no-response-required messages do not
+  establish the prior agent reply.
+- Needs Attention excludes resolved, snoozed, inactive, ticketed, Facebook
+  comment, and Instagram comment conversations. Direct Messenger and Instagram
+  DM conversations remain eligible.
+- The projection is transaction-current: it recomputes from authoritative
+  conversation/message rows, delivery metadata, and ticket provenance on
+  every read. There is no stored flag to drift and no event-specific repair
+  path; a normal projection refetch is the idempotent rebuild.
+- Queue-row unread totals count inbound messages after the authenticated
+  operator's authoritative read cursor. With no cursor, every timestamped
+  inbound message in the conversation is unread; outbound and internal
+  messages never contribute.
 - Sort: the typed allow-list in `InboxListSort`; unknown values fall back to
   the priority-ascending, last-message-descending queue order. Page size is
   restricted to the declared options.

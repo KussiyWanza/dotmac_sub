@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import and_, false, func, or_, select
@@ -15,6 +16,7 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
     InboxMediaAsset,
@@ -116,6 +118,7 @@ class InboxConversationListRow:
     is_muted: bool
     snoozed_until: datetime | None
     is_snoozed: bool
+    contact_name: str | None
     subject: str | None
     contact_address: str | None
     first_message_at: datetime | None
@@ -128,7 +131,10 @@ class InboxConversationListRow:
     latest_delivery_error: str | None
     active_assigned_person_id: str | None
     needs_response: bool
+    needs_attention: bool
+    has_ticket: bool
     is_unread: bool
+    unread_count: int
     team_count: int
     labels: tuple[InboxConversationListLabel, ...]
 
@@ -225,10 +231,23 @@ def _latest_visible_direction():
     )
 
 
-def _latest_messages_by_conversation(
+def _timestamp(value: datetime) -> float:
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.timestamp()
+
+
+def _message_order_key(message: InboxMessage) -> tuple[float, float, str]:
+    return (
+        _timestamp(_message_time(message)),
+        _timestamp(message.created_at),
+        str(message.id),
+    )
+
+
+def _messages_by_conversation(
     db: Session,
     conversation_ids: list[UUID],
-) -> dict[UUID, InboxMessage]:
+) -> dict[UUID, tuple[InboxMessage, ...]]:
     if not conversation_ids:
         return {}
     messages = (
@@ -237,14 +256,167 @@ def _latest_messages_by_conversation(
         .order_by(InboxMessage.created_at.asc())
         .all()
     )
-    latest: dict[UUID, InboxMessage] = {}
+    grouped: dict[UUID, list[InboxMessage]] = {}
     for message in messages:
-        if message.direction == InboxMessageDirection.internal.value:
-            continue
-        current = latest.get(message.conversation_id)
-        if current is None or _message_time(message) >= _message_time(current):
-            latest[message.conversation_id] = message
-    return latest
+        grouped.setdefault(message.conversation_id, []).append(message)
+    return {
+        conversation_id: tuple(sorted(items, key=_message_order_key))
+        for conversation_id, items in grouped.items()
+    }
+
+
+def _latest_external_message(
+    messages: Sequence[InboxMessage],
+) -> InboxMessage | None:
+    return next(
+        (
+            message
+            for message in reversed(messages)
+            if message.direction != InboxMessageDirection.internal.value
+        ),
+        None,
+    )
+
+
+class InboxResponseCohort(StrEnum):
+    """Current customer-response state derived from authoritative message history."""
+
+    none = "none"
+    unreplied = "unreplied"
+    needs_attention = "needs_attention"
+
+
+_SUCCESSFUL_AGENT_DELIVERY_STATUSES = frozenset(
+    {"queued", "accepted", "sent", "delivered", "read", "retried"}
+)
+_SOCIAL_COMMENT_CHANNELS = frozenset({"facebook_comment", "instagram_comment"})
+_SOCIAL_COMMENT_METADATA_VALUES = frozenset(
+    {"comment", "post_comment", "facebook_comment", "instagram_comment"}
+)
+
+
+def _metadata_flag_is_true(metadata: dict, key: str) -> bool:
+    value = metadata.get(key)
+    return value is True or str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _metadata_flag_is_false(metadata: dict, key: str) -> bool:
+    if key not in metadata:
+        return False
+    value = metadata.get(key)
+    return value is False or str(value).strip().lower() in {"0", "false", "no"}
+
+
+def _is_valid_agent_reply(message: InboxMessage) -> bool:
+    if message.direction != InboxMessageDirection.outbound.value:
+        return False
+    metadata = message.metadata_ or {}
+    if not str(metadata.get("sent_by_person_id") or "").strip():
+        return False
+    if str(metadata.get("delivery_status") or "").strip().lower() not in (
+        _SUCCESSFUL_AGENT_DELIVERY_STATUSES
+    ):
+        return False
+    if any(
+        _metadata_flag_is_true(metadata, key)
+        for key in ("ai_intake", "is_ai_intake", "automated_ai_intake")
+    ):
+        return False
+    if any(
+        _metadata_flag_is_false(metadata, key)
+        for key in ("requires_response", "response_required", "requires_reply")
+    ):
+        return False
+    return True
+
+
+def _is_social_comment_conversation(
+    conversation: InboxConversation,
+    messages: Sequence[InboxMessage],
+) -> bool:
+    if conversation.channel_type in _SOCIAL_COMMENT_CHANNELS:
+        return True
+    metadata_values = [conversation.metadata_ or {}]
+    metadata_values.extend(message.metadata_ or {} for message in messages)
+    for metadata in metadata_values:
+        if _metadata_flag_is_true(metadata, "is_comment"):
+            return True
+        if any(
+            str(metadata.get(key) or "").strip().lower()
+            in _SOCIAL_COMMENT_METADATA_VALUES
+            for key in ("interaction_type", "message_type", "source_type", "surface")
+        ):
+            return True
+    return False
+
+
+def _ticketed_conversation_ids(
+    db: Session,
+    conversation_ids: Sequence[UUID],
+) -> set[UUID]:
+    if not conversation_ids:
+        return set()
+    from app.models.support import Ticket
+
+    return {
+        conversation_id
+        for (conversation_id,) in db.query(Ticket.origin_conversation_id)
+        .filter(Ticket.origin_conversation_id.in_(conversation_ids))
+        .all()
+        if conversation_id is not None
+    }
+
+
+def response_cohort(
+    conversation: InboxConversation,
+    messages: Sequence[InboxMessage],
+    *,
+    has_ticket_handoff: bool,
+) -> InboxResponseCohort:
+    """Classify an active thread without persisting a stale response flag."""
+
+    external_messages = tuple(
+        message
+        for message in sorted(messages, key=_message_order_key)
+        if message.direction != InboxMessageDirection.internal.value
+    )
+    inbound_indexes = [
+        index
+        for index, message in enumerate(external_messages)
+        if message.direction == InboxMessageDirection.inbound.value
+    ]
+    if (
+        not conversation.is_active
+        or conversation.status == InboxConversationStatus.resolved.value
+        or not inbound_indexes
+    ):
+        return InboxResponseCohort.none
+
+    latest_inbound_index = inbound_indexes[-1]
+    valid_reply_indexes = [
+        index
+        for index, message in enumerate(external_messages)
+        if _is_valid_agent_reply(message)
+    ]
+    if any(index > latest_inbound_index for index in valid_reply_indexes):
+        return InboxResponseCohort.none
+
+    has_completed_exchange = any(
+        reply_index < latest_inbound_index
+        and any(inbound_index < reply_index for inbound_index in inbound_indexes)
+        for reply_index in valid_reply_indexes
+    )
+    if not has_completed_exchange:
+        return InboxResponseCohort.unreplied
+
+    if (
+        conversation.status == InboxConversationStatus.snoozed.value
+        or conversation.snoozed_until is not None
+        or has_ticket_handoff
+        or _is_social_comment_conversation(conversation, external_messages)
+    ):
+        return InboxResponseCohort.none
+    return InboxResponseCohort.needs_attention
 
 
 def _contact_resolution_status(conversation: InboxConversation) -> str | None:
@@ -253,6 +425,15 @@ def _contact_resolution_status(conversation: InboxConversation) -> str | None:
     if isinstance(resolution, dict):
         value = str(resolution.get("status") or "").strip()
         return value or None
+    return None
+
+
+def _contact_display_name(conversation: InboxConversation) -> str | None:
+    metadata = conversation.metadata_ or {}
+    for key in ("contact_name", "sender_name", "profile_name"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value[:200]
     return None
 
 
@@ -325,6 +506,7 @@ def list_conversations(
     service_team_ids: Sequence[str | UUID] | None = None,
     assigned_person_id: str | UUID | None = None,
     needs_response: bool = False,
+    needs_attention: bool = False,
     contact_resolution_status: str | None = None,
     priority_at_most: int | None = None,
     muted: bool | None = None,
@@ -462,10 +644,8 @@ def list_conversations(
     if has_ticket is not None:
         from app.models.support import Ticket
 
-        issued = (
-            select(Ticket.origin_conversation_id)
-            .where(Ticket.origin_conversation_id.isnot(None))
-            .where(Ticket.is_active.is_(True))
+        issued = select(Ticket.origin_conversation_id).where(
+            Ticket.origin_conversation_id.isnot(None)
         )
         query = (
             query.filter(InboxConversation.id.in_(issued))
@@ -562,17 +742,29 @@ def list_conversations(
             InboxConversation.id.asc(),
         )
     total = query.count()
-    rows = ordered_query.limit(limit).offset(offset).all()
+    # `needs_response` and `contact_resolution_status` are already SQL filters
+    # above, so listing them here too would load the whole filtered set before a
+    # page could be sliced — and `needs_response` is the default "Unreplied"
+    # cohort, so that is the ordinary path. Only `needs_attention` genuinely
+    # needs Python: its rule reads ordering across the message sequence and
+    # loose-typed metadata on every message, which has no faithful SQL twin.
+    # The row-level checks below stay as a safety net; they are no-ops whenever
+    # the SQL twin agrees.
+    needs_python_filter = bool(needs_attention)
+    rows = (
+        ordered_query.all()
+        if needs_python_filter
+        else ordered_query.limit(limit).offset(offset).all()
+    )
     conversations = [conversation for conversation, _team in rows]
     conversation_ids = [conversation.id for conversation in conversations]
-    latest_messages = _latest_messages_by_conversation(db, conversation_ids)
-    unread_ids = (
-        team_inbox_read_state.unread_conversation_ids(
-            db, conversation_ids=conversation_ids, person_id=operator_person_id
-        )
-        if operator_person_id is not None
-        else set()
-    )
+    messages_by_conversation = _messages_by_conversation(db, conversation_ids)
+    latest_messages = {
+        conversation_id: latest
+        for conversation_id, messages in messages_by_conversation.items()
+        if (latest := _latest_external_message(messages)) is not None
+    }
+    ticketed_conversation_ids = _ticketed_conversation_ids(db, conversation_ids)
     active_assignments = (
         {
             assignment.conversation_id: assignment
@@ -619,17 +811,38 @@ def list_conversations(
                 )
             )
 
+    unread_counts = (
+        team_inbox_read_state.conversation_unread_message_counts(
+            db,
+            conversation_ids=conversation_ids,
+            person_id=operator_person_id,
+        )
+        if conversation_ids and operator_person_id is not None
+        else {}
+    )
+
     items: list[InboxConversationListRow] = []
     for conversation, team in rows:
         latest = latest_messages.get(conversation.id)
         active_assignment = active_assignments.get(conversation.id)
         resolution_status = _contact_resolution_status(conversation)
-        row_needs_response = (
-            latest is not None
-            and latest.direction == InboxMessageDirection.inbound.value
-            and conversation.status != "resolved"
+        cohort = response_cohort(
+            conversation,
+            messages_by_conversation.get(conversation.id, ()),
+            has_ticket_handoff=conversation.id in ticketed_conversation_ids,
         )
-        row_is_unread = conversation.id in unread_ids
+        row_needs_response = cohort == InboxResponseCohort.unreplied
+        row_needs_attention = cohort == InboxResponseCohort.needs_attention
+        if needs_response and not row_needs_response:
+            continue
+        if needs_attention and not row_needs_attention:
+            continue
+        if contact_resolution_status and resolution_status != contact_resolution_status:
+            continue
+        unread_count = unread_counts.get(conversation.id, 0)
+        row_is_unread = unread_count > 0
+        if unread_only and not row_is_unread:
+            continue
         items.append(
             InboxConversationListRow(
                 id=str(conversation.id),
@@ -647,6 +860,7 @@ def list_conversations(
                 is_muted=conversation.is_muted,
                 snoozed_until=conversation.snoozed_until,
                 is_snoozed=_is_currently_snoozed(conversation),
+                contact_name=_contact_display_name(conversation),
                 subject=conversation.subject,
                 contact_address=conversation.contact_address,
                 first_message_at=conversation.first_message_at,
@@ -663,14 +877,19 @@ def list_conversations(
                 if active_assignment is not None
                 else None,
                 needs_response=row_needs_response,
+                needs_attention=row_needs_attention,
+                has_ticket=conversation.id in ticketed_conversation_ids,
                 is_unread=row_is_unread,
+                unread_count=unread_count,
                 team_count=int(team_counts.get(conversation.id, 0)),
                 labels=tuple(labels_by_conversation.get(conversation.id, [])),
             )
         )
+    filtered_count = len(items) if needs_python_filter else total
+    page_items = items[offset : offset + limit] if needs_python_filter else items
     return InboxConversationListResult(
-        items=items,
-        count=total,
+        items=page_items,
+        count=filtered_count,
         limit=limit,
         offset=offset,
     )

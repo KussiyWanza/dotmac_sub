@@ -13902,19 +13902,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="communications.team_inbox_projection",
                 module="app.services.team_inbox_projection",
-                owns=("Inbox list detail metrics unread and action projection",),
+                owns=(
+                    "Inbox list detail metrics response cohort unread and action projection",
+                ),
                 depends_on=(
                     "communications.team_inbox_threads",
                     "communications.team_inbox_contact_resolution",
                     "communications.team_inbox_routing",
                     "communications.team_inbox_delivery_receipts",
                     "communications.team_inbox_operator_state",
+                    "communications.conversation_ticket_handoff",
                 ),
                 contract=_team_inbox_contract(
                     service_name="communications.team_inbox_projection",
                     concerns=(
                         (
-                            "Inbox list detail metrics unread and action projection",
+                            "Inbox list detail metrics response cohort unread and action projection",
                             OwnerRole.RESOLVER,
                         ),
                     ),
@@ -13949,10 +13952,24 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source="Per-person read cursor and unread decision.",
                         ),
+                        AuthorityInput(
+                            name="ticket handoff provenance",
+                            owner="communications.conversation_ticket_handoff",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Ticket origin links issued from Inbox conversations."
+                            ),
+                        ),
                     ),
                     transaction_mode=TransactionMode.READ_ONLY,
                     projections=(
-                        "Inbox queue detail metrics actions and unread cohorts",
+                        "Inbox queue detail metrics response cohorts actions and unread cohorts",
+                    ),
+                    test_refs=(
+                        "tests/test_team_inbox_sot_completion.py",
+                        "tests/test_team_inbox_needs_attention.py",
+                        "tests/architecture/test_team_inbox_boundaries.py",
+                        "tests/architecture/test_team_inbox_sot_contracts.py",
                     ),
                 ),
             ),

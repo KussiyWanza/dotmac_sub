@@ -946,6 +946,10 @@ def start_conversation(
     subscriber_id: str | UUID | None = None,
     actor_person_id: str | UUID | None = None,
     attachment_ids: Sequence[str] | None = None,
+    contact_name: str | None = None,
+    template_id: str | UUID | None = None,
+    template_values: Sequence[str] | None = None,
+    uploads: Sequence[tuple[str, str | None, bytes]] | None = None,
 ) -> StartConversationOutcome:
     """Open a new outbound conversation and send its first message.
 
@@ -961,11 +965,21 @@ def start_conversation(
 
     def action() -> StartConversationOutcome:
         clean_channel = str(channel_type or "").strip().lower()
+        clean_body = str(body_text or "").strip()
         if clean_channel not in {c.value for c in InboxChannelType}:
             raise InboxCommandError("Choose a channel for this conversation.")
         if not str(contact_address or "").strip():
             raise InboxCommandError("Enter who this conversation is with.")
-        if not str(body_text or "").strip():
+        template = None
+        if template_id is not None and str(template_id).strip():
+            template = team_inbox_operations.get_template(db, str(template_id))
+            if template.channel_type not in {clean_channel, "any"}:
+                raise InboxCommandError(
+                    "The selected template is not available for this channel."
+                )
+            if not clean_body:
+                clean_body = str(template.body_text or "").strip()
+        if not clean_body:
             raise InboxCommandError("Enter the first message.")
 
         resolution = team_inbox_channel_receive.resolve_contact_context(
@@ -975,18 +989,26 @@ def start_conversation(
             subscriber_id=subscriber_id,
         )
 
+        conversation_metadata: dict[str, object] = {
+            "source": "operator_initiated",
+            "contact_resolution": resolution.as_metadata(),
+        }
+        clean_contact_name = str(contact_name or "").strip()
+        if clean_contact_name:
+            conversation_metadata["contact_name"] = clean_contact_name[:200]
         conversation = InboxConversation(
             channel_type=clean_channel,
-            subject=(subject or "").strip()[:200] or None,
+            subject=(
+                (subject or "").strip()
+                or (str(template.subject or "").strip() if template is not None else "")
+            )[:200]
+            or None,
             contact_address=resolution.normalized_contact or contact_address.strip(),
             status=InboxConversationStatus.open.value,
             subscriber_id=resolution.subscriber_id,
             primary_service_team_id=coerce_uuid(service_team_id),
             first_message_at=datetime.now(UTC),
-            metadata_={
-                "source": "operator_initiated",
-                "contact_resolution": resolution.as_metadata(),
-            },
+            metadata_=conversation_metadata,
         )
         db.add(conversation)
         db.flush()
@@ -1008,21 +1030,70 @@ def start_conversation(
                 ),
             ),
         )
+        staged_attachment_ids = list(attachment_ids or ())
+        for file_name, content_type, data in uploads or ():
+            asset = team_inbox_media.stage_outbound_attachment(
+                db,
+                conversation=conversation,
+                file_name=file_name,
+                content_type=content_type,
+                data=data,
+                uploaded_by=str(actor_person_id) if actor_person_id else None,
+            )
+            staged_attachment_ids.append(str(asset.id))
 
         body_html = (
             "<p>"
-            + "<br>".join(escape(line) for line in str(body_text).splitlines())
+            + "<br>".join(escape(line) for line in clean_body.splitlines())
             + "</p>"
         )
+        reply_metadata: dict[str, object] = {
+            "source": "operator_initiated",
+            "template_id": str(template.id) if template is not None else None,
+        }
+        if template is not None and clean_channel == InboxChannelType.whatsapp.value:
+            template_metadata = dict(template.metadata_ or {})
+            provider_template_name = str(
+                template_metadata.get("provider_template_name")
+                or template_metadata.get("whatsapp_template_name")
+                or ""
+            ).strip()
+            if provider_template_name:
+                submitted_values = tuple(
+                    str(value).strip()
+                    for value in (template_values or ())
+                    if str(value).strip()
+                )
+                configured_values = template_metadata.get("provider_template_variables")
+                reply_metadata["whatsapp_template"] = {
+                    "name": provider_template_name,
+                    "language": str(
+                        template_metadata.get("provider_template_language") or ""
+                    ).strip()
+                    or None,
+                    "variables": (
+                        {
+                            str(index): value
+                            for index, value in enumerate(submitted_values, 1)
+                        }
+                        if submitted_values
+                        else (
+                            configured_values
+                            if isinstance(configured_values, dict)
+                            else {}
+                        )
+                    ),
+                    "inbox_template_id": str(template.id),
+                }
         result = team_inbox_outbound.send_inbox_reply(
             db,
             conversation=conversation,
             payload=team_inbox_outbound.InboxReplyPayload(
                 body_html=body_html,
-                body_text=str(body_text).strip(),
-                subject=(subject or "").strip() or None,
+                body_text=clean_body,
+                subject=conversation.subject,
                 sent_by_person_id=actor_person_id,
-                metadata={"source": "operator_initiated"},
+                metadata=reply_metadata,
             ),
             record_failure=True,
         )
@@ -1035,11 +1106,13 @@ def start_conversation(
                 conversation_id=conversation.id,
             )
 
-        if attachment_ids and result.message_id:
+        if staged_attachment_ids and result.message_id:
             message = db.get(InboxMessage, coerce_uuid(result.message_id))
             if message is not None:
                 team_inbox_media.bind_assets_to_message(
-                    db, message=message, asset_ids=list(attachment_ids)
+                    db,
+                    message=message,
+                    asset_ids=staged_attachment_ids,
                 )
 
         return StartConversationOutcome(

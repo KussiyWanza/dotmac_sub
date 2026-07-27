@@ -68,6 +68,101 @@ Missing backend capabilities may be represented by the isolated browser demo
 adapter. Demo controls must be labelled, remain non-authoritative, and be
 replaceable without changing the page's presentational components.
 
+## Stats and filters control
+
+The collapsible Stats and Filters control is a page-scoped visual exception to
+the shared branding palette and 8px compact-control radius. Its static Tailwind
+v4 amber, status, assignment, saved-view, dark-mode, and `rounded-xl` group
+classes are confined to `templates/admin/inbox/_sidebar.html`; it does not
+change the global theme, Tailwind configuration, or shared components.
+
+The same page-scoped exception covers the sidebar shell, header, action
+tooltips, live/offline indicator, and search field. The header keeps the real
+new-conversation, local notification-sound, manager-dashboard, and settings
+actions. Notification sound remains a local preference and never opens an
+overlay. Settings uses `/admin/crm/inbox/settings` as an adapter entry point
+which renders the canonical mailbox-routing settings view.
+
+The New Conversation action opens the page-owned centred modal while retaining
+`communications.team_inbox_commands.start_conversation` as the transaction
+owner. Channel-specific controls submit only the active Email, WhatsApp,
+Facebook Messenger, or Instagram DM address fields. WhatsApp templates retain
+their template identity and provider variables; attachments are staged and
+bound to the successful opening message in the same owner transaction. The
+form exposes CC and BCC for the specified layout but fails closed when either is
+used because the canonical notification transport does not yet support copy
+recipients; the UI must not claim that undelivered copies were sent. A receiving
+Inbox selector remains hidden until the projection can supply a real provider
+account or mailbox identifier, so Team is not relabelled as Inbox.
+
+The Manager Dashboard is a non-modal, upper-right floating panel, distinct from
+the Stats and Filters disclosure. The current manager-level UI gate is
+`support:ticket:update`, matching the repository's existing inbox permission
+contract; there is no separate inbox-manager permission. Its presence, assigned
+load, status, channel, and active-chat values come from the typed
+`communications.team_inbox_projection` read owner. It closes from its button,
+an outside click, Escape, or the header toggle without obscuring or disabling
+the inbox behind it.
+
+Search remains a server-owned list query. The browser waits 300ms after input,
+updates only the `search` URL parameter, resets pagination, preserves the other
+active filters and selected conversation, and refreshes the authoritative
+sidebar projection. The filter form carries the current search value forward
+when another filter is submitted.
+
+The desktop sidebar resize handle is an absolutely positioned 12px by 56px
+control attached to the sidebar's right edge. It is available from 640px
+upward, hidden while the Manager Dashboard panel is open, and exposes a visible
+hover/focus tooltip. Pointer dragging clamps the sidebar to 288-448px, applies a
+document-wide resize cursor and selection lock for the drag, restores the prior
+document styles on pointer-up/cancel or window blur, and persists the final
+width in local storage. The default remains 320px.
+
+Status, assignment, channel, team, agent, activity-window, unread, and saved-view
+controls continue to submit the canonical projection filters. Channel remains
+the communication method and Team remains staff ownership. A separate Inbox
+selector is rendered only after the projection exposes a specific receiving
+account or mailbox identifier and real choices; Team must never be relabelled
+as Inbox.
+
+## Queue below Stats and Filters
+
+Saved Views remains part of the expanded Stats and Filters disclosure. The
+section after that disclosure is a single vertical stack: new-activity notice,
+selected-conversation bulk toolbar, scrollable conversation list or empty
+state, then the inbox-scoped pagination footer. It does not reuse the shared
+triage-row or general list-pagination macros, so its dense avatar, channel,
+badge, unread, hover, and partial-pagination presentation cannot restyle other
+admin lists.
+
+Realtime activity leaves the visible queue stable and sets a browser-only
+notice. `Refresh list` refetches and swaps only
+`#inbox-conversation-queue`; pagination uses the same HTMX select-and-swap
+boundary and preserves the selected conversation in the URL. Thread refresh
+remains independent, so a focused composer is never replaced.
+
+Each queue row displays only projected facts. Contact display name is sourced
+from bounded conversation metadata when available, unread count is the number
+of inbound messages after the operator's authoritative read cursor, and ticket,
+status, priority, assignment/team, and label badges come from the existing
+queue projection. Only the first two labels render, with a numeric remainder.
+The receiving Inbox badge remains absent until a real provider account/mailbox
+identity is projected.
+
+`Needs attention` is a live, counted cohort distinct from Unreplied. It selects
+an active conversation only after a customer message, a successful human-agent
+reply, and a later customer follow-up, while no successful human-agent reply
+follows that latest message. It applies immediately and does not depend on an
+overdue timer. Successful replies require agent provenance and a
+successful/accepted delivery state; failed, scheduled, AI-intake, and
+explicitly no-response-required messages do not qualify.
+
+The cohort excludes resolved, snoozed, inactive, ticketed, Facebook comment,
+and Instagram comment conversations. It is recomputed by
+`communications.team_inbox_projection` on every read, so message, delivery,
+status, snooze, activation, or ticket changes are reflected on refetch without
+a persisted UI flag.
+
 ## Loading and failure behaviour
 
 - List, thread, and contact context load independently.
