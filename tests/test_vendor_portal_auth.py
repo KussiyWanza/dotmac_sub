@@ -223,3 +223,51 @@ def test_reads_stay_open_to_every_role(db_session) -> None:
         user = _linked_member(db_session, role)
         client = _client(db_session, _auth(user))
         assert client.get("/api/v1/vendor/projects/mine").status_code == 200
+
+
+def test_field_role_cannot_request_material_or_an_advance(db_session) -> None:
+    """A field technician records what happened; drawing stock and asking for
+    money are decisions above their role."""
+    user = _linked_member(db_session, "field")
+    client = _client(db_session, _auth(user))
+
+    material = client.post(
+        "/api/v1/vendor/material-releases",
+        json={
+            "project_id": str(uuid4()),
+            "items": [{"description": "Cable", "quantity": 10}],
+        },
+    )
+    advance = client.post(
+        "/api/v1/vendor/advances",
+        json={"project_id": str(uuid4()), "amount": "1000"},
+    )
+
+    assert material.status_code == 403
+    assert "vendor:material:request" in material.json()["detail"]
+    assert advance.status_code == 403
+    assert "vendor:advance:request" in advance.json()["detail"]
+
+
+def test_supervisor_may_draw_material_but_not_ask_for_money(db_session) -> None:
+    """A supervisor runs the site and needs material to keep working;
+    committing the organisation to a financial ask stays with the owner."""
+    user = _linked_member(db_session, "supervisor")
+    client = _client(db_session, _auth(user))
+
+    material = client.post(
+        "/api/v1/vendor/material-releases",
+        json={
+            "project_id": str(uuid4()),
+            "items": [{"description": "Cable", "quantity": 10}],
+        },
+    )
+    advance = client.post(
+        "/api/v1/vendor/advances",
+        json={"project_id": str(uuid4()), "amount": "1000"},
+    )
+
+    # Material clears the capability gate; the project simply does not exist,
+    # which is the owner's answer rather than the gate's.
+    assert material.status_code != 403
+    assert advance.status_code == 403

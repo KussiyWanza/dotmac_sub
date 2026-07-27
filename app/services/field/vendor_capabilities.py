@@ -37,6 +37,8 @@ PROJECT_EXECUTE = "vendor:project:execute"
 QUOTE_WRITE = "vendor:quote:write"
 AS_BUILT_WRITE = "vendor:as_built:write"
 INVOICE_WRITE = "vendor:invoice:write"
+MATERIAL_REQUEST = "vendor:material:request"
+ADVANCE_REQUEST = "vendor:advance:request"
 
 VENDOR_CAPABILITIES = (
     PROJECT_READ,
@@ -44,6 +46,8 @@ VENDOR_CAPABILITIES = (
     QUOTE_WRITE,
     AS_BUILT_WRITE,
     INVOICE_WRITE,
+    MATERIAL_REQUEST,
+    ADVANCE_REQUEST,
 )
 
 # Money out (quoting, invoicing) concentrates with the owner; evidence and
@@ -51,8 +55,16 @@ VENDOR_CAPABILITIES = (
 # record what happened and never commit the organisation to a price.
 _ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     "owner": frozenset(VENDOR_CAPABILITIES),
+    # A supervisor runs the site: they can draw down material they need to
+    # keep working, but asking Dotmac for money is the owner's call.
     "supervisor": frozenset(
-        {PROJECT_READ, PROJECT_EXECUTE, QUOTE_WRITE, AS_BUILT_WRITE}
+        {
+            PROJECT_READ,
+            PROJECT_EXECUTE,
+            QUOTE_WRITE,
+            AS_BUILT_WRITE,
+            MATERIAL_REQUEST,
+        }
     ),
     "field": frozenset({PROJECT_READ, PROJECT_EXECUTE, AS_BUILT_WRITE}),
 }

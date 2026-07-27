@@ -557,3 +557,86 @@ def request_vendor_invoice_revision(
         "?message=Invoice+revision+requested",
         status_code=303,
     )
+
+
+# ---------------------------------------------------------------------------
+# Vendor material releases and advances
+#
+# Both owners decide; this router only authorizes, translates the form, and
+# commits. Approval is the Sub decision the configured provider then acts on.
+# ---------------------------------------------------------------------------
+
+
+def _supply_error(exc: ValueError) -> HTTPException:
+    code = getattr(exc, "code", "")
+    kind = getattr(exc, "kind", "invalid")
+    status_code = 404 if kind == "not_found" else 409 if code else 400
+    return HTTPException(status_code=status_code, detail=str(exc))
+
+
+@router.post(
+    "/material-releases/{release_id}/{action}",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def review_vendor_material_release(
+    request: Request,
+    release_id: str,
+    action: str,
+    review_notes: str = Form(default=""),
+    db: Session = Depends(get_db),
+):
+    from app.services import vendor_material_release
+
+    if action not in {"approve", "reject"}:
+        raise HTTPException(status_code=404, detail="Unknown action")
+    db_session_adapter.release_read_transaction(db)
+    try:
+        if action == "approve":
+            vendor_material_release.approve_committed(
+                db, release_id, actor_id=_actor(request), notes=review_notes
+            )
+        else:
+            vendor_material_release.reject_committed(
+                db, release_id, actor_id=_actor(request), reason=review_notes
+            )
+    except ValueError as exc:
+        raise _supply_error(exc) from exc
+    return RedirectResponse(
+        f"/admin/vendors/operations?message=Material+release+{action}d",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/advances/{advance_id}/{action}",
+    dependencies=[Depends(require_permission("finance:ap:write"))],
+)
+def review_vendor_advance(
+    request: Request,
+    advance_id: str,
+    action: str,
+    review_notes: str = Form(default=""),
+    db: Session = Depends(get_db),
+):
+    """Advancing money is an accounts-payable decision, so it is gated on the
+    AP permission rather than the inventory one used for material."""
+    from app.services import vendor_advances
+
+    if action not in {"approve", "reject"}:
+        raise HTTPException(status_code=404, detail="Unknown action")
+    db_session_adapter.release_read_transaction(db)
+    try:
+        if action == "approve":
+            vendor_advances.approve_committed(
+                db, advance_id, actor_id=_actor(request), notes=review_notes
+            )
+        else:
+            vendor_advances.reject_committed(
+                db, advance_id, actor_id=_actor(request), reason=review_notes
+            )
+    except ValueError as exc:
+        raise _supply_error(exc) from exc
+    return RedirectResponse(
+        f"/admin/vendors/operations?message=Advance+{action}d",
+        status_code=303,
+    )

@@ -17692,12 +17692,34 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/vendor/advances": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "c58089a631c4",
+   "responses": {
+    "201": "a2431939694c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/vendor/as-built": {
    "params": [
     "header:authorization",
     "header:x-api-key"
    ],
    "request": "e45490a99c6a",
+   "responses": {
+    "201": "a2431939694c",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/vendor/material-releases": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "d2994eef723f",
    "responses": {
     "201": "a2431939694c",
     "422": "a11c9d9b2af8"
@@ -19579,11 +19601,14 @@
   "ValidationAddOnRequest": "712ae15dbfdd",
   "ValidationError": "743962c190f1",
   "ValidationResult": "e2ce9d1ba9a8",
+  "VendorAdvanceCreate": "285e6ca64aa0",
   "VendorAsBuiltCreate": "bcfa19ce3157",
   "VendorAsBuiltLineCreate": "e4f5e52d0c93",
   "VendorCapabilityCreate": "5bda8a17f6b0",
   "VendorCapabilityRead": "910c9e5aaf0a",
   "VendorCapabilityUpdate": "1530a7cc897f",
+  "VendorMaterialReleaseCreate": "fc371c7f8878",
+  "VendorMaterialReleaseItemCreate": "265a29450d05",
   "VendorPurchaseInvoiceCreate": "19fbbc4e1285",
   "VendorPurchaseInvoiceLineCreate": "2587fe7016e4",
   "VendorPurchaseInvoiceLineRead": "e57b8e825f4f",

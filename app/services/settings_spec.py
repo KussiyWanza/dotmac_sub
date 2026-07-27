@@ -3964,6 +3964,22 @@ SETTINGS_SPECS: list[SettingSpec] = [
         max_value=365,
         label="Vendor quote validity (days)",
     ),
+    SettingSpec(
+        domain=SettingDomain.projects,
+        # Optional guard rail, not the control. Staff approval is what decides
+        # an advance; this only stops a request that is obviously out of policy
+        # before it reaches an approver. 0 means no percentage policy — the
+        # approver judges each advance on its merits. Advances can never exceed
+        # the approved quote total regardless, which is arithmetic rather than
+        # policy: you cannot advance more than the work is worth.
+        key="vendor_advance_max_percent",
+        env_var=None,
+        value_type=SettingValueType.integer,
+        default=0,
+        min_value=0,
+        max_value=100,
+        label="Vendor advance cap (% of approved quote, 0 = no cap)",
+    ),
     # --- AI provider transport (docs/designs/AI_SOT.md, ai.gateway) ----------
     # Every value defaults OFF/empty: the transport is inert until an operator
     # configures a provider. ai_enabled is the stored master switch, resolved

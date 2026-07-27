@@ -16131,6 +16131,343 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="operations.vendor_material_release",
+                module="app.services.vendor_material_release",
+                owns=(
+                    "vendor project material release need and approval",
+                    "backoffice material issue outcome projection for vendors",
+                ),
+                depends_on=("operations.vendor_project_lifecycle",),
+                notes=(
+                    "field_material_requests is work-order scoped with a "
+                    "TechnicianProfile requester, so it models an employee on a "
+                    "customer job; this owner models a contractor drawing "
+                    "Dotmac-owned material for a project. Sub decides whether "
+                    "material is released and records the evidence; the "
+                    "configured provider owns the stock issue. Sub never posts "
+                    "stock and never selects a warehouse, and a provider refusal "
+                    "is recorded as an observation that never reverses a "
+                    "committed Sub approval."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="vendor project material release need and approval",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical installation-project lifecycle state",
+                            ),
+                            canonical_writer="operations.vendor_material_release",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "backoffice material issue outcome projection "
+                                "for vendors"
+                            ),
+                            role=OwnerRole.RECONCILER,
+                            input_names=("backoffice material issue outcome",),
+                            canonical_writer="operations.vendor_material_release",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical installation-project lifecycle state",
+                            owner="operations.vendor_project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the assigned vendor and the approved or "
+                                "in-progress state that makes material releasable"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="backoffice material issue outcome",
+                            owner="integration.dotmac_erp_material_support_adapter",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "the configured provider's issue or refusal, "
+                                "carried as a provider-neutral reference plus an "
+                                "explicit source-system name"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "The vendor or staff adapter owns commit; this owner "
+                            "stages the request, review, or outcome."
+                        ),
+                        locking=(
+                            "Review and outcome application lock the release row."
+                        ),
+                        idempotency=(
+                            "Re-applying the same provider outcome writes the same "
+                            "values and never double-issues."
+                        ),
+                        retries=(
+                            "Provider delivery retries are the adapter's concern; "
+                            "the Sub approval stands regardless."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "operations.vendor_material_release.release_not_found",
+                            "operations.vendor_material_release.project_not_found",
+                            "operations.vendor_material_release.project_not_assigned",
+                            "operations.vendor_material_release.project_not_releasable",
+                            "operations.vendor_material_release.items_required",
+                            "operations.vendor_material_release.invalid_quantity",
+                            "operations.vendor_material_release.not_reviewable",
+                            "operations.vendor_material_release.reason_required",
+                            "operations.vendor_material_release.outcome_not_applicable",
+                        ),
+                        mapping_owner="app.web.admin.vendor_operations",
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "vendor_material_release.requested",
+                            "vendor_material_release.reviewed",
+                            "vendor_material_release.issued",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries release, project, vendor, and "
+                            "provider-reference identity. It never carries stock "
+                            "levels or warehouse identity, which Sub does not own."
+                        ),
+                        replay=(
+                            "The release row and its items rebuild the request and "
+                            "the last observed provider outcome."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "backoffice material issue outcome projection "
+                                "for vendors"
+                            ),
+                            input_names=("backoffice material issue outcome",),
+                            writer="operations.vendor_material_release",
+                            freshness=(
+                                "As fresh as the last provider observation; the "
+                                "row records when it was observed."
+                            ),
+                            stale_behavior=(
+                                "A stale or absent outcome leaves the release "
+                                "approved rather than claiming stock moved."
+                            ),
+                            drift_signal=(
+                                "An approved release with no support_status after "
+                                "the provider reports an issue."
+                            ),
+                            rebuild_operation=(
+                                "apply_provider_outcome with the provider's current "
+                                "state for the release"
+                            ),
+                            repair_owner=(
+                                "integration.dotmac_erp_material_support_adapter"
+                            ),
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="operations.vendor_material_release",
+                        verification=(
+                            "Request, assignment, releasable-state, line "
+                            "validation, approval, provider outcome, and "
+                            "idempotency tests."
+                        ),
+                    ),
+                    steward="vendor operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/BACKOFFICE_INTEGRATION_BOUNDARY.md",
+                    ),
+                    test_refs=("tests/test_vendor_supply.py",),
+                ),
+            ),
+            SOTService(
+                name="operations.vendor_advances",
+                module="app.services.vendor_advances",
+                owns=(
+                    "vendor advance eligibility, ceiling, and approval",
+                    "payables settlement observation for vendor advances",
+                ),
+                depends_on=(
+                    "control.settings_spec",
+                    "operations.vendor_project_lifecycle",
+                ),
+                notes=(
+                    "Sub decides whether to advance money to a vendor and how "
+                    "much; the payables provider owns the payment and any netting "
+                    "against the vendor's later invoice. The amount is entered, "
+                    "not derived: staff approval is the control. Sub applies two "
+                    "limits only — a hard bound at the approved quote total, "
+                    "which is arithmetic rather than policy and counts advances "
+                    "already committed so it cannot be evaded by splitting a "
+                    "request, and an optional percentage guard rail from "
+                    "projects.vendor_advance_max_percent that defaults to no cap "
+                    "and can only lower that bound, never raise it. A settled "
+                    "advance is an observation of the provider, never a Sub "
+                    "decision; Sub never computes settlement and never adjusts an "
+                    "invoice total."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="vendor advance eligibility, ceiling, and approval",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical installation-project lifecycle state",
+                                "canonical vendor project records",
+                                "vendor advance cap policy",
+                            ),
+                            canonical_writer="operations.vendor_advances",
+                        ),
+                        ConcernContract(
+                            name="payables settlement observation for vendor advances",
+                            role=OwnerRole.RECONCILER,
+                            input_names=("vendor payables settlement observation",),
+                            canonical_writer="operations.vendor_advances",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical installation-project lifecycle state",
+                            owner="operations.vendor_project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the assigned vendor and the approved or "
+                                "in-progress state that makes an advance available"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor project records",
+                            owner="operations.vendor_project_records",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the approved quote total and currency the advance "
+                                "draws against"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="vendor advance cap policy",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "projects.vendor_advance_max_percent, an optional "
+                                "guard rail that defaults to no cap"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="vendor payables settlement observation",
+                            owner="integration.dotmac_erp_payables_adapter",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "the payables provider's settlement state for the "
+                                "advance, carried as a provider-neutral reference"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "The vendor or staff adapter owns commit; this owner "
+                            "stages the request, review, or observation."
+                        ),
+                        locking=(
+                            "Review and observation application lock the advance."
+                        ),
+                        idempotency=(
+                            "Re-applying the same settlement observation writes the "
+                            "same values; the ceiling check counts committed "
+                            "advances so a retry cannot double-commit."
+                        ),
+                        retries=(
+                            "Provider delivery retries are the adapter's concern; "
+                            "the Sub approval stands regardless."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "operations.vendor_advances.advance_not_found",
+                            "operations.vendor_advances.project_not_found",
+                            "operations.vendor_advances.project_not_assigned",
+                            "operations.vendor_advances.project_not_advanceable",
+                            "operations.vendor_advances.approved_quote_required",
+                            "operations.vendor_advances.advance_ceiling_exceeded",
+                            "operations.vendor_advances.invalid_amount",
+                            "operations.vendor_advances.not_reviewable",
+                            "operations.vendor_advances.reason_required",
+                            "operations.vendor_advances.observation_not_applicable",
+                        ),
+                        mapping_owner="app.web.admin.vendor_operations",
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "vendor_advance.requested",
+                            "vendor_advance.reviewed",
+                            "vendor_advance.settled",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries advance, project, vendor, quote, "
+                            "amount, and currency. Settlement identity is a "
+                            "provider reference, never a Sub payment record."
+                        ),
+                        replay=(
+                            "The advance row rebuilds the decision and the last "
+                            "observed payables state; Sub never recomputes "
+                            "settlement."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "payables settlement observation for vendor advances"
+                            ),
+                            input_names=("vendor payables settlement observation",),
+                            writer="operations.vendor_advances",
+                            freshness=(
+                                "As fresh as the last payables observation; the row "
+                                "records when it was observed."
+                            ),
+                            stale_behavior=(
+                                "A stale or unavailable observation retains the last "
+                                "good one and leaves the advance approved rather "
+                                "than claiming it was paid."
+                            ),
+                            drift_signal=(
+                                "An approved advance whose payables_status has not "
+                                "advanced since approval."
+                            ),
+                            rebuild_operation=(
+                                "apply_payables_observation with the provider's "
+                                "current state for the advance"
+                            ),
+                            repair_owner="integration.dotmac_erp_payables_adapter",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="operations.vendor_advances",
+                        verification=(
+                            "Quote-total bound, stacking, released-ceiling, "
+                            "configured-cap, cap-cannot-raise-the-bound, "
+                            "assignment, advanceable-state, approval, and "
+                            "observed-settlement tests."
+                        ),
+                    ),
+                    steward="vendor operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/BACKOFFICE_INTEGRATION_BOUNDARY.md",
+                    ),
+                    test_refs=("tests/test_vendor_supply.py",),
+                ),
+            ),
+            SOTService(
                 name="operations.vendor_project_lifecycle",
                 module="app.services.vendor_project_lifecycle",
                 owns=(

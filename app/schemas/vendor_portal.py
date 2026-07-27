@@ -96,3 +96,29 @@ class VendorSubmissionConfirm(BaseModel):
 
 class VendorReview(BaseModel):
     review_notes: str | None = Field(default=None, max_length=2000)
+
+
+class VendorMaterialReleaseItemCreate(BaseModel):
+    """One material line a vendor is asking Dotmac to release.
+
+    ``item_code`` is provider-neutral: Sub does not hold the stock catalogue,
+    so the code is correlation evidence for whoever issues the material.
+    """
+
+    description: str = Field(min_length=1, max_length=255)
+    quantity: int = Field(gt=0)
+    unit: str | None = Field(default=None, max_length=40)
+    item_code: str | None = Field(default=None, max_length=80)
+    notes: str | None = None
+
+
+class VendorMaterialReleaseCreate(BaseModel):
+    project_id: UUID
+    items: list[VendorMaterialReleaseItemCreate] = Field(min_length=1)
+    notes: str | None = None
+
+
+class VendorAdvanceCreate(BaseModel):
+    project_id: UUID
+    amount: Decimal = Field(gt=0)
+    reason: str | None = None

@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.schemas.common import ListResponse
 from app.schemas.vendor_portal import (
+    VendorAdvanceCreate,
     VendorAsBuiltCreate,
+    VendorMaterialReleaseCreate,
     VendorQuoteCreate,
     VendorQuoteLineCreate,
     VendorQuoteLineUpdate,
@@ -25,6 +27,7 @@ from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceRead,
     VendorPurchaseInvoiceUpdate,
 )
+from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.field import vendor_capabilities
@@ -693,3 +696,83 @@ def submit_purchase_invoice(
             user_id=str(context["principal_id"]),
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Material releases and advances
+#
+# A vendor asks; staff decide; the configured provider issues the stock or
+# moves the money. These routes only authorize and translate.
+# ---------------------------------------------------------------------------
+
+
+def _supply_http_error(exc: ValueError) -> HTTPException:
+    kind = getattr(exc, "kind", "invalid")
+    code = getattr(exc, "code", "")
+    if kind == "not_found":
+        status_code = 404
+    elif code in {"project_not_assigned"}:
+        status_code = 403
+    elif code:
+        status_code = 409
+    else:
+        status_code = 400
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": str(exc)},
+    )
+
+
+@router.post("/material-releases", status_code=status.HTTP_201_CREATED)
+def request_material_release(
+    payload: VendorMaterialReleaseCreate,
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.MATERIAL_REQUEST)
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services import vendor_material_release
+
+    command = vendor_material_release.RequestMaterialRelease(
+        project_id=payload.project_id,
+        vendor_id=coerce_uuid(_vendor_id(context)),
+        requested_by_person_id=context["principal_id"],
+        items=tuple(item.model_dump() for item in payload.items),
+        notes=payload.notes,
+    )
+    db_session_adapter.release_read_transaction(db)
+    try:
+        release = vendor_material_release.request_release_committed(db, command)
+    except ValueError as exc:
+        raise _supply_http_error(exc) from exc
+    return {"id": str(release.id), "status": release.status}
+
+
+@router.post("/advances", status_code=status.HTTP_201_CREATED)
+def request_vendor_advance(
+    payload: VendorAdvanceCreate,
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.ADVANCE_REQUEST)
+    ),
+    db: Session = Depends(get_db),
+):
+    from app.services import vendor_advances
+
+    command = vendor_advances.RequestVendorAdvance(
+        project_id=payload.project_id,
+        vendor_id=coerce_uuid(_vendor_id(context)),
+        amount=payload.amount,
+        requested_by_person_id=context["principal_id"],
+        reason=payload.reason,
+    )
+    db_session_adapter.release_read_transaction(db)
+    try:
+        advance = vendor_advances.request_advance_committed(db, command)
+    except ValueError as exc:
+        raise _supply_http_error(exc) from exc
+    return {
+        "id": str(advance.id),
+        "status": advance.status,
+        "amount": str(advance.amount),
+        "currency": advance.currency,
+    }

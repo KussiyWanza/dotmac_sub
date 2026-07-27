@@ -417,6 +417,10 @@ do not hand-edit these rows.
 | `operations.installation_scope` | idempotent structural InstallationProject root creation | `command_writer` | canonical native project state ← `operations.project_lifecycle`<br>installation scope creation command ← `sales.orders` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
 | `operations.installation_scope` | Project-to-InstallationProject subscriber alignment | `policy` | canonical native project state ← `operations.project_lifecycle`<br>installation scope creation command ← `sales.orders` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
 | `operations.installation_scope` | buildout-rooted installation scope creation | `command_writer` | canonical native project state ← `operations.project_lifecycle` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
+| `operations.vendor_material_release` | vendor project material release need and approval | `command_writer` | canonical installation-project lifecycle state ← `operations.vendor_project_lifecycle` | `participant` | `native` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`<br>`tests/test_vendor_supply.py` |
+| `operations.vendor_material_release` | backoffice material issue outcome projection for vendors | `reconciler` | backoffice material issue outcome ← `integration.dotmac_erp_material_support_adapter` | `participant` | `native` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`<br>`tests/test_vendor_supply.py` |
+| `operations.vendor_advances` | vendor advance eligibility, ceiling, and approval | `command_writer` | canonical installation-project lifecycle state ← `operations.vendor_project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records`<br>vendor advance cap policy ← `control.settings_spec` | `participant` | `native` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`<br>`tests/test_vendor_supply.py` |
+| `operations.vendor_advances` | payables settlement observation for vendor advances | `reconciler` | vendor payables settlement observation ← `integration.dotmac_erp_payables_adapter` | `participant` | `native` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`<br>`tests/test_vendor_supply.py` |
 | `operations.vendor_project_lifecycle` | vendor start/complete and staff verify/rework installation-project transitions | `command_writer` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>authenticated assigned-vendor transition evidence ← `auth.permission_gate`<br>vendor lifecycle transition protocol ← `operations.vendor_project_lifecycle`<br>work-order as-built evidence policy ← `operations.work_order_commands` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
 | `operations.vendor_project_lifecycle` | staff bidding publication and direct vendor assignment | `command_writer` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>vendor lifecycle transition protocol ← `operations.vendor_project_lifecycle` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
 | `operations.vendor_project_lifecycle` | durable vendor lifecycle actor/time/reason/event evidence | `authoritative_record` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>authenticated assigned-vendor transition evidence ← `auth.permission_gate`<br>work-order as-built evidence policy ← `operations.work_order_commands` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
@@ -3386,6 +3390,40 @@ Dependency order:
    lifecycle event `decision_context` and typed outbox payload. The optional
    vendor-supplied `work_order_ref` remains observational and is never used to
    decide verification eligibility.
+9b. `operations.vendor_material_release` owns the decision to release
+   Dotmac-owned material to a vendor for a project, and the projection of the
+   configured provider's issue or refusal back into that workflow.
+   `field_material_requests` is work-order scoped with a `TechnicianProfile`
+   requester, so it models an employee on a customer job; a contractor drawing
+   our cable for a buildout is the other case and needs its own anchor. Release
+   is available only to the assigned vendor on approved or in-progress work —
+   releasing stock for work nobody has agreed to, or that is already verified,
+   releases it for nothing. Sub never posts stock and never selects a
+   warehouse. Per `docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`, a provider refusal
+   is recorded as an observation and never reverses a committed Sub approval.
+
+9c. `operations.vendor_advances` owns whether Dotmac advances money to a vendor
+   and how much. **The amount is entered, not derived** — staff approval is the
+   control, and an approver sees the amount, the quote total, and what the
+   project has already committed. Sub applies two limits only. The hard bound
+   is the approved quote total: that is arithmetic rather than policy, because
+   you cannot advance more than the work is agreed to be worth, and cost
+   escalation is answered by a variation rather than an over-advance. It counts
+   already-committed advances, so the bound cannot be evaded by splitting a
+   request. On top of that, `projects.vendor_advance_max_percent` is an
+   optional operator guard rail that defaults to no cap and can only lower the
+   bound, never raise it — a misconfigured 100% cannot authorise advancing more
+   than the quote. There is deliberately no code-default percentage: a number
+   nobody chose is policy by accident, and an invented cap forces the
+   workarounds this domain exists to eliminate. A rejected or canceled request
+   reserves nothing. An
+   advance is available once work is approved and before it is verified —
+   verified work is complete and invoiceable, which is payment rather than an
+   advance. The payables provider owns the payment and any netting against the
+   vendor's later invoice: a `settled` advance is an observation of that
+   provider, never a Sub decision. Sub never computes settlement, never marks
+   itself paid, and never adjusts an invoice total.
+
 10. `operations.vendor_purchase_invoices` owns vendor purchase-invoice state,
    financial totals, submit eligibility, and the financial impact snapshot.
    The configured payables system owns accounts-payable settlement. The current

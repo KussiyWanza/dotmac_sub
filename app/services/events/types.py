@@ -139,6 +139,12 @@ class EventType(enum.Enum):
     service_team_membership_changed = "service_team.membership_changed"
 
     # Operations - vendor installation project lifecycle
+    vendor_material_release_requested = "vendor_material_release.requested"
+    vendor_material_release_reviewed = "vendor_material_release.reviewed"
+    vendor_material_release_issued = "vendor_material_release.issued"
+    vendor_advance_requested = "vendor_advance.requested"
+    vendor_advance_reviewed = "vendor_advance.reviewed"
+    vendor_advance_settled = "vendor_advance.settled"
     vendor_project_published = "vendor_project.published"
     vendor_project_assigned = "vendor_project.assigned"
     vendor_project_started = "vendor_project.started"
