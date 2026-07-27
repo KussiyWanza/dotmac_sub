@@ -4,7 +4,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 from uuid import UUID
 
 import anyio
@@ -97,6 +97,17 @@ SERVICE_CHANGE_FINANCIAL_POSITION_MESSAGE = (
 
 def _is_read_only_customer(customer: dict | None) -> bool:
     return bool(customer and customer.get("read_only"))
+
+
+def _safe_portal_return_path(value: str | None) -> str:
+    """Keep notification-action redirects inside the customer portal."""
+    candidate = str(value or "").strip()
+    parsed = urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        return "/portal/notifications"
+    if parsed.path != "/portal" and not parsed.path.startswith("/portal/"):
+        return "/portal/notifications"
+    return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
 def _read_only_response(
@@ -1474,6 +1485,7 @@ def customer_notifications_mark_read(
     request: Request,
     read_key: str | None = Form(None),
     all_visible: bool = Form(False),
+    return_to: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> Response:
     """Mark one or all visible customer notifications as read."""
@@ -1488,7 +1500,10 @@ def customer_notifications_mark_read(
         read_key=read_key,
         all_visible=all_visible,
     )
-    return RedirectResponse(url="/portal/notifications", status_code=303)
+    return RedirectResponse(
+        url=_safe_portal_return_path(return_to),
+        status_code=303,
+    )
 
 
 def _profile_context(

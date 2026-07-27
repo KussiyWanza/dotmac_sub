@@ -1,4 +1,7 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestPortalNotificationsPage:
@@ -457,6 +460,88 @@ class TestPortalNotificationsPage:
         )
 
         assert page["total"] == 0
+
+
+class TestPortalNotificationDropdown:
+    def test_dropdown_has_separate_read_actions_and_bottom_view_all_link(
+        self,
+    ) -> None:
+        source = (REPO_ROOT / "templates/layouts/customer.html").read_text(
+            encoding="utf-8"
+        )
+        menu = source.split('id="customer-notifications-menu"', maxsplit=1)[1].split(
+            "<!-- Dark mode toggle", maxsplit=1
+        )[0]
+        notification_loop = menu.index("{% for notification in recent_notifications %}")
+        notification_link_close = menu.index("</a>", notification_loop)
+        read_action = menu.index('name="read_key"', notification_loop)
+
+        assert "Mark all as read" in menu
+        assert 'name="all_visible" value="true"' in menu
+        assert "{% if not notification.is_read" in menu
+        assert "Mark as read" in menu
+        assert 'name="return_to"' in menu
+        assert notification_link_close < read_action
+        assert menu.index("Mark all as read") < menu.index("max-h-96")
+        assert menu.rindex("View all") > menu.index("{% endfor %}")
+
+    def test_mark_read_route_returns_to_current_portal_page(self) -> None:
+        from app.web.customer.routes import customer_notifications_mark_read
+
+        request = MagicMock()
+        db = MagicMock()
+        customer = {"subscriber_id": "subscriber-1"}
+
+        with (
+            patch(
+                "app.web.customer.routes.get_current_customer_from_request",
+                return_value=customer,
+            ),
+            patch(
+                "app.web.customer.routes.customer_notifications_service"
+                ".mark_notifications_read"
+            ) as mark_read,
+        ):
+            response = customer_notifications_mark_read(
+                request=request,
+                read_key="notification:notice-1",
+                all_visible=False,
+                return_to="/portal/billing?tab=history",
+                db=db,
+            )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/portal/billing?tab=history"
+        mark_read.assert_called_once_with(
+            db,
+            customer,
+            read_key="notification:notice-1",
+            all_visible=False,
+        )
+
+    def test_mark_read_route_rejects_external_return_target(self) -> None:
+        from app.web.customer.routes import customer_notifications_mark_read
+
+        with (
+            patch(
+                "app.web.customer.routes.get_current_customer_from_request",
+                return_value={"subscriber_id": "subscriber-1"},
+            ),
+            patch(
+                "app.web.customer.routes.customer_notifications_service"
+                ".mark_notifications_read"
+            ),
+        ):
+            response = customer_notifications_mark_read(
+                request=MagicMock(),
+                read_key=None,
+                all_visible=True,
+                return_to="https://example.com/steal-session",
+                db=MagicMock(),
+            )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == "/portal/notifications"
 
 
 class TestCustomerProfileNotifications:
