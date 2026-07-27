@@ -1,0 +1,19 @@
+<section aria-labelledby="right-now-heading">
+    <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+            <h2 id="right-now-heading" class="text-lg font-semibold text-slate-900 dark:text-white">Right now</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Highest-ranked work across every native source.</p>
+        </div>
+        <span class="text-xs text-slate-500 dark:text-slate-400">Generated {{ projection.generated_at_label }}</span>
+    </div>
+    <div class="space-y-3">
+        {% for row in projection.right_now %}
+            {% include "admin/workqueue/_row.html" %}
+        {% else %}
+        <div class="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-10 text-center dark:border-slate-700 dark:bg-slate-800">
+            <h3 class="font-semibold text-slate-900 dark:text-white">Nothing needs immediate attention</h3>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">New native Inbox, ticket, and dispatch work will appear here.</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>

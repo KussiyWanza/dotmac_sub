@@ -123,7 +123,9 @@ def ticket_owner_command(name: str):
             # transaction lands. Workqueue holds no authority, so a late
             # invalidation costs a pane its instant refresh, never a fact.
             if owner_command_active(db):
-                return operation(db, *args, **kwargs)
+                result = operation(db, *args, **kwargs)
+                db.info.pop("_support_previous_assignee_id", None)
+                return result
 
             from app.services.db_session_adapter import db_session_adapter
 

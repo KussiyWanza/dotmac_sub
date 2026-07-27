@@ -1815,6 +1815,7 @@
   },
   "DELETE /api/v1/workqueue/snoozes/{item_kind}/{item_id}": {
    "params": [
+    "header:Idempotency-Key",
     "header:authorization",
     "header:x-api-key",
     "path:item_id!",
@@ -17986,6 +17987,7 @@
   },
   "POST /api/v1/workqueue/snoozes": {
    "params": [
+    "header:Idempotency-Key",
     "header:authorization",
     "header:x-api-key"
    ],

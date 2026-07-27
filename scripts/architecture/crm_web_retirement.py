@@ -267,19 +267,22 @@ MODULE_REVIEW_OVERRIDES: dict[str, dict[str, Any]] = {
         "target_slice": "service-team-production-cutover-and-crm-retirement",
     },
     "app/web/agent/workqueue.py": {
-        "assessment_state": "assessed",
+        "assessment_state": "cutover_ready",
         "decision": {
             "notes": (
-                "Sub has ranked native workqueue services, scoped API reads, snooze "
-                "persistence, and realtime invalidation, but no registered workqueue "
-                "owner contract and no CRM-equivalent agent HTML surface. Claim and "
-                "complete actions must delegate to each item's domain owner rather "
-                "than making the queue a parallel lifecycle writer."
+                "This slice registers operations.agent_workqueue, cuts scope reads "
+                "over to the service-team owner, adds the native admin page and "
+                "partials, moves API and web snooze writes through one typed command, "
+                "and coordinates ticket and Inbox claim/complete through their "
+                "canonical lifecycle owners. Work Orders remain open/snooze-only. "
+                "Production snooze reconciliation, shadow comparison, traffic "
+                "cutover, fallback removal, zero traffic, and CRM source deletion "
+                "remain."
             ),
             "owner_service": "operations.agent_workqueue",
-            "state": "in_progress",
+            "state": "verified",
         },
-        "target_slice": "agent-workqueue-owner-and-web-surface",
+        "target_slice": "agent-workqueue-production-cutover-and-crm-retirement",
     },
 }
 
@@ -347,6 +350,45 @@ SERVICE_TEAM_READ_HANDLERS = frozenset(
         "service_team_new",
         "service_team_detail",
         "service_team_edit",
+    }
+)
+
+WORKQUEUE_ROUTE_REPLACEMENTS: dict[str, tuple[str, str]] = {
+    "page": (
+        "Ranked native agent workqueue page",
+        "GET /admin/workqueue",
+    ),
+    "partial_right_now": (
+        "Cross-source right-now ranking partial",
+        "GET /admin/workqueue/_right-now",
+    ),
+    "partial_section": (
+        "Native source section partial",
+        "GET /admin/workqueue/_section/{kind}",
+    ),
+    "post_snooze": (
+        "Personal workqueue snooze command",
+        "POST /admin/workqueue/snooze",
+    ),
+    "post_clear_snooze": (
+        "Personal workqueue snooze restore command",
+        "POST /admin/workqueue/snooze/clear",
+    ),
+    "post_claim": (
+        "Scope-checked source-owner claim coordination",
+        "POST /admin/workqueue/claim",
+    ),
+    "post_complete": (
+        "Scope-checked source-owner completion coordination",
+        "POST /admin/workqueue/complete",
+    ),
+}
+
+WORKQUEUE_READ_HANDLERS = frozenset(
+    {
+        "page",
+        "partial_right_now",
+        "partial_section",
     }
 )
 
@@ -866,6 +908,152 @@ def _service_team_route_tracking(route: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _workqueue_route_tracking(route: dict[str, Any]) -> dict[str, Any]:
+    source = route.get("source", {})
+    if source.get("file") != "app/web/agent/workqueue.py":
+        return {}
+    handler = source.get("handler")
+    replacement = WORKQUEUE_ROUTE_REPLACEMENTS.get(handler)
+    if replacement is None:
+        return {}
+    capability, surface = replacement
+    write_route = handler not in WORKQUEUE_READ_HANDLERS
+    no_write_evidence = [
+        (
+            "CRM GET behavior is replaced by the owner-built query projection; "
+            "audit, event, and idempotency write semantics do not apply."
+        )
+    ]
+    command_evidence = [
+        "tests/test_workqueue_commands.py",
+        "docs/designs/AGENT_WORKQUEUE_SOT.md",
+    ]
+    write_gate = (
+        {"evidence": command_evidence, "state": "verified"}
+        if write_route
+        else {"evidence": no_write_evidence, "state": "not_applicable"}
+    )
+    return {
+        "assessment_state": "cutover_ready",
+        "replacement": {
+            "capability": capability,
+            "kind": "native_web_route",
+            "notes": (
+                "The native owner and operator surface implement this behavior. "
+                "Ticket and Inbox lifecycle changes delegate to their canonical "
+                "owners; Work Orders intentionally expose no inline lifecycle "
+                "transition. Production data reconciliation, traffic cutover, and "
+                "retirement evidence remain."
+            ),
+            "owner_service": "operations.agent_workqueue",
+            "surfaces": [surface],
+        },
+        "parity": {
+            "audit": write_gate,
+            "behavior": {
+                "evidence": [
+                    "tests/test_workqueue_parity.py",
+                    "tests/test_workqueue_commands.py",
+                    "tests/test_workqueue_web.py",
+                    "tests/playwright/e2e/test_workqueue.py",
+                    "docs/designs/AGENT_WORKQUEUE_SOT.md",
+                ],
+                "state": "verified",
+            },
+            "errors": {
+                "evidence": [
+                    "tests/test_workqueue_commands.py",
+                    "app/web/admin/workqueue.py",
+                    "app/api/workqueue.py",
+                ],
+                "state": "verified",
+            },
+            "events": write_gate,
+            "idempotency": write_gate,
+            "permissions": {
+                "evidence": [
+                    "tests/test_workqueue_commands.py",
+                    "tests/test_workqueue_web.py",
+                    "tests/playwright/e2e/test_workqueue.py",
+                    "tests/architecture/test_agent_workqueue_boundary.py",
+                ],
+                "state": "verified",
+            },
+        },
+        "migration": {
+            "callers": {
+                "evidence": [
+                    "app/api/workqueue.py",
+                    "app/web/admin/workqueue.py",
+                    "templates/components/navigation/admin_sidebar.html",
+                    "tests/architecture/test_agent_workqueue_boundary.py",
+                ],
+                "state": "verified",
+            },
+            "cutover": {
+                "evidence": [
+                    (
+                        "Native web, API, and navigation cutover is implemented; "
+                        "production CRM traffic cutover remains pending."
+                    )
+                ],
+                "state": "in_progress",
+            },
+            "data": {
+                "evidence": [
+                    (
+                        "Native source rows are authoritative. Production CRM "
+                        "WorkqueueSnooze reconciliation or a reviewed zero-data "
+                        "disposition remains required."
+                    ),
+                    "docs/designs/AGENT_WORKQUEUE_SOT.md",
+                ],
+                "state": "in_progress",
+            },
+            "rollback": {
+                "evidence": [
+                    (
+                        "The code rollback retains native source authority; the "
+                        "production traffic rollback and snooze-data procedure must "
+                        "be rehearsed before cutover."
+                    )
+                ],
+                "state": "in_progress",
+            },
+            "shadow_verification": {
+                "evidence": [
+                    (
+                        "Provider parity tests are green; production scope, membership, "
+                        "ordering-band, and action comparison remains pending."
+                    )
+                ],
+                "state": "in_progress",
+            },
+        },
+        "retirement": {
+            "crm_route_deleted": {
+                "evidence": ["CRM route remains at the pinned source revision."],
+                "state": "in_progress",
+            },
+            "fallback_removed": {
+                "evidence": [
+                    "CRM route, templates, action dispatcher, and snooze writer remain."
+                ],
+                "state": "in_progress",
+            },
+            "zero_traffic": {
+                "evidence": [
+                    (
+                        "The 30-day Loki and VictoriaMetrics observation window has "
+                        "not started."
+                    )
+                ],
+                "state": "in_progress",
+            },
+        },
+    }
+
+
 def _new_module_tracking(module: dict[str, Any]) -> dict[str, Any]:
     tracking = {
         "assessment_state": "inventory_only",
@@ -941,7 +1129,8 @@ def _new_route_tracking(route: dict[str, Any] | None = None) -> dict[str, Any]:
     }
     if route is None:
         return tracking
-    return _deep_merge(tracking, _service_team_route_tracking(route))
+    tracking = _deep_merge(tracking, _service_team_route_tracking(route))
+    return _deep_merge(tracking, _workqueue_route_tracking(route))
 
 
 def _merge_tracking(

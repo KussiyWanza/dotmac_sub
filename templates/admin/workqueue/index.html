@@ -1,0 +1,76 @@
+{% extends "layouts/admin.html" %}
+
+{% block title %}Workqueue - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+            <nav class="mb-2 text-sm text-slate-500 dark:text-slate-400">
+                <a href="/admin/support/tickets" class="hover:text-indigo-600">Support</a>
+                <span aria-hidden="true"> / </span>
+                <span>Workqueue</span>
+            </nav>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Agent workqueue</h1>
+            <p class="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">One ranked native view of Inbox conversations, support tickets, and dispatch work. Lifecycle actions remain owned by their source module.</p>
+        </div>
+        <a href="/admin/inbox" class="inline-flex min-h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Open Inbox</a>
+    </header>
+
+    <div id="workqueue-feedback" aria-live="polite">
+        {% include "admin/workqueue/_feedback.html" %}
+    </div>
+
+    <form method="get" action="/admin/workqueue" class="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 sm:grid-cols-[12rem_minmax(0,1fr)_auto_auto] sm:items-end">
+        <div>
+            <label for="workqueue-audience" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Audience</label>
+            <select id="workqueue-audience" name="audience" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <option value="self" {% if projection.audience.value == "self" %}selected{% endif %}>My queue</option>
+                <option value="team" {% if projection.audience.value == "team" %}selected{% endif %}>My teams</option>
+                <option value="org" {% if projection.audience.value == "org" %}selected{% endif %}>Organization</option>
+            </select>
+        </div>
+        <div>
+            <label for="workqueue-team" class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Service team</label>
+            <select id="workqueue-team" name="service_team_id" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                <option value="">All accessible teams</option>
+                {% for option in projection.team_options %}<option value="{{ option.team_id }}" {% if projection.selected_team_id == option.team_id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+            </select>
+        </div>
+        <label class="flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 dark:border-slate-600 dark:text-slate-200">
+            <input type="checkbox" name="include_snoozed" value="true" {% if projection.include_snoozed %}checked{% endif %}>
+            Show snoozed
+        </label>
+        <button class="min-h-10 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Apply</button>
+    </form>
+
+    <div id="workqueue-right-now"
+         hx-get="/admin/workqueue/_right-now?audience={{ projection.audience.value }}{% if projection.selected_team_id %}&service_team_id={{ projection.selected_team_id }}{% endif %}{% if projection.include_snoozed %}&include_snoozed=true{% endif %}"
+         hx-trigger="every 30s, workqueue-refresh from:body"
+         hx-swap="innerHTML">
+        {% include "admin/workqueue/_right_now.html" %}
+    </div>
+
+    <div class="space-y-8">
+        {% for section in projection.sections %}
+        <div id="workqueue-section-{{ section.item_kind.value }}"
+             hx-get="/admin/workqueue/_section/{{ section.item_kind.value }}?audience={{ projection.audience.value }}{% if projection.selected_team_id %}&service_team_id={{ projection.selected_team_id }}{% endif %}{% if projection.include_snoozed %}&include_snoozed=true{% endif %}"
+             hx-trigger="workqueue-refresh from:body"
+             hx-swap="innerHTML">
+            {% include "admin/workqueue/_section.html" %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+    if (!window.EventSource) return;
+    const source = new EventSource("/api/v1/workqueue/events?audience={{ projection.audience.value }}");
+    source.addEventListener("workqueue_changed", () => {
+        document.body.dispatchEvent(new CustomEvent("workqueue-refresh"));
+    });
+    window.addEventListener("beforeunload", () => source.close(), { once: true });
+})();
+</script>
+{% endblock %}

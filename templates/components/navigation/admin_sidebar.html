@@ -8,6 +8,7 @@
     'support-tickets': 'support-tickets',
     'support-automation': 'support-tickets', 'support-assignment-rules': 'support-tickets',
     'team-inbox': 'team-inbox',
+    'agent-workqueue': 'agent-workqueue',
     'service-requests': 'service-requests',
     'sales': 'sales', 'sales-leads': 'sales', 'sales-pipelines': 'sales',
     'sales-quotes': 'sales', 'sales-orders': 'sales',
@@ -190,6 +191,7 @@
     {{ nav_link("Customers", "/admin/customers", icon_customers, "customers", tour_id="nav-customers") }}
     {% endif %}
     {{ nav_link("Support", "/admin/support/tickets", icon_support, "support-tickets") }}
+    {{ nav_link("Workqueue", "/admin/workqueue", icon_support, "agent-workqueue") }}
     {{ nav_link("Inbox", "/admin/inbox", icon_support, "team-inbox") }}
     {{ nav_link("Sales", "/admin/sales/leads", icon_sales, "sales") }}
     {{ nav_link("Service Requests", "/admin/service-requests", icon_provisioning, "service-requests") }}

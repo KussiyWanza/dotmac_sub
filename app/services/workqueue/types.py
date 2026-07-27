@@ -25,6 +25,7 @@ class ItemKind(enum.StrEnum):
 class ActionKind(enum.StrEnum):
     open = "open"
     snooze = "snooze"
+    clear_snooze = "clear_snooze"
     claim = "claim"
     complete = "complete"
 

@@ -7,7 +7,8 @@ Layout:
 * ``scope``          — which teams/people a principal may see.
 * ``providers/``     — one module per item source; self-registering.
 * ``aggregator``     — merges providers into one ranked view.
-* ``snooze``         — per-user snooze CRUD (owns its commits).
+* ``commands``       — typed action coordinator and personal snooze owner.
+* ``snooze``         — transaction-neutral personal snooze participants.
 * ``events``         — realtime change notifications.
 """
 
@@ -17,6 +18,14 @@ from app.services.workqueue.aggregator import (
     build_workqueue,
     collect_items,
     list_workqueue,
+)
+from app.services.workqueue.commands import (
+    SnoozeMode,
+    WorkqueueActionCommand,
+    WorkqueueActionError,
+    WorkqueueActionOutcome,
+    WorkqueueSnoozeSnapshot,
+    execute_action,
 )
 from app.services.workqueue.permissions import (
     WORKQUEUE_ACT_PERMISSION,
@@ -64,13 +73,18 @@ __all__ = [
     "ActionKind",
     "ItemKind",
     "SlaBands",
+    "SnoozeMode",
     "WorkqueueAudience",
+    "WorkqueueActionCommand",
+    "WorkqueueActionError",
+    "WorkqueueActionOutcome",
     "WorkqueueItem",
     "WorkqueuePermissionError",
     "WorkqueuePrincipal",
     "WorkqueueScope",
     "WorkqueueScoringConfig",
     "WorkqueueSection",
+    "WorkqueueSnoozeSnapshot",
     "WorkqueueView",
     "active_snoozed_ids",
     "all_providers",
@@ -79,6 +93,7 @@ __all__ = [
     "clear_snooze",
     "clear_snooze_committed",
     "collect_items",
+    "execute_action",
     "get_workqueue_scope",
     "has_workqueue_view",
     "list_workqueue",

@@ -13,12 +13,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models.service_team import (
-    ServiceTeam,
-    ServiceTeamMember,
-    ServiceTeamMemberRole,
-)
-from app.models.system_user import SystemUser
+from app.services import service_team_lifecycle
 from app.services.workqueue.permissions import (
     WorkqueuePermissionError,
     WorkqueuePrincipal,
@@ -28,10 +23,6 @@ from app.services.workqueue.permissions import (
 from app.services.workqueue.types import WorkqueueAudience
 
 logger = logging.getLogger(__name__)
-
-LEAD_ROLES = frozenset(
-    {ServiceTeamMemberRole.lead.value, ServiceTeamMemberRole.manager.value}
-)
 
 
 @dataclass(frozen=True)
@@ -91,52 +82,6 @@ class WorkqueueScope:
         }
 
 
-def _memberships(db: Session, person_id: UUID) -> list[ServiceTeamMember]:
-    return (
-        db.query(ServiceTeamMember)
-        .join(
-            SystemUser,
-            SystemUser.person_party_id == ServiceTeamMember.person_id,
-        )
-        .filter(SystemUser.id == person_id)
-        .filter(SystemUser.is_active.is_(True))
-        .filter(ServiceTeamMember.is_active.is_(True))
-        .all()
-    )
-
-
-def _managed_team_ids(db: Session, person_id: UUID) -> set[UUID]:
-    rows = (
-        db.query(ServiceTeam.id)
-        .join(
-            SystemUser,
-            SystemUser.person_party_id == ServiceTeam.manager_person_id,
-        )
-        .filter(SystemUser.id == person_id)
-        .filter(SystemUser.is_active.is_(True))
-        .filter(ServiceTeam.is_active.is_(True))
-        .all()
-    )
-    return {row[0] for row in rows}
-
-
-def _team_member_person_ids(db: Session, team_ids: frozenset[UUID]) -> set[UUID]:
-    if not team_ids:
-        return set()
-    rows = (
-        db.query(SystemUser.id)
-        .join(
-            ServiceTeamMember,
-            ServiceTeamMember.person_id == SystemUser.person_party_id,
-        )
-        .filter(ServiceTeamMember.team_id.in_(team_ids))
-        .filter(ServiceTeamMember.is_active.is_(True))
-        .filter(SystemUser.is_active.is_(True))
-        .all()
-    )
-    return {row[0] for row in rows}
-
-
 def get_workqueue_scope(
     db: Session,
     principal: WorkqueuePrincipal,
@@ -151,14 +96,18 @@ def get_workqueue_scope(
     """
     require_workqueue_view(principal)
 
-    memberships = _memberships(db, principal.person_id)
-    member_team_ids = frozenset(m.team_id for m in memberships)
-    managed_team_ids = _managed_team_ids(db, principal.person_id)
-    leads_team = bool(managed_team_ids) or any(
-        m.role in LEAD_ROLES for m in memberships
+    team_scope = service_team_lifecycle.resolve_staff_team_scope(
+        db,
+        principal.person_id,
     )
+    member_team_ids = frozenset(team_scope.member_team_ids)
+    managed_team_ids = frozenset(team_scope.managed_team_ids)
 
-    audience = resolve_audience(principal, requested_audience, leads_team=leads_team)
+    audience = resolve_audience(
+        principal,
+        requested_audience,
+        leads_team=team_scope.leads_team,
+    )
     is_org_wide = audience is WorkqueueAudience.org
 
     # Even at `self` audience a principal sees unassigned work sitting in their
@@ -173,13 +122,24 @@ def get_workqueue_scope(
 
     if is_org_wide:
         accessible_person_ids = (
-            frozenset(_team_member_person_ids(db, query_team_ids))
+            frozenset(
+                service_team_lifecycle.list_active_team_member_system_user_ids(
+                    db,
+                    query_team_ids,
+                )
+            )
             if service_team_id is not None
             else frozenset()
         )
     elif audience is WorkqueueAudience.team:
         accessible_person_ids = frozenset(
-            _team_member_person_ids(db, query_team_ids) | {principal.person_id}
+            {
+                *service_team_lifecycle.list_active_team_member_system_user_ids(
+                    db,
+                    query_team_ids,
+                ),
+                principal.person_id,
+            }
         )
     else:
         accessible_person_ids = frozenset({principal.person_id})

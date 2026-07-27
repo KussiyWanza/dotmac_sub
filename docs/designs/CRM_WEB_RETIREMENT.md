@@ -167,9 +167,11 @@ recommended target owner is `operations.service_team_lifecycle`. Its slice must:
 7. pass shadow parity, cutover, rollback, zero-traffic, and CRM deletion gates
    before its 11 routes or module can be marked retired.
 
-The ledger records this owner decision as `in_progress`, not verified. The
-executable SOT registry must not claim the new owner until the implementation
-and caller cutover land in the same coherent slice.
+The ledger records this owner as `cutover_ready`, not retired. Native records,
+typed commands, administration, Party-backed caller cutover, and architecture
+guards are implemented together. Production migration evidence, traffic
+cutover, fallback removal, the zero-traffic window, and CRM source deletion
+remain open gates.
 
 This is not an identity-system replacement. `party.registry` remains the
 canonical Person Party owner and `auth.staff_provisioning` remains the staff
@@ -193,11 +195,13 @@ triage predated:
   and PR #1617 added the vendor-delivery projection. CRM project administration
   remains `implementation_in_progress` until data, callers, traffic, and source
   deletion pass the retirement gates.
-- The agent workqueue remains an assessed gap. Sub has ranked native providers,
-  scoped API reads, snooze state, and realtime invalidation, but no registered
-  workqueue owner contract and no equivalent agent HTML surface. Claim and
-  complete operations must delegate to the underlying ticket, work-order, or
-  conversation owner.
+- The agent workqueue is the next native slice. `operations.agent_workqueue`
+  owns native service-team scope consumption, ranking, personal snooze state,
+  and action coordination. `/admin/workqueue` replaces the seven CRM page,
+  partial, snooze, claim, and complete behaviors. Ticket and Team Inbox
+  lifecycle owners participate in the coordinator transaction; Work Orders
+  remain open/snooze-only because dispatch and field owners retain their
+  transitions. See `docs/designs/AGENT_WORKQUEUE_SOT.md`.
 
 No local CRM-retirement worktree or unpushed branch is accepted as target
 evidence. Only behavior present at the recorded Sub revision may advance a

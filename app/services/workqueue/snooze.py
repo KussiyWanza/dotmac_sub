@@ -1,9 +1,8 @@
-"""Snooze CRUD for the workqueue.
+"""Participant helpers for workqueue-owned personal snooze state.
 
-SOT service-ownership contract: the API layer never commits. Writes have an
-uncommitted core (``snooze_item`` / ``clear_snooze``) usable inside a larger
-transaction, plus a ``*_committed`` entry point that owns the commit and is what
-``app/api/workqueue.py`` calls.
+``operations.agent_workqueue`` owns the public command and transaction. These
+helpers validate and flush only; compatibility wrappers at the bottom delegate
+back through that owner instead of retaining a parallel commit path.
 """
 
 from __future__ import annotations
@@ -11,13 +10,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import HTTPException
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.workqueue import WorkqueueItemKind, WorkqueueSnooze
 from app.services.common import coerce_uuid
+from app.services.domain_errors import DomainError
 from app.services.workqueue.types import ItemKind
+
+
+class WorkqueueSnoozeError(DomainError):
+    """Transport-neutral snooze validation failure."""
 
 
 def _coerce_kind(item_kind: str | ItemKind) -> str:
@@ -25,8 +28,9 @@ def _coerce_kind(item_kind: str | ItemKind) -> str:
     try:
         WorkqueueItemKind(value)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"Unknown workqueue item kind: {value}"
+        raise WorkqueueSnoozeError(
+            code="operations.agent_workqueue.invalid_item_kind",
+            message=f"Unknown workqueue item kind: {value}",
         ) from exc
     return value
 
@@ -69,7 +73,7 @@ def clear_snooze(
     user_id: str | UUID,
     item_kind: str | ItemKind,
     item_id: str | UUID,
-) -> None:
+) -> bool:
     snooze = (
         db.query(WorkqueueSnooze)
         .filter(WorkqueueSnooze.user_id == coerce_uuid(user_id))
@@ -78,9 +82,10 @@ def clear_snooze(
         .one_or_none()
     )
     if snooze is None:
-        raise HTTPException(status_code=404, detail="Snooze not found")
+        return False
     db.delete(snooze)
     db.flush()
+    return True
 
 
 def active_snoozed_ids(
@@ -143,19 +148,7 @@ def release_until_next_reply(db: Session, *, conversation_id: str | UUID) -> lis
     return affected
 
 
-def _emit(user_id: UUID, item_kind: str, item_id: UUID, change: str) -> None:
-    """Tell the owner's live queue that a snooze hid/restored an item."""
-    from app.services.workqueue.events import emit_change
-
-    emit_change(
-        item_kind=item_kind,
-        item_id=item_id,
-        change=change,  # type: ignore[arg-type]
-        affected_user_ids=[user_id],
-    )
-
-
-# --- Commit-owning entry points (called by the API layer) --------------------
+# --- Compatibility entry points ---------------------------------------------
 
 
 def snooze_item_committed(
@@ -167,17 +160,58 @@ def snooze_item_committed(
     snooze_until: datetime | None = None,
     until_next_reply: bool = False,
 ) -> WorkqueueSnooze:
-    snooze = snooze_item(
-        db,
-        user_id=user_id,
-        item_kind=item_kind,
-        item_id=item_id,
-        snooze_until=snooze_until,
-        until_next_reply=until_next_reply,
+    from uuid import uuid4
+
+    from app.services.owner_commands import CommandContext
+    from app.services.workqueue.commands import (
+        SnoozeMode,
+        WorkqueueActionCommand,
+        execute_action,
     )
-    db.commit()
+    from app.services.workqueue.permissions import WorkqueuePrincipal
+    from app.services.workqueue.types import ActionKind
+
+    user_uuid = coerce_uuid(user_id)
+    mode = SnoozeMode.indefinite
+    if until_next_reply:
+        mode = SnoozeMode.next_reply
+    elif snooze_until is not None:
+        mode = SnoozeMode.explicit
+    request_id = uuid4()
+    execute_action(
+        db,
+        WorkqueueActionCommand(
+            context=CommandContext.system(
+                actor=f"user:{user_uuid}",
+                scope="workqueue:snooze",
+                reason="Set personal workqueue snooze",
+                command_id=request_id,
+                idempotency_key=str(request_id),
+            ),
+            principal=WorkqueuePrincipal(
+                person_id=user_uuid,
+                roles=frozenset({"admin"}),
+                scopes=frozenset(),
+                can_view=True,
+                can_act=True,
+            ),
+            item_kind=ItemKind(str(item_kind)),
+            item_id=coerce_uuid(item_id),
+            action=ActionKind.snooze,
+            snooze_mode=mode,
+            explicit_snooze_until=snooze_until,
+        ),
+    )
+    snooze = (
+        db.query(WorkqueueSnooze)
+        .filter(
+            WorkqueueSnooze.user_id == user_uuid,
+            WorkqueueSnooze.item_kind == _coerce_kind(item_kind),
+            WorkqueueSnooze.item_id == coerce_uuid(item_id),
+        )
+        .one()
+    )
     db.refresh(snooze)
-    _emit(snooze.user_id, snooze.item_kind, snooze.item_id, "removed")
     return snooze
 
 
@@ -188,11 +222,37 @@ def clear_snooze_committed(
     item_kind: str | ItemKind,
     item_id: str | UUID,
 ) -> None:
-    clear_snooze(db, user_id=user_id, item_kind=item_kind, item_id=item_id)
-    db.commit()
-    _emit(
-        coerce_uuid(user_id),
-        _coerce_kind(item_kind),
-        coerce_uuid(item_id),
-        "added",
+    from uuid import uuid4
+
+    from app.services.owner_commands import CommandContext
+    from app.services.workqueue.commands import (
+        WorkqueueActionCommand,
+        execute_action,
+    )
+    from app.services.workqueue.permissions import WorkqueuePrincipal
+    from app.services.workqueue.types import ActionKind
+
+    user_uuid = coerce_uuid(user_id)
+    request_id = uuid4()
+    execute_action(
+        db,
+        WorkqueueActionCommand(
+            context=CommandContext.system(
+                actor=f"user:{user_uuid}",
+                scope="workqueue:snooze",
+                reason="Clear personal workqueue snooze",
+                command_id=request_id,
+                idempotency_key=str(request_id),
+            ),
+            principal=WorkqueuePrincipal(
+                person_id=user_uuid,
+                roles=frozenset({"admin"}),
+                scopes=frozenset(),
+                can_view=True,
+                can_act=True,
+            ),
+            item_kind=ItemKind(str(item_kind)),
+            item_id=coerce_uuid(item_id),
+            action=ActionKind.clear_snooze,
+        ),
     )

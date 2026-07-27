@@ -19,6 +19,7 @@ on:
         options:
           - all
           - service-teams
+          - workqueue
 
 env:
   PYTHON_VERSION: "3.12"
@@ -109,6 +110,9 @@ jobs:
         run: |
           if [ "$E2E_SUITE" = "service-teams" ]; then
             poetry run pytest tests/playwright/e2e/test_service_teams.py \
+              -v --tb=short -o "addopts="
+          elif [ "$E2E_SUITE" = "workqueue" ]; then
+            poetry run pytest tests/playwright/e2e/test_workqueue.py \
               -v --tb=short -o "addopts="
           else
             poetry run pytest tests/playwright/ -v --tb=short -o "addopts="

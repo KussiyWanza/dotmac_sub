@@ -13225,6 +13225,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "service-team lifecycle",
                     "service-team membership lifecycle",
                     "staff service-team resolution",
+                    "staff service-team scope projection",
                     "active service-team selector projection",
                     "service-team administration projection",
                 ),
@@ -13260,6 +13261,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         ConcernContract(
                             name="staff service-team resolution",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="staff service-team scope projection",
                             role=OwnerRole.RESOLVER,
                             input_names=(
                                 "active staff authentication principal",
@@ -13409,6 +13419,30 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             repair_owner="operations.service_team_lifecycle",
                         ),
                         ProjectionContract(
+                            name="staff service-team scope projection",
+                            input_names=(
+                                "active staff authentication principal",
+                                "canonical Person Party identity",
+                                "current native service-team state",
+                            ),
+                            writer="operations.service_team_lifecycle",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Return no accessible teams for an inactive, Party-unbound, "
+                                "or inactive-Party principal; never compare principal and "
+                                "Party identifier domains directly."
+                            ),
+                            drift_signal=(
+                                "A workqueue or routing caller derives team membership with "
+                                "direct ServiceTeamMember queries."
+                            ),
+                            rebuild_operation=(
+                                "Requery active native teams, Party-backed memberships, "
+                                "lead roles, managers, and active SystemUser bindings."
+                            ),
+                            repair_owner="operations.service_team_lifecycle",
+                        ),
+                        ProjectionContract(
                             name="active service-team selector projection",
                             input_names=("current native service-team state",),
                             writer="operations.service_team_lifecycle",
@@ -13482,9 +13516,318 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                 ),
             ),
+            SOTService(
+                name="operations.agent_workqueue",
+                module="app.services.workqueue.commands",
+                owns=(
+                    "agent workqueue scope and audience resolution",
+                    "agent workqueue prioritization projection",
+                    "personal workqueue snooze state",
+                    "agent workqueue action coordination",
+                ),
+                depends_on=(
+                    "auth.staff_provisioning",
+                    "operations.service_team_lifecycle",
+                    "support.ticket_lifecycle",
+                    "support.ticket_sla_clock",
+                    "communications.team_inbox_projection",
+                    "communications.team_inbox_commands",
+                    "operations.work_orders",
+                    "events.store",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "The workqueue owns scope, ranking, and each operator's snooze "
+                    "state. Claim and complete are atomic coordinator commands: "
+                    "Ticket and Team Inbox owners retain every underlying lifecycle "
+                    "decision, while Work Orders remain open/snooze-only until their "
+                    "native dispatch owner exposes an approved inline transition."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="agent workqueue scope and audience resolution",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authenticated staff principal",
+                                "native service-team scope",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="agent workqueue prioritization projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "native service-team scope",
+                                "canonical support-ticket state",
+                                "canonical ticket SLA clocks",
+                                "canonical Team Inbox projection",
+                                "native work-order projection",
+                                "personal workqueue snooze state",
+                                "workqueue scoring policy",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="personal workqueue snooze state",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "authenticated staff principal",
+                                "scope-checked workqueue action",
+                                "personal workqueue snooze state",
+                            ),
+                            canonical_writer="operations.agent_workqueue",
+                        ),
+                        ConcernContract(
+                            name="agent workqueue action coordination",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated staff principal",
+                                "native service-team scope",
+                                "scope-checked workqueue action",
+                                "canonical support-ticket state",
+                                "canonical Team Inbox projection",
+                                "workqueue action idempotency evidence",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated staff principal",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active authenticated SystemUser ID, roles, scopes, and "
+                                "support ticket read/update authorization"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="native service-team scope",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "Party-backed active member, lead, manager, accessible-team, "
+                                "and active team-member SystemUser projections"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical support-ticket state",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active Ticket identity, status, priority, assignment, "
+                                "service team, due time, and lifecycle command outcome"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical ticket SLA clocks",
+                            owner="support.ticket_sla_clock",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="running and breached ticket SlaClock rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical Team Inbox projection",
+                            owner="communications.team_inbox_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "active conversation, owner team, assignment, latest inbound "
+                                "message, status, priority, and lifecycle command outcome"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="native work-order projection",
+                            owner="operations.work_orders",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "non-terminal native WorkOrder and dispatch assignment "
+                                "projection; CRM compatibility IDs carry no action authority"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="personal workqueue snooze state",
+                            owner="operations.agent_workqueue",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "WorkqueueSnooze rows keyed by authenticated SystemUser, "
+                                "native item kind, and native item ID"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="workqueue scoring policy",
+                            owner="operations.agent_workqueue",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed SLA bands, source scores, stable kind order, "
+                                "provider limit, and right-now band configuration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="scope-checked workqueue action",
+                            owner="operations.agent_workqueue",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed item kind, native item ID, action, audience, team "
+                                "filter, snooze mode, CommandContext, current action hints, "
+                                "owner-generated state fingerprint, and explicit completion "
+                                "confirmation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="workqueue action idempotency evidence",
+                            owner="operations.agent_workqueue",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked IdempotencyKey bound to actor, item kind, item ID, "
+                                "and action"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "execute_action enters execute_owner_command once on a clean "
+                            "session; scope, idempotency, target locks, source-owner "
+                            "participants, snooze state, audit, and outbox evidence commit "
+                            "as one root transaction."
+                        ),
+                        locking=(
+                            "The idempotency row and native target record are selected FOR "
+                            "UPDATE before current scope and action eligibility are checked; "
+                            "claim/complete fingerprints and completion confirmation are "
+                            "rechecked under that lock; source owners apply their own locked "
+                            "lifecycle policy as flush-only participants."
+                        ),
+                        idempotency=(
+                            "A mandatory caller key binds actor, item kind, native item ID, "
+                            "and action; an exact replay returns its stored result without "
+                            "reapplying the source transition."
+                        ),
+                        retries=(
+                            "Adapters retry only after complete rollback with the same "
+                            "idempotency key; stale scope, missing membership, and unavailable "
+                            "actions fail closed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "operations.agent_workqueue.item_not_found",
+                            "operations.agent_workqueue.item_out_of_scope",
+                            "operations.agent_workqueue.action_unavailable",
+                            "operations.agent_workqueue.permission_denied",
+                            "operations.agent_workqueue.team_required",
+                            "operations.agent_workqueue.claim_rejected",
+                            "operations.agent_workqueue.completion_rejected",
+                            "operations.agent_workqueue.action_review_required",
+                            "operations.agent_workqueue.stale_action_review",
+                            "operations.agent_workqueue.confirmation_required",
+                            "operations.agent_workqueue.idempotency_key_required",
+                            "operations.agent_workqueue.invalid_idempotency_key",
+                            "operations.agent_workqueue.idempotency_conflict",
+                            "operations.agent_workqueue.invalid_item_kind",
+                            "operations.agent_workqueue.invalid_snooze_mode",
+                            *owner_command_boundary_error_codes(
+                                "operations.agent_workqueue"
+                            ),
+                        ),
+                        mapping_owner="workqueue API and admin web adapters",
+                        fail_closed_on=(
+                            "inactive or Party-unbound authenticated staff identity",
+                            "requested audience or team outside native service-team scope",
+                            "stale item action hints",
+                            "missing or stale lifecycle-action review fingerprint",
+                            "completion without explicit impact confirmation",
+                            "target or idempotency mismatch",
+                            "claim without active target-team membership",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("workqueue.action_coordinated",),
+                        schema_version=1,
+                        delivery_owner="events.store",
+                        compatibility=(
+                            "Version 1 carries command/correlation, item kind and ID, "
+                            "action, result, team, and assignee identifiers without "
+                            "message or customer payloads."
+                        ),
+                        replay=(
+                            "Canonical source rows, WorkqueueSnooze, IdempotencyKey, "
+                            "transactional audit, and outbox evidence reconstruct actions."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="agent workqueue prioritization projection",
+                            input_names=(
+                                "native service-team scope",
+                                "canonical support-ticket state",
+                                "canonical ticket SLA clocks",
+                                "canonical Team Inbox projection",
+                                "native work-order projection",
+                                "personal workqueue snooze state",
+                                "workqueue scoring policy",
+                            ),
+                            writer="operations.agent_workqueue",
+                            freshness=(
+                                "Transaction-current reads plus best-effort realtime "
+                                "invalidation and a 30-second browser repair poll."
+                            ),
+                            stale_behavior=(
+                                "Render the last request result with its generated-at "
+                                "timestamp; a realtime transport failure never changes facts "
+                                "and the next poll rebuilds from authoritative inputs."
+                            ),
+                            drift_signal=(
+                                "Provider parity tests or production comparison show an "
+                                "eligible source item missing, mis-scoped, or ranked with "
+                                "different authoritative inputs."
+                            ),
+                            rebuild_operation=(
+                                "Resolve native service-team scope, fetch every registered "
+                                "provider, apply personal snoozes, then deterministically "
+                                "score and sort with stable kind and native-ID tie-breakers."
+                            ),
+                            repair_owner="operations.agent_workqueue",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner="dotmac_crm app/web/agent/workqueue.py",
+                        new_owner="operations.agent_workqueue",
+                        verification=(
+                            "provider parity, scope, owner command, admin web, route, "
+                            "ledger, and architecture tests"
+                        ),
+                        cutover_gate=(
+                            "native operator surface and all seven route behaviors are "
+                            "verified; production snooze data and callers are reconciled; "
+                            "CRM route traffic is directed to Sub"
+                        ),
+                        fallback_retirement=(
+                            "CRM workqueue routes, templates, action dispatcher, and "
+                            "personal snooze writer are deleted after the defined zero-"
+                            "traffic observation window"
+                        ),
+                    ),
+                    steward="support operations",
+                    design_refs=(
+                        "docs/designs/AGENT_WORKQUEUE_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/CRM_WEB_RETIREMENT.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_workqueue_parity.py",
+                        "tests/test_workqueue_api.py",
+                        "tests/test_workqueue_commands.py",
+                        "tests/test_workqueue_web.py",
+                        "tests/playwright/e2e/test_workqueue.py",
+                        "tests/architecture/test_agent_workqueue_boundary.py",
+                    ),
+                ),
+            ),
         ),
         entrypoints=(
             "app.web.admin.service_teams",
+            "app.web.admin.workqueue",
+            "app.api.workqueue",
             "app.services.support_ticket_settings",
             "app.services.team_inbox_*",
             "app.services.workqueue.*",

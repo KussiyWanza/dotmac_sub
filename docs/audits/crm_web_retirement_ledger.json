@@ -1521,13 +1521,13 @@
         "agent/workqueue/index.html"
       ],
       "tracking": {
-        "assessment_state": "assessed",
+        "assessment_state": "cutover_ready",
         "decision": {
-          "notes": "Sub has ranked native workqueue services, scoped API reads, snooze persistence, and realtime invalidation, but no registered workqueue owner contract and no CRM-equivalent agent HTML surface. Claim and complete actions must delegate to each item's domain owner rather than making the queue a parallel lifecycle writer.",
+          "notes": "This slice registers operations.agent_workqueue, cuts scope reads over to the service-team owner, adds the native admin page and partials, moves API and web snooze writes through one typed command, and coordinates ticket and Inbox claim/complete through their canonical lifecycle owners. Work Orders remain open/snooze-only. Production snooze reconciliation, shadow comparison, traffic cutover, fallback removal, zero traffic, and CRM source deletion remain.",
           "owner_service": "operations.agent_workqueue",
-          "state": "in_progress"
+          "state": "verified"
         },
-        "target_slice": "agent-workqueue-owner-and-web-surface"
+        "target_slice": "agent-workqueue-production-cutover-and-crm-retirement"
       }
     },
     {
@@ -15291,7 +15291,121 @@
           "agent/workqueue/index.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Ranked native agent workqueue page",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "GET /admin/workqueue"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:partial_right_now:GET:/agent/workqueue/_right_now:bb33dc9f5ac7",
@@ -15308,7 +15422,121 @@
           "agent/workqueue/_right_now.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Cross-source right-now ranking partial",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "GET /admin/workqueue/_right-now"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:partial_section:GET:/agent/workqueue/_section/{kind}:35a8c607cd8e",
@@ -15325,7 +15553,121 @@
           "agent/workqueue/_section.html"
         ]
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "idempotency": {
+            "evidence": [
+              "CRM GET behavior is replaced by the owner-built query projection; audit, event, and idempotency write semantics do not apply."
+            ],
+            "state": "not_applicable"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Native source section partial",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "GET /admin/workqueue/_section/{kind}"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:post_snooze:POST:/agent/workqueue/snooze:f185ac7b6a35",
@@ -15340,7 +15682,124 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Personal workqueue snooze command",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "POST /admin/workqueue/snooze"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:post_clear_snooze:POST:/agent/workqueue/snooze/clear:2cd5f28e4214",
@@ -15355,7 +15814,124 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Personal workqueue snooze restore command",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "POST /admin/workqueue/snooze/clear"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:post_claim:POST:/agent/workqueue/claim:47636be141c3",
@@ -15370,7 +15946,124 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Scope-checked source-owner claim coordination",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "POST /admin/workqueue/claim"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.agent.workqueue:post_complete:POST:/agent/workqueue/complete:21dbfc308e65",
@@ -15385,7 +16078,124 @@
         "router": "router",
         "templates": []
       },
-      "tracking": {}
+      "tracking": {
+        "assessment_state": "cutover_ready",
+        "migration": {
+          "callers": {
+            "evidence": [
+              "app/api/workqueue.py",
+              "app/web/admin/workqueue.py",
+              "templates/components/navigation/admin_sidebar.html",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          },
+          "cutover": {
+            "evidence": [
+              "Native web, API, and navigation cutover is implemented; production CRM traffic cutover remains pending."
+            ],
+            "state": "in_progress"
+          },
+          "data": {
+            "evidence": [
+              "Native source rows are authoritative. Production CRM WorkqueueSnooze reconciliation or a reviewed zero-data disposition remains required.",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "in_progress"
+          },
+          "rollback": {
+            "evidence": [
+              "The code rollback retains native source authority; the production traffic rollback and snooze-data procedure must be rehearsed before cutover."
+            ],
+            "state": "in_progress"
+          },
+          "shadow_verification": {
+            "evidence": [
+              "Provider parity tests are green; production scope, membership, ordering-band, and action comparison remains pending."
+            ],
+            "state": "in_progress"
+          }
+        },
+        "parity": {
+          "audit": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "behavior": {
+            "evidence": [
+              "tests/test_workqueue_parity.py",
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "errors": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "app/web/admin/workqueue.py",
+              "app/api/workqueue.py"
+            ],
+            "state": "verified"
+          },
+          "events": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "idempotency": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "docs/designs/AGENT_WORKQUEUE_SOT.md"
+            ],
+            "state": "verified"
+          },
+          "permissions": {
+            "evidence": [
+              "tests/test_workqueue_commands.py",
+              "tests/test_workqueue_web.py",
+              "tests/playwright/e2e/test_workqueue.py",
+              "tests/architecture/test_agent_workqueue_boundary.py"
+            ],
+            "state": "verified"
+          }
+        },
+        "replacement": {
+          "capability": "Scope-checked source-owner completion coordination",
+          "kind": "native_web_route",
+          "notes": "The native owner and operator surface implement this behavior. Ticket and Inbox lifecycle changes delegate to their canonical owners; Work Orders intentionally expose no inline lifecycle transition. Production data reconciliation, traffic cutover, and retirement evidence remain.",
+          "owner_service": "operations.agent_workqueue",
+          "surfaces": [
+            "POST /admin/workqueue/complete"
+          ]
+        },
+        "retirement": {
+          "crm_route_deleted": {
+            "evidence": [
+              "CRM route remains at the pinned source revision."
+            ],
+            "state": "in_progress"
+          },
+          "fallback_removed": {
+            "evidence": [
+              "CRM route, templates, action dispatcher, and snooze writer remain."
+            ],
+            "state": "in_progress"
+          },
+          "zero_traffic": {
+            "evidence": [
+              "The 30-day Loki and VictoriaMetrics observation window has not started."
+            ],
+            "state": "in_progress"
+          }
+        }
+      }
     },
     {
       "id": "app.web.auth.routes:login_page:GET:/auth/login:35a3185b5c05",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
@@ -18,6 +18,8 @@ from app.schemas.workqueue import (
 from app.services import workqueue
 from app.services.auth_dependencies import require_permission, require_user_auth
 from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from app.services.realtime_platform import (
     iter_topic_events,
     ready_event,
@@ -26,7 +28,13 @@ from app.services.realtime_platform import (
 )
 from app.services.response import list_response
 from app.services.workqueue import WorkqueuePermissionError, WorkqueuePrincipal
+from app.services.workqueue.commands import (
+    SnoozeMode,
+    WorkqueueActionCommand,
+    execute_action,
+)
 from app.services.workqueue.events import channels_for_scope
+from app.services.workqueue.types import ActionKind, ItemKind
 
 router = APIRouter(prefix="/workqueue", tags=["workqueue"])
 logger = logging.getLogger(__name__)
@@ -46,6 +54,35 @@ def _principal(db: Session, auth: dict) -> WorkqueuePrincipal:
         return workqueue.principal_from_auth(db, auth)
     except WorkqueuePermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _command_context(
+    auth: dict,
+    *,
+    action: ActionKind,
+    idempotency_key: str | None,
+) -> CommandContext:
+    command_id = uuid4()
+    principal_id = _user_id(auth)
+    actor_type = "api_key" if auth.get("principal_type") == "api_key" else "user"
+    return CommandContext(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=f"{actor_type}:{principal_id}",
+        scope="support:ticket:update",
+        reason=f"Execute workqueue {action.value} API command",
+        idempotency_key=str(idempotency_key or command_id),
+    )
+
+
+def _map_action_error(exc: DomainError) -> HTTPException:
+    if exc.code.endswith("permission_denied") or exc.code.endswith("item_out_of_scope"):
+        return HTTPException(status_code=403, detail=exc.message)
+    if exc.code.endswith("item_not_found"):
+        return HTTPException(status_code=404, detail=exc.message)
+    if exc.code.endswith("idempotency_conflict"):
+        return HTTPException(status_code=409, detail=exc.message)
+    return HTTPException(status_code=422, detail=exc.message)
 
 
 @router.get(
@@ -164,16 +201,47 @@ def workqueue_events(
 )
 def snooze_item(
     payload: WorkqueueSnoozeCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     auth=Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    return workqueue.snooze_item_committed(
-        db,
-        user_id=_user_id(auth),
-        item_kind=payload.item_kind,
-        item_id=payload.item_id,
-        snooze_until=payload.snooze_until,
-        until_next_reply=payload.until_next_reply,
+    mode = SnoozeMode.indefinite
+    if payload.until_next_reply:
+        mode = SnoozeMode.next_reply
+    elif payload.snooze_until is not None:
+        mode = SnoozeMode.explicit
+    try:
+        outcome = execute_action(
+            db,
+            WorkqueueActionCommand(
+                context=_command_context(
+                    auth,
+                    action=ActionKind.snooze,
+                    idempotency_key=idempotency_key,
+                ),
+                principal=_principal(db, auth),
+                item_kind=ItemKind(payload.item_kind),
+                item_id=payload.item_id,
+                action=ActionKind.snooze,
+                snooze_mode=mode,
+                explicit_snooze_until=payload.snooze_until,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        if isinstance(exc, DomainError):
+            raise _map_action_error(exc) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    snapshot = outcome.snooze
+    if snapshot is None:
+        raise HTTPException(status_code=500, detail="Snooze result evidence is missing")
+    return WorkqueueSnoozeRead(
+        id=snapshot.snooze_id,
+        user_id=snapshot.system_user_id,
+        item_kind=snapshot.item_kind.value,
+        item_id=snapshot.item_id,
+        snooze_until=snapshot.snooze_until,
+        until_next_reply=snapshot.until_next_reply,
+        created_at=snapshot.created_at,
     )
 
 
@@ -185,12 +253,26 @@ def snooze_item(
 def clear_snooze(
     item_kind: str,
     item_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     auth=Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    workqueue.clear_snooze_committed(
-        db,
-        user_id=_user_id(auth),
-        item_kind=item_kind,
-        item_id=item_id,
-    )
+    try:
+        execute_action(
+            db,
+            WorkqueueActionCommand(
+                context=_command_context(
+                    auth,
+                    action=ActionKind.clear_snooze,
+                    idempotency_key=idempotency_key,
+                ),
+                principal=_principal(db, auth),
+                item_kind=ItemKind(item_kind),
+                item_id=item_id,
+                action=ActionKind.clear_snooze,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        if isinstance(exc, DomainError):
+            raise _map_action_error(exc) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

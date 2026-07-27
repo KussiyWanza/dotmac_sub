@@ -187,9 +187,13 @@ def test_reviewed_target_slices_keep_exact_owner_state() -> None:
     )
 
     workqueue = modules["app/web/agent/workqueue.py"]
-    assert workqueue["assessment_state"] == "assessed"
+    assert workqueue["assessment_state"] == "cutover_ready"
     assert workqueue["decision"]["owner_service"] == "operations.agent_workqueue"
-    assert workqueue["decision"]["state"] == "in_progress"
+    assert workqueue["decision"]["state"] == "verified"
+    assert (
+        workqueue["target_slice"]
+        == "agent-workqueue-production-cutover-and-crm-retirement"
+    )
 
     projects = modules["app/web/admin/projects.py"]
     assert projects["assessment_state"] == "implementation_in_progress"
@@ -229,6 +233,44 @@ def test_service_team_routes_record_native_replacements_without_retirement() -> 
         and route["retirement"]["crm_route_deleted"]["state"] == "unassessed"
         for route in routes.values()
     )
+
+
+def test_workqueue_routes_record_native_replacements_without_retirement() -> None:
+    ledger = crm_web_retirement.load_ledger()
+    defaults = ledger["tracking_defaults"]["route"]
+    routes = {
+        route["source"]["handler"]: crm_web_retirement._deep_merge(
+            defaults,
+            route["tracking"],
+        )
+        for route in ledger["routes"]
+        if route["source"]["file"] == "app/web/agent/workqueue.py"
+    }
+
+    assert set(routes) == set(crm_web_retirement.WORKQUEUE_ROUTE_REPLACEMENTS)
+    assert {route["assessment_state"] for route in routes.values()} == {"cutover_ready"}
+    assert {route["replacement"]["owner_service"] for route in routes.values()} == {
+        "operations.agent_workqueue"
+    }
+    assert all(
+        route["migration"]["callers"]["state"] == "verified"
+        and route["migration"]["data"]["state"] == "in_progress"
+        and route["migration"]["shadow_verification"]["state"] == "in_progress"
+        and route["migration"]["cutover"]["state"] == "in_progress"
+        and route["retirement"]["crm_route_deleted"]["state"] == "in_progress"
+        for route in routes.values()
+    )
+    for handler in crm_web_retirement.WORKQUEUE_READ_HANDLERS:
+        assert routes[handler]["parity"]["audit"]["state"] == "not_applicable"
+        assert routes[handler]["parity"]["events"]["state"] == "not_applicable"
+        assert routes[handler]["parity"]["idempotency"]["state"] == "not_applicable"
+    for handler in (
+        set(crm_web_retirement.WORKQUEUE_ROUTE_REPLACEMENTS)
+        - crm_web_retirement.WORKQUEUE_READ_HANDLERS
+    ):
+        assert routes[handler]["parity"]["audit"]["state"] == "verified"
+        assert routes[handler]["parity"]["events"]["state"] == "verified"
+        assert routes[handler]["parity"]["idempotency"]["state"] == "verified"
 
 
 def test_reviewed_inbox_modules_are_not_mistaken_for_retired() -> None:

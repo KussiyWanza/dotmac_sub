@@ -206,6 +206,34 @@ class ServiceTeamResolution:
 
 
 @dataclass(frozen=True)
+class StaffServiceTeamScope:
+    """Active native team scope for one authenticated staff principal."""
+
+    system_user_id: UUID
+    person_party_id: UUID | None
+    identity_available: bool
+    member_team_ids: tuple[UUID, ...]
+    lead_team_ids: tuple[UUID, ...]
+    managed_team_ids: tuple[UUID, ...]
+
+    @property
+    def accessible_team_ids(self) -> tuple[UUID, ...]:
+        return tuple(
+            sorted(
+                {
+                    *self.member_team_ids,
+                    *self.managed_team_ids,
+                },
+                key=str,
+            )
+        )
+
+    @property
+    def leads_team(self) -> bool:
+        return bool(self.lead_team_ids or self.managed_team_ids)
+
+
+@dataclass(frozen=True)
 class ServiceTeamRoleRegionMember:
     person_id: UUID
     system_user_id: UUID
@@ -1160,6 +1188,113 @@ def resolve_staff_service_team(
         kind=ServiceTeamResolutionKind.resolved,
         team_id=candidate_team_ids[0],
         candidate_team_ids=candidate_team_ids,
+    )
+
+
+def resolve_staff_team_scope(
+    db: Session,
+    system_user_id: UUID,
+) -> StaffServiceTeamScope:
+    """Resolve every active native team role for one staff principal.
+
+    Workqueue, Inbox, ticket, and dispatch callers consume this query instead of
+    comparing adapter-facing ``SystemUser.id`` values with Party-backed
+    ``ServiceTeamMember.person_id`` values themselves.
+    """
+
+    user = db.get(SystemUser, system_user_id)
+    if user is None or not user.is_active or user.person_party_id is None:
+        return StaffServiceTeamScope(
+            system_user_id=system_user_id,
+            person_party_id=(user.person_party_id if user is not None else None),
+            identity_available=False,
+            member_team_ids=(),
+            lead_team_ids=(),
+            managed_team_ids=(),
+        )
+    person_party_id = user.person_party_id
+    party_is_active = db.scalar(
+        select(Party.id).where(
+            Party.id == person_party_id,
+            Party.party_type == PartyType.person.value,
+            Party.status == PartyIdentityStatus.active.value,
+        )
+    )
+    if party_is_active is None:
+        return StaffServiceTeamScope(
+            system_user_id=system_user_id,
+            person_party_id=person_party_id,
+            identity_available=False,
+            member_team_ids=(),
+            lead_team_ids=(),
+            managed_team_ids=(),
+        )
+
+    memberships = db.execute(
+        select(ServiceTeam.id, ServiceTeamMember.role)
+        .join(ServiceTeamMember, ServiceTeamMember.team_id == ServiceTeam.id)
+        .where(
+            ServiceTeam.is_active.is_(True),
+            ServiceTeamMember.is_active.is_(True),
+            ServiceTeamMember.person_id == person_party_id,
+        )
+        .order_by(ServiceTeam.id.asc())
+    ).all()
+    member_team_ids = tuple(row[0] for row in memberships)
+    lead_roles = {
+        ServiceTeamMemberRole.lead.value,
+        ServiceTeamMemberRole.manager.value,
+    }
+    lead_team_ids = tuple(row[0] for row in memberships if row[1] in lead_roles)
+    managed_team_ids = tuple(
+        db.scalars(
+            select(ServiceTeam.id)
+            .where(
+                ServiceTeam.is_active.is_(True),
+                ServiceTeam.manager_person_id == person_party_id,
+            )
+            .order_by(ServiceTeam.id.asc())
+        ).all()
+    )
+    return StaffServiceTeamScope(
+        system_user_id=system_user_id,
+        person_party_id=person_party_id,
+        identity_available=True,
+        member_team_ids=member_team_ids,
+        lead_team_ids=lead_team_ids,
+        managed_team_ids=managed_team_ids,
+    )
+
+
+def list_active_team_member_system_user_ids(
+    db: Session,
+    team_ids: frozenset[UUID] | set[UUID] | tuple[UUID, ...],
+) -> tuple[UUID, ...]:
+    """Return active authenticated staff IDs for active native teams."""
+
+    normalized_team_ids = tuple(sorted(set(team_ids), key=str))
+    if not normalized_team_ids:
+        return ()
+    return tuple(
+        db.scalars(
+            select(SystemUser.id)
+            .join(
+                ServiceTeamMember,
+                ServiceTeamMember.person_id == SystemUser.person_party_id,
+            )
+            .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+            .join(Party, Party.id == ServiceTeamMember.person_id)
+            .where(
+                ServiceTeam.id.in_(normalized_team_ids),
+                ServiceTeam.is_active.is_(True),
+                ServiceTeamMember.is_active.is_(True),
+                SystemUser.is_active.is_(True),
+                Party.party_type == PartyType.person.value,
+                Party.status == PartyIdentityStatus.active.value,
+            )
+            .distinct()
+            .order_by(SystemUser.id.asc())
+        ).all()
     )
 
 

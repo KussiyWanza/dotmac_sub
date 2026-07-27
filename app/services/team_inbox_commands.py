@@ -40,6 +40,7 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+    owner_command_active,
 )
 
 T = TypeVar("T")
@@ -121,6 +122,11 @@ def _commit(
     *,
     context: CommandContext | None = None,
 ) -> T:
+    if owner_command_active(db):
+        return action()
+    from app.services.db_session_adapter import db_session_adapter
+
+    db_session_adapter.release_read_transaction(db)
     command_context = context or CommandContext.system(
         actor="system:team-inbox-admin-adapter",
         scope="team-inbox:operator-command",

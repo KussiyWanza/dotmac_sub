@@ -112,6 +112,7 @@ from app.web.admin.vendor_routes import router as vendor_routes_router
 from app.web.admin.vendors import router as vendors_router
 from app.web.admin.wireguard import legacy_router as wireguard_legacy_router
 from app.web.admin.wireguard import router as wireguard_router
+from app.web.admin.workqueue import router as workqueue_router
 from app.web.auth.dependencies import require_admin_web_auth
 
 router = APIRouter(
@@ -257,6 +258,7 @@ router.include_router(
     dependencies=[Depends(module_manager_service.require_module_enabled("billing"))],
 )
 router.include_router(inbox_router)
+router.include_router(workqueue_router)
 router.include_router(system_router)
 router.include_router(system_whats_new_router)
 router.include_router(

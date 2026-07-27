@@ -38,6 +38,8 @@ class WorkqueuePermissionError(PermissionError):
 
 @dataclass(frozen=True)
 class WorkqueuePrincipal:
+    # Compatibility name: this is the authenticated SystemUser identifier, not
+    # the staff Party identifier used by native service-team membership.
     person_id: UUID
     roles: frozenset[str]
     scopes: frozenset[str]
@@ -47,6 +49,12 @@ class WorkqueuePrincipal:
     @property
     def is_admin(self) -> bool:
         return bool(self.roles & ADMIN_ROLES)
+
+    @property
+    def system_user_id(self) -> UUID:
+        """Return the explicit identity type represented by ``person_id``."""
+
+        return self.person_id
 
 
 def _normalize(values: Any) -> frozenset[str]:
