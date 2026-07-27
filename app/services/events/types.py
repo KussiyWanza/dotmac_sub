@@ -78,6 +78,9 @@ class EventType(enum.Enum):
     topup_intent_direct_transfer_created = "topup_intent.direct_transfer_created"
     topup_intent_direct_transfer_canceled = "topup_intent.direct_transfer_canceled"
     topup_intent_direct_transfer_submitted = "topup_intent.direct_transfer_submitted"
+    topup_intent_direct_transfer_proof_rejected = (
+        "topup_intent.direct_transfer_proof_rejected"
+    )
     topup_intent_completed = "topup_intent.completed"
     topup_intent_expired = "topup_intent.expired"
     topup_intent_gateway_created = "topup_intent.gateway_created"

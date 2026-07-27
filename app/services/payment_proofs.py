@@ -555,7 +555,7 @@ def _submit_proof(
         wht_value = round_money(gross_value - value)
         if rate_value is None and gross_value > 0:
             rate_value = round_money(wht_value / gross_value * Decimal("100"))
-        elif rate_value is not None:
+        elif rate_value is not None and not allow_server_wht_snapshot:
             expected_wht = round_money(gross_value * rate_value / Decimal("100"))
             if expected_wht != wht_value:
                 raise _error(
@@ -670,6 +670,31 @@ def _open_invoice_allocations(
         )
         remaining -= take
     return allocations
+
+
+def _exact_linked_direct_transfer_intent(
+    db: Session,
+    proof: PaymentProof,
+) -> TopupIntent | None:
+    """Return only the direct-transfer intent that names this exact proof."""
+
+    if proof.account_id is None or not str(proof.reference or "").strip():
+        return None
+    intent = db.scalar(
+        select(TopupIntent)
+        .where(
+            TopupIntent.account_id == proof.account_id,
+            TopupIntent.reference == proof.reference,
+            TopupIntent.provider_type == DIRECT_TRANSFER_PROVIDER,
+        )
+        .order_by(TopupIntent.created_at.desc())
+    )
+    if intent is None:
+        return None
+    linked_proof_id = str(
+        (intent.metadata_ or {}).get("payment_proof_id") or ""
+    ).strip()
+    return intent if linked_proof_id == str(proof.id) else None
 
 
 def verify_proof(
@@ -811,6 +836,7 @@ def _verify_proof(
         )
         .order_by(TopupIntent.created_at.desc())
     )
+    exact_linked_intent = _exact_linked_direct_transfer_intent(db, proof)
     direct_transfer_metadata = (
         dict(direct_transfer_intent.metadata_ or {})
         if direct_transfer_intent is not None
@@ -962,6 +988,22 @@ def _verify_proof(
     proof.verified_by = str(verified_by)
     proof.review_notes = (review_notes or "").strip() or None
     proof.payment_id = payment.id
+    if exact_linked_intent is not None:
+        from app.services import topup_intents
+
+        topup_intents.stage_direct_transfer_proof_resolution(
+            db,
+            topup_intents.ResolveDirectTransferProofCommand(
+                intent_id=exact_linked_intent.id,
+                proof_id=proof.id,
+                outcome=topup_intents.DirectTransferProofResolutionOutcome.verified,
+                payment_id=payment.id,
+                source=(
+                    topup_intents.DirectTransferProofResolutionSource.payment_proof_review
+                ),
+            ),
+            context=context,
+        )
     _resolve_reviewer_confirmation(db, proof)
     _audit(
         db,
@@ -1239,6 +1281,22 @@ def _reject_proof(
     proof.status = PaymentProofStatus.rejected
     proof.verified_by = str(verified_by)
     proof.review_notes = review_notes.strip()
+    exact_linked_intent = _exact_linked_direct_transfer_intent(db, proof)
+    if exact_linked_intent is not None:
+        from app.services import topup_intents
+
+        topup_intents.stage_direct_transfer_proof_resolution(
+            db,
+            topup_intents.ResolveDirectTransferProofCommand(
+                intent_id=exact_linked_intent.id,
+                proof_id=proof.id,
+                outcome=topup_intents.DirectTransferProofResolutionOutcome.rejected,
+                source=(
+                    topup_intents.DirectTransferProofResolutionSource.payment_proof_review
+                ),
+            ),
+            context=context,
+        )
     _resolve_reviewer_confirmation(db, proof)
     _audit(
         db,

@@ -81,6 +81,12 @@ def test_direct_transfer_intent_participant_has_complete_contract() -> None:
         )
         == service
     )
+    assert (
+        sot_relationships.owning_service_for(
+            "direct-transfer reviewed-proof resolution projection"
+        )
+        == service
+    )
 
 
 def test_direct_transfer_creation_coordinator_has_complete_contract() -> None:
@@ -101,6 +107,29 @@ def test_direct_transfer_creation_coordinator_has_complete_contract() -> None:
     assert (
         sot_relationships.owning_service_for(
             "customer direct-transfer intent creation coordination"
+        )
+        == service
+    )
+
+
+def test_terminal_proof_reconciliation_has_complete_contract() -> None:
+    service = sot_relationships.service_relationship(
+        "financial.topup_intent_proof_reconciliation"
+    )
+
+    assert service.module == "app.services.topup_intent_proof_reconciliation"
+    assert service.contract is not None
+    assert service.contract.transaction.mode is TransactionMode.OWNER_MANAGED
+    assert (
+        contract_validation_errors(
+            service,
+            service_names={item.name for item in sot_relationships.all_services()},
+        )
+        == ()
+    )
+    assert (
+        sot_relationships.owning_service_for(
+            "submitted intent terminal-proof reconciliation"
         )
         == service
     )
@@ -138,6 +167,18 @@ def test_payment_proof_owner_composes_locked_intent_participant() -> None:
     assert "stage_direct_transfer_proof_submission" in calls
     assert "commit" not in calls
     assert "rollback" not in calls
+
+
+def test_payment_proof_review_composes_intent_resolution_participant() -> None:
+    for function_name in ("_verify_proof", "_reject_proof"):
+        review_function = _function(
+            "app/services/payment_proofs.py",
+            function_name,
+        )
+        calls = _attribute_calls(review_function)
+        assert "stage_direct_transfer_proof_resolution" in calls
+        assert "commit" not in calls
+        assert "rollback" not in calls
 
 
 def test_customer_portal_does_not_write_direct_transfer_intent_state() -> None:
@@ -262,6 +303,7 @@ def test_gateway_adapters_delegate_without_lifecycle_policy_or_writes() -> None:
 def test_completion_and_expiry_callers_delegate_to_intent_participant() -> None:
     expected_calls = {
         "app/services/account_credit_deposits.py": "stage_topup_intent_completion",
+        "app/services/payment_proofs.py": "stage_direct_transfer_proof_resolution",
         "app/services/payment_webhook_commands.py": "stage_topup_intent_completion",
         "app/services/customer_portal_flow_payments.py": (
             "stage_topup_intent_completion"
@@ -290,6 +332,9 @@ def test_topup_intent_participant_never_completes_its_transaction() -> None:
     assert "begin_nested" not in calls
     assert "HTTPException" not in source
     assert "topup_intent.direct_transfer_submitted" in (
+        ROOT / "app/services/events/types.py"
+    ).read_text(encoding="utf-8")
+    assert "topup_intent.direct_transfer_proof_rejected" in (
         ROOT / "app/services/events/types.py"
     ).read_text(encoding="utf-8")
     assert "topup_intent.completed" in (

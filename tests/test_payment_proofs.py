@@ -109,15 +109,26 @@ def _submit(db_session, sub, amount="5000", reference=None, file_path="x.png"):
     )
 
 
-def _direct_transfer_intent(db_session, sub, *, status="pending") -> TopupIntent:
+def _direct_transfer_intent(
+    db_session,
+    sub,
+    *,
+    status="pending",
+    requested_amount="5000.00",
+    metadata=None,
+) -> TopupIntent:
     intent = TopupIntent(
         account_id=sub.id,
         reference=f"TRF-{uuid4().hex[:12].upper()}",
         provider_type=DIRECT_TRANSFER_PROVIDER,
         currency="NGN",
-        requested_amount=Decimal("5000.00"),
+        requested_amount=Decimal(requested_amount),
         status=status,
-        metadata_={"payment_method": "bank_transfer"},
+        metadata_={
+            "payment_method": "bank_transfer",
+            "payment_flow": "account_topup",
+            **dict(metadata or {}),
+        },
     )
     db_session.add(intent)
     db_session.commit()
@@ -188,6 +199,98 @@ def test_direct_transfer_submission_commits_proof_intent_link_and_events_atomica
         "payment_proof.submitted",
         "topup_intent.direct_transfer_submitted",
     }
+
+
+def test_verify_linked_direct_transfer_completes_intent_atomically(db_session):
+    sub = _account(db_session)
+    intent = _direct_transfer_intent(db_session, sub)
+    proof = _submit_direct_transfer(db_session, sub, intent)
+
+    result = _verify(db_session, str(proof.id), verified_by="admin-1")
+
+    persisted_intent = db_session.get(TopupIntent, intent.id)
+    assert persisted_intent is not None
+    assert persisted_intent.status == TopupIntentStatus.completed.value
+    assert str(persisted_intent.completed_payment_id) == result["payment_id"]
+    assert persisted_intent.metadata_["payment_proof_resolution"] == {
+        "schema_version": 1,
+        "payment_proof_id": str(proof.id),
+        "outcome": "verified",
+        "source": "payment_proof_review",
+    }
+    completed = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "topup_intent.completed")
+        .one()
+    )
+    assert completed.payload["payment_id"] == result["payment_id"]
+    assert completed.payload["source"] == "payment_proof_review"
+
+
+def test_reject_linked_direct_transfer_cancels_intent_and_unblocks_deposit(
+    db_session,
+):
+    sub = _account(db_session)
+    intent = _direct_transfer_intent(db_session, sub)
+    proof = _submit_direct_transfer(db_session, sub, intent)
+
+    _reject(
+        db_session,
+        str(proof.id),
+        verified_by="admin-1",
+        review_notes="Bank statement did not match",
+    )
+
+    persisted_intent = db_session.get(TopupIntent, intent.id)
+    assert persisted_intent is not None
+    assert persisted_intent.status == TopupIntentStatus.canceled.value
+    assert persisted_intent.completed_payment_id is None
+    assert persisted_intent.metadata_["canceled_reason"] == "payment_proof_rejected"
+    assert persisted_intent.metadata_["payment_proof_resolution"] == {
+        "schema_version": 1,
+        "payment_proof_id": str(proof.id),
+        "outcome": "rejected",
+        "source": "payment_proof_review",
+    }
+    assert AccountCreditDeposits.active_request(db_session, account_id=sub.id) is None
+    rejected = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "topup_intent.direct_transfer_proof_rejected")
+        .one()
+    )
+    assert rejected.payload["payment_proof_id"] == str(proof.id)
+    assert rejected.payload["reason_code"] == "payment_proof_rejected"
+
+
+def test_verify_rolls_back_when_linked_intent_resolution_fails(db_session, monkeypatch):
+    from app.services import topup_intents
+
+    sub = _account(db_session)
+    intent = _direct_transfer_intent(db_session, sub)
+    proof = _submit_direct_transfer(db_session, sub, intent)
+
+    def fail_resolution(*_args, **_kwargs):
+        raise RuntimeError("intent resolution unavailable")
+
+    monkeypatch.setattr(
+        topup_intents,
+        "stage_direct_transfer_proof_resolution",
+        fail_resolution,
+    )
+
+    with pytest.raises(RuntimeError, match="intent resolution unavailable"):
+        _verify(db_session, str(proof.id), verified_by="admin-1")
+
+    db_session.expire_all()
+    persisted_proof = db_session.get(PaymentProof, proof.id)
+    persisted_intent = db_session.get(TopupIntent, intent.id)
+    assert persisted_proof is not None
+    assert persisted_proof.status is PaymentProofStatus.submitted
+    assert persisted_proof.payment_id is None
+    assert persisted_intent is not None
+    assert persisted_intent.status == TopupIntentStatus.submitted.value
+    assert persisted_intent.completed_payment_id is None
+    assert db_session.query(Payment).count() == 0
 
 
 def test_direct_transfer_submission_rolls_back_proof_when_intent_staging_fails(
@@ -515,17 +618,11 @@ def test_deposit_proof_review_uses_typed_account_credit_owner(db_session):
     )
     db_session.commit()
     invoice = _open_invoice(db_session, sub, amount="3000.00")
-    proof = _submit(
-        db_session,
-        sub,
-        amount="5000.00",
-        reference=intent.reference,
-        file_path="typed-deposit.png",
-    )
+    proof = _submit_direct_transfer(db_session, sub, intent)
 
     result = _verify(
         db_session,
-        proof["id"],
+        str(proof.id),
         verified_by="admin-1",
     )
 
@@ -570,7 +667,7 @@ def test_verify_direct_transfer_wht_uses_snapshot_and_rejects_amount_tampering(
         provider_type=DIRECT_TRANSFER_PROVIDER,
         currency="NGN",
         requested_amount=Decimal("102500.00"),
-        status=TopupIntentStatus.submitted.value,
+        status=TopupIntentStatus.pending.value,
         metadata_={
             "payment_method": "bank_transfer",
             "payment_flow": "invoice_payment",
@@ -592,20 +689,13 @@ def test_verify_direct_transfer_wht_uses_snapshot_and_rejects_amount_tampering(
     )
     db_session.add(intent)
     db_session.commit()
-    proof = _submit_command(
-        db_session,
-        str(sub.id),
-        submitted_by=str(sub.id),
-        amount="102500.00",
-        reference="TRF-WHT-SNAPSHOT",
-        file_path="uploads/payment_proofs/wht-snapshot.png",
-    )
+    proof = _submit_direct_transfer(db_session, sub, intent)
 
     with pytest.raises(svc.PaymentProofReviewError) as exc:
-        _verify(db_session, proof["id"], verified_by="admin-1", amount="100000.00")
+        _verify(db_session, str(proof.id), verified_by="admin-1", amount="100000.00")
     assert exc.value.code == "financial.payment_proofs.verified_amount_conflict"
 
-    out = _verify(db_session, proof["id"], verified_by="admin-1")
+    out = _verify(db_session, str(proof.id), verified_by="admin-1")
     payment = db_session.get(Payment, out["payment_id"])
     record = db_session.get(WithholdingTaxRecord, out["withholding_tax_record_id"])
     db_session.refresh(invoice)
@@ -624,6 +714,9 @@ def test_verify_direct_transfer_wht_uses_snapshot_and_rejects_amount_tampering(
     assert record.wht_amount == Decimal("5000.00")
     assert record.wht_rate == Decimal("5.00")
     assert invoice.status == InvoiceStatus.paid
+    db_session.refresh(intent)
+    assert intent.status == TopupIntentStatus.completed.value
+    assert intent.completed_payment_id == payment.id
 
 
 def test_duplicate_reference_is_flagged_on_submit(db_session):

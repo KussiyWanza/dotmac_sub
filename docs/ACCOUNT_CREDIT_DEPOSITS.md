@@ -15,6 +15,14 @@ participant, which flushes but never commits or rolls back. Callers cannot
 select transaction behavior or pass a transport-shaped gateway object into the
 domain owner.
 
+Payment-proof review also composes the canonical
+`financial.topup_intents` reviewed-proof participant in the same transaction.
+Verification completes the exact metadata-linked direct-transfer intent from
+the resulting canonical Payment. Rejection cancels that exact submitted intent
+with `payment_proof_rejected` provenance. Review never infers intent ownership
+from another proof on the account, and a proof review cannot commit while its
+linked intent remains submitted.
+
 Every new deposit intent persists:
 
 - `purpose=account_credit_deposit`
@@ -155,6 +163,24 @@ invoices with unused compatible credit, overallocated payments, completed
 deposit intents without exact settlement evidence, duplicate provider
 references and unresolved deposit webhooks. Repair invokes the canonical
 applicator; it never invents payments or infers cash from memo text.
+
+`financial.topup_intent_proof_reconciliation` owns the separate lifecycle
+invariant that a submitted direct-transfer intent must not reference a verified
+or rejected proof. Its dry-run preview joins the exact persisted
+`payment_proof_id`, classifies verified/current-succeeded payments for
+completion, rejected proofs for cancellation, and quarantines missing,
+inactive, reversed, or changed payment evidence. Apply mode runs one
+owner-managed transaction per exact candidate and delegates every status and
+completion-field write to `financial.topup_intents`; it never posts, allocates,
+reverses, or deletes money.
+
+Operators preview and then apply the bounded repair from the application
+environment:
+
+```bash
+poetry run python -m scripts.one_off.reconcile_topup_intent_proofs --limit 500
+poetry run python -m scripts.one_off.reconcile_topup_intent_proofs --limit 500 --apply
+```
 
 Customer-facing pages say “Deposit Account Credit”, show current credit, show
 the live owner-generated allocation preview, and permit checkout even when

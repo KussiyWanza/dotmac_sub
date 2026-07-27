@@ -78,6 +78,8 @@ class TopupIntentCompletionSource(str, Enum):
     customer_invoice_verify = "customer_invoice_verify"
     customer_legacy_topup_verify = "customer_legacy_topup_verify"
     gateway_reconciliation = "gateway_reconciliation"
+    payment_proof_review = "payment_proof_review"
+    payment_proof_reconciliation = "payment_proof_reconciliation"
     reseller_verify = "reseller_verify"
 
 
@@ -111,6 +113,20 @@ class TopupIntentFailureReason(str, Enum):
     """Non-sensitive reason vocabulary for failed intent projection."""
 
     gateway_charge_failed = "gateway_charge_failed"
+
+
+class DirectTransferProofResolutionOutcome(str, Enum):
+    """Terminal proof observations admitted by the intent projection owner."""
+
+    verified = "verified"
+    rejected = "rejected"
+
+
+class DirectTransferProofResolutionSource(str, Enum):
+    """Named coordinators allowed to project a reviewed transfer proof."""
+
+    payment_proof_review = "payment_proof_review"
+    payment_proof_reconciliation = "payment_proof_reconciliation"
 
 
 _VALID_TOPUP_STATUSES: frozenset[str] = frozenset(s.value for s in TopupIntentStatus)
@@ -317,6 +333,17 @@ class CompleteTopupIntentCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolveDirectTransferProofCommand:
+    """Exact reviewed-proof evidence used to terminalize one linked intent."""
+
+    intent_id: UUID
+    proof_id: UUID
+    outcome: DirectTransferProofResolutionOutcome
+    source: DirectTransferProofResolutionSource
+    payment_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExpireTopupIntentCommand:
     """Canonical time evidence used to park one abandoned gateway intent."""
 
@@ -340,6 +367,17 @@ class TopupIntentProjectionResult:
     """Immutable participant result for completion or expiry projection."""
 
     intent_id: UUID
+    status: TopupIntentStatus
+    payment_id: UUID | None
+    changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DirectTransferProofResolutionResult:
+    """Immutable outcome of projecting one exact reviewed proof."""
+
+    intent_id: UUID
+    proof_id: UUID
     status: TopupIntentStatus
     payment_id: UUID | None
     changed: bool
@@ -875,6 +913,148 @@ def stage_topup_intent_completion(
         status=TopupIntentStatus.completed,
         payment_id=payment.id,
         changed=changed,
+    )
+
+
+def stage_direct_transfer_proof_resolution(
+    db: Session,
+    command: ResolveDirectTransferProofCommand,
+    *,
+    context: CommandContext,
+) -> DirectTransferProofResolutionResult:
+    """Project one exact terminal proof inside its review/reconciliation transaction."""
+
+    intent = lock_topup_intent_scope(db, command.intent_id)
+    if intent.provider_type != DIRECT_TRANSFER_PROVIDER:
+        raise _error(
+            "provider_mismatch",
+            "Top-up intent is not a direct bank transfer",
+            intent_id=str(intent.id),
+            provider_type=intent.provider_type,
+        )
+
+    metadata = dict(intent.metadata_ or {})
+    linked_proof_id = str(metadata.get("payment_proof_id") or "").strip()
+    if linked_proof_id != str(command.proof_id):
+        raise _error(
+            "proof_resolution_link_mismatch",
+            "Reviewed proof does not match the intent's exact proof evidence",
+            intent_id=str(intent.id),
+            proof_id=str(command.proof_id),
+            linked_proof_id=linked_proof_id or None,
+        )
+
+    resolution = {
+        "schema_version": 1,
+        "payment_proof_id": str(command.proof_id),
+        "outcome": command.outcome.value,
+        "source": command.source.value,
+    }
+    existing_resolution = metadata.get("payment_proof_resolution")
+    if existing_resolution is not None and existing_resolution != resolution:
+        raise _error(
+            "proof_resolution_conflict",
+            "Intent already records different proof-resolution evidence",
+            intent_id=str(intent.id),
+            proof_id=str(command.proof_id),
+        )
+
+    if command.outcome is DirectTransferProofResolutionOutcome.verified:
+        if command.payment_id is None:
+            raise _error(
+                "proof_resolution_payment_required",
+                "Verified proof resolution requires canonical payment evidence",
+                intent_id=str(intent.id),
+                proof_id=str(command.proof_id),
+            )
+        completion_source = (
+            TopupIntentCompletionSource.payment_proof_review
+            if command.source
+            is DirectTransferProofResolutionSource.payment_proof_review
+            else TopupIntentCompletionSource.payment_proof_reconciliation
+        )
+        projection = stage_topup_intent_completion(
+            db,
+            CompleteTopupIntentCommand(
+                intent_id=intent.id,
+                payment_id=command.payment_id,
+                source=completion_source,
+            ),
+            context=context,
+        )
+        metadata_changed = existing_resolution is None
+        if metadata_changed:
+            metadata["payment_proof_resolution"] = resolution
+            intent.metadata_ = metadata
+            db.add(intent)
+        return DirectTransferProofResolutionResult(
+            intent_id=intent.id,
+            proof_id=command.proof_id,
+            status=projection.status,
+            payment_id=projection.payment_id,
+            changed=projection.changed or metadata_changed,
+        )
+
+    if command.payment_id is not None:
+        raise _error(
+            "proof_resolution_payment_forbidden",
+            "Rejected proof resolution cannot carry payment evidence",
+            intent_id=str(intent.id),
+            proof_id=str(command.proof_id),
+        )
+    if (
+        intent.status == TopupIntentStatus.canceled.value
+        and existing_resolution == resolution
+    ):
+        return DirectTransferProofResolutionResult(
+            intent_id=intent.id,
+            proof_id=command.proof_id,
+            status=TopupIntentStatus.canceled,
+            payment_id=intent.completed_payment_id,
+            changed=False,
+        )
+    if intent.status != TopupIntentStatus.submitted.value:
+        raise _error(
+            "invalid_transition",
+            "Only a submitted direct-transfer intent can record proof rejection",
+            intent_id=str(intent.id),
+            status=intent.status,
+        )
+
+    set_topup_intent_status(
+        intent,
+        TopupIntentStatus.canceled,
+        source=command.source.value,
+    )
+    metadata["payment_proof_resolution"] = resolution
+    metadata["canceled_reason"] = "payment_proof_rejected"
+    intent.metadata_ = metadata
+    db.add(intent)
+    emit_event(
+        db,
+        EventType.topup_intent_direct_transfer_proof_rejected,
+        {
+            "schema_version": 1,
+            "topup_intent_id": str(intent.id),
+            "payment_proof_id": str(command.proof_id),
+            "account_id": str(intent.account_id) if intent.account_id else None,
+            "status": intent.status,
+            "provider_type": intent.provider_type,
+            "reason_code": "payment_proof_rejected",
+            "source": command.source.value,
+            "command_id": str(context.command_id),
+            "correlation_id": str(context.correlation_id),
+        },
+        actor=context.actor,
+        subscriber_id=intent.account_id,
+        account_id=intent.account_id,
+    )
+    return DirectTransferProofResolutionResult(
+        intent_id=intent.id,
+        proof_id=command.proof_id,
+        status=TopupIntentStatus.canceled,
+        payment_id=None,
+        changed=True,
     )
 
 

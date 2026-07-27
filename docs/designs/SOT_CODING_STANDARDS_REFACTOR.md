@@ -325,6 +325,18 @@ grace all resolve from `control.settings_spec`; the former local expiry constant
 is retired. The broader webhook/reconciliation coordinators remain legacy until
 their transaction and transport concerns are migrated.
 
+The reviewed-proof resolution follow-up closes the missing downstream half of
+that boundary. `financial.payment_proofs` remains the submit/verify/reject root
+transaction owner and supplies exact linked proof evidence to
+`financial.topup_intents`. The participant completes verified transfers from
+their canonical Payment and cancels rejected transfers with typed provenance,
+so proof state, intent state, audit, delivery intents, and events commit or roll
+back together. `financial.topup_intent_proof_reconciliation` discovers only
+persisted exact proof links and repairs historical submitted drift through the
+same participant; verified proofs whose payments are no longer active and
+succeeded remain explicitly quarantined. Account-level proof joins, direct SQL
+status mutation, and event-handler decision paths are not repair authorities.
+
 The completed gateway creation/failure slice adds
 `financial.gateway_topup_intent_commands` as the typed root coordinator for
 customer invoice checkout, customer account-credit deposit, reseller
