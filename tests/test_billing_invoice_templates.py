@@ -8,6 +8,20 @@ def test_invoice_detail_consumes_server_owned_status_presentation():
     assert "status_variant_map" not in template
 
 
+def test_customer_invoice_pay_button_uses_compiled_brand_colors():
+    template = Path("templates/customer/billing/invoice.html").read_text()
+    pay_button = template.split(
+        'href="/portal/billing/pay?invoice={{ invoice.id }}"',
+        maxsplit=1,
+    )[1].split("</a>", maxsplit=1)[0]
+
+    assert "from-[var(--color-brand-500)]" in pay_button
+    assert "to-[var(--color-brand-600)]" in pay_button
+    assert "text-white" in pay_button
+    assert "from-brand-500" not in pay_button
+    assert "to-brand-600" not in pay_button
+
+
 def test_invoice_edit_form_locks_currency_while_submitting_existing_value():
     template = Path("templates/admin/billing/invoice_form.html").read_text()
 
