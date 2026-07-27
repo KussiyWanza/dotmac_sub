@@ -27,6 +27,7 @@ from app.services import vendor_submission_proposals
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.field import vendor_capabilities
 from app.services.field.vendor_auth import vendor_context
 from app.services.owner_commands import CommandContext
 from app.services.vendor_portal_operations import (
@@ -113,12 +114,22 @@ def _command_context(auth: dict, *, vendor_id: str, reason: str) -> CommandConte
     )
 
 
-def _context(auth: dict, db: Session) -> dict:
+def _context(auth: dict, db: Session, capability: str | None = None) -> dict:
     context = vendor_context(db, auth)
     if not context.get("native_vendor_id"):
         raise HTTPException(
             status_code=409,
             detail="Vendor account is not linked to the native vendor domain",
+        )
+    # The API gates capability with a FastAPI dependency; these handlers resolve
+    # the vendor context themselves, so the same check lands here instead. Both
+    # read from the one declaring owner.
+    if capability is not None and not vendor_capabilities.has_capability(
+        context, capability
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=vendor_capabilities.refusal_message(capability),
         )
     return context
 
@@ -151,7 +162,7 @@ def vendor_dashboard(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.PROJECT_READ)
     vendor_id = str(context["native_vendor_id"])
     return templates.TemplateResponse(
         "vendor/dashboard.html",
@@ -176,7 +187,7 @@ def vendor_project_detail(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.PROJECT_READ)
     vendor_id = str(context["native_vendor_id"])
     project = next(
         (
@@ -235,7 +246,7 @@ def vendor_create_quote(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth,
@@ -267,7 +278,7 @@ def vendor_start_project(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.PROJECT_EXECUTE)
     proposal = _submission_call(
         lambda: vendor_submission_proposals.issue_project_lifecycle(
             db,
@@ -294,7 +305,7 @@ def vendor_complete_project(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.PROJECT_EXECUTE)
     proposal = _submission_call(
         lambda: vendor_submission_proposals.issue_project_lifecycle(
             db,
@@ -325,7 +336,7 @@ def vendor_add_quote_line(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth,
@@ -360,7 +371,7 @@ def vendor_submit_quote(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
     proposal = _submission_call(
         lambda: vendor_submission_proposals.issue_quote_submission(
             db,
@@ -453,7 +464,7 @@ def vendor_submit_as_built(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.AS_BUILT_WRITE)
     proposal = _submission_call(
         lambda: vendor_submission_proposals.issue_as_built_submission(
             db,
@@ -485,7 +496,7 @@ def vendor_create_invoice(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth, vendor_id=vendor_id, reason="vendor_purchase_invoice_creation"
@@ -520,7 +531,7 @@ def vendor_add_invoice_line(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth, vendor_id=vendor_id, reason="vendor_purchase_invoice_line_addition"
@@ -553,7 +564,7 @@ async def vendor_upload_invoice_attachment(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth, vendor_id=vendor_id, reason="vendor_purchase_invoice_attachment_upload"
@@ -584,7 +595,7 @@ def vendor_submit_invoice(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
     proposal = _submission_call(
         lambda: vendor_submission_proposals.issue_purchase_invoice_submission(
             db,

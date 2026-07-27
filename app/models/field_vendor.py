@@ -21,6 +21,14 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# Roles inside one contractor organisation. Stored as a plain string like
+# ``WorkOrder.status`` rather than a PG enum, so the vocabulary can evolve
+# without a type migration; ``app.services.field.vendor_capabilities`` is the
+# declaring owner and resolves each role to its capability set.
+VENDOR_USER_ROLES = ("owner", "supervisor", "field")
+DEFAULT_VENDOR_USER_ROLE = "field"
+
+
 class FieldVendor(Base):
     __tablename__ = "field_vendors"
     __table_args__ = (

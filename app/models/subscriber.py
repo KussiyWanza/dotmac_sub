@@ -101,6 +101,12 @@ class UserType(enum.Enum):
     system_user = "system_user"
     customer = "customer"
     reseller = "reseller"
+    # External contractor principals. They authenticate through the same
+    # ``system_users`` table as staff, so without this marker a vendor login is
+    # indistinguishable from an employee login — and staff screens, grants, and
+    # audits cannot tell them apart. Vendor capability is resolved by
+    # ``app.services.field.vendor_capabilities``, never by staff RBAC.
+    vendor = "vendor"
 
 
 class SubscriberCategory(enum.Enum):

@@ -11,7 +11,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.services import vendor_admin
+from app.models.field_vendor import VENDOR_USER_ROLES
+from app.services import vendor_admin, vendor_user_provisioning
+from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
+from app.services.field import vendor_capabilities
 
 
 def _as_bool(value: str | None) -> bool:
@@ -135,6 +139,54 @@ def build_vendor_form_error_context(
     }
 
 
+_CAPABILITY_LABELS = {
+    vendor_capabilities.PROJECT_READ: "view projects",
+    vendor_capabilities.PROJECT_EXECUTE: "start/complete work",
+    vendor_capabilities.QUOTE_WRITE: "quote",
+    vendor_capabilities.AS_BUILT_WRITE: "submit as-built",
+    vendor_capabilities.INVOICE_WRITE: "invoice",
+}
+
+
+def _capability_summary(role: str | None) -> str:
+    """Plain-language rendering of what a role may do.
+
+    Staff choosing a role should not have to know the capability keys, and the
+    summary is derived from the declaring owner so it cannot drift from what
+    the routes actually enforce.
+    """
+    granted = vendor_capabilities.capabilities_for_role(role)
+    return ", ".join(
+        label
+        for capability, label in _CAPABILITY_LABELS.items()
+        if capability in granted
+    )
+
+
+def vendor_user_role_options() -> list[dict[str, str]]:
+    return [
+        {
+            "value": role,
+            "label": role.replace("_", " ").title(),
+            "summary": _capability_summary(role),
+        }
+        for role in VENDOR_USER_ROLES
+    ]
+
+
+def _vendor_user_row(membership: Any) -> dict[str, Any]:
+    principal = getattr(membership, "system_user", None)
+    role = vendor_capabilities.normalize_role(membership.role)
+    return {
+        "id": membership.id,
+        "role": role,
+        "capability_summary": _capability_summary(role),
+        "is_active": membership.is_active,
+        "display_name": getattr(principal, "display_name", None),
+        "email": getattr(principal, "email", None),
+    }
+
+
 def build_vendor_detail_context(db: Session, *, vendor_id: str) -> dict[str, Any]:
     vendor = vendor_admin.get(db, vendor_id)
     field_vendor = vendor_admin.get_field_vendor(db, vendor)
@@ -145,8 +197,47 @@ def build_vendor_detail_context(db: Session, *, vendor_id: str) -> dict[str, Any
         # twin, not the native row.
         "field_vendor": field_vendor,
         "portal_login_enabled": bool(field_vendor and field_vendor.is_active),
-        "vendor_users": list(field_vendor.users) if field_vendor else [],
+        "vendor_users": [
+            _vendor_user_row(membership)
+            for membership in (list(field_vendor.users) if field_vendor else [])
+        ],
+        "vendor_user_roles": vendor_user_role_options(),
     }
+
+
+def add_vendor_user_from_form(
+    db: Session,
+    *,
+    vendor_id: str,
+    first_name: str | None,
+    last_name: str | None,
+    email: str | None,
+    role: str | None,
+) -> None:
+    """Create one portal login for the vendor behind this admin page."""
+    vendor = vendor_admin.get(db, vendor_id)
+    field_vendor = vendor_admin.get_field_vendor(db, vendor)
+    if field_vendor is None:
+        raise ValueError(
+            "This vendor has no portal identity, so a login cannot be added."
+        )
+    db_session_adapter.release_read_transaction(db)
+    vendor_user_provisioning.provision_committed(
+        db,
+        vendor_user_provisioning.ProvisionVendorUser(
+            field_vendor_id=field_vendor.id,
+            first_name=first_name or "",
+            last_name=last_name or "",
+            email=email or "",
+            role=role,
+        ),
+    )
+
+
+def revoke_vendor_user(db: Session, *, membership_id: str) -> None:
+    db_session_adapter.release_read_transaction(db)
+    # The route hands this in as a path string; the owner command takes a UUID.
+    vendor_user_provisioning.revoke_committed(db, coerce_uuid(membership_id))
 
 
 def create_vendor_from_form(

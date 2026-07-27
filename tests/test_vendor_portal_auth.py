@@ -121,3 +121,105 @@ def test_linked_member_reaches_the_route(db_session) -> None:
     client = _client(db_session, _auth(user))
     resp = client.get("/api/v1/vendor/projects/available")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Capability enforcement
+#
+# Membership answers "is this a vendor user?". It never answered "which vendor
+# user?" — so every authenticated vendor could quote, submit evidence, and
+# raise invoices alike. These pin the role split at the route boundary.
+# ---------------------------------------------------------------------------
+
+
+def _linked_member(db_session, role: str) -> SystemUser:
+    user = _system_user(db_session)
+    native = Vendor(name=f"Native Co {uuid4().hex[:6]}")
+    db_session.add(native)
+    db_session.flush()
+    vendor = FieldVendor(
+        name="Linked Co",
+        code=f"VC-{uuid4().hex[:6]}",
+        is_active=True,
+        crm_vendor_id=str(native.id),
+    )
+    db_session.add(vendor)
+    db_session.flush()
+    db_session.add(
+        FieldVendorUser(
+            vendor_id=vendor.id,
+            system_user_id=user.id,
+            role=role,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    return user
+
+
+def test_field_role_cannot_raise_a_purchase_invoice(db_session) -> None:
+    """Money out is the owner's decision. A field technician recording work
+    must not be able to invoice for it."""
+    user = _linked_member(db_session, "field")
+    client = _client(db_session, _auth(user))
+
+    resp = client.post(
+        "/api/v1/vendor/purchase-invoices",
+        json={"project_id": str(uuid4()), "invoice_number": "INV-1"},
+    )
+
+    assert resp.status_code == 403
+    assert "vendor:invoice:write" in resp.json()["detail"]
+
+
+def test_field_role_cannot_create_a_quote(db_session) -> None:
+    user = _linked_member(db_session, "field")
+    client = _client(db_session, _auth(user))
+
+    resp = client.post(
+        "/api/v1/vendor/quotes",
+        json={"project_id": str(uuid4()), "currency": "NGN"},
+    )
+
+    assert resp.status_code == 403
+    assert "vendor:quote:write" in resp.json()["detail"]
+
+
+def test_supervisor_may_quote_but_not_invoice(db_session) -> None:
+    user = _linked_member(db_session, "supervisor")
+    client = _client(db_session, _auth(user))
+
+    invoice = client.post(
+        "/api/v1/vendor/purchase-invoices",
+        json={"project_id": str(uuid4()), "invoice_number": "INV-1"},
+    )
+    assert invoice.status_code == 403
+
+    # Quoting clears the capability gate; the project simply does not exist,
+    # which is the domain owner's answer rather than the capability gate's.
+    quote = client.post(
+        "/api/v1/vendor/quotes",
+        json={"project_id": str(uuid4()), "currency": "NGN"},
+    )
+    assert quote.status_code != 403
+
+
+def test_owner_role_clears_every_capability_gate(db_session) -> None:
+    user = _linked_member(db_session, "owner")
+    client = _client(db_session, _auth(user))
+
+    for path, body in (
+        ("/api/v1/vendor/quotes", {"project_id": str(uuid4()), "currency": "NGN"}),
+        (
+            "/api/v1/vendor/purchase-invoices",
+            {"project_id": str(uuid4()), "invoice_number": "INV-1"},
+        ),
+    ):
+        assert client.post(path, json=body).status_code != 403
+
+
+def test_reads_stay_open_to_every_role(db_session) -> None:
+    for role in ("owner", "supervisor", "field"):
+        user = _linked_member(db_session, role)
+        client = _client(db_session, _auth(user))
+        assert client.get("/api/v1/vendor/projects/mine").status_code == 200

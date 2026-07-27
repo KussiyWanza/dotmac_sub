@@ -199,6 +199,62 @@ def vendor_update(
     )
 
 
+def _detail_with_error(request: Request, db: Session, vendor_id: str, error: str):
+    context = _ctx(request, db, "vendors")
+    context.update(
+        web_vendors_service.build_vendor_detail_context(db, vendor_id=vendor_id)
+    )
+    context["error"] = error
+    return templates.TemplateResponse(
+        "admin/vendors/detail.html", context, status_code=400
+    )
+
+
+@router.post(
+    "/{vendor_id}/users",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def vendor_user_create(
+    request: Request,
+    vendor_id: str,
+    first_name: str = Form(...),
+    last_name: str = Form(...),
+    email: str = Form(...),
+    role: str = Form(default="field"),
+    db: Session = Depends(get_db),
+):
+    try:
+        web_vendors_service.add_vendor_user_from_form(
+            db,
+            vendor_id=vendor_id,
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            role=role,
+        )
+    except ValueError as exc:
+        # The owner rejects before writing, so nothing to roll back here.
+        return _detail_with_error(request, db, vendor_id, _error_detail(exc))
+    return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
+
+
+@router.post(
+    "/{vendor_id}/users/{membership_id}/revoke",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def vendor_user_revoke(
+    request: Request,
+    vendor_id: str,
+    membership_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        web_vendors_service.revoke_vendor_user(db, membership_id=membership_id)
+    except ValueError as exc:
+        return _detail_with_error(request, db, vendor_id, _error_detail(exc))
+    return RedirectResponse(url=f"/admin/vendors/{vendor_id}", status_code=303)
+
+
 @router.post(
     "/{vendor_id}/delete",
     dependencies=[Depends(require_permission("inventory:write"))],
@@ -213,12 +269,5 @@ def vendor_delete(request: Request, vendor_id: str, db: Session = Depends(get_db
         # the row, so there is nothing for this adapter to roll back — and
         # owning a transaction here is exactly what the adapter boundary
         # forbids. Just render the refusal.
-        context = _ctx(request, db, "vendors")
-        context.update(
-            web_vendors_service.build_vendor_detail_context(db, vendor_id=vendor_id)
-        )
-        context["error"] = _error_detail(exc)
-        return templates.TemplateResponse(
-            "admin/vendors/detail.html", context, status_code=400
-        )
+        return _detail_with_error(request, db, vendor_id, _error_detail(exc))
     return RedirectResponse(url="/admin/vendors", status_code=303)

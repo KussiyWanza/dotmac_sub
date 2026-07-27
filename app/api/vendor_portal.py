@@ -27,6 +27,7 @@ from app.schemas.vendor_purchase_invoice import (
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.field import vendor_capabilities
 from app.services.field.vendor_auth import require_native_vendor_context
 from app.services.owner_commands import CommandContext
 from app.services.vendor_portal_operations import (
@@ -64,6 +65,33 @@ router = APIRouter(
     dependencies=[Depends(require_native_vendor_context)],
 )
 ResultT = TypeVar("ResultT")
+
+
+def require_vendor_capability(capability: str):
+    """Gate one route on one vendor capability.
+
+    Mirrors ``auth_dependencies.require_permission`` in shape so vendor routes
+    read like every other guarded route, while resolving against the vendor
+    plane rather than staff RBAC. It layers on ``require_native_vendor_context``
+    because every portal route already needs the native vendor link, so a route
+    swaps one dependency for the other instead of stacking two.
+
+    The decision lives in ``field.vendor_capabilities``; this adapter only
+    turns a refusal into a 403.
+    """
+    vendor_capabilities.assert_known_capability(capability)
+
+    def _require(
+        context: dict = Depends(require_native_vendor_context),
+    ) -> dict:
+        if not vendor_capabilities.has_capability(context, capability):
+            raise HTTPException(
+                status_code=403,
+                detail=vendor_capabilities.refusal_message(capability),
+            )
+        return context
+
+    return _require
 
 
 def _vendor_id(context: dict) -> str:
@@ -138,7 +166,9 @@ def _vendor_call(operation: Callable[[], ResultT]) -> ResultT:
 def list_available_projects(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     items = vendor_portal_operations.list_projects(
@@ -151,7 +181,9 @@ def list_available_projects(
 def list_my_projects(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     items = vendor_portal_operations.list_projects(
@@ -163,7 +195,7 @@ def list_my_projects(
 @router.post("/quotes", status_code=status.HTTP_201_CREATED)
 def create_quote(
     payload: VendorQuoteCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -189,7 +221,9 @@ def create_quote(
 @router.get("/quotes/{quote_id}")
 def get_quote(
     quote_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     return _vendor_call(
@@ -201,7 +235,7 @@ def get_quote(
 def add_quote_line(
     quote_id: str,
     payload: VendorQuoteLineCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -229,7 +263,7 @@ def update_quote_line(
     quote_id: str,
     line_id: str,
     payload: VendorQuoteLineUpdate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -257,7 +291,7 @@ def update_quote_line(
 def delete_quote_line(
     quote_id: str,
     line_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -283,7 +317,7 @@ def delete_quote_line(
 @router.post("/quotes/{quote_id}/submit")
 def submit_quote(
     quote_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     return _vendor_call(
@@ -300,7 +334,7 @@ def submit_quote(
 def create_route_revision(
     quote_id: str,
     payload: VendorRouteRevisionCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -326,7 +360,7 @@ def create_route_revision(
 @router.post("/route-revisions/{revision_id}/submit")
 def submit_route_revision(
     revision_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(require_vendor_capability(vendor_capabilities.QUOTE_WRITE)),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -352,7 +386,9 @@ def submit_route_revision(
 @router.post("/as-built", status_code=status.HTTP_201_CREATED)
 def submit_as_built(
     payload: VendorAsBuiltCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.AS_BUILT_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     return _vendor_call(
@@ -369,6 +405,12 @@ def submit_as_built(
 def confirm_vendor_submission(
     project_id: str,
     payload: VendorSubmissionConfirm,
+    # Deliberately not capability-gated: one route confirms every submission
+    # type, so a single capability would be either too broad or too narrow.
+    # The proposal is already bound to the issuing ``user_id`` and rejects
+    # anyone else with ``proposal_context_mismatch``, and issuing is gated on
+    # the matching capability — so confirmation cannot widen what its issuer
+    # was allowed to do.
     context: dict = Depends(require_native_vendor_context),
     db: Session = Depends(get_db),
 ):
@@ -401,7 +443,9 @@ def list_purchase_invoices(
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     items = vendor_purchase_invoices.list(
@@ -422,7 +466,9 @@ def list_purchase_invoices(
 )
 def create_purchase_invoice(
     payload: VendorPurchaseInvoiceCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -446,7 +492,9 @@ def create_purchase_invoice(
 @router.get("/purchase-invoices/{invoice_id}", response_model=VendorPurchaseInvoiceRead)
 def get_purchase_invoice(
     invoice_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     return vendor_purchase_invoices.get(db, invoice_id, vendor_id=_vendor_id(context))
@@ -458,7 +506,9 @@ def get_purchase_invoice(
 def update_purchase_invoice(
     invoice_id: str,
     payload: VendorPurchaseInvoiceUpdate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -487,7 +537,9 @@ def update_purchase_invoice(
 def add_purchase_invoice_line(
     invoice_id: str,
     payload: VendorPurchaseInvoiceLineCreate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -516,7 +568,9 @@ def update_purchase_invoice_line(
     invoice_id: str,
     line_id: str,
     payload: VendorPurchaseInvoiceLineUpdate,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -545,7 +599,9 @@ def update_purchase_invoice_line(
 def delete_purchase_invoice_line(
     invoice_id: str,
     line_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     vendor_id = _vendor_id(context)
@@ -573,7 +629,9 @@ def delete_purchase_invoice_line(
 async def upload_purchase_invoice_attachment(
     invoice_id: str,
     attachment: UploadFile = File(...),
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     content = await attachment.read()
@@ -600,7 +658,9 @@ async def upload_purchase_invoice_attachment(
 @router.get("/purchase-invoices/{invoice_id}/attachment")
 def download_purchase_invoice_attachment(
     invoice_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.PROJECT_READ)
+    ),
     db: Session = Depends(get_db),
 ):
     file, stream = vendor_purchase_invoices.attachment_file(
@@ -620,7 +680,9 @@ def download_purchase_invoice_attachment(
 )
 def submit_purchase_invoice(
     invoice_id: str,
-    context: dict = Depends(require_native_vendor_context),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.INVOICE_WRITE)
+    ),
     db: Session = Depends(get_db),
 ):
     return _vendor_call(

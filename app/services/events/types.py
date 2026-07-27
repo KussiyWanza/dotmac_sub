@@ -246,6 +246,9 @@ class EventType(enum.Enum):
     reseller_impersonated = "reseller.impersonated"
 
     # Staff and subscriber identity/authorization lifecycle (6)
+    vendor_user_provisioned = "vendor_user.provisioned"
+    vendor_user_revoked = "vendor_user.revoked"
+    vendor_user_role_changed = "vendor_user.role_changed"
     staff_account_provisioned = "staff_account.provisioned"
     staff_account_roles_changed = "staff_account.roles_changed"
     staff_account_activated = "staff_account.activated"
