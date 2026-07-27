@@ -21,7 +21,6 @@ from app.models.vendor_routes import (
     ProposedRouteRevision,
     ProposedRouteRevisionReviewEvent,
     ProposedRouteRevisionStatus,
-    VendorAssignmentType,
 )
 from app.services.common import coerce_uuid
 from app.services.events import EventType, emit_event
@@ -45,6 +44,7 @@ from app.services.vendor_portal_operations import (
     _money,
     _project,
     _quote,
+    _quote_creation_eligibility,
     _serialize_as_built_review,
     _serialize_quote,
 )
@@ -117,15 +117,6 @@ def stage_create_quote(db: Session, command: CreateVendorQuoteCommand) -> dict:
             "Vendor quote currency and validity evidence are required.",
         )
     project = _project(db, str(command.payload.project_id), for_update=True)
-    if project.assignment_type == VendorAssignmentType.direct.value and str(
-        project.assigned_vendor_id
-    ) != str(command.vendor_id):
-        raise _error(
-            "project_not_assigned",
-            "Project is assigned to another vendor.",
-        )
-    if project.bidding_close_at and project.bidding_close_at <= _now():
-        raise _error("bidding_closed", "Bidding window has closed.")
     existing = (
         db.query(ProjectQuote)
         .filter(ProjectQuote.project_id == project.id)
@@ -135,7 +126,14 @@ def stage_create_quote(db: Session, command: CreateVendorQuoteCommand) -> dict:
         .first()
     )
     if existing:
+        # Returning the vendor's own open draft is a read of a row they already
+        # own, so it stays available regardless of the project's current state.
         return _serialize_quote(_quote(db, str(existing.id), command.vendor_id))
+    allowed, reason = _quote_creation_eligibility(
+        project, command.vendor_id, now=_now()
+    )
+    if not allowed:
+        raise _error("quote_creation_not_allowed", str(reason))
     quote = ProjectQuote(
         project_id=project.id,
         vendor_id=coerce_uuid(command.vendor_id),

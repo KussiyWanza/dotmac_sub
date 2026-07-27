@@ -132,6 +132,8 @@ class EventType(enum.Enum):
     service_order_recovered = "service_order.recovered"
 
     # Operations - vendor installation project lifecycle
+    vendor_project_published = "vendor_project.published"
+    vendor_project_assigned = "vendor_project.assigned"
     vendor_project_started = "vendor_project.started"
     vendor_project_completed = "vendor_project.completed"
     vendor_quote_changed = "vendor_quote.changed"

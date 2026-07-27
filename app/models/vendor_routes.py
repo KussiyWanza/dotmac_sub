@@ -334,10 +334,13 @@ class InstallationProjectLifecycleEvent(Base):
         ForeignKey("installation_projects.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    vendor_id: Mapped[uuid.UUID] = mapped_column(
+    # NULL only for intake decisions taken before a vendor exists — publishing
+    # a project for competitive bidding is exactly that. Every transition from
+    # ``assigned``/``approved`` onward carries the vendor it was decided about.
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vendors.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)

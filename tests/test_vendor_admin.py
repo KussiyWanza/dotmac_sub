@@ -79,6 +79,51 @@ def test_duplicate_code_is_a_form_error_not_an_integrity_crash(db_session):
         vendor_admin.create_committed(db_session, name="Second", code="DUP")
 
 
+def test_duplicate_code_on_the_auth_twin_is_also_a_form_error(db_session):
+    """``FieldVendor.code`` carries its own unique constraint. An imported twin
+    can hold a code no native vendor claims, so checking only ``Vendor.code``
+    still lets the write reach the DB as a 500."""
+    db_session.add(FieldVendor(name="Imported Twin", code="ORPHAN"))
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="already in use"):
+        vendor_admin.create_committed(db_session, name="Native", code="ORPHAN")
+
+
+def test_deactivation_fails_closed_when_a_login_is_not_bridged(db_session):
+    """The dangerous case: a field-vendor login exists for this vendor but is
+    not bridged, so the mirror silently no-ops and the vendor keeps signing in
+    after staff 'deactivated' them. Refuse rather than report a false success."""
+    vendor = vendor_admin.create_committed(
+        db_session, name="Jos Fibre", code="JOS", contact_email="ops@jos.example"
+    )
+    # Break the bridge the way an import does: a live login this service's
+    # crm_vendor_id lookup can no longer resolve.
+    twin = vendor_admin.get_field_vendor(db_session, vendor)
+    twin.crm_vendor_id = None
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="cannot be deactivated"):
+        vendor_admin.deactivate_committed(db_session, vendor.id)
+
+    # The refusal must leave nothing half-applied: the guard runs before the
+    # row is touched, so no caller can commit a deactivation that never took.
+    assert db_session.get(Vendor, vendor.id).is_active is True
+    assert db_session.get(FieldVendor, twin.id).is_active is True
+
+
+def test_deactivation_proceeds_when_no_login_exists_at_all(db_session):
+    """A vendor with no field-vendor row has no portal access to revoke, so the
+    guard must not block an ordinary deactivation."""
+    vendor = Vendor(name="Quote Only", code="QO")
+    db_session.add(vendor)
+    db_session.commit()
+
+    vendor_admin.deactivate_committed(db_session, vendor.id)
+
+    assert db_session.get(Vendor, vendor.id).is_active is False
+
+
 def test_update_may_keep_its_own_code(db_session):
     """The uniqueness check must exclude the row being edited, or saving a
     vendor without changing its code would falsely report a clash."""

@@ -387,6 +387,10 @@ _PROJECT_TERMINAL_STATUSES = {
     ProjectStatus.completed.value,
     ProjectStatus.canceled.value,
 }
+# Provenance marker for projects rooted in a network buildout rather than a
+# sale. Paired with ``Project.external_reference`` (the BuildoutProject id) it
+# reuses ``uq_projects_external_system_reference`` as the idempotency key.
+BUILDOUT_PROJECT_SYSTEM = "buildout"
 _PROJECT_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
     status.value: frozenset(
         candidate.value
@@ -1254,6 +1258,89 @@ def prepare_sales_project(
         },
         actor=actor_id,
         subscriber_id=subscriber_id,
+    )
+    return project
+
+
+def prepare_buildout_project(
+    db: Session,
+    *,
+    buildout_project_id: UUID,
+    name: str,
+    project_type: str,
+    customer_address: str | None = None,
+    region: str | None = None,
+    actor_id: str,
+) -> Project:
+    """Create the native project root for one exact BuildoutProject, no commit.
+
+    Network buildout is the other way work reaches a vendor. It has no
+    subscriber, quote, or sales order — the project exists because we decided
+    to build plant, not because someone bought a service. ``Project`` already
+    allows that (``subscriber_id`` is nullable); only the sales entry point
+    required one, which is why buildout could not previously be scoped.
+
+    Idempotency rides the existing ``uq_projects_external_system_reference``
+    constraint rather than a new column: one native project per buildout root.
+    """
+
+    existing = (
+        db.query(Project)
+        .filter(Project.external_system == BUILDOUT_PROJECT_SYSTEM)
+        .filter(Project.external_reference == str(buildout_project_id))
+        .one_or_none()
+    )
+    if existing is not None:
+        return existing
+    normalized_type = _sales_project_enum(
+        project_type, ProjectType, "project_type"
+    ).value
+    configured_priority = _read_text_setting(
+        db, SettingDomain.projects, "default_project_priority"
+    )
+    project_priority = _sales_project_enum(
+        configured_priority or ProjectPriority.normal.value,
+        ProjectPriority,
+        "default_project_priority",
+    ).value
+    number = generate_number(
+        db=db,
+        domain=SettingDomain.projects,
+        sequence_key="project_number",
+        enabled_key="project_number_enabled",
+        prefix_key="project_number_prefix",
+        padding_key="project_number_padding",
+        start_key="project_number_start",
+    )
+    now = datetime.now(UTC)
+    duration_days = Projects._duration_days_for_type(normalized_type)
+    project = Project(
+        name=str(name).strip()[:160],
+        number=number,
+        description="Implementation scope created from a network buildout project",
+        customer_address=(customer_address or "").strip() or None,
+        project_type=normalized_type,
+        status=ProjectStatus.open.value,
+        priority=project_priority,
+        external_system=BUILDOUT_PROJECT_SYSTEM,
+        external_reference=str(buildout_project_id),
+        start_at=now,
+        due_at=now + timedelta(days=duration_days) if duration_days else None,
+        region=(region or "").strip() or None,
+        metadata_={"buildout_project_id": str(buildout_project_id)},
+    )
+    db.add(project)
+    db.flush()
+    _sync_project_sla_clock(db, project)
+    emit_event(
+        db,
+        EventType.project_created,
+        {
+            "project_id": str(project.id),
+            "buildout_project_id": str(buildout_project_id),
+            "project_type": normalized_type,
+        },
+        actor=actor_id,
     )
     return project
 

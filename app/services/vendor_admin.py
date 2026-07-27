@@ -21,6 +21,18 @@ always writes the pair and bridges them.
 
 (``Vendor.users`` relates to ``VendorUser``, which has no consumers anywhere —
 the live membership model is ``FieldVendorUser``. Do not wire new work to it.)
+
+**Revocation invariant.** Deactivating a vendor is an authorization decision,
+so it fails closed. ``vendor_auth`` gates portal login on
+``FieldVendor.is_active``, which means a deactivation that does not reach the
+twin revokes nothing while still reporting success. Because the bridge is a
+nullable string rather than a foreign key, "no twin resolved" is not evidence
+that no login exists — an imported vendor routinely carries one this service
+cannot resolve. So a deactivation with no resolvable twin refuses outright when
+an unbridged login still matches the vendor, and it refuses *before* mutating
+the row so no caller can commit a revocation that never took effect. Repairing
+the bridge is a deliberate staff act; guessing at it here would be guessing at
+an authorization boundary.
 """
 
 from __future__ import annotations
@@ -54,6 +66,37 @@ def get_field_vendor(db: Session, vendor: Vendor) -> FieldVendor | None:
         db.query(FieldVendor)
         .filter(FieldVendor.crm_vendor_id == str(vendor.id))
         .one_or_none()
+    )
+
+
+def unbridged_twin_candidates(db: Session, vendor: Vendor) -> list[FieldVendor]:
+    """Active ``FieldVendor`` rows that look like this vendor but are not
+    bridged to it.
+
+    ``FieldVendor.crm_vendor_id`` is a nullable ``String(64)``, not a foreign
+    key, so an imported vendor can carry a login this service cannot resolve.
+    Matching on the unique ``code`` or the contact email is enough to *detect*
+    that case; it is deliberately not enough to act on it, because guessing at
+    an authorization boundary is how access silently survives revocation.
+    """
+    matches = []
+    if vendor.code:
+        matches.append(FieldVendor.code == vendor.code)
+    if vendor.contact_email:
+        matches.append(FieldVendor.contact_email == vendor.contact_email)
+    if not matches:
+        return []
+    return (
+        db.query(FieldVendor)
+        .filter(FieldVendor.is_active.is_(True))
+        .filter(
+            or_(
+                FieldVendor.crm_vendor_id.is_(None),
+                FieldVendor.crm_vendor_id != str(vendor.id),
+            )
+        )
+        .filter(or_(*matches))
+        .all()
     )
 
 
@@ -97,14 +140,26 @@ def list_vendors(
 def _assert_code_free(
     db: Session, code: str | None, *, exclude_id: UUID | None
 ) -> None:
-    """``Vendor.code`` and ``FieldVendor.code`` are both unique. Check before
-    writing so a clash surfaces as a form error, not an IntegrityError 500."""
+    """``Vendor.code`` and ``FieldVendor.code`` are both unique. Check *both*
+    before writing so a clash surfaces as a form error, not an IntegrityError
+    500 — an imported twin can hold a code its native vendor never claimed."""
     if not code:
         return
     query = db.query(Vendor.id).filter(Vendor.code == code)
     if exclude_id is not None:
         query = query.filter(Vendor.id != exclude_id)
     if query.first() is not None:
+        raise ValueError(f"Vendor code '{code}' is already in use.")
+
+    twin_query = db.query(FieldVendor.id).filter(FieldVendor.code == code)
+    if exclude_id is not None:
+        twin_query = twin_query.filter(
+            or_(
+                FieldVendor.crm_vendor_id.is_(None),
+                FieldVendor.crm_vendor_id != str(exclude_id),
+            )
+        )
+    if twin_query.first() is not None:
         raise ValueError(f"Vendor code '{code}' is already in use.")
 
 
@@ -193,6 +248,14 @@ def update(
     if code is not None:
         _assert_code_free(db, clean_code, exclude_id=vendor.id)
 
+    twin = get_field_vendor(db, vendor)
+    if is_active is False and twin is None:
+        # Revocation with no resolvable twin: fail closed, and do it *before*
+        # touching the row. A missing bridge is not evidence that no login
+        # exists, and reporting success here would tell staff access was
+        # withdrawn when it was not.
+        _assert_no_unbridged_login(db, vendor)
+
     if clean_name is not None:
         vendor.name = clean_name
     if code is not None:
@@ -215,7 +278,6 @@ def update(
     # Keep the auth-side twin in step, so deactivating a vendor in admin
     # actually revokes their portal login (vendor_auth filters on
     # FieldVendor.is_active) rather than only hiding them from staff.
-    twin = get_field_vendor(db, vendor)
     if twin is not None:
         twin.name = vendor.name
         twin.code = vendor.code
@@ -226,6 +288,18 @@ def update(
         twin.is_active = vendor.is_active
 
     return vendor
+
+
+def _assert_no_unbridged_login(db: Session, vendor: Vendor) -> None:
+    candidates = unbridged_twin_candidates(db, vendor)
+    if not candidates:
+        return
+    names = ", ".join(sorted(candidate.name for candidate in candidates))
+    raise ValueError(
+        f"Vendor '{vendor.name}' cannot be deactivated: an unlinked field-vendor "
+        f"login ({names}) still matches this vendor. Link it to this vendor "
+        "first, or the portal access would survive deactivation."
+    )
 
 
 def update_committed(db: Session, vendor_id: str | UUID, **fields: Any) -> Vendor:

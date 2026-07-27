@@ -69,6 +69,7 @@ def _submission_http_error(exc: DomainError) -> HTTPException:
         "quote_not_found": 404,
         "quote_line_not_found": 404,
         "project_not_assigned": 403,
+        "quote_creation_not_allowed": 403,
         "bidding_closed": 409,
         "quote_not_editable": 409,
         "quote_not_submittable": 409,

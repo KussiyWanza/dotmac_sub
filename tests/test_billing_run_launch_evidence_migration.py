@@ -14,9 +14,13 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: proposed-route review evidence (424) chains onto
-    # prepaid opening-funding reconciliation (423).
-    assert script.get_heads() == ["424_proposed_route_review_evidence"]
+    # Single linear head: vendor project intake evidence (425) chains onto
+    # proposed-route review evidence (424).
+    assert script.get_heads() == ["425_vendor_project_intake_evidence"]
+    assert (
+        script.get_revision("425_vendor_project_intake_evidence").down_revision
+        == "424_proposed_route_review_evidence"
+    )
     assert (
         script.get_revision("424_proposed_route_review_evidence").down_revision
         == "423_prepaid_opening_funding_reconciliation"

@@ -48,6 +48,16 @@ _EDITABLE_QUOTES = {
     ProjectQuoteStatus.draft.value,
     ProjectQuoteStatus.revision_requested.value,
 }
+# Awarding a project (``approved``) and everything after it closes quoting:
+# post-award change is a variation, not another bid. ``assigned`` is the
+# directed-work intake state: the vendor was named without a bidding round and
+# still has to quote.
+_QUOTE_CREATION_STATUSES = {
+    InstallationProjectStatus.draft.value,
+    InstallationProjectStatus.assigned.value,
+    InstallationProjectStatus.open_for_bidding.value,
+    InstallationProjectStatus.quoted.value,
+}
 ResultT = TypeVar("ResultT")
 
 
@@ -182,6 +192,52 @@ def _now() -> datetime:
 
 def _money(value) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Bidding-window columns are ``timezone=True``, but SQLite hands back naive
+    values. Compare everything in UTC rather than raising on a mixed pair."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _quote_creation_eligibility(
+    project: InstallationProject,
+    vendor_id: str,
+    *,
+    now: datetime,
+) -> tuple[bool, str | None]:
+    """Whether this vendor may open a *new* quote on this installation project.
+
+    Visibility is the rule: a vendor may quote work directed at them, or work
+    genuinely published for bidding — nothing else. The marketplace read
+    (``list_projects(available=True)``) already applied this shape as a query
+    filter; stating it here makes it a decision the command owner enforces
+    under lock instead of an assumption the listing happened to imply.
+    """
+    assigned_vendor_id = project.assigned_vendor_id
+    if assigned_vendor_id is not None and str(assigned_vendor_id) != str(vendor_id):
+        return False, "Project is assigned to another vendor."
+    if project.status not in _QUOTE_CREATION_STATUSES:
+        return False, "Project is no longer accepting quotes."
+    if assigned_vendor_id is not None:
+        # Directed work: the assignment itself is the invitation, so it does
+        # not depend on a bidding window.
+        return True, None
+    if project.status != InstallationProjectStatus.open_for_bidding.value and (
+        project.status != InstallationProjectStatus.quoted.value
+    ):
+        return False, "Project is not open for bidding."
+    opens_at = _as_utc(project.bidding_open_at)
+    closes_at = _as_utc(project.bidding_close_at)
+    if opens_at is None or closes_at is None:
+        return False, "Project has no open bidding window."
+    if now < opens_at:
+        return False, "Bidding has not opened yet."
+    if now > closes_at:
+        return False, "Bidding window has closed."
+    return True, None
 
 
 def _as_built_submission_eligibility(

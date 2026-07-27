@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -58,6 +59,144 @@ def _chain(db_session):
     db_session.add(installation)
     db_session.commit()
     return installation, vendor, user
+
+
+def _create_quote_command(installation, vendor_id, user_id):
+    return CreateVendorQuoteCommand(
+        context=_context(
+            actor=str(user_id),
+            scope=str(vendor_id),
+            reason="test quote creation",
+        ),
+        payload=VendorQuoteCreate(
+            project_id=installation.id,
+            currency="NGN",
+            vat_rate_percent=Decimal("7.5"),
+        ),
+        vendor_id=str(vendor_id),
+        user_id=str(user_id),
+    )
+
+
+def test_a_vendor_cannot_quote_a_project_assigned_to_another_vendor(db_session):
+    """The marketplace listing hid other vendors' projects, but the command
+    never enforced it: any vendor holding a project id could open a quote on
+    work assigned elsewhere. Visibility is a decision the owner makes."""
+    installation, _assigned_vendor, user = _chain(db_session)
+    intruder = Vendor(name="Intruder", code=f"INT-{uuid4().hex[:8]}")
+    db_session.add(intruder)
+    db_session.commit()
+    command = _create_quote_command(installation, intruder.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    with pytest.raises(VendorProjectWorkspaceError) as exc:
+        vendor_portal_operations.create_quote(db_session, command)
+
+    assert exc.value.code.endswith(".quote_creation_not_allowed")
+    assert db_session.query(ProjectQuote).count() == 0
+
+
+def test_an_unassigned_project_is_not_quotable_until_bidding_opens(db_session):
+    """An unassigned project sitting in ``draft`` was never published. Without
+    a status check any vendor could quote it the moment it was created."""
+    installation, vendor, user = _chain(db_session)
+    installation.assigned_vendor_id = None
+    db_session.commit()
+    command = _create_quote_command(installation, vendor.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    with pytest.raises(VendorProjectWorkspaceError) as exc:
+        vendor_portal_operations.create_quote(db_session, command)
+
+    assert exc.value.code.endswith(".quote_creation_not_allowed")
+
+
+def test_open_bidding_requires_an_actual_window(db_session):
+    """``list_projects(available=True)`` requires both window bounds. The
+    command must not accept a project the listing would never have shown."""
+    installation, vendor, user = _chain(db_session)
+    installation.assigned_vendor_id = None
+    installation.status = InstallationProjectStatus.open_for_bidding.value
+    db_session.commit()
+    command = _create_quote_command(installation, vendor.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    with pytest.raises(VendorProjectWorkspaceError) as exc:
+        vendor_portal_operations.create_quote(db_session, command)
+
+    assert exc.value.code.endswith(".quote_creation_not_allowed")
+
+
+def test_any_vendor_may_quote_inside_an_open_bidding_window(db_session):
+    """The positive case the guard must not break: genuinely published work is
+    quotable by a vendor it was never explicitly assigned to."""
+    installation, _vendor, user = _chain(db_session)
+    bidder = Vendor(name="Bidder", code=f"BID-{uuid4().hex[:8]}")
+    db_session.add(bidder)
+    installation.assigned_vendor_id = None
+    installation.status = InstallationProjectStatus.open_for_bidding.value
+    installation.bidding_open_at = datetime.now(UTC) - timedelta(days=1)
+    installation.bidding_close_at = datetime.now(UTC) + timedelta(days=1)
+    db_session.commit()
+    command = _create_quote_command(installation, bidder.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    quote = vendor_portal_operations.create_quote(db_session, command)
+
+    assert quote["status"] == ProjectQuoteStatus.draft.value
+
+
+def test_an_awarded_project_stops_accepting_new_quotes(db_session):
+    """After award, change is a variation — not another bid. Even the winning
+    vendor may not open a fresh quote against approved work."""
+    installation, vendor, user = _chain(db_session)
+    installation.status = InstallationProjectStatus.approved.value
+    db_session.commit()
+    command = _create_quote_command(installation, vendor.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    with pytest.raises(VendorProjectWorkspaceError) as exc:
+        vendor_portal_operations.create_quote(db_session, command)
+
+    assert exc.value.code.endswith(".quote_creation_not_allowed")
+
+
+def test_an_existing_open_draft_stays_reachable_after_the_window_closes(db_session):
+    """Returning the vendor's own editable quote is a read of a row they
+    already own, so it must not be gated by the creation policy."""
+    installation, vendor, user = _chain(db_session)
+    existing = ProjectQuote(
+        project_id=installation.id,
+        vendor_id=vendor.id,
+        status=ProjectQuoteStatus.draft.value,
+    )
+    db_session.add(existing)
+    installation.status = InstallationProjectStatus.approved.value
+    db_session.commit()
+    command = _create_quote_command(installation, vendor.id, user.id)
+    db_session_adapter.release_read_transaction(db_session)
+
+    quote = vendor_portal_operations.create_quote(db_session, command)
+
+    assert str(quote["id"]) == str(existing.id)
+    assert db_session.query(ProjectQuote).count() == 1
+
+
+def test_quote_creation_refusal_maps_to_403_on_both_transports():
+    """Both vendor transports map error *suffixes*, defaulting anything they
+    do not recognise to 500. An authorization refusal that arrives as a server
+    error reads as a bug in Sub rather than a denied request, so the mapping is
+    part of the fix, not a detail."""
+    from app.api.vendor_portal import _vendor_http_error
+    from app.web.vendor_portal import _submission_http_error
+
+    error = VendorProjectWorkspaceError(
+        code="operations.vendor_project_workspace.quote_creation_not_allowed",
+        message="Project is assigned to another vendor.",
+    )
+
+    assert _vendor_http_error(error).status_code == 403
+    assert _submission_http_error(error).status_code == 403
 
 
 def test_typed_quote_commands_commit_rows_and_event_evidence(db_session):

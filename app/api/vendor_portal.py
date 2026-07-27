@@ -85,7 +85,11 @@ def _vendor_http_error(exc: DomainError) -> HTTPException:
     suffix = exc.code.rsplit(".", 1)[-1]
     if suffix.endswith("not_found"):
         status_code = 404
-    elif suffix in {"project_not_assigned", "proposal_context_mismatch"}:
+    elif suffix in {
+        "project_not_assigned",
+        "quote_creation_not_allowed",
+        "proposal_context_mismatch",
+    }:
         status_code = 403
     elif suffix in {
         "quote_line_required",

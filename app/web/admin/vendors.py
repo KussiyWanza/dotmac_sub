@@ -203,7 +203,22 @@ def vendor_update(
     "/{vendor_id}/delete",
     dependencies=[Depends(require_permission("inventory:write"))],
 )
-def vendor_delete(vendor_id: str, db: Session = Depends(get_db)):
+def vendor_delete(request: Request, vendor_id: str, db: Session = Depends(get_db)):
     # Soft delete -- quotes and purchase invoices FK against the vendor.
-    web_vendors_service.deactivate_vendor(db, vendor_id)
+    try:
+        web_vendors_service.deactivate_vendor(db, vendor_id)
+    except ValueError as exc:
+        # The owner refuses a deactivation it cannot make stick (an unlinked
+        # field-vendor login would keep working). It rejects before touching
+        # the row, so there is nothing for this adapter to roll back — and
+        # owning a transaction here is exactly what the adapter boundary
+        # forbids. Just render the refusal.
+        context = _ctx(request, db, "vendors")
+        context.update(
+            web_vendors_service.build_vendor_detail_context(db, vendor_id=vendor_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/vendors/detail.html", context, status_code=400
+        )
     return RedirectResponse(url="/admin/vendors", status_code=303)

@@ -4,6 +4,12 @@
 
 {% block content %}
 <div class="space-y-4">
+    {% if error %}
+    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+        {{ error }}
+    </div>
+    {% endif %}
+
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
             <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">

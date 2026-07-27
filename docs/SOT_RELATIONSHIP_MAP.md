@@ -405,11 +405,14 @@ do not hand-edit these rows.
 | `operations.project_assignment_policy` | project assignment-rule evaluation | `policy` | canonical project assignment facts ← `operations.project_lifecycle`<br>configured assignment rules ← `control.settings_spec` | `read_only` | `complete` | service delivery | `docs/designs/PROJECTS_SOT_COMPLETION.md`<br>`tests/test_project_assignment_engine.py`<br>`tests/architecture/test_projects_sot_boundary.py` |
 | `operations.installation_scope` | idempotent structural InstallationProject root creation | `command_writer` | canonical native project state ← `operations.project_lifecycle`<br>installation scope creation command ← `sales.orders` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
 | `operations.installation_scope` | Project-to-InstallationProject subscriber alignment | `policy` | canonical native project state ← `operations.project_lifecycle`<br>installation scope creation command ← `sales.orders` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
+| `operations.installation_scope` | buildout-rooted installation scope creation | `command_writer` | canonical native project state ← `operations.project_lifecycle` | `participant` | `complete` | service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sot_relationships.py` |
 | `operations.vendor_project_lifecycle` | vendor start/complete and staff verify/rework installation-project transitions | `command_writer` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>authenticated assigned-vendor transition evidence ← `auth.permission_gate`<br>vendor lifecycle transition protocol ← `operations.vendor_project_lifecycle`<br>work-order as-built evidence policy ← `operations.work_order_commands` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
+| `operations.vendor_project_lifecycle` | staff bidding publication and direct vendor assignment | `command_writer` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>vendor lifecycle transition protocol ← `operations.vendor_project_lifecycle` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
 | `operations.vendor_project_lifecycle` | durable vendor lifecycle actor/time/reason/event evidence | `authoritative_record` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>authenticated assigned-vendor transition evidence ← `auth.permission_gate`<br>work-order as-built evidence policy ← `operations.work_order_commands` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
 | `operations.vendor_project_lifecycle` | typed vendor project lifecycle outbox events | `authoritative_record` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>authenticated assigned-vendor transition evidence ← `auth.permission_gate` | `participant` | `complete` | vendor operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_lifecycle.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/architecture/test_vendor_project_lifecycle_boundary.py` |
 | `operations.vendor_project_workspace` | vendor project workspace read and action projections | `resolver` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
 | `operations.vendor_project_workspace` | vendor project workspace mutation coordination | `application_coordinator` | authenticated vendor workspace command context ← `auth.permission_gate`<br>canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records`<br>vendor quote currency and validity policy ← `control.settings_spec`<br>vendor workspace mutation protocol ← `operations.vendor_project_workspace` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
+| `operations.vendor_project_workspace` | quote creation eligibility | `policy` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
 | `operations.vendor_project_workspace` | quote submission eligibility and impact snapshot | `policy` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records`<br>vendor workspace mutation protocol ← `operations.vendor_project_workspace` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
 | `operations.vendor_project_workspace` | as-built submission eligibility and impact snapshot | `policy` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records`<br>vendor workspace mutation protocol ← `operations.vendor_project_workspace` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
 | `operations.vendor_project_workspace` | staff project-review eligibility and impact snapshot | `policy` | canonical installation-project lifecycle state ← `operations.project_lifecycle`<br>canonical vendor project records ← `operations.vendor_project_records`<br>work-order as-built evidence policy ← `operations.work_order_commands`<br>vendor workspace mutation protocol ← `operations.vendor_project_workspace` | `coordinator_managed` | `complete` | vendor operations | `docs/designs/VENDOR_PROJECT_REVIEW_UI.md`<br>`docs/designs/UI_PROJECTION_CONTRACTS.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_vendor_project_workspace.py`<br>`tests/test_vendor_submission_proposals.py`<br>`tests/test_vendor_project_review.py`<br>`tests/test_vendor_as_built_review.py`<br>`tests/architecture/test_vendor_project_workspace_boundary.py`<br>`tests/test_vendor_action_eligibility.py` |
@@ -3272,10 +3275,32 @@ Dependency order:
    boundary is `docs/BACKOFFICE_INTEGRATION_BOUNDARY.md`.
 8. `operations.project_lifecycle`: owns native project field/status mutations,
    project SLA synchronization, and lifecycle event/notification requests.
+8b. `operations.installation_scope` has two entry points onto one root. A sold
+   installation is scoped by `ensure_for_project` (subscriber-bound, triggered
+   by `sales.fulfillment`). Network buildout is scoped by `ensure_for_buildout`
+   (subscriber-less, rooted on a `BuildoutProject`), which mints the native
+   project root through `operations.project_lifecycle` with
+   `external_system='buildout'` and the buildout id as `external_reference` —
+   reusing `uq_projects_external_system_reference` as the idempotency key
+   rather than adding a column. Both land on `InstallationProject`, so every
+   downstream vendor decision runs one path. Plant work has no subscriber and
+   never invents one.
+
 9. `operations.vendor_project_lifecycle` (`app.services.vendor_portal_operations`)
    is the only writer for vendor and staff work transitions on
-   `installation_projects`: vendor `approved -> in_progress -> completed`, staff
-   `completed -> verified`, and staff rework `completed -> in_progress`. It locks
+   `installation_projects`: staff intake `draft -> open_for_bidding` (publish)
+   and `draft -> assigned` (direct assignment), vendor
+   `approved -> in_progress -> completed`, staff
+   `completed -> verified`, and staff rework `completed -> in_progress`.
+   Publication requires a bidding window that closes after it opens, because
+   the marketplace read and the quote-creation policy both refuse a project
+   without one — a project no vendor can quote is not published. Direct
+   assignment names the vendor instead of opening a window; the vendor still
+   quotes and staff still approve, so assignment decides *who may quote* and
+   never what the work is worth. The two intakes are alternatives, not a
+   sequence. `installation_project_lifecycle_events.vendor_id` is NULL only for
+   an intake decision taken before a vendor exists; every transition from
+   `assigned`/`approved` onward carries its vendor. It locks
    the project, rechecks the assigned vendor and current state, and atomically
    appends `installation_project_lifecycle_events` evidence carrying the
    authenticated actor type/id, transition time, previous/result state, vendor,
@@ -3293,7 +3318,18 @@ Dependency order:
    importing FastAPI or Starlette. The same named owner also owns the
    installation-project quote and as-built evidence lifecycles, including the
    read-only impact snapshot used before submit; one implementation module is
-   therefore declared under one owner name. The vendor project-detail map reads
+   therefore declared under one owner name. It likewise owns `quote creation
+   eligibility`: which vendor may open a *new* quote on an installation
+   project. A vendor may quote work directed at them (`assigned_vendor_id`
+   matches) or work genuinely published for bidding (`open_for_bidding` or
+   `quoted`, inside a populated `bidding_open_at`/`bidding_close_at` window);
+   a project assigned to another vendor, never published, or already awarded
+   is not quotable. Awarding closes quoting — post-award change is a variation,
+   not another bid. Returning a vendor's own already-open editable quote is a
+   read of a row they own and is deliberately not gated by this policy. The
+   marketplace listing applies the same shape as a query filter, but the
+   listing is a projection: the command owner enforces the decision under lock
+   and never infers visibility from what a read happened to return. The vendor project-detail map reads
    proposed and prior as-built geometry through
    `app.services.vendor_routes_api.build_project_route_geojson`; its capture
    controls render only from the owner's `as_built_action` projection and

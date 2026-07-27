@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from app.models.vendor_routes import (
     InstallationProject,
     InstallationProjectLifecycleEvent,
     InstallationProjectStatus,
+    Vendor,
+    VendorAssignmentType,
 )
 from app.services.common import coerce_uuid
 from app.services.events import EventType, emit_event
@@ -46,6 +49,22 @@ class StageVendorProjectTransition:
 class StageStaffVendorProjectTransition:
     project_id: str
     action: str
+    actor_id: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StagePublishForBidding:
+    project_id: str
+    actor_id: str
+    bidding_open_at: datetime
+    bidding_close_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class StageAssignVendorDirectly:
+    project_id: str
+    vendor_id: str
     actor_id: str
     reason: str | None = None
 
@@ -273,3 +292,157 @@ def stage_staff_project_transition(
     result["domain_event_id"] = str(domain_event.event_id)
     result["transitioned_at"] = domain_event.occurred_at
     return result
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _stage_intake_transition(
+    db: Session,
+    *,
+    project: InstallationProject,
+    target: str,
+    event_type: EventType,
+    actor_id: str,
+    reason: str | None,
+    decision_context: dict,
+) -> dict:
+    """Shared tail for the two ways a draft project becomes vendor-visible."""
+
+    from app.services.vendor_portal_operations import _serialize_project
+
+    previous = project.status
+    project.status = target
+    domain_event = emit_event(
+        db,
+        event_type,
+        {
+            "schema_version": 1,
+            "project_id": str(project.id),
+            "native_project_id": str(project.project_id),
+            "vendor_id": (
+                str(project.assigned_vendor_id) if project.assigned_vendor_id else None
+            ),
+            "from_status": previous,
+            "to_status": target,
+            "actor_type": "staff_user",
+            "actor_id": actor_id,
+            "reason": reason,
+            **decision_context,
+        },
+        actor=actor_id,
+        subscriber_id=project.subscriber_id,
+        account_id=project.subscriber_id,
+    )
+    evidence = InstallationProjectLifecycleEvent(
+        event_id=domain_event.event_id,
+        project_id=project.id,
+        vendor_id=project.assigned_vendor_id,
+        event_type=domain_event.event_type.value,
+        from_status=previous,
+        to_status=target,
+        actor_type="staff_user",
+        actor_id=actor_id,
+        reason=reason,
+        decision_context=decision_context or None,
+        occurred_at=domain_event.occurred_at,
+    )
+    db.add(evidence)
+    db.flush()
+    result = _serialize_project(project)
+    result["lifecycle_event_id"] = str(evidence.id)
+    result["domain_event_id"] = str(domain_event.event_id)
+    result["transitioned_at"] = domain_event.occurred_at
+    return result
+
+
+def stage_publish_for_bidding(
+    db: Session,
+    command: StagePublishForBidding,
+) -> dict:
+    """Open a drafted installation project to competitive vendor bidding.
+
+    Publishing is the decision that makes work visible to vendors who were
+    never assigned it, so the window is required rather than optional: the
+    marketplace read and the quote-creation policy both refuse a project whose
+    window is absent, and a project nobody can quote is not published.
+    """
+
+    actor = str(command.actor_id or "").strip()
+    if not actor:
+        raise _error("actor_required", "Lifecycle transition actor is required.")
+    project = _project(db, command.project_id, for_update=True)
+    if project.status != InstallationProjectStatus.draft.value:
+        raise _error(
+            "invalid_transition",
+            "Only a draft project can be published for bidding.",
+        )
+    if project.assigned_vendor_id is not None:
+        raise _error(
+            "already_assigned",
+            "A directly assigned project cannot be opened for bidding.",
+        )
+    opens_at = _as_utc(command.bidding_open_at)
+    closes_at = _as_utc(command.bidding_close_at)
+    if closes_at <= opens_at:
+        raise _error(
+            "invalid_bidding_window",
+            "Bidding must close after it opens.",
+        )
+    project.bidding_open_at = opens_at
+    project.bidding_close_at = closes_at
+    project.assignment_type = VendorAssignmentType.bidding.value
+    return _stage_intake_transition(
+        db,
+        project=project,
+        target=InstallationProjectStatus.open_for_bidding.value,
+        event_type=EventType.vendor_project_published,
+        actor_id=actor,
+        reason=None,
+        decision_context={
+            "assignment_type": VendorAssignmentType.bidding.value,
+            "bidding_open_at": opens_at.isoformat(),
+            "bidding_close_at": closes_at.isoformat(),
+        },
+    )
+
+
+def stage_assign_vendor_directly(
+    db: Session,
+    command: StageAssignVendorDirectly,
+) -> dict:
+    """Direct one drafted installation project at one vendor without bidding.
+
+    The assignment is the invitation, so no window applies. The vendor still
+    quotes and the quote still needs staff approval — this decides *who may
+    quote*, never what the work is worth.
+    """
+
+    actor = str(command.actor_id or "").strip()
+    if not actor:
+        raise _error("actor_required", "Lifecycle transition actor is required.")
+    project = _project(db, command.project_id, for_update=True)
+    if project.status != InstallationProjectStatus.draft.value:
+        raise _error(
+            "invalid_transition",
+            "Only a draft project can be assigned to a vendor.",
+        )
+    vendor_uuid = coerce_uuid(command.vendor_id)
+    vendor = db.get(Vendor, vendor_uuid)
+    if vendor is None or not vendor.is_active:
+        raise _error("vendor_not_found", "Vendor not found or inactive.")
+    project.assigned_vendor_id = vendor_uuid
+    project.assignment_type = VendorAssignmentType.direct.value
+    return _stage_intake_transition(
+        db,
+        project=project,
+        target=InstallationProjectStatus.assigned.value,
+        event_type=EventType.vendor_project_assigned,
+        actor_id=actor,
+        reason=(command.reason or "").strip() or None,
+        decision_context={
+            "assignment_type": VendorAssignmentType.direct.value,
+            "vendor_name": vendor.name,
+        },
+    )
