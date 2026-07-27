@@ -197,6 +197,47 @@ def overdue_debt_balance_for_accounts(
     )
 
 
+def accounts_with_due_debt(db: Session, account_ids, *, now: datetime | None = None):
+    """Which of these accounts carry a due balance right now.
+
+    A set-shaped answer for cohort callers — audience segmentation asks about
+    thousands of accounts at once, and the per-account reads above issue a
+    query each. It reuses ``due_invoice_filters_for_accounts`` rather than
+    restating the rule, so a cohort answer can never disagree with what the
+    customer sees on their own invoice page.
+    """
+    ids = _coerce_account_ids(account_ids)
+    if not ids:
+        return set()
+    rows = db.execute(
+        select(Invoice.account_id)
+        .where(*due_invoice_filters_for_accounts(ids, now=now))
+        .group_by(Invoice.account_id)
+        .having(func.coalesce(func.sum(Invoice.balance_due), Decimal("0.00")) > 0)
+    ).all()
+    return {row[0] for row in rows}
+
+
+def accounts_with_overdue_debt(
+    db: Session, account_ids, *, now: datetime | None = None
+):
+    """Which of these accounts carry overdue debt right now.
+
+    Same contract as ``accounts_with_due_debt``, over
+    ``overdue_debt_filters_for_accounts``.
+    """
+    ids = _coerce_account_ids(account_ids)
+    if not ids:
+        return set()
+    rows = db.execute(
+        select(Invoice.account_id)
+        .where(*overdue_debt_filters_for_accounts(ids, now=now))
+        .group_by(Invoice.account_id)
+        .having(func.coalesce(func.sum(Invoice.balance_due), Decimal("0.00")) > 0)
+    ).all()
+    return {row[0] for row in rows}
+
+
 def overdue_status_count(db: Session, account_id) -> int:
     return int(
         db.execute(

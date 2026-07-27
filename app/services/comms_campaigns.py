@@ -184,6 +184,54 @@ def _validate_campaign_values(campaign: Campaign) -> None:
 MARKETING_CATEGORY = "marketing"
 
 
+#: Financial segment values. Marketing that cannot see service state is the
+#: reason a separate CRM was worth replacing — not upselling a subscriber who
+#: is in arrears is the concrete case. The values name the *canonical*
+#: financial meanings rather than inventing a generic "debt" notion:
+#: ``customer.financial_position`` deliberately keeps due and overdue distinct.
+FINANCIAL_SEGMENTS = {
+    "no_due_debt",
+    "has_due_debt",
+    "has_overdue_debt",
+}
+
+
+def _financial_segment(campaign: Campaign) -> str | None:
+    segment = (
+        campaign.segment_filter if isinstance(campaign.segment_filter, dict) else {}
+    )
+    value = str(segment.get("financial_position") or "").strip().lower()
+    return value if value in FINANCIAL_SEGMENTS else None
+
+
+def _financial_excluded(db: Session, campaign: Campaign, subscribers: list) -> set:
+    """Subscriber ids the financial segment excludes.
+
+    Read in bulk for the same reason suppression is: a campaign audience is
+    thousands of accounts, and the per-account financial reads issue several
+    queries each. The predicate comes from ``invoice_collectibility``, the
+    owner of what due and overdue mean, so a segment can never disagree with
+    the customer's own invoice page.
+    """
+    wanted = _financial_segment(campaign)
+    if wanted is None or not subscribers:
+        return set()
+    from app.services.invoice_collectibility import (
+        accounts_with_due_debt,
+        accounts_with_overdue_debt,
+    )
+
+    ids = [item.id for item in subscribers]
+    if wanted == "has_overdue_debt":
+        matching = accounts_with_overdue_debt(db, ids)
+        return {item.id for item in subscribers if item.id not in matching}
+    matching = accounts_with_due_debt(db, ids)
+    if wanted == "has_due_debt":
+        return {item.id for item in subscribers if item.id not in matching}
+    # no_due_debt
+    return {item.id for item in subscribers if item.id in matching}
+
+
 def _blocked_addresses(
     db: Session, *, channel, addresses: list[str | None]
 ) -> set[str]:
@@ -638,6 +686,7 @@ def build_recipient_list(
         channel=campaign.channel,
         addresses=[_recipient_address(campaign, item)[0] for item in subscribers],
     )
+    financially_excluded = _financial_excluded(db, campaign, subscribers)
 
     for subscriber in subscribers:
         address, email = _recipient_address(campaign, subscriber)
@@ -655,6 +704,9 @@ def build_recipient_list(
             continue
         if address in blocked:
             skipped["suppressed"] += 1
+            continue
+        if subscriber.id in financially_excluded:
+            skipped["financial_position"] += 1
             continue
         already_exists = (
             db.query(CampaignRecipient.id)
