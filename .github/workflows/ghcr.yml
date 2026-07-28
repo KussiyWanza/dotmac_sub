@@ -1,11 +1,12 @@
 name: Build & Push to GHCR
 
-# Builds the prod image in CI and pushes it to GHCR on every push to main, so
-# prod can `docker compose pull` a prebuilt image instead of building on the
-# host (`make prod-build`). Deploy with `make prod-ghcr-deploy`.
+# Builds one immutable image per commit on dev and main. Dev images are
+# staging-only; only the default branch receives the moving `latest` tag.
+# Production can therefore pull a main-built image while staging tests the
+# exact dev commit before promotion.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 env:

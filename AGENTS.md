@@ -68,11 +68,26 @@ authoritative documents in the same change that updates the contract.
 ## Change workflow
 
 - Work on a feature branch; never commit directly to `main`.
+- Follow the mandatory promotion sequence for every release change:
+  feature branch -> `dev` -> `origin/dev` -> prescribed validation on that exact
+  remote commit -> immutable dev image -> staging deployment and acceptance ->
+  `main` -> immutable main image -> production deployment.
+- Do not merge a feature branch directly into `main`. Merge it into `dev`,
+  update `origin/dev`, and require the repository-prescribed tests and CI to
+  pass on that exact `origin/dev` commit before merging `dev` into `main`.
+- Deploy the validated immutable `origin/dev` image to the explicitly named
+  staging host and complete staging acceptance before promoting `dev` to
+  `main`. A dev image is staging-only and must never receive the `latest` tag.
+- Promote only the staged and accepted code from `dev` to `main`; do not add
+  unrelated changes during promotion. Require the resulting `main` CI and
+  immutable image build to pass before any production deployment.
 - Keep each implementation slice coherent and reviewable even when several
   slices are assembled into a larger release.
-- Every pull request must include the appropriate repository `VERSION` bump,
-  following the established release-version sequence and using a separate
-  `chore: bump version to X.Y.Z` commit.
+- Every pull request must declare exactly one appropriate `version:major`,
+  `version:minor`, `version:patch`, or `version:none` label. Release-impacting
+  source pull requests do not edit `VERSION`; after merge, the checked-in
+  automation owns the separate rolling `chore: bump version to X.Y.Z` pull
+  request for the target branch.
 - Do not commit, push, open or update a pull request, merge, release, deploy, or
   perform production work unless Michael explicitly requests that action.
 - Production or SSH work requires Michael to name the target host.
