@@ -6,8 +6,6 @@ Same paths and payloads as the CRM router; sub conventions applied:
   ``project:task:{read,write}`` (already seeded in sub RBAC).
 * The `filters` JSON param goes through sub's whitelisted dynamic-filter
   engine (`project_filters`) instead of CRM's `filter_engine`.
-* ``GET /projects/{id}/cost-summary`` is **not** ported; it depends on the
-  future native time-cost capability while work logs remain CRM-owned.
 """
 
 from collections.abc import Callable, Coroutine
@@ -21,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.schemas.common import ListResponse
 from app.schemas.project import (
+    ProjectCostSummary,
     ProjectCreate,
     ProjectRead,
     ProjectTaskCreate,
@@ -28,7 +27,7 @@ from app.schemas.project import (
     ProjectTaskUpdate,
     ProjectUpdate,
 )
-from app.services import project_filters
+from app.services import project_costs, project_filters
 from app.services import projects as projects_service
 from app.services.auth_dependencies import require_permission
 from app.services.domain_errors import DomainError
@@ -210,6 +209,16 @@ class ProjectKanbanMove(BaseModel):
 )
 def projects_kanban_move(payload: ProjectKanbanMove, db: Session = Depends(get_db)):
     return projects_service.projects.update_status(db, payload.id, payload.to)
+
+
+@router.get(
+    "/projects/{project_id}/cost-summary",
+    response_model=ProjectCostSummary,
+    tags=["projects"],
+    dependencies=[Depends(require_permission("project:read"))],
+)
+def get_project_cost_summary(project_id: str, db: Session = Depends(get_db)):
+    return project_costs.project_cost_summary(db, project_id)
 
 
 @router.get(

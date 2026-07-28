@@ -3864,6 +3864,14 @@ SETTINGS_SPECS: list[SettingSpec] = [
     ),
     SettingSpec(
         domain=SettingDomain.projects,
+        key="default_labor_hourly_rate",
+        env_var="PROJECTS_DEFAULT_LABOR_HOURLY_RATE",
+        value_type=SettingValueType.string,
+        default="0.00",
+        label="Default field labor hourly cost",
+    ),
+    SettingSpec(
+        domain=SettingDomain.projects,
         key="default_sales_project_type",
         env_var="PROJECTS_DEFAULT_SALES_PROJECT_TYPE",
         value_type=SettingValueType.string,

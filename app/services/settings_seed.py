@@ -2176,6 +2176,12 @@ def seed_projects_settings(db: Session) -> None:
     )
     projects_settings.ensure_by_key(
         db,
+        key="default_labor_hourly_rate",
+        value_type=SettingValueType.string,
+        value_text=os.getenv("PROJECTS_DEFAULT_LABOR_HOURLY_RATE", "0.00"),
+    )
+    projects_settings.ensure_by_key(
+        db,
         key="default_sales_project_type",
         value_type=SettingValueType.string,
         value_text=os.getenv(
