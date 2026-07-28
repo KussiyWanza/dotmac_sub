@@ -1,0 +1,32 @@
+# Named enum types that more than one migration site can create. This is
+# migration debt, not permission: PostgreSQL rejects a second CREATE TYPE, and
+# the fresh-database CI path cannot see it, because 001 builds the schema from
+# model metadata and _safe_create_table then skips the tables whose creation
+# would emit it. Only an incremental database reaches the failure.
+# Counts must only shrink; new entries require an explicit owner and review.
+# Format: enum-type-name count repository-relative-path.
+accountingtreatment 2 alembic/versions/430_billing_contract_obligation_identity.py
+billingcontractsourcekind 2 alembic/versions/430_billing_contract_obligation_identity.py
+billingcontractversionstatus 2 alembic/versions/430_billing_contract_obligation_identity.py
+billingrecordauthority 2 alembic/versions/430_billing_contract_obligation_identity.py
+billingrecordauthority 1 alembic/versions/431_customer_subledger_postings.py
+billingrecordauthority 1 alembic/versions/433_durable_timers_collections_cases.py
+billingrecordauthority 1 alembic/versions/434_sales_funding_erp_exports.py
+cadencealignment 2 alembic/versions/430_billing_contract_obligation_identity.py
+chargecomponent 2 alembic/versions/430_billing_contract_obligation_identity.py
+collectionscasestate 2 alembic/versions/433_durable_timers_collections_cases.py
+collectionsreason 2 alembic/versions/433_durable_timers_collections_cases.py
+collectiontiming 2 alembic/versions/430_billing_contract_obligation_identity.py
+endofmonthrule 2 alembic/versions/430_billing_contract_obligation_identity.py
+erpbillingflow 2 alembic/versions/434_sales_funding_erp_exports.py
+erpexportstatus 2 alembic/versions/434_sales_funding_erp_exports.py
+fundinggatestate 2 alembic/versions/434_sales_funding_erp_exports.py
+intervalunit 2 alembic/versions/430_billing_contract_obligation_identity.py
+obligationresolutionkind 2 alembic/versions/430_billing_contract_obligation_identity.py
+obligationstate 2 alembic/versions/430_billing_contract_obligation_identity.py
+positioneffectkind 2 alembic/versions/431_customer_subledger_postings.py
+postingcommandkind 2 alembic/versions/431_customer_subledger_postings.py
+prorationpolicy 2 alembic/versions/430_billing_contract_obligation_identity.py
+ratebasis 2 alembic/versions/430_billing_contract_obligation_identity.py
+receiptoutcome 2 alembic/versions/432_owner_output_receipts.py
+timerstatus 2 alembic/versions/433_durable_timers_collections_cases.py

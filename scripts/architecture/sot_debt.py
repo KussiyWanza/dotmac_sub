@@ -30,6 +30,8 @@ ADAPTER_TRANSACTION_BASELINE = (
 )
 HTTP_EXCEPTION_BASELINE = ARCHITECTURE_TEST_DIR / "service_http_exception_baseline.txt"
 LEGACY_MANIFEST_BASELINE = ARCHITECTURE_TEST_DIR / "sot_manifest_legacy_baseline.txt"
+MIGRATION_ENUM_BASELINE = ARCHITECTURE_TEST_DIR / "migration_enum_creation_baseline.txt"
+MIGRATION_DIR = PROJECT_ROOT / "alembic" / "versions"
 
 ADAPTER_ROOTS = (
     PROJECT_ROOT / "app" / "api",
@@ -362,6 +364,176 @@ def build_report(domains: Sequence[Any]) -> dict[str, Any]:
             ),
         },
     }
+
+
+@dataclass(frozen=True)
+class MigrationEnumEmitter:
+    """One place a migration can emit ``CREATE TYPE`` for a named enum."""
+
+    enum_name: str
+    path: str
+    kind: str  # "explicit" (a checked .create()) or "auto" (a column declaration)
+
+
+_ENUM_FACTORIES = {"Enum", "ENUM"}
+
+
+def _enum_construction(node: ast.AST) -> tuple[str, bool] | None:
+    """Return ``(type_name, auto_creates)`` for an Enum/ENUM construction."""
+
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    attr = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if attr not in _ENUM_FACTORIES:
+        return None
+    type_name = None
+    auto_creates = True
+    for keyword in node.keywords:
+        if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+            type_name = keyword.value.value
+        # postgresql.ENUM(create_type=False) leaves creation to an explicit owner.
+        if keyword.arg == "create_type" and isinstance(keyword.value, ast.Constant):
+            auto_creates = bool(keyword.value.value)
+    if not isinstance(type_name, str) or not type_name:
+        return None
+    return type_name, auto_creates
+
+
+def _migration_enum_emitters_for(path: Path) -> list[MigrationEnumEmitter]:
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+
+    # Only ``upgrade`` can emit CREATE TYPE. Scoping to it also stops a
+    # ``downgrade`` that rebinds the same variable to a bare ``sa.Enum`` (for a
+    # ``.drop()``) from shadowing the create_type=False definition upgrade used.
+    upgrade_fn = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+        ),
+        None,
+    )
+    if upgrade_fn is None:
+        return []
+    scopes: list[ast.AST] = [
+        node for node in tree.body if not isinstance(node, ast.FunctionDef)
+    ]
+    scopes.append(upgrade_fn)
+
+    bound: dict[str, tuple[str, bool]] = {}
+    groups: dict[str, list[str]] = {}
+    for scope in scopes:
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            construction = _enum_construction(node.value)
+            if construction is not None:
+                bound[target.id] = construction
+            elif isinstance(node.value, ast.Tuple | ast.List):
+                members = [e.id for e in node.value.elts if isinstance(e, ast.Name)]
+                if members:
+                    groups[target.id] = members
+
+    # Names an explicit `.create(...)` owns, directly or through a group tuple
+    # the migration iterates (`for enum_type in _ALL_ENUMS: enum_type.create(...)`).
+    explicit: set[str] = set()
+    loop_sources: dict[str, str] = {}
+    for node in ast.walk(upgrade_fn):
+        if (
+            isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.iter, ast.Name)
+        ):
+            loop_sources[node.target.id] = node.iter.id
+
+    created_vars: set[str] = set()
+    for node in ast.walk(upgrade_fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "create"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            created_vars.add(node.func.value.id)
+
+    for var in created_vars:
+        if var in bound:
+            explicit.add(bound[var][0])
+        source = loop_sources.get(var)
+        if source:
+            for member in groups.get(source, []):
+                if member in bound:
+                    explicit.add(bound[member][0])
+
+    # Auto-creation fires from SQLAlchemy's `_on_table_create` hook, so only a
+    # reference inside `create_table` emits CREATE TYPE. `add_column` does not —
+    # which is why migrations that add an enum column must create the type
+    # themselves, and why counting every reference would be a false positive.
+    seen_auto: set[str] = set()
+    for node in ast.walk(upgrade_fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"create_table", "Table"}
+        ):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Name) and inner.id in bound:
+                type_name, auto_creates = bound[inner.id]
+                if auto_creates:
+                    seen_auto.add(type_name)
+            construction = _enum_construction(inner)
+            if construction is not None and construction[1]:
+                seen_auto.add(construction[0])
+
+    emitters: list[MigrationEnumEmitter] = []
+    try:
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:  # a scanner self-test fixture outside the project
+        relative = path.name
+
+    for type_name in sorted(explicit):
+        emitters.append(MigrationEnumEmitter(type_name, relative, "explicit"))
+    for type_name in sorted(seen_auto):
+        emitters.append(MigrationEnumEmitter(type_name, relative, "auto"))
+    return emitters
+
+
+def migration_enum_emitters() -> list[MigrationEnumEmitter]:
+    """Every place any migration can emit ``CREATE TYPE`` for a named enum.
+
+    A named PostgreSQL type may only be created once. Alembic's fresh-database
+    path hides duplicates: ``001`` builds the schema from model metadata, so
+    ``_safe_create_table`` skips the tables whose creation would have emitted the
+    second ``CREATE TYPE``. Only an incremental database reaches it, which is why
+    this is enforced statically rather than left to the migration suite.
+    """
+
+    if not MIGRATION_DIR.exists():
+        return []
+    emitters: list[MigrationEnumEmitter] = []
+    for path in sorted(MIGRATION_DIR.glob("*.py")):
+        emitters.extend(_migration_enum_emitters_for(path))
+    return emitters
+
+
+def duplicated_migration_enums() -> Counter[tuple[str, str]]:
+    """Emitters for enum names that more than one place can create."""
+
+    emitters = migration_enum_emitters()
+    per_name: Counter[str] = Counter(e.enum_name for e in emitters)
+    duplicated: Counter[tuple[str, str]] = Counter()
+    for emitter in emitters:
+        if per_name[emitter.enum_name] > 1:
+            duplicated[(emitter.enum_name, emitter.path)] += 1
+    return duplicated
 
 
 def main() -> int:
