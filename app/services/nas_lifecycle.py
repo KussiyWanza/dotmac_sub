@@ -198,12 +198,19 @@ def _monitoring_evidence(
 ) -> tuple[bool, str]:
     if node is None or not node.is_active:
         return False, "status_retry_pending"
+    from app.services.topology.live_status import live_status_observed_at
+
     live = str(node.live_status or "").strip().lower()
-    if live == "up" and _fresh(node.live_status_at, now):
+    observation_at = live_status_observed_at(
+        node,
+        now=now,
+        stale_after_seconds=int(_MONITORING_FRESHNESS.total_seconds()),
+    )
+    if live == "up" and _fresh(observation_at, now):
         return True, "live_status_up"
     if node.last_ping_ok is True and _fresh(node.last_ping_at, now):
         return True, "ping_up"
-    if live == "down" and _fresh(node.live_status_at, now):
+    if live == "down" and _fresh(observation_at, now):
         return False, "live_status_down"
     if node.last_ping_ok is False and _fresh(node.last_ping_at, now):
         return False, "ping_down"

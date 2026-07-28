@@ -11414,8 +11414,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="runtime.infrastructure_polling",
                             kind=AuthorityKind.OBSERVATION,
                             source=(
-                                "timestamped ping, poll, live-status, and health "
-                                "observations"
+                                "timestamped ping, poll, and health observations; "
+                                "live_status_at is derived transition/dwell evidence, "
+                                "not an observation timestamp"
                             ),
                         ),
                         AuthorityInput(

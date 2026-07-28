@@ -61,6 +61,13 @@ current positive observation
   -> working(confirmed device-specific reason)
 ```
 
+For core `NetworkDevice` rows, `last_ping_at` and `last_snmp_at` are the
+observation timestamps used for freshness. `live_status_at` has a different,
+non-observational meaning: it records when the derived `live_status` entered
+its current value so debounce and availability-history consumers can measure
+state dwell. A continuously working device therefore retains its transition
+timestamp while each successful native poll renews its verification evidence.
+
 Per-device verification sources differ:
 
 - core devices: native infrastructure polling and warmed live observations;

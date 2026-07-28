@@ -372,13 +372,17 @@ def derive_operational_status(
     ):
         return _maybe_mismatch(NOT_WORKING, "verification_path_unavailable", admin)
 
-    # 3/4/5. Observation time decides whether verification has expired. A
-    # current per-device timestamp is stronger than a missing global heartbeat;
-    # rows without their own timestamp fall back to the warmer heartbeat.
+    # 3/4/5. Native observation time decides whether verification has expired.
+    # live_status_at is the status-transition/dwell timestamp, not freshness
+    # evidence. A current per-device collector timestamp is stronger than a
+    # missing global heartbeat; legacy rows without one fall back to the warmer
+    # heartbeat.
     if live is None:
         return _maybe_mismatch(NOT_WORKING, "verification_not_started", admin)
-    observation_at = getattr(device, "live_status_at", None)
     current = now or datetime.now(UTC)
+    from app.services.topology.live_status import live_status_observed_at
+
+    observation_at = live_status_observed_at(device, now=current)
     verification_expired = (
         not _is_fresh(observation_at, current, _WARM_STALE_SECONDS)
         if observation_at is not None
