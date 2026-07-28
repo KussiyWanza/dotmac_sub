@@ -13,12 +13,14 @@ from app.services import (
     vendor_as_built_review_proposals,
     vendor_project_review_proposals,
     vendor_route_review_proposals,
+    vendor_supply_review_proposals,
 )
 from app.services.auth_dependencies import (
     can,
     require_any_permission,
     require_permission,
 )
+from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition
@@ -40,6 +42,15 @@ from app.services.vendor_purchase_invoices import (
 )
 from app.services.vendor_route_review_proposals import (
     ConfirmVendorRouteReviewCommand,
+)
+from app.services.vendor_supply_review_proposals import (
+    ConfirmVendorSupplyReviewCommand,
+)
+from app.services.vendor_supply_views import (
+    VendorSupplyReviewAction,
+    VendorSupplyType,
+    advance_review_queue,
+    material_review_queue,
 )
 
 templates = Jinja2Templates(directory="templates")
@@ -64,6 +75,13 @@ def _ctx(request: Request, db: Session) -> dict:
 def _actor(request: Request) -> str:
     auth = getattr(request.state, "auth", {}) or {}
     return str(auth.get("principal_id") or auth.get("person_id") or "")
+
+
+def _supply_action(value: str) -> VendorSupplyReviewAction:
+    try:
+        return VendorSupplyReviewAction(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Unknown action") from exc
 
 
 def _review_context(request: Request, *, quote_id: str) -> CommandContext:
@@ -124,6 +142,7 @@ def vendor_operations_queue(
         request,
         "finance:ap:read",
     )
+    show_advance_reviews = can(request, "finance:ap:read")
     context.update(
         {
             "draft_projects": (
@@ -140,6 +159,13 @@ def vendor_operations_queue(
             "show_field_reviews": show_field_reviews,
             "show_route_reviews": show_route_reviews,
             "show_financial_reviews": show_financial_reviews,
+            "show_advance_reviews": show_advance_reviews,
+            "material_releases": (
+                material_review_queue(db).items if show_field_reviews else ()
+            ),
+            "advances": (
+                advance_review_queue(db).items if show_advance_reviews else ()
+            ),
             "projects": (
                 vendor_portal_operations.list_reviewable_projects(db)
                 if show_field_reviews
@@ -607,81 +633,138 @@ def request_vendor_invoice_revision(
 # ---------------------------------------------------------------------------
 # Vendor material releases and advances
 #
-# Both owners decide; this router only authorizes, translates the form, and
-# commits. Approval is the Sub decision the configured provider then acts on.
+# Both participant owners decide. This adapter only authorizes and translates;
+# the signed confirmation coordinator owns the atomic transaction.
 # ---------------------------------------------------------------------------
 
 
-def _supply_error(exc: ValueError) -> HTTPException:
-    code = getattr(exc, "code", "")
-    kind = getattr(exc, "kind", "invalid")
-    status_code = 404 if kind == "not_found" else 409 if code else 400
-    return HTTPException(status_code=status_code, detail=str(exc))
-
-
 @router.post(
-    "/material-releases/{release_id}/{action}",
+    "/material-releases/{release_id}/{action}/preview",
     dependencies=[Depends(require_permission("inventory:write"))],
+    response_class=HTMLResponse,
 )
-def review_vendor_material_release(
+def preview_vendor_material_release(
     request: Request,
     release_id: str,
     action: str,
     review_notes: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
-    from app.services import vendor_material_release
+    proposal = vendor_supply_review_proposals.issue_review(
+        db,
+        supply_type=VendorSupplyType.material,
+        record_id=coerce_uuid(release_id),
+        action=_supply_action(action),
+        actor_id=coerce_uuid(_actor(request)),
+        reason=review_notes,
+    )
+    context = _ctx(request, db)
+    context["proposal"] = proposal
+    return templates.TemplateResponse(
+        "admin/vendors/supply_review_confirm.html",
+        context,
+    )
 
-    if action not in {"approve", "reject"}:
-        raise HTTPException(status_code=404, detail="Unknown action")
+
+@router.post(
+    "/material-releases/{release_id}/{action}/confirm",
+    dependencies=[Depends(require_permission("inventory:write"))],
+)
+def confirm_vendor_material_release(
+    request: Request,
+    release_id: str,
+    action: str,
+    confirmation_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor_id = _actor(request)
+    context = _staff_confirmation_context(
+        request,
+        scope=release_id,
+        reason="vendor_material_release_review_confirmation",
+    )
     db_session_adapter.release_read_transaction(db)
-    try:
-        if action == "approve":
-            vendor_material_release.approve_committed(
-                db, release_id, actor_id=_actor(request), notes=review_notes
-            )
-        else:
-            vendor_material_release.reject_committed(
-                db, release_id, actor_id=_actor(request), reason=review_notes
-            )
-    except ValueError as exc:
-        raise _supply_error(exc) from exc
+    result = vendor_supply_review_proposals.confirm_review(
+        db,
+        ConfirmVendorSupplyReviewCommand(
+            context=context,
+            confirmation_token=confirmation_token,
+            supply_type=VendorSupplyType.material,
+            record_id=coerce_uuid(release_id),
+            action=_supply_action(action),
+            actor_id=coerce_uuid(actor_id),
+        ),
+    )
+    label = (
+        "approved" if result.action is VendorSupplyReviewAction.approve else "rejected"
+    )
     return RedirectResponse(
-        f"/admin/vendors/operations?message=Material+release+{action}d",
+        f"/admin/vendors/operations?message=Material+release+{label}",
         status_code=303,
     )
 
 
 @router.post(
-    "/advances/{advance_id}/{action}",
+    "/advances/{advance_id}/{action}/preview",
     dependencies=[Depends(require_permission("finance:ap:write"))],
+    response_class=HTMLResponse,
 )
-def review_vendor_advance(
+def preview_vendor_advance(
     request: Request,
     advance_id: str,
     action: str,
     review_notes: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
-    """Advancing money is an accounts-payable decision, so it is gated on the
-    AP permission rather than the inventory one used for material."""
-    from app.services import vendor_advances
+    proposal = vendor_supply_review_proposals.issue_review(
+        db,
+        supply_type=VendorSupplyType.advance,
+        record_id=coerce_uuid(advance_id),
+        action=_supply_action(action),
+        actor_id=coerce_uuid(_actor(request)),
+        reason=review_notes,
+    )
+    context = _ctx(request, db)
+    context["proposal"] = proposal
+    return templates.TemplateResponse(
+        "admin/vendors/supply_review_confirm.html",
+        context,
+    )
 
-    if action not in {"approve", "reject"}:
-        raise HTTPException(status_code=404, detail="Unknown action")
+
+@router.post(
+    "/advances/{advance_id}/{action}/confirm",
+    dependencies=[Depends(require_permission("finance:ap:write"))],
+)
+def confirm_vendor_advance(
+    request: Request,
+    advance_id: str,
+    action: str,
+    confirmation_token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor_id = _actor(request)
+    context = _staff_confirmation_context(
+        request,
+        scope=advance_id,
+        reason="vendor_advance_review_confirmation",
+    )
     db_session_adapter.release_read_transaction(db)
-    try:
-        if action == "approve":
-            vendor_advances.approve_committed(
-                db, advance_id, actor_id=_actor(request), notes=review_notes
-            )
-        else:
-            vendor_advances.reject_committed(
-                db, advance_id, actor_id=_actor(request), reason=review_notes
-            )
-    except ValueError as exc:
-        raise _supply_error(exc) from exc
+    result = vendor_supply_review_proposals.confirm_review(
+        db,
+        ConfirmVendorSupplyReviewCommand(
+            context=context,
+            confirmation_token=confirmation_token,
+            supply_type=VendorSupplyType.advance,
+            record_id=coerce_uuid(advance_id),
+            action=_supply_action(action),
+            actor_id=coerce_uuid(actor_id),
+        ),
+    )
+    label = (
+        "approved" if result.action is VendorSupplyReviewAction.approve else "rejected"
+    )
     return RedirectResponse(
-        f"/admin/vendors/operations?message=Advance+{action}d",
+        f"/admin/vendors/operations?message=Advance+{label}",
         status_code=303,
     )

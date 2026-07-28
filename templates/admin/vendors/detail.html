@@ -1,5 +1,5 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import status_badge %}
+{% from "components/ui/macros.html" import status_badge, status_presentation_badge %}
 {% block title %}{{ vendor.name }} - Vendor - Admin{% endblock %}
 
 {% block content %}
@@ -135,5 +135,112 @@
             {% endif %}
         </div>
     </div>
+
+    <section id="delivery-portfolio" class="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+                <h2 class="text-base font-semibold text-slate-900 dark:text-white">Delivery portfolio</h2>
+                <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Authoritative project, evidence, supply, invoice, and provider-observation state for this vendor.</p>
+            </div>
+            <form method="get" action="/admin/vendors/{{ vendor.id }}" class="grid gap-2 sm:grid-cols-[minmax(180px,1fr)_180px_auto]">
+                <input name="project_search" value="{{ project_search }}" maxlength="120" placeholder="Search projects" class="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+                <select name="project_status" class="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+                    <option value="">All project states</option>
+                    {% for option in portfolio.status_options %}
+                    <option value="{{ option.value.value }}"{% if project_status == option.value.value %} selected{% endif %}>{{ option.presentation.label }}</option>
+                    {% endfor %}
+                </select>
+                <button class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">Filter</button>
+            </form>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {% for kpi in portfolio.kpis %}
+            <a href="{{ kpi.cohort_url }}" class="rounded-lg border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-300 hover:bg-cyan-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-cyan-700">
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{{ kpi.label }}</p>
+                <p class="mt-2 text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{{ kpi.value.value }}</p>
+            </a>
+            {% endfor %}
+        </div>
+
+        <div class="space-y-3">
+            {% for item in portfolio.items %}
+            <article class="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <a href="{{ item.detail_url }}" class="font-semibold text-cyan-700 hover:underline dark:text-cyan-400">{{ item.name }}</a>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ item.code or item.project_id }} · updated {{ item.updated_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+                    </div>
+                    {{ status_presentation_badge(item.status, size="sm") }}
+                </div>
+
+                <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {% if item.delivery.quote %}
+                    <a href="{{ item.delivery.quote.url }}" class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">Quote</p>
+                        <div class="mt-2">{% if item.delivery.quote.status %}{{ status_presentation_badge(item.delivery.quote.status, size="sm") }}{% else %}<span class="text-slate-500">{{ item.delivery.quote.detail }}</span>{% endif %}</div>
+                        {% if item.delivery.quote.total is not none %}<p class="mt-2 font-semibold">{{ item.delivery.quote.currency }} {{ "{:,.2f}".format(item.delivery.quote.total) }}</p>{% endif %}
+                    </a>
+                    {% endif %}
+
+                    {% if item.delivery.route %}
+                    <a href="{{ item.delivery.route.url }}" class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">Proposed route</p>
+                        <div class="mt-2">{% if item.delivery.route.status %}{{ status_presentation_badge(item.delivery.route.status, size="sm") }}{% else %}<span class="text-slate-500">{{ item.delivery.route.detail }}</span>{% endif %}</div>
+                    </a>
+                    {% endif %}
+
+                    {% if item.delivery.as_built %}
+                    <a href="{{ item.delivery.as_built.url }}" class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">As-built evidence</p>
+                        <div class="mt-2">{% if item.delivery.as_built.status %}{{ status_presentation_badge(item.delivery.as_built.status, size="sm") }}{% else %}<span class="text-slate-500">{{ item.delivery.as_built.detail }}</span>{% endif %}</div>
+                    </a>
+                    {% endif %}
+
+                    {% if item.latest_material_release %}
+                    <div class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">Latest material request</p>
+                        <div class="mt-2">{{ status_presentation_badge(item.latest_material_release.status, size="sm") }}</div>
+                        <p class="mt-2 text-xs text-slate-500">{{ item.latest_material_release.provider.detail }}</p>
+                    </div>
+                    {% endif %}
+
+                    {% if item.delivery.invoice %}
+                    <a href="{{ item.delivery.invoice.url }}" class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">Purchase invoice</p>
+                        <div class="mt-2">{% if item.delivery.invoice.status %}{{ status_presentation_badge(item.delivery.invoice.status, size="sm") }}{% else %}<span class="text-slate-500">{{ item.delivery.invoice.detail }}</span>{% endif %}</div>
+                        {% if item.delivery.invoice.payment and item.delivery.invoice.payment.status.value %}
+                        <div class="mt-2">{{ status_presentation_badge(item.delivery.invoice.payment.status.value, size="sm") }}{% if item.delivery.invoice.payment.status.is_stale %} {{ status_badge("Stale", "warning", size="sm") }}{% endif %}</div>
+                        <p class="mt-2 text-xs text-slate-500">{{ item.delivery.invoice.payment.detail }}</p>
+                        {% endif %}
+                    </a>
+                    {% endif %}
+
+                    {% if item.latest_advance %}
+                    <div class="rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-900">
+                        <p class="text-xs font-semibold uppercase text-slate-500">Latest advance</p>
+                        <div class="mt-2">{{ status_presentation_badge(item.latest_advance.status, size="sm") }}</div>
+                        <p class="mt-2 font-semibold">{{ item.latest_advance.currency }} {{ "{:,.2f}".format(item.latest_advance.amount) }}</p>
+                        <p class="mt-1 text-xs text-slate-500">{{ item.latest_advance.payables.detail }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </article>
+            {% else %}
+            <div class="rounded-lg border border-dashed border-slate-300 px-4 py-10 text-center dark:border-slate-700">
+                <p class="font-semibold text-slate-700 dark:text-slate-200">No assigned projects match this view.</p>
+                <p class="mt-1 text-sm text-slate-500">Clear the filters or assign this vendor through the <a href="/admin/vendors/operations" class="font-semibold text-cyan-700 hover:underline dark:text-cyan-400">vendor operations workspace</a>.</p>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if portfolio.has_previous or portfolio.has_next %}
+        <nav class="flex items-center justify-between border-t border-slate-200 pt-4 text-sm dark:border-slate-700" aria-label="Vendor portfolio pagination">
+            {% if portfolio.has_previous %}<a class="font-semibold text-cyan-700 dark:text-cyan-400" href="?project_search={{ project_search | urlencode }}&project_status={{ project_status }}&project_page={{ project_page - 1 }}&project_per_page={{ project_per_page }}#delivery-portfolio">Previous</a>{% else %}<span></span>{% endif %}
+            <span class="text-slate-500">Page {{ project_page }} of {{ project_pages }} · {{ portfolio.total }} project{{ '' if portfolio.total == 1 else 's' }}</span>
+            {% if portfolio.has_next %}<a class="font-semibold text-cyan-700 dark:text-cyan-400" href="?project_search={{ project_search | urlencode }}&project_status={{ project_status }}&project_page={{ project_page + 1 }}&project_per_page={{ project_per_page }}#delivery-portfolio">Next</a>{% endif %}
+        </nav>
+        {% endif %}
+    </section>
 </div>
 {% endblock %}

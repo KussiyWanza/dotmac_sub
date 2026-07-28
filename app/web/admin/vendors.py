@@ -19,8 +19,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.vendor_routes import InstallationProjectStatus
 from app.services import web_vendors as web_vendors_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/vendors", tags=["web-admin-vendors"])
@@ -129,10 +130,28 @@ def vendor_create(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("inventory:read"))],
 )
-def vendor_detail(request: Request, vendor_id: str, db: Session = Depends(get_db)):
+def vendor_detail(
+    request: Request,
+    vendor_id: str,
+    project_search: str | None = Query(default=None, max_length=120),
+    project_status: InstallationProjectStatus | None = Query(default=None),
+    project_page: int = Query(default=1, ge=1),
+    project_per_page: int = Query(default=25, ge=10, le=100),
+    db: Session = Depends(get_db),
+):
     context = _ctx(request, db, "vendors")
     context.update(
-        web_vendors_service.build_vendor_detail_context(db, vendor_id=vendor_id)
+        web_vendors_service.build_vendor_detail_context(
+            db,
+            vendor_id=vendor_id,
+            project_search=project_search,
+            project_status=project_status,
+            project_page=project_page,
+            project_per_page=project_per_page,
+            can_read_operations=can(request, "inventory:read"),
+            can_read_routes=can(request, "network:fiber:read"),
+            can_read_financials=can(request, "finance:ap:read"),
+        )
     )
     return templates.TemplateResponse("admin/vendors/detail.html", context)
 
@@ -202,7 +221,13 @@ def vendor_update(
 def _detail_with_error(request: Request, db: Session, vendor_id: str, error: str):
     context = _ctx(request, db, "vendors")
     context.update(
-        web_vendors_service.build_vendor_detail_context(db, vendor_id=vendor_id)
+        web_vendors_service.build_vendor_detail_context(
+            db,
+            vendor_id=vendor_id,
+            can_read_operations=can(request, "inventory:read"),
+            can_read_routes=can(request, "network:fiber:read"),
+            can_read_financials=can(request, "finance:ap:read"),
+        )
     )
     context["error"] = error
     return templates.TemplateResponse(

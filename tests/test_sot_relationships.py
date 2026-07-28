@@ -640,6 +640,8 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "operations.work_order_status",
         "operations.vendor_project_lifecycle",
         "operations.vendor_project_workspace",
+        "operations.vendor_material_release",
+        "operations.vendor_advances",
         "integration.dotmac_erp_payables_adapter",
     )
     assert sot_relationships.dependencies_for("operations.material_dependencies") == (

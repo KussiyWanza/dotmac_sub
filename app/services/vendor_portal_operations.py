@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import TypeVar
+from typing import NoReturn, TypeVar
 from uuid import UUID
 
 from sqlalchemy import or_
@@ -25,10 +25,13 @@ from app.models.vendor_routes import (
     Vendor,
     VendorAssignmentType,
 )
+from app.models.vendor_supply import VendorAdvanceStatus, VendorMaterialReleaseStatus
 from app.models.work_order import WorkOrder
 from app.schemas.status_presentation import StatusPresentation
 from app.schemas.vendor_portal import (
+    VendorAdvanceCreate,
     VendorAsBuiltCreate,
+    VendorMaterialReleaseCreate,
     VendorQuoteCreate,
     VendorQuoteLineCreate,
     VendorQuoteLineUpdate,
@@ -201,6 +204,43 @@ class ConfigureVendorProcurementCommand:
     mode: str
     vendor_id: str | None = None
     bidding_close_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RequestVendorMaterialReleaseCommand:
+    context: CommandContext
+    payload: VendorMaterialReleaseCreate
+    vendor_id: UUID
+    user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class RequestVendorAdvanceCommand:
+    context: CommandContext
+    payload: VendorAdvanceCreate
+    vendor_id: UUID
+    user_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class VendorMaterialReleaseRequestOutcome:
+    id: UUID
+    project_id: UUID
+    status: VendorMaterialReleaseStatus
+
+
+@dataclass(frozen=True, slots=True)
+class VendorAdvanceRequestOutcome:
+    id: UUID
+    project_id: UUID
+    status: VendorAdvanceStatus
+    amount: Decimal
+    currency: str
+
+
+def _raise_supply_error(exc: ValueError) -> NoReturn:
+    suffix = str(getattr(exc, "code", "") or "invalid_supply_request")
+    raise _error(suffix, str(exc)) from exc
 
 
 def _lifecycle_project(
@@ -819,6 +859,79 @@ def _serialize_route_revision_review(row: ProposedRouteRevision) -> dict:
 
 
 class VendorPortalOperations:
+    @staticmethod
+    def request_material_release(
+        db: Session,
+        command: RequestVendorMaterialReleaseCommand,
+    ) -> VendorMaterialReleaseRequestOutcome:
+        def operation() -> VendorMaterialReleaseRequestOutcome:
+            from app.services import vendor_material_release
+
+            try:
+                row = vendor_material_release.request_release(
+                    db,
+                    vendor_material_release.RequestMaterialRelease(
+                        project_id=command.payload.project_id,
+                        vendor_id=command.vendor_id,
+                        requested_by_person_id=command.user_id,
+                        items=tuple(
+                            item.model_dump(mode="python")
+                            for item in command.payload.items
+                        ),
+                        notes=command.payload.notes,
+                    ),
+                )
+            except ValueError as exc:
+                _raise_supply_error(exc)
+            return VendorMaterialReleaseRequestOutcome(
+                id=row.id,
+                project_id=row.project_id,
+                status=VendorMaterialReleaseStatus(row.status),
+            )
+
+        return _execute(
+            db,
+            context=command.context,
+            name="request_vendor_material_release",
+            operation=operation,
+        )
+
+    @staticmethod
+    def request_advance(
+        db: Session,
+        command: RequestVendorAdvanceCommand,
+    ) -> VendorAdvanceRequestOutcome:
+        def operation() -> VendorAdvanceRequestOutcome:
+            from app.services import vendor_advances
+
+            try:
+                row = vendor_advances.request_advance(
+                    db,
+                    vendor_advances.RequestVendorAdvance(
+                        project_id=command.payload.project_id,
+                        vendor_id=command.vendor_id,
+                        requested_by_person_id=command.user_id,
+                        amount=command.payload.amount,
+                        reason=command.payload.reason,
+                    ),
+                )
+            except ValueError as exc:
+                _raise_supply_error(exc)
+            return VendorAdvanceRequestOutcome(
+                id=row.id,
+                project_id=row.project_id,
+                status=VendorAdvanceStatus(row.status),
+                amount=Decimal(row.amount),
+                currency=row.currency,
+            )
+
+        return _execute(
+            db,
+            context=command.context,
+            name="request_vendor_advance",
+            operation=operation,
+        )
+
     @staticmethod
     def configure_procurement(
         db: Session, command: ConfigureVendorProcurementCommand

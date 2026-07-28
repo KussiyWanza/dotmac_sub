@@ -72,6 +72,48 @@ class RequestMaterialRelease:
     notes: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialReleaseEligibility:
+    """Owner-supplied decision used by commands and read projections."""
+
+    allowed: bool
+    reason: str | None
+
+
+def request_eligibility(
+    db: Session,
+    *,
+    project_id: UUID | str,
+    vendor_id: UUID | str,
+) -> MaterialReleaseEligibility:
+    project = db.get(InstallationProject, coerce_uuid(project_id))
+    if project is None or not project.is_active:
+        return MaterialReleaseEligibility(
+            allowed=False,
+            reason="Installation project not found.",
+        )
+    if str(project.assigned_vendor_id or "") != str(vendor_id):
+        return MaterialReleaseEligibility(
+            allowed=False,
+            reason="Material can only be requested by the assigned vendor.",
+        )
+    if project.status not in _RELEASABLE_PROJECT_STATUSES:
+        return MaterialReleaseEligibility(
+            allowed=False,
+            reason="Materials are available for approved or in-progress work only.",
+        )
+    return MaterialReleaseEligibility(allowed=True, reason=None)
+
+
+def review_eligibility(status: str) -> MaterialReleaseEligibility:
+    if status != VendorMaterialReleaseStatus.requested.value:
+        return MaterialReleaseEligibility(
+            allowed=False,
+            reason="Only a requested material release can be reviewed.",
+        )
+    return MaterialReleaseEligibility(allowed=True, reason=None)
+
+
 def _release(
     db: Session, release_id: UUID | str, *, for_update: bool = False
 ) -> VendorMaterialRelease:
@@ -93,21 +135,28 @@ def request_release(
 ) -> VendorMaterialRelease:
     """Stage one vendor material request. Caller owns commit."""
 
-    project = db.get(InstallationProject, coerce_uuid(command.project_id))
+    project = (
+        db.query(InstallationProject)
+        .filter(InstallationProject.id == coerce_uuid(command.project_id))
+        .with_for_update(of=InstallationProject)
+        .one_or_none()
+    )
     if project is None or not project.is_active:
         raise _error(
             "project_not_found", "Installation project not found.", kind="not_found"
         )
-    if str(project.assigned_vendor_id or "") != str(command.vendor_id):
-        raise _error(
-            "project_not_assigned",
-            "Material can only be released to the vendor assigned to the project.",
+    eligibility = request_eligibility(
+        db,
+        project_id=project.id,
+        vendor_id=command.vendor_id,
+    )
+    if not eligibility.allowed:
+        code = (
+            "project_not_assigned"
+            if str(project.assigned_vendor_id or "") != str(command.vendor_id)
+            else "project_not_releasable"
         )
-    if project.status not in _RELEASABLE_PROJECT_STATUSES:
-        raise _error(
-            "project_not_releasable",
-            "Material is released for approved or in-progress work only.",
-        )
+        raise _error(code, str(eligibility.reason))
 
     lines = [
         item for item in command.items if str(item.get("description") or "").strip()
@@ -174,8 +223,9 @@ def approve(
 ) -> VendorMaterialRelease:
     """Staff approve the release. This is the Sub decision the provider acts on."""
     release = _release(db, release_id, for_update=True)
-    if release.status != VendorMaterialReleaseStatus.requested.value:
-        raise _error("not_reviewable", "Only a requested release can be approved.")
+    eligibility = review_eligibility(release.status)
+    if not eligibility.allowed:
+        raise _error("not_reviewable", str(eligibility.reason))
     release.status = VendorMaterialReleaseStatus.approved.value
     release.reviewed_by_person_id = coerce_uuid(actor_id)
     release.reviewed_at = _now()
@@ -193,8 +243,9 @@ def reject(
     reason: str,
 ) -> VendorMaterialRelease:
     release = _release(db, release_id, for_update=True)
-    if release.status != VendorMaterialReleaseStatus.requested.value:
-        raise _error("not_reviewable", "Only a requested release can be rejected.")
+    eligibility = review_eligibility(release.status)
+    if not eligibility.allowed:
+        raise _error("not_reviewable", str(eligibility.reason))
     normalized = (reason or "").strip()
     if not normalized:
         raise _error("reason_required", "A rejection reason is required.")

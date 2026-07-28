@@ -1,4 +1,5 @@
 {% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import status_presentation_badge %}
 {% block title %}Vendor operations{% endblock %}
 {% block content %}
 <div class="space-y-6">
@@ -63,6 +64,35 @@
   </section>
 
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Material releases awaiting review</h2><p class="mt-1 text-sm text-slate-500">Approve Dotmac's release decision here; provider issue remains separately observed.</p></header>
+    {% for release in material_releases %}
+    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
+      <div>
+        <div class="flex flex-wrap items-center gap-2"><strong>{{ release.project.name }}</strong>{{ status_presentation_badge(release.status, size="sm") }}</div>
+        <p class="mt-1 text-sm text-slate-500">{{ release.vendor.name }} · {{ release.items|length }} line item{{ '' if release.items|length == 1 else 's' }} · requested {{ release.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+        <ul class="mt-3 space-y-1 text-sm">{% for item in release.items %}<li>{{ item.description }} — {{ item.quantity }} {{ item.unit or 'unit(s)' }}</li>{% endfor %}</ul>
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        {% if action_permitted(request, release.approve_action) %}
+        <form method="post" action="{{ release.approve_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Approval note (optional)<textarea name="review_notes" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ release.approve_action.label }}</button>
+        </form>
+        {% endif %}
+        {% if action_permitted(request, release.reject_action) %}
+        <form method="post" action="{{ release.reject_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Rejection reason<textarea name="review_notes" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md border border-rose-500 px-3 py-2 text-sm font-semibold text-rose-700">{{ release.reject_action.label }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No material releases waiting.</p>{% endfor %}
+  </section>
+
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Completed projects awaiting verification</h2></header>
     {% for project in projects %}
     <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)]">
@@ -95,6 +125,36 @@
   {% endif %}
 
   {% if show_financial_reviews %}
+  {% if show_advance_reviews %}
+  <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+    <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Vendor advances awaiting review</h2><p class="mt-1 text-sm text-slate-500">Approval authorizes the advance; payment and settlement remain payables-provider facts.</p></header>
+    {% for advance in advances %}
+    <article class="grid gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800 lg:grid-cols-[minmax(0,1fr)_minmax(300px,420px)]">
+      <div>
+        <div class="flex flex-wrap items-center gap-2"><strong>{{ advance.project.name }}</strong>{{ status_presentation_badge(advance.status, size="sm") }}</div>
+        <p class="mt-1 text-sm text-slate-500">{{ advance.vendor.name }} · {{ advance.currency }} {{ "{:,.2f}".format(advance.amount) }} · requested {{ advance.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+        {% if advance.reason %}<p class="mt-2 text-sm">{{ advance.reason }}</p>{% endif %}
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        {% if action_permitted(request, advance.approve_action) %}
+        <form method="post" action="{{ advance.approve_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Approval note (optional)<textarea name="review_notes" rows="2" maxlength="2000" class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white">{{ advance.approve_action.label }}</button>
+        </form>
+        {% endif %}
+        {% if action_permitted(request, advance.reject_action) %}
+        <form method="post" action="{{ advance.reject_action.preview_url }}" class="space-y-2">
+          {% include "components/forms/csrf_input.html" %}
+          <label class="block text-xs text-slate-500">Rejection reason<textarea name="review_notes" rows="2" maxlength="2000" required class="mt-1 w-full rounded-md border-slate-300 text-sm"></textarea></label>
+          <button class="w-full rounded-md border border-rose-500 px-3 py-2 text-sm font-semibold text-rose-700">{{ advance.reject_action.label }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}<p class="p-8 text-center text-sm text-slate-500">No vendor advances waiting.</p>{% endfor %}
+  </section>
+  {% endif %}
   <section class="rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="border-b border-slate-200 px-5 py-4 dark:border-slate-800"><h2 class="font-bold">Purchase invoices awaiting review</h2></header>
     {% for invoice in invoices %}

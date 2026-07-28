@@ -185,6 +185,8 @@ def test_public_adapters_construct_typed_workspace_commands_on_clean_sessions() 
         "ReviewVendorQuoteCommand(",
         "CreateVendorRouteRevisionCommand(",
         "SubmitVendorRouteRevisionCommand(",
+        "RequestVendorMaterialReleaseCommand(",
+        "RequestVendorAdvanceCommand(",
     ):
         assert command in combined
     assert "CreateVendorRouteRevisionCommand(" in web

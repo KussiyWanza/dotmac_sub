@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.vendor_portal import (
+    VendorAdvanceCreate,
     VendorAsBuiltCreate,
+    VendorMaterialReleaseCreate,
+    VendorMaterialReleaseItemCreate,
     VendorQuoteCreate,
     VendorQuoteLineCreate,
     VendorRouteRevisionCreate,
@@ -34,6 +37,8 @@ from app.services.vendor_portal_operations import (
     AddVendorQuoteLineCommand,
     CreateVendorQuoteCommand,
     CreateVendorRouteRevisionCommand,
+    RequestVendorAdvanceCommand,
+    RequestVendorMaterialReleaseCommand,
     SubmitVendorRouteRevisionCommand,
     vendor_portal_operations,
 )
@@ -47,6 +52,7 @@ from app.services.vendor_routes_api import build_vendor_project_route_geojson
 from app.services.vendor_submission_proposals import (
     ConfirmVendorSubmissionCommand,
 )
+from app.services.vendor_supply_views import project_workspace
 from app.web.auth.dependencies import require_web_auth
 
 templates = Jinja2Templates(directory="templates")
@@ -92,6 +98,13 @@ def _submission_http_error(exc: DomainError) -> HTTPException:
         "invoice_number_required": 422,
         "invoice_line_required": 422,
         "submitted_quote_required": 409,
+        "items_required": 422,
+        "invalid_quantity": 422,
+        "invalid_amount": 422,
+        "project_not_releasable": 409,
+        "project_not_advanceable": 409,
+        "approved_quote_required": 409,
+        "advance_ceiling_exceeded": 409,
     }.get(suffix, 500)
     return HTTPException(status_code=status_code, detail=exc.message)
 
@@ -225,6 +238,12 @@ def vendor_project_detail(
         str(project["id"]),
         vendor_id,
     )
+    supply = project_workspace(
+        db,
+        project_id=str(project["id"]),
+        vendor_id=vendor_id,
+        capabilities=vendor_capabilities.capabilities_for(context),
+    )
     return templates.TemplateResponse(
         "vendor/project_detail.html",
         {
@@ -234,6 +253,7 @@ def vendor_project_detail(
             "quote": quote,
             "invoice": invoice,
             "route_geojson": route_geojson,
+            "supply": supply,
             "message": message,
         },
     )
@@ -263,12 +283,113 @@ def vendor_create_quote(
                     project_id=coerce_uuid(project_id),
                     vat_rate_percent=vat_rate_percent,
                 ),
-                vendor_id=vendor_id,
-                user_id=str(auth["principal_id"]),
+                vendor_id=coerce_uuid(vendor_id),
+                user_id=coerce_uuid(auth["principal_id"]),
             ),
         )
     )
     return _redirect(project_id, "Quote created")
+
+
+@router.post("/projects/{project_id}/material-releases")
+def vendor_request_material_release(
+    project_id: str,
+    descriptions: list[str] = Form(..., alias="description"),
+    quantities: list[str] = Form(..., alias="quantity"),
+    units: list[str] = Form(..., alias="unit"),
+    item_codes: list[str] = Form(..., alias="item_code"),
+    line_notes: list[str] = Form(..., alias="line_notes"),
+    notes: str | None = Form(default=None),
+    auth: dict = Depends(require_web_auth),
+    db: Session = Depends(get_db),
+):
+    context = _context(auth, db, vendor_capabilities.MATERIAL_REQUEST)
+    vendor_id = str(context["native_vendor_id"])
+    try:
+        items: list[VendorMaterialReleaseItemCreate] = []
+        for index, description in enumerate(descriptions):
+            if not description.strip():
+                continue
+            try:
+                quantity = int(quantities[index])
+            except (IndexError, TypeError, ValueError) as exc:
+                raise ValueError("invalid material quantity") from exc
+            items.append(
+                VendorMaterialReleaseItemCreate(
+                    description=description,
+                    quantity=quantity,
+                    unit=units[index] if index < len(units) else None,
+                    item_code=(item_codes[index] if index < len(item_codes) else None),
+                    notes=line_notes[index] if index < len(line_notes) else None,
+                )
+            )
+        payload = VendorMaterialReleaseCreate(
+            project_id=coerce_uuid(project_id),
+            items=items,
+            notes=notes,
+        )
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Enter a material description and a quantity greater than zero.",
+        ) from exc
+    db_session_adapter.release_read_transaction(db)
+    _submission_call(
+        lambda: vendor_portal_operations.request_material_release(
+            db,
+            RequestVendorMaterialReleaseCommand(
+                context=_command_context(
+                    auth,
+                    vendor_id=vendor_id,
+                    reason="vendor_material_release_request",
+                ),
+                payload=payload,
+                vendor_id=coerce_uuid(vendor_id),
+                user_id=coerce_uuid(auth["principal_id"]),
+            ),
+        )
+    )
+    return _redirect(project_id, "Material request submitted")
+
+
+@router.post("/projects/{project_id}/advances")
+def vendor_request_advance(
+    project_id: str,
+    amount: Decimal = Form(...),
+    reason: str | None = Form(default=None),
+    auth: dict = Depends(require_web_auth),
+    db: Session = Depends(get_db),
+):
+    context = _context(auth, db, vendor_capabilities.ADVANCE_REQUEST)
+    vendor_id = str(context["native_vendor_id"])
+    try:
+        payload = VendorAdvanceCreate(
+            project_id=coerce_uuid(project_id),
+            amount=amount,
+            reason=reason,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Enter an advance amount greater than zero.",
+        ) from exc
+    db_session_adapter.release_read_transaction(db)
+    _submission_call(
+        lambda: vendor_portal_operations.request_advance(
+            db,
+            RequestVendorAdvanceCommand(
+                context=_command_context(
+                    auth,
+                    vendor_id=vendor_id,
+                    reason="vendor_advance_request",
+                ),
+                payload=payload,
+                vendor_id=coerce_uuid(vendor_id),
+                user_id=coerce_uuid(auth["principal_id"]),
+            ),
+        )
+    )
+    return _redirect(project_id, "Advance request submitted")
 
 
 @router.post("/projects/{project_id}/start")

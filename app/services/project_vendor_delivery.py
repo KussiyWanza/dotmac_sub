@@ -51,6 +51,29 @@ class ProjectVendorDeliveryQuery:
             self.can_read_operations or self.can_read_routes or self.can_read_financials
         )
 
+    @property
+    def visibility(self) -> ProjectVendorDeliveryVisibility:
+        return ProjectVendorDeliveryVisibility(
+            can_read_operations=self.can_read_operations,
+            can_read_routes=self.can_read_routes,
+            can_read_financials=self.can_read_financials,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectVendorDeliveryVisibility:
+    """Permission decisions supplied by an authenticated read adapter."""
+
+    can_read_operations: bool = False
+    can_read_routes: bool = False
+    can_read_financials: bool = False
+
+    @property
+    def has_visible_scope(self) -> bool:
+        return (
+            self.can_read_operations or self.can_read_routes or self.can_read_financials
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class VendorQuoteGlance:
@@ -282,23 +305,41 @@ def get_project_vendor_delivery(
     if row is None:
         return None
 
+    return project_vendor_delivery_from_record(row, visibility=query.visibility)
+
+
+def project_vendor_delivery_from_record(
+    row: InstallationProject,
+    *,
+    visibility: ProjectVendorDeliveryVisibility,
+) -> ProjectVendorDeliveryProjection | None:
+    """Compose one eagerly loaded installation row without issuing queries."""
+
+    if not visibility.has_visible_scope:
+        return None
     quote = _latest_quote(row)
     route = _latest_route(quote)
     as_built = _latest_as_built(row)
     invoice = _current_invoice(row)
-    operations_visible = query.can_read_operations or query.can_read_financials
+    operations_visible = (
+        visibility.can_read_operations or visibility.can_read_financials
+    )
 
     return ProjectVendorDeliveryProjection(
         installation_project_id=row.id,
         vendor_name=getattr(row.assigned_vendor, "name", None) or "Unassigned",
         installation_status=installation_project_status_presentation(row.status),
         quote=(
-            _quote_glance(quote, include_amount=query.can_read_financials)
+            _quote_glance(quote, include_amount=visibility.can_read_financials)
             if operations_visible
             else None
         ),
-        route=_route_glance(row, route) if query.can_read_routes else None,
-        as_built=_as_built_glance(as_built) if query.can_read_operations else None,
-        invoice=(_invoice_glance(row, invoice) if query.can_read_financials else None),
+        route=_route_glance(row, route) if visibility.can_read_routes else None,
+        as_built=(
+            _as_built_glance(as_built) if visibility.can_read_operations else None
+        ),
+        invoice=(
+            _invoice_glance(row, invoice) if visibility.can_read_financials else None
+        ),
         operations_url=VENDOR_OPERATIONS_URL if operations_visible else None,
     )

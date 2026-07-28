@@ -18417,8 +18417,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.PARTICIPANT,
                         boundary=(
-                            "The vendor or staff adapter owns commit; this owner "
-                            "stages the request, review, or outcome."
+                            "The vendor workspace or signed staff-review coordinator "
+                            "owns commit; this owner stages the request, review, or "
+                            "provider outcome."
                         ),
                         locking=(
                             "Review and outcome application lock the release row."
@@ -18520,6 +18521,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "control.settings_spec",
                     "operations.vendor_project_lifecycle",
+                    "operations.vendor_project_records",
                 ),
                 notes=(
                     "Sub decides whether to advance money to a vendor and how "
@@ -18596,8 +18598,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.PARTICIPANT,
                         boundary=(
-                            "The vendor or staff adapter owns commit; this owner "
-                            "stages the request, review, or observation."
+                            "The vendor workspace or signed staff-review coordinator "
+                            "owns commit; this owner stages the request, review, or "
+                            "provider observation."
                         ),
                         locking=(
                             "Review and observation application lock the advance."
@@ -18914,6 +18917,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "auth.permission_gate",
                     "control.settings_spec",
                     "operations.project_lifecycle",
+                    "operations.vendor_advances",
+                    "operations.vendor_material_release",
                     "operations.vendor_project_records",
                     "operations.vendor_project_lifecycle",
                     "operations.work_order_commands",
@@ -18941,6 +18946,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authenticated vendor workspace command context",
                                 "canonical installation-project lifecycle state",
                                 "canonical vendor project records",
+                                "canonical vendor material release decisions",
+                                "canonical vendor advance decisions",
                                 "vendor quote currency and validity policy",
                                 "vendor workspace mutation protocol",
                             ),
@@ -19037,6 +19044,24 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical vendor material release decisions",
+                            owner="operations.vendor_material_release",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "assigned-project eligibility and staged material "
+                                "release request records"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor advance decisions",
+                            owner="operations.vendor_advances",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "approved-quote allowance, committed advances, and "
+                                "staged advance request records"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="work-order as-built evidence policy",
                             owner="operations.work_order_commands",
                             kind=AuthorityKind.CONTROL_INPUT,
@@ -19108,6 +19133,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "operations.vendor_project_workspace.unsupported_action",
                             "operations.vendor_project_workspace.invalid_as_built_route",
                             "operations.vendor_project_workspace.invalid_write_evidence",
+                            "operations.vendor_project_workspace.project_not_releasable",
+                            "operations.vendor_project_workspace.items_required",
+                            "operations.vendor_project_workspace.invalid_quantity",
+                            "operations.vendor_project_workspace.project_not_advanceable",
+                            "operations.vendor_project_workspace.approved_quote_required",
+                            "operations.vendor_project_workspace.advance_ceiling_exceeded",
+                            "operations.vendor_project_workspace.invalid_amount",
                             "operations.vendor_project_workspace.invalid_command_context",
                             "operations.vendor_project_workspace.command_contract_violation",
                             "operations.vendor_project_workspace.nested_owner_command",
@@ -19153,6 +19185,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "docs/designs/VENDOR_PROJECT_REVIEW_UI.md",
                         "docs/designs/UI_PROJECTION_CONTRACTS.md",
                         "docs/designs/VENDOR_ROUTE_REVISION_AUTHORING.md",
+                        "docs/designs/VENDOR_SUPPLY_UI.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                         "docs/adr/0002-owner-command-transaction-boundary.md",
                     ),
@@ -19969,6 +20002,189 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_vendor_submission_proposals.py",
                         "tests/architecture/test_vendor_submission_confirmation_boundary.py",
                         "tests/test_vendor_lifecycle.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="operations.vendor_supply_review_confirmation",
+                module="app.services.vendor_supply_review_proposals",
+                owns=(
+                    "short-lived signed vendor supply review proposal",
+                    "vendor supply review stale-preview verification",
+                    "vendor supply review idempotency and replay result",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "auth.token_signing",
+                    "operations.vendor_advances",
+                    "operations.vendor_material_release",
+                    "ui.vendor_supply_projection",
+                ),
+                notes=(
+                    "This coordinator cannot decide stock issue or payment. It binds "
+                    "an authenticated staff actor to an exact material-release or "
+                    "advance preview, revalidates it under lock, and invokes the "
+                    "declaring participant owner once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="short-lived signed vendor supply review proposal",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "authenticated vendor supply review context",
+                                "canonical vendor supply review preview",
+                                "capability signing envelope",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="vendor supply review stale-preview verification",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical vendor supply review preview",
+                                "capability signing envelope",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="vendor supply review idempotency and replay result",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated vendor supply review context",
+                                "canonical vendor supply review preview",
+                                "vendor supply review replay record",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated vendor supply review context",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "authenticated staff actor, inventory or accounts-payable "
+                                "permission, action, command, and correlation identifiers"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor supply review preview",
+                            owner="ui.vendor_supply_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "exact release lines or advance amount, project/vendor "
+                                "identity, allowance facts, target action, and fingerprint"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="capability signing envelope",
+                            owner="auth.token_signing",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="configured context-signing key and algorithm",
+                        ),
+                        AuthorityInput(
+                            name="vendor supply review replay record",
+                            owner="operations.vendor_supply_review_confirmation",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "IdempotencyKey row keyed by proposal jti, supply type, "
+                                "and review action"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "A typed confirmation command owns locked stale verification, "
+                            "replay reservation, participant mutation, and one root commit."
+                        ),
+                        locking=(
+                            "The material release or advance is locked before fingerprint "
+                            "comparison and participant review."
+                        ),
+                        idempotency=(
+                            "Signed jti plus supply type and action identifies one stable "
+                            "review result."
+                        ),
+                        retries=(
+                            "Invalid or stale proposals are terminal; concurrency failures "
+                            "retry the complete typed confirmation."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "operations.vendor_supply_review_confirmation.actor_required",
+                            "operations.vendor_supply_review_confirmation.unsupported_supply_type",
+                            "operations.vendor_supply_review_confirmation.unsupported_action",
+                            "operations.vendor_supply_review_confirmation.invalid_proposal",
+                            "operations.vendor_supply_review_confirmation.expired_proposal",
+                            "operations.vendor_supply_review_confirmation.proposal_context_mismatch",
+                            "operations.vendor_supply_review_confirmation.confirmation_in_progress",
+                            "operations.vendor_supply_review_confirmation.stale_proposal",
+                            "operations.vendor_supply_review_confirmation.material_release_not_found",
+                            "operations.vendor_supply_review_confirmation.advance_not_found",
+                            "operations.vendor_supply_review_confirmation.material_not_reviewable",
+                            "operations.vendor_supply_review_confirmation.advance_not_reviewable",
+                            "operations.vendor_supply_review_confirmation.reason_required",
+                            "operations.vendor_supply_review_confirmation.reason_too_long",
+                            "operations.vendor_supply_review_confirmation.not_reviewable",
+                            "operations.vendor_supply_review_confirmation.invalid_command_context",
+                            "operations.vendor_supply_review_confirmation.command_contract_violation",
+                            "operations.vendor_supply_review_confirmation.nested_owner_command",
+                            "operations.vendor_supply_review_confirmation.active_caller_transaction",
+                            "operations.vendor_supply_review_confirmation.nested_transaction_completion",
+                        ),
+                        mapping_owner="app.web.admin.vendor_operations",
+                        fail_closed_on=(
+                            "invalid, expired, or context-mismatched proposal",
+                            "request, quote allowance, or lifecycle drift",
+                            "ambiguous concurrent confirmation",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "vendor_material_release.reviewed",
+                            "vendor_advance.reviewed",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries record, project, vendor, decision, actor, "
+                            "and amount where applicable."
+                        ),
+                        replay=(
+                            "The supply record, outbox event, and idempotency row rebuild "
+                            "the decision and replay result."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "admin supply routes calling participant committed wrappers"
+                        ),
+                        new_owner="operations.vendor_supply_review_confirmation",
+                        verification=(
+                            "Preview, expiry, stale-state, replay, rollback, permission, "
+                            "and adapter boundary tests."
+                        ),
+                        cutover_gate=(
+                            "Every staff supply decision uses signed preview and typed "
+                            "confirmation on a clean session."
+                        ),
+                        fallback_retirement=(
+                            "Direct admin calls to material or advance committed wrappers "
+                            "are removed."
+                        ),
+                    ),
+                    steward="vendor operations",
+                    design_refs=(
+                        "docs/designs/VENDOR_SUPPLY_UI.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/adr/0002-owner-command-transaction-boundary.md",
+                    ),
+                    test_refs=(
+                        "tests/test_vendor_supply_ui.py",
+                        "tests/architecture/test_vendor_supply_ui_boundary.py",
+                        "tests/test_vendor_delivery_portfolio.py",
+                        "tests/architecture/test_vendor_delivery_portfolio_boundary.py",
                     ),
                 ),
             ),
@@ -25933,6 +26149,434 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.vendor_supply_projection",
+                module="app.services.vendor_supply_views",
+                owns=(
+                    "vendor project supply workspace projection",
+                    "staff vendor supply review queues and impact previews",
+                    "latest active vendor supply record selection",
+                    "material provider issue observation presentation",
+                    "advance payables observation presentation",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "operations.vendor_advances",
+                    "operations.vendor_material_release",
+                    "operations.vendor_project_lifecycle",
+                    "operations.vendor_project_records",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "Read-only composition for vendor material and mobilisation-advance "
+                    "workflows. It renders owner-supplied eligibility, exact decision "
+                    "state, and provider observations without inferring stock issue, "
+                    "payment, settlement, or stale data as current."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="vendor project supply workspace projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical vendor project lifecycle facts",
+                                "canonical vendor material release decisions",
+                                "canonical vendor advance decisions",
+                                "vendor supply request capabilities",
+                                "canonical vendor supply status presentation",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="staff vendor supply review queues and impact previews",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical vendor material release decisions",
+                                "canonical vendor advance decisions",
+                                "canonical vendor project records",
+                                "staff vendor supply review capabilities",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="latest active vendor supply record selection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical vendor material release decisions",
+                                "canonical vendor advance decisions",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="material provider issue observation presentation",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("material provider issue observation",),
+                        ),
+                        ConcernContract(
+                            name="advance payables observation presentation",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("advance payables settlement observation",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical vendor project lifecycle facts",
+                            owner="operations.vendor_project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active InstallationProject assignment and lifecycle state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor project records",
+                            owner="operations.vendor_project_records",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="approved quote identity, total, and currency",
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor material release decisions",
+                            owner="operations.vendor_material_release",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active release, line, review, and provider-correlation rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor advance decisions",
+                            owner="operations.vendor_advances",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active advance, quote allowance, review, and "
+                                "payables-correlation rows"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="vendor supply request capabilities",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "vendor:material:request and vendor:advance:request "
+                                "capabilities"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="staff vendor supply review capabilities",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="inventory and finance accounts-payable read/write results",
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor supply status presentation",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="labels, semantic tones, and icon keys",
+                        ),
+                        AuthorityInput(
+                            name="material provider issue observation",
+                            owner="operations.vendor_material_release",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "support system, reference, status, and observed timestamp"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="advance payables settlement observation",
+                            owner="operations.vendor_advances",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "payables system, reference, status, and observed timestamp"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Typed workspace, queue, detail, and preview queries never "
+                            "commit, flush, or make a business decision."
+                        ),
+                        locking=(
+                            "Ordinary projections do not lock; confirmation preview can "
+                            "request a row lock for stale-safe revalidation."
+                        ),
+                        idempotency=(
+                            "Equivalent scope and snapshot return equivalent typed results."
+                        ),
+                        retries="Read availability failures may be retried.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "ui.vendor_supply_projection.material_release_not_found",
+                            "ui.vendor_supply_projection.advance_not_found",
+                            "ui.vendor_supply_projection.unsupported_action",
+                            "ui.vendor_supply_projection.reason_required",
+                            "ui.vendor_supply_projection.reason_too_long",
+                            "ui.vendor_supply_projection.material_not_reviewable",
+                            "ui.vendor_supply_projection.advance_not_reviewable",
+                        ),
+                        mapping_owner=(
+                            "app.web.vendor_portal and app.web.admin.vendor_operations"
+                        ),
+                        fail_closed_on=(
+                            "vendor/project scope mismatch",
+                            "missing review record",
+                            "non-reviewable state",
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="material provider issue observation presentation",
+                            input_names=("material provider issue observation",),
+                            writer="ui.vendor_supply_projection",
+                            freshness=(
+                                "Each present observation carries its provider-observed "
+                                "timestamp; absent and not-applicable states are explicit."
+                            ),
+                            stale_behavior=(
+                                "Retain and label the last observation; never infer issue "
+                                "or payment from a Dotmac approval."
+                            ),
+                            drift_signal=(
+                                "An approved record without a later provider observation."
+                            ),
+                            rebuild_operation=(
+                                "Re-run project_workspace or the relevant review/detail "
+                                "query after the provider owner refreshes its observation."
+                            ),
+                            repair_owner=(
+                                "integration.dotmac_erp_material_support_adapter"
+                            ),
+                        ),
+                        ProjectionContract(
+                            name="advance payables observation presentation",
+                            input_names=("advance payables settlement observation",),
+                            writer="ui.vendor_supply_projection",
+                            freshness=(
+                                "Each present observation carries its provider-observed "
+                                "timestamp; absent and not-applicable states are explicit."
+                            ),
+                            stale_behavior=(
+                                "Retain and label the last observation; never infer "
+                                "payment from a Dotmac approval."
+                            ),
+                            drift_signal=(
+                                "An approved advance without a later payables observation."
+                            ),
+                            rebuild_operation=(
+                                "Re-run project_workspace or the relevant review/detail "
+                                "query after the provider owner refreshes its observation."
+                            ),
+                            repair_owner="integration.dotmac_erp_payables_adapter",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "missing vendor UI and route/template-local staff supply forms"
+                        ),
+                        new_owner="ui.vendor_supply_projection",
+                        verification=(
+                            "Eligibility, status, observation, permission, queue, preview, "
+                            "and template architecture tests."
+                        ),
+                        cutover_gate=(
+                            "Vendor detail and staff queue consume only typed projection "
+                            "objects and owner-supplied actions."
+                        ),
+                        fallback_retirement=(
+                            "Templates do not infer supply transitions, payment, or stock "
+                            "issue state."
+                        ),
+                    ),
+                    steward="vendor operations UI",
+                    design_refs=(
+                        "docs/designs/VENDOR_SUPPLY_UI.md",
+                        "docs/designs/UI_PROJECTION_CONTRACTS.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_vendor_supply_ui.py",
+                        "tests/architecture/test_vendor_supply_ui_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="ui.vendor_delivery_portfolio_projection",
+                module="app.services.vendor_delivery_portfolio",
+                owns=(
+                    "admin vendor operational portfolio composition",
+                    "admin vendor project portfolio filtering and pagination",
+                    "admin vendor portfolio KPI and cohort parity",
+                    "admin vendor portfolio field visibility",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "operations.vendor_advances",
+                    "operations.vendor_material_release",
+                    "operations.vendor_project_lifecycle",
+                    "operations.vendor_project_records",
+                    "operations.vendor_purchase_invoices",
+                    "ui.project_vendor_delivery_projection",
+                    "ui.status_presentation",
+                    "ui.vendor_supply_projection",
+                ),
+                notes=(
+                    "Read-only, permission-scoped composition for the admin vendor "
+                    "detail page. It pages active installation projects assigned to "
+                    "one authorized vendor, reuses project-delivery current-record "
+                    "selection, bulk-loads the latest material and advance projections, "
+                    "and links every KPI to its exact lifecycle-status cohort."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="admin vendor operational portfolio composition",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authorized vendor portfolio scope",
+                                "canonical vendor project lifecycle facts",
+                                "canonical project vendor-delivery composition",
+                                "canonical latest vendor supply projection",
+                                "canonical vendor status presentation",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "admin vendor project portfolio filtering and pagination"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authorized vendor portfolio scope",
+                                "canonical vendor project lifecycle facts",
+                                "vendor portfolio query contract",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin vendor portfolio KPI and cohort parity",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical vendor project lifecycle facts",
+                                "canonical vendor status presentation",
+                                "vendor portfolio query contract",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="admin vendor portfolio field visibility",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "authorized vendor portfolio scope",
+                                "canonical project vendor-delivery composition",
+                                "canonical latest vendor supply projection",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authorized vendor portfolio scope",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "authenticated vendor UUID scope plus inventory, fiber, "
+                                "and accounts-payable read results supplied by the adapter"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor project lifecycle facts",
+                            owner="operations.vendor_project_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active InstallationProject assignment, lifecycle state, "
+                                "native project identity, and update timestamp"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical project vendor-delivery composition",
+                            owner="ui.project_vendor_delivery_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "current quote, route revision, as-built, purchase invoice, "
+                                "and permission-scoped payment observation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical latest vendor supply projection",
+                            owner="ui.vendor_supply_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "latest active material release and advance per installation "
+                                "project with separate provider observations"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical vendor status presentation",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="server-owned labels, semantic tones, and icon keys",
+                        ),
+                        AuthorityInput(
+                            name="vendor portfolio query contract",
+                            owner="ui.vendor_delivery_portfolio_projection",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed lifecycle-status filter, project search, stable "
+                                "updated-time ordering, page size, and offset"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Loads and composes one authorized vendor portfolio without "
+                            "committing, flushing, mutating ORM state, or invoking a command."
+                        ),
+                        locking=(
+                            "No locks; the projection reads committed rows and applies "
+                            "stable updated-at and UUID ordering."
+                        ),
+                        idempotency=(
+                            "Equivalent vendor scope, capabilities, filters, pagination, "
+                            "and committed snapshot return equivalent typed results."
+                        ),
+                        retries=(
+                            "Read availability failures may be retried; invalid transport "
+                            "filters are rejected by the adapter."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.web.admin.vendors",
+                        fail_closed_on=(
+                            "missing inventory read scope",
+                            "missing fiber or accounts-payable capability for protected fields",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "admin vendor detail limited to profile and portal-login data"
+                        ),
+                        new_owner="ui.vendor_delivery_portfolio_projection",
+                        verification=(
+                            "vendor scoping, current-record selection, KPI cohort parity, "
+                            "permission omission, stable pagination, provider freshness, "
+                            "template rendering, and query-boundary tests"
+                        ),
+                        cutover_gate=(
+                            "The admin vendor detail route delegates operational reads to "
+                            "the typed portfolio and templates render only its fields."
+                        ),
+                        fallback_retirement=(
+                            "No route or template performs project selection, lifecycle "
+                            "grouping, financial visibility, or provider-state inference."
+                        ),
+                    ),
+                    steward="vendor operations UI",
+                    design_refs=(
+                        "docs/designs/VENDOR_DELIVERY_PORTFOLIO_UI.md",
+                        "docs/designs/VENDOR_PROJECT_REVIEW_UI.md",
+                        "docs/designs/VENDOR_SUPPLY_UI.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_vendor_delivery_portfolio.py",
+                        "tests/architecture/test_vendor_delivery_portfolio_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.project_vendor_delivery_projection",
                 module="app.services.project_vendor_delivery",
                 owns=(
@@ -27497,6 +28141,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "vendor quote status labels, semantic tones, and icon keys",
                     "vendor proposed-route status labels, semantic tones, and icon keys",
                     "vendor as-built status labels, semantic tones, and icon keys",
+                    "vendor material-release status labels, semantic tones, and icon keys",
+                    "vendor advance status labels, semantic tones, and icon keys",
                     "supplier-invoice status labels, semantic tones, and icon keys",
                     "status presentation fallback semantics",
                 ),
@@ -27511,6 +28157,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "operations.work_order_status",
                     "operations.vendor_project_lifecycle",
                     "operations.vendor_project_workspace",
+                    "operations.vendor_material_release",
+                    "operations.vendor_advances",
                     "integration.dotmac_erp_payables_adapter",
                 ),
                 notes=(

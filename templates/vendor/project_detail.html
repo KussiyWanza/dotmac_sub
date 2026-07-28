@@ -50,6 +50,74 @@
       {% endif %}{% endif %}
     </section>
     <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+      <div class="mb-4"><h2 class="text-lg font-bold">Project materials</h2><p class="mt-1 text-xs text-slate-500">Request Dotmac-owned material for approved field work. Staff approval and provider issue are shown separately.</p></div>
+      {% if supply.material_request_action.allowed %}
+      <form method="post" action="/vendor/projects/{{ project.id }}/material-releases" class="space-y-3 rounded-md bg-slate-50 p-4 dark:bg-slate-800" data-material-request-form>
+        {% include "components/forms/csrf_input.html" %}
+        <div class="space-y-2" data-material-lines>
+          <div class="grid gap-2 rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900 sm:grid-cols-6" data-material-line>
+            <input name="description" required maxlength="255" placeholder="Material description" class="rounded-md border-slate-300 sm:col-span-2">
+            <input name="quantity" required type="number" min="1" step="1" placeholder="Quantity" class="rounded-md border-slate-300">
+            <input name="unit" maxlength="40" placeholder="Unit" class="rounded-md border-slate-300">
+            <input name="item_code" maxlength="80" placeholder="Item code (optional)" class="rounded-md border-slate-300">
+            <div class="flex gap-2"><input name="line_notes" placeholder="Line note" class="min-w-0 flex-1 rounded-md border-slate-300"><button type="button" data-remove-material-line class="hidden rounded-md border border-rose-300 px-2 text-rose-700" aria-label="Remove material line">×</button></div>
+          </div>
+        </div>
+        <button type="button" data-add-material-line class="rounded-md border border-teal-600 px-3 py-2 text-sm font-semibold text-teal-700">Add another line</button>
+        <div class="flex flex-wrap items-end gap-3"><label class="min-w-64 flex-1 text-xs text-slate-500">Request note (optional)<textarea name="notes" rows="2" class="mt-1 block w-full rounded-md border-slate-300"></textarea></label><button class="rounded-md bg-teal-600 px-4 py-2 font-semibold text-white">{{ supply.material_request_action.label }}</button></div>
+      </form>
+      {% else %}
+      <p class="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ supply.material_request_action.reason }}</p>
+      {% endif %}
+      <div class="mt-4 space-y-3">
+        {% for release in supply.material_releases %}
+        <article class="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+          <div class="flex flex-wrap items-center justify-between gap-2"><strong>{{ release.items|length }} requested line{{ '' if release.items|length == 1 else 's' }}</strong>{{ status_presentation_badge(release.status, size="sm") }}</div>
+          <p class="mt-1 text-xs text-slate-500">Requested {{ release.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+          <ul class="mt-2 space-y-1">{% for item in release.items %}<li>{{ item.description }} — {{ item.quantity }} {{ item.unit or 'unit(s)' }}{% if item.issued_quantity is not none %}; {{ item.issued_quantity }} issued{% endif %}</li>{% endfor %}</ul>
+          {% if release.review_notes %}<p class="mt-2"><strong>Staff review:</strong> {{ release.review_notes }}</p>{% endif %}
+          <div class="mt-2 text-xs text-slate-500">
+            {% if release.provider.status.is_present %}
+            Provider: {{ release.provider.status.value }}{% if release.provider.reference %} · {{ release.provider.reference }}{% endif %}{% if release.provider.status.is_stale %} · stale{% endif %}
+            {% else %}{{ release.provider.detail }}{% endif %}
+          </div>
+        </article>
+        {% else %}<p class="text-sm text-slate-500">No material requests yet.</p>{% endfor %}
+      </div>
+    </section>
+    <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+      <div class="mb-4"><h2 class="text-lg font-bold">Mobilisation advance</h2><p class="mt-1 text-xs text-slate-500">Request an advance against the approved quote. Approval is not payment; payables settlement is observed separately.</p></div>
+      {% if supply.advance_quote_total is not none %}
+      <dl class="mb-4 grid grid-cols-2 gap-3 rounded-md bg-slate-50 p-3 text-sm dark:bg-slate-800 sm:grid-cols-4">
+        <div><dt class="text-xs text-slate-500">Quote total</dt><dd class="font-semibold">{{ supply.advance_currency }} {{ "{:,.2f}".format(supply.advance_quote_total) }}</dd></div>
+        <div><dt class="text-xs text-slate-500">Advance ceiling</dt><dd class="font-semibold">{{ supply.advance_currency }} {{ "{:,.2f}".format(supply.advance_ceiling) }}</dd></div>
+        <div><dt class="text-xs text-slate-500">Committed</dt><dd class="font-semibold">{{ supply.advance_currency }} {{ "{:,.2f}".format(supply.advance_committed) }}</dd></div>
+        <div><dt class="text-xs text-slate-500">Remaining</dt><dd class="font-semibold">{{ supply.advance_currency }} {{ "{:,.2f}".format(supply.advance_remaining) }}</dd></div>
+      </dl>
+      {% endif %}
+      {% if supply.advance_request_action.allowed %}
+      <form method="post" action="/vendor/projects/{{ project.id }}/advances" class="flex flex-wrap items-end gap-3 rounded-md bg-slate-50 p-4 dark:bg-slate-800">
+        {% include "components/forms/csrf_input.html" %}
+        <label class="text-xs text-slate-500">Amount<input name="amount" required type="number" min="0.01" step="0.01" max="{{ supply.advance_remaining }}" class="mt-1 block rounded-md border-slate-300"></label>
+        <label class="min-w-64 flex-1 text-xs text-slate-500">Reason (optional)<input name="reason" class="mt-1 block w-full rounded-md border-slate-300"></label>
+        <button class="rounded-md bg-teal-600 px-4 py-2 font-semibold text-white">{{ supply.advance_request_action.label }}</button>
+      </form>
+      {% else %}
+      <p class="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{{ supply.advance_request_action.reason }}</p>
+      {% endif %}
+      <div class="mt-4 space-y-3">
+        {% for advance in supply.advances %}
+        <article class="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+          <div class="flex flex-wrap items-center justify-between gap-2"><strong>{{ advance.currency }} {{ "{:,.2f}".format(advance.amount) }}</strong>{{ status_presentation_badge(advance.status, size="sm") }}</div>
+          <p class="mt-1 text-xs text-slate-500">Requested {{ advance.requested_at | app_datetime('%d %b %Y %H:%M', 'time unavailable') }}</p>
+          {% if advance.reason %}<p class="mt-2">{{ advance.reason }}</p>{% endif %}
+          {% if advance.review_notes %}<p class="mt-2"><strong>Staff review:</strong> {{ advance.review_notes }}</p>{% endif %}
+          <div class="mt-2 text-xs text-slate-500">{% if advance.payables.status.is_present %}Payables: {{ advance.payables.status.value }}{% if advance.payables.reference %} · {{ advance.payables.reference }}{% endif %}{% if advance.payables.status.is_stale %} · stale{% endif %}{% else %}{{ advance.payables.detail }}{% endif %}</div>
+        </article>
+        {% else %}<p class="text-sm text-slate-500">No advance requests yet.</p>{% endfor %}
+      </div>
+    </section>
+    <section class="rounded-md border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
       <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-bold">Proposed route revisions</h2>
@@ -206,6 +274,25 @@
 </div>
 {% endblock %}
 {% block scripts %}
+{% if supply.material_request_action.allowed %}
+<script>
+(() => {
+  const form = document.querySelector("[data-material-request-form]");
+  const lines = form?.querySelector("[data-material-lines]");
+  const first = lines?.querySelector("[data-material-line]");
+  form?.querySelector("[data-add-material-line]")?.addEventListener("click", () => {
+    const line = first.cloneNode(true);
+    line.querySelectorAll("input").forEach((input) => { input.value = ""; });
+    line.querySelector("[data-remove-material-line]")?.classList.remove("hidden");
+    lines.appendChild(line);
+  });
+  lines?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-material-line]");
+    if (button) button.closest("[data-material-line]")?.remove();
+  });
+})();
+</script>
+{% endif %}
 <script src="/static/vendor/leaflet/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="/static/js/vendor-route-authoring.js"></script>

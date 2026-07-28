@@ -108,6 +108,88 @@ class RequestVendorAdvance:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AdvanceRequestEligibility:
+    """Owner-supplied advance decision facts for commands and UI projections."""
+
+    allowed: bool
+    reason: str | None
+    quote_id: UUID | None = None
+    currency: str | None = None
+    quote_total: Decimal | None = None
+    max_percent: Decimal = NO_PERCENT_CAP
+    ceiling: Decimal | None = None
+    committed: Decimal = Decimal("0.00")
+    remaining: Decimal = Decimal("0.00")
+
+
+def request_eligibility(
+    db: Session,
+    *,
+    project_id: UUID | str,
+    vendor_id: UUID | str,
+) -> AdvanceRequestEligibility:
+    project = db.get(InstallationProject, coerce_uuid(project_id))
+    if project is None or not project.is_active:
+        return AdvanceRequestEligibility(
+            allowed=False,
+            reason="Installation project not found.",
+        )
+    if str(project.assigned_vendor_id or "") != str(vendor_id):
+        return AdvanceRequestEligibility(
+            allowed=False,
+            reason="An advance is available only to the assigned vendor.",
+        )
+    if project.status not in _ADVANCEABLE_PROJECT_STATUSES:
+        return AdvanceRequestEligibility(
+            allowed=False,
+            reason="An advance is available once work is approved and before verification.",
+        )
+    quote = (
+        db.get(ProjectQuote, project.approved_quote_id)
+        if project.approved_quote_id
+        else None
+    )
+    if quote is None or quote.status != ProjectQuoteStatus.approved.value:
+        return AdvanceRequestEligibility(
+            allowed=False,
+            reason="An advance requires an approved quote to draw against.",
+        )
+    max_percent = configured_max_percent(db)
+    ceiling = advance_ceiling(quote, max_percent)
+    already = committed_total(db, project.id)
+    remaining = max(ceiling - already, Decimal("0.00"))
+    if remaining <= Decimal("0.00"):
+        return AdvanceRequestEligibility(
+            allowed=False,
+            reason="The available advance allowance has already been committed.",
+            quote_id=quote.id,
+            currency=quote.currency,
+            quote_total=_money(quote.total),
+            max_percent=max_percent,
+            ceiling=ceiling,
+            committed=already,
+            remaining=remaining,
+        )
+    return AdvanceRequestEligibility(
+        allowed=True,
+        reason=None,
+        quote_id=quote.id,
+        currency=quote.currency,
+        quote_total=_money(quote.total),
+        max_percent=max_percent,
+        ceiling=ceiling,
+        committed=already,
+        remaining=remaining,
+    )
+
+
+def review_eligibility(status: str) -> tuple[bool, str | None]:
+    if status != VendorAdvanceStatus.requested.value:
+        return False, "Only a requested advance can be reviewed."
+    return True, None
+
+
 def _advance(
     db: Session, advance_id: UUID | str, *, for_update: bool = False
 ) -> VendorAdvance:
@@ -163,38 +245,41 @@ def request_advance(db: Session, command: RequestVendorAdvance) -> VendorAdvance
     if amount <= Decimal("0.00"):
         raise _error("invalid_amount", "Advance amount must be greater than zero.")
 
-    project = db.get(InstallationProject, coerce_uuid(command.project_id))
+    project = (
+        db.query(InstallationProject)
+        .filter(InstallationProject.id == coerce_uuid(command.project_id))
+        .with_for_update(of=InstallationProject)
+        .one_or_none()
+    )
     if project is None or not project.is_active:
         raise _error(
             "project_not_found", "Installation project not found.", kind="not_found"
         )
-    if str(project.assigned_vendor_id or "") != str(command.vendor_id):
-        raise _error(
-            "project_not_assigned",
-            "An advance is only available to the vendor assigned to the project.",
-        )
-    if project.status not in _ADVANCEABLE_PROJECT_STATUSES:
-        raise _error(
-            "project_not_advanceable",
-            "An advance is available once work is approved and before it is verified.",
-        )
-    quote = (
-        db.get(ProjectQuote, project.approved_quote_id)
-        if project.approved_quote_id
-        else None
+    eligibility = request_eligibility(
+        db,
+        project_id=project.id,
+        vendor_id=command.vendor_id,
     )
-    if quote is None or quote.status != ProjectQuoteStatus.approved.value:
-        # Without an approved quote there is no agreed value to advance against,
-        # so there is no ceiling and no basis for the payment.
+    if not eligibility.allowed:
+        if str(project.assigned_vendor_id or "") != str(command.vendor_id):
+            code = "project_not_assigned"
+        elif project.status not in _ADVANCEABLE_PROJECT_STATUSES:
+            code = "project_not_advanceable"
+        elif eligibility.quote_id is None:
+            code = "approved_quote_required"
+        else:
+            code = "advance_ceiling_exceeded"
+        raise _error(code, str(eligibility.reason))
+    quote = db.get(ProjectQuote, eligibility.quote_id)
+    if quote is None:
         raise _error(
             "approved_quote_required",
             "An advance requires an approved quote to draw against.",
         )
-
-    ceiling = advance_ceiling(quote, configured_max_percent(db))
-    already = committed_total(db, project.id)
-    if already + amount > ceiling:
-        remaining = max(ceiling - already, Decimal("0.00"))
+    ceiling = eligibility.ceiling or Decimal("0.00")
+    already = eligibility.committed
+    if amount > eligibility.remaining:
+        remaining = eligibility.remaining
         raise _error(
             "advance_ceiling_exceeded",
             (
@@ -246,8 +331,9 @@ def approve(
 ) -> VendorAdvance:
     """Staff approve the advance. Payment itself belongs to the provider."""
     advance = _advance(db, advance_id, for_update=True)
-    if advance.status != VendorAdvanceStatus.requested.value:
-        raise _error("not_reviewable", "Only a requested advance can be approved.")
+    allowed, reason = review_eligibility(advance.status)
+    if not allowed:
+        raise _error("not_reviewable", str(reason))
     advance.status = VendorAdvanceStatus.approved.value
     advance.reviewed_by_person_id = coerce_uuid(actor_id)
     advance.reviewed_at = _now()
@@ -265,8 +351,9 @@ def reject(
     reason: str,
 ) -> VendorAdvance:
     advance = _advance(db, advance_id, for_update=True)
-    if advance.status != VendorAdvanceStatus.requested.value:
-        raise _error("not_reviewable", "Only a requested advance can be rejected.")
+    allowed, blocked_reason = review_eligibility(advance.status)
+    if not allowed:
+        raise _error("not_reviewable", str(blocked_reason))
     normalized = (reason or "").strip()
     if not normalized:
         raise _error("reason_required", "A rejection reason is required.")

@@ -38,6 +38,8 @@ from app.services.vendor_portal_operations import (
     CreateVendorQuoteCommand,
     CreateVendorRouteRevisionCommand,
     DeleteVendorQuoteLineCommand,
+    RequestVendorAdvanceCommand,
+    RequestVendorMaterialReleaseCommand,
     SubmitVendorRouteRevisionCommand,
     UpdateVendorQuoteLineCommand,
     vendor_portal_operations,
@@ -132,6 +134,9 @@ def _vendor_http_error(exc: DomainError) -> HTTPException:
         "invalid_attachment",
         "invoice_number_required",
         "invoice_line_required",
+        "items_required",
+        "invalid_quantity",
+        "invalid_amount",
     }:
         status_code = 422
     elif suffix in {
@@ -148,6 +153,10 @@ def _vendor_http_error(exc: DomainError) -> HTTPException:
         "invoice_not_editable",
         "invoice_number_conflict",
         "submitted_quote_required",
+        "project_not_releasable",
+        "project_not_advanceable",
+        "approved_quote_required",
+        "advance_ceiling_exceeded",
     }:
         status_code = 409
     else:
@@ -699,28 +708,9 @@ def submit_purchase_invoice(
 
 
 # ---------------------------------------------------------------------------
-# Material releases and advances
-#
-# A vendor asks; staff decide; the configured provider issues the stock or
-# moves the money. These routes only authorize and translate.
+# Material releases and advances. These adapters authorize and translate;
+# ``operations.vendor_project_workspace`` owns each atomic request.
 # ---------------------------------------------------------------------------
-
-
-def _supply_http_error(exc: ValueError) -> HTTPException:
-    kind = getattr(exc, "kind", "invalid")
-    code = getattr(exc, "code", "")
-    if kind == "not_found":
-        status_code = 404
-    elif code in {"project_not_assigned"}:
-        status_code = 403
-    elif code:
-        status_code = 409
-    else:
-        status_code = 400
-    return HTTPException(
-        status_code=status_code,
-        detail={"code": code, "message": str(exc)},
-    )
 
 
 @router.post("/material-releases", status_code=status.HTTP_201_CREATED)
@@ -731,21 +721,23 @@ def request_material_release(
     ),
     db: Session = Depends(get_db),
 ):
-    from app.services import vendor_material_release
-
-    command = vendor_material_release.RequestMaterialRelease(
-        project_id=payload.project_id,
-        vendor_id=coerce_uuid(_vendor_id(context)),
-        requested_by_person_id=context["principal_id"],
-        items=tuple(item.model_dump() for item in payload.items),
-        notes=payload.notes,
-    )
     db_session_adapter.release_read_transaction(db)
-    try:
-        release = vendor_material_release.request_release_committed(db, command)
-    except ValueError as exc:
-        raise _supply_http_error(exc) from exc
-    return {"id": str(release.id), "status": release.status}
+    result = _vendor_call(
+        lambda: vendor_portal_operations.request_material_release(
+            db,
+            RequestVendorMaterialReleaseCommand(
+                context=_command_context(
+                    context,
+                    scope=str(payload.project_id),
+                    reason="vendor_material_release_request",
+                ),
+                payload=payload,
+                vendor_id=coerce_uuid(_vendor_id(context)),
+                user_id=coerce_uuid(context["principal_id"]),
+            ),
+        )
+    )
+    return {"id": str(result.id), "status": result.status.value}
 
 
 @router.post("/advances", status_code=status.HTTP_201_CREATED)
@@ -756,23 +748,25 @@ def request_vendor_advance(
     ),
     db: Session = Depends(get_db),
 ):
-    from app.services import vendor_advances
-
-    command = vendor_advances.RequestVendorAdvance(
-        project_id=payload.project_id,
-        vendor_id=coerce_uuid(_vendor_id(context)),
-        amount=payload.amount,
-        requested_by_person_id=context["principal_id"],
-        reason=payload.reason,
-    )
     db_session_adapter.release_read_transaction(db)
-    try:
-        advance = vendor_advances.request_advance_committed(db, command)
-    except ValueError as exc:
-        raise _supply_http_error(exc) from exc
+    result = _vendor_call(
+        lambda: vendor_portal_operations.request_advance(
+            db,
+            RequestVendorAdvanceCommand(
+                context=_command_context(
+                    context,
+                    scope=str(payload.project_id),
+                    reason="vendor_advance_request",
+                ),
+                payload=payload,
+                vendor_id=coerce_uuid(_vendor_id(context)),
+                user_id=coerce_uuid(context["principal_id"]),
+            ),
+        )
+    )
     return {
-        "id": str(advance.id),
-        "status": advance.status,
-        "amount": str(advance.amount),
-        "currency": advance.currency,
+        "id": str(result.id),
+        "status": result.status.value,
+        "amount": str(result.amount),
+        "currency": result.currency,
     }

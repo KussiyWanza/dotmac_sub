@@ -15,6 +15,7 @@ from app.models.payment_proof import WithholdingTaxStatus
 from app.models.subscriber import SubscriberStatus
 from app.models.support import Ticket, TicketStatus
 from app.models.vendor_routes import VendorPurchaseInvoiceStatus
+from app.models.vendor_supply import VendorAdvanceStatus, VendorMaterialReleaseStatus
 from app.schemas.billing import InvoiceRead, PaymentRead
 from app.schemas.catalog import SubscriptionRead
 from app.schemas.network_monitoring import NetworkDeviceRead
@@ -41,6 +42,8 @@ from app.services.status_presentation import (
     supplier_invoice_status_presentation,
     system_job_status_presentation,
     ticket_status_presentation,
+    vendor_advance_status_presentation,
+    vendor_material_release_status_presentation,
     vendor_purchase_invoice_status_presentation,
     withholding_tax_status_presentation,
     work_order_status_presentation,
@@ -87,6 +90,30 @@ def test_vendor_purchase_invoice_presentation_covers_authoritative_enum(
     status: VendorPurchaseInvoiceStatus,
 ) -> None:
     presentation = vendor_purchase_invoice_status_presentation(status)
+
+    assert presentation.value == status.value
+    assert presentation.label
+    assert presentation.tone in StatusTone
+    assert presentation.icon in StatusIcon
+
+
+@pytest.mark.parametrize("status", list(VendorMaterialReleaseStatus))
+def test_vendor_material_release_presentation_covers_authoritative_enum(
+    status: VendorMaterialReleaseStatus,
+) -> None:
+    presentation = vendor_material_release_status_presentation(status)
+
+    assert presentation.value == status.value
+    assert presentation.label
+    assert presentation.tone in StatusTone
+    assert presentation.icon in StatusIcon
+
+
+@pytest.mark.parametrize("status", list(VendorAdvanceStatus))
+def test_vendor_advance_presentation_covers_authoritative_enum(
+    status: VendorAdvanceStatus,
+) -> None:
+    presentation = vendor_advance_status_presentation(status)
 
     assert presentation.value == status.value
     assert presentation.label

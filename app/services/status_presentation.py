@@ -32,6 +32,10 @@ from app.models.vendor_routes import (
     ProposedRouteRevisionStatus,
     VendorPurchaseInvoiceStatus,
 )
+from app.models.vendor_supply import (
+    VendorAdvanceStatus,
+    VendorMaterialReleaseStatus,
+)
 from app.schemas.status_presentation import (
     StatusIcon,
     StatusPresentation,
@@ -905,6 +909,82 @@ def vendor_purchase_invoice_status_presentation(
 ) -> StatusPresentation:
     """Project vendor purchase-invoice approval status without re-deriving it."""
     return _presentation(_status_value(status), _VENDOR_PURCHASE_INVOICE_PRESENTATIONS)
+
+
+_VENDOR_MATERIAL_RELEASE_PRESENTATIONS: dict[
+    str, tuple[str, StatusTone, StatusIcon]
+] = {
+    VendorMaterialReleaseStatus.draft.value: (
+        "Draft",
+        StatusTone.neutral,
+        StatusIcon.archive,
+    ),
+    VendorMaterialReleaseStatus.requested.value: (
+        "Requested",
+        StatusTone.warning,
+        StatusIcon.clock,
+    ),
+    VendorMaterialReleaseStatus.approved.value: (
+        "Approved; issue pending",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    VendorMaterialReleaseStatus.rejected.value: (
+        "Rejected",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+    VendorMaterialReleaseStatus.issued.value: (
+        "Issued",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    VendorMaterialReleaseStatus.canceled.value: (
+        "Canceled",
+        StatusTone.neutral,
+        StatusIcon.x,
+    ),
+}
+
+_VENDOR_ADVANCE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    VendorAdvanceStatus.requested.value: (
+        "Requested",
+        StatusTone.warning,
+        StatusIcon.clock,
+    ),
+    VendorAdvanceStatus.approved.value: (
+        "Approved; payment pending",
+        StatusTone.info,
+        StatusIcon.clock,
+    ),
+    VendorAdvanceStatus.rejected.value: (
+        "Rejected",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+    VendorAdvanceStatus.settled.value: (
+        "Settled",
+        StatusTone.positive,
+        StatusIcon.check,
+    ),
+    VendorAdvanceStatus.canceled.value: (
+        "Canceled",
+        StatusTone.neutral,
+        StatusIcon.x,
+    ),
+}
+
+
+def vendor_material_release_status_presentation(
+    status: VendorMaterialReleaseStatus | str | None,
+) -> StatusPresentation:
+    return _presentation(_status_value(status), _VENDOR_MATERIAL_RELEASE_PRESENTATIONS)
+
+
+def vendor_advance_status_presentation(
+    status: VendorAdvanceStatus | str | None,
+) -> StatusPresentation:
+    return _presentation(_status_value(status), _VENDOR_ADVANCE_PRESENTATIONS)
 
 
 _SUPPLIER_INVOICE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
