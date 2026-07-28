@@ -17,7 +17,7 @@ explicitly terminal failure is recorded with reviewable evidence via
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, TypeVar
@@ -44,6 +44,80 @@ class OwnerOutputError(DomainError):
 def _error(suffix: str, message: str, **details: object) -> OwnerOutputError:
     return OwnerOutputError(
         code=f"{OWNER}.{suffix}", message=message, details=dict(details)
+    )
+
+
+def require_output_text(
+    payload: Mapping[str, object],
+    field: str,
+    *,
+    consumer: str,
+    event_id: UUID,
+    event_type: str,
+) -> str:
+    """Return one required owner-output field or fail the delivery.
+
+    A handler returning normally is durable success evidence. Required identity
+    can therefore never be converted into a warning or an empty-string
+    fallback: raising leaves the EventStore delivery failed and retryable.
+    """
+
+    value = payload.get(field)
+    normalized = str(value).strip() if value is not None else ""
+    if not normalized:
+        raise _error(
+            "missing_required_payload",
+            "Owner output is missing a required consumer input.",
+            consumer=consumer,
+            event_id=str(event_id),
+            event_type=event_type,
+            field=field,
+        )
+    return normalized
+
+
+def require_output_records(
+    payload: Mapping[str, object],
+    field: str,
+    *,
+    consumer: str,
+    event_id: UUID,
+    event_type: str,
+) -> tuple[Mapping[str, object], ...]:
+    """Return one required list of record-shaped payload entries."""
+
+    value = payload.get(field)
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, Mapping) for item in value
+    ):
+        raise invalid_output_payload(
+            consumer=consumer,
+            event_id=event_id,
+            event_type=event_type,
+            field=field,
+            reason="expected_list_of_records",
+        )
+    return tuple(value)
+
+
+def invalid_output_payload(
+    *,
+    consumer: str,
+    event_id: UUID,
+    event_type: str,
+    field: str,
+    reason: str,
+) -> OwnerOutputError:
+    """Build a typed fail-closed error for malformed owner-output content."""
+
+    return _error(
+        "invalid_required_payload",
+        "Owner output contains an invalid required consumer input.",
+        consumer=consumer,
+        event_id=str(event_id),
+        event_type=event_type,
+        field=field,
+        reason=reason,
     )
 
 
@@ -253,5 +327,8 @@ __all__ = [
     "consume_owner_output",
     "existing_receipt",
     "record_terminal_failure",
+    "invalid_output_payload",
+    "require_output_records",
+    "require_output_text",
     "stage_owner_output",
 ]

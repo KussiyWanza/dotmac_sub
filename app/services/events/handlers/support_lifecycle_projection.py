@@ -15,16 +15,14 @@ failed and retryable instead of a warning log.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from app.services.common import coerce_uuid
 from app.services.events.handlers.owner_session import owner_session as _owner_session
+from app.services.events.owner_outputs import require_output_text
 from app.services.events.types import Event, EventType
-
-logger = logging.getLogger(__name__)
 
 HANDLED_EVENT_TYPES = frozenset(
     {
@@ -72,26 +70,46 @@ class SupportLifecycleProjectionHandler:
         )
 
     def _apply_field_outcome(self, db: Session, event: Event) -> None:
-        work_order_id = event.payload.get("work_order_id")
-        field_event_id = event.payload.get("field_event_id")
-        if not work_order_id or not field_event_id:
-            logger.warning(
-                "field outcome event %s lacks work order or field event id",
-                event.event_id,
-            )
-            return
         # Work orders without an origin ticket have no ticket projection.
         if not event.payload.get("origin_ticket_id"):
             return
+        work_order_id = require_output_text(
+            event.payload,
+            "work_order_id",
+            consumer="support.ticket_work_order_handoff",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
+        field_event_id = require_output_text(
+            event.payload,
+            "field_event_id",
+            consumer="support.ticket_work_order_handoff",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
+        occurred_at_text = require_output_text(
+            event.payload,
+            "occurred_at",
+            consumer="support.ticket_work_order_handoff",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
+        outcome = require_output_text(
+            event.payload,
+            "outcome",
+            consumer="support.ticket_work_order_handoff",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
         from app.services import ticket_work_order_handoff
 
-        occurred_at = datetime.fromisoformat(event.payload["occurred_at"])
+        occurred_at = datetime.fromisoformat(occurred_at_text)
         with _owner_session(db) as owner_db:
             ticket_work_order_handoff.consume_field_outcome(
                 owner_db,
                 work_order_id=coerce_uuid(work_order_id),
                 field_event_id=coerce_uuid(field_event_id),
-                outcome=str(event.payload.get("outcome")),
+                outcome=outcome,
                 occurred_at=occurred_at,
                 note=event.payload.get("note"),
                 actor_id=event.payload.get("actor_id"),
@@ -100,9 +118,13 @@ class SupportLifecycleProjectionHandler:
             )
 
     def _auto_confirm_resolution(self, db: Session, event: Event) -> None:
-        ticket_id = event.payload.get("entity_id")
-        if not ticket_id:
-            return
+        ticket_id = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="support.ticket_lifecycle",
+            event_id=event.event_id,
+            event_type=_RESOLUTION_GRACE_TRIGGER,
+        )
         from app.services.support import Tickets
 
         with _owner_session(db) as owner_db:
@@ -114,9 +136,13 @@ class SupportLifecycleProjectionHandler:
             )
 
     def _wake_snoozed_conversation(self, db: Session, event: Event) -> None:
-        conversation_id = event.payload.get("entity_id")
-        if not conversation_id:
-            return
+        conversation_id = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="communications.team_inbox",
+            event_id=event.event_id,
+            event_type=_SNOOZE_WAKE_TRIGGER,
+        )
         from app.services import team_inbox_commands
 
         with _owner_session(db) as owner_db:
@@ -128,9 +154,13 @@ class SupportLifecycleProjectionHandler:
             )
 
     def _evaluate_sla_breach(self, db: Session, event: Event) -> None:
-        clock_id = event.payload.get("entity_id")
-        if not clock_id:
-            return
+        clock_id = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="support.ticket_sla_clock",
+            event_id=event.event_id,
+            event_type=_SLA_BREACH_TRIGGER,
+        )
         from app.services.support import Tickets
 
         with _owner_session(db) as owner_db:

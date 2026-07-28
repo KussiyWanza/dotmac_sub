@@ -62,10 +62,11 @@ def test_projection_handler_consumes_the_full_chain():
     # Consequences must not be wrapped in a swallow: the handler module
     # delegates to owners and lets failures propagate to the dispatcher.
     assert "except Exception" not in src
-    # The verified/release/acceptance hops run through sales.fulfillment's
-    # receipted consumer commands on fresh owner-command sessions.
+    # Every sales.fulfillment hop runs through a receipted consumer command on
+    # a fresh owner-command session.
     assert "_owner_session(" in src
     for consumer in (
+        "consume_funding_satisfaction",
         "consume_verified_implementation",
         "consume_service_order_release",
         "consume_cx_acceptance",

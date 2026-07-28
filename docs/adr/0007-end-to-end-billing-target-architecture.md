@@ -923,7 +923,17 @@ evidence are append-only and are not removed by rollback.
   `docs/FINANCIAL_ACCESS_ENFORCEMENT.md`, and
   `docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`.
 - First implementation slice: Phase 1 structural billing contract and
-  obligation identity in shadow mode.
+  obligation identity in shadow mode. The receipted
+  `sales.fulfillment.funding_applied -> billing.contracts.shadow_recorded ->
+  billing.obligations.shadow_scheduled` chain now records proposed terms and
+  first-period obligations for newly funded structurally linked services, then
+  commits terminal delivery evidence through `billing.shadow_verification`.
+  It has no financial or access effect.
+- Phase 1 verification runs are durable complete-cohort records with source and
+  result fingerprints, exhaustive blocker classifications, per-currency
+  totals, owner-output outcomes, and exact code/schema identity. Operator and
+  finance approvals are separate and fail closed while any blocker is non-zero;
+  recording approvals still does not move authority.
 - Each subsequent phase is reviewed at its own cutover gate. A gate that
   requires cohort parity or finance approval cannot be satisfied by code review
   alone; it needs a durable run record meeting the cutover evidence standard

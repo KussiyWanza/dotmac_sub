@@ -70,6 +70,9 @@ class EventType(enum.Enum):
     prepaid_service_renewed = "prepaid_service.renewed"
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"
     subscription_service_granted = "subscription_service.granted"
+    billing_shadow_delivery_recorded = "billing.shadow_delivery.recorded"
+    billing_cutover_verification_recorded = "billing.cutover_verification.recorded"
+    billing_cutover_verification_approved = "billing.cutover_verification.approved"
 
     # Billing - Bank-transfer evidence lifecycle
     payment_proof_submitted = "payment_proof.submitted"

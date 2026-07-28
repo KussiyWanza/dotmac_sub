@@ -16,15 +16,13 @@ failed and retryable instead of a warning log.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from app.services.events.handlers.owner_session import owner_session as _owner_session
+from app.services.events.owner_outputs import require_output_text
 from app.services.events.types import Event, EventType
-
-logger = logging.getLogger(__name__)
 
 HANDLED_EVENT_TYPES = frozenset(
     {
@@ -40,12 +38,13 @@ class OutageLifecycleProjectionHandler:
     """Deliver committed outage outputs to their receipted consumers."""
 
     def handle(self, db: Session, event: Event) -> None:
-        incident_id = event.payload.get("incident_id")
-        if not incident_id:
-            logger.warning(
-                "outage lifecycle event %s has no incident id", event.event_id
-            )
-            return
+        incident_id = require_output_text(
+            event.payload,
+            "incident_id",
+            consumer="network.outage_lifecycle",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
         if event.event_type in {
             EventType.outage_created,
             EventType.outage_confirmed,

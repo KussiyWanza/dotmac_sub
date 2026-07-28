@@ -17,12 +17,20 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from app.models.catalog import Subscription, SubscriptionStatus
+from app.models.billing_contract import BillingContract, BillingObligation
+from app.models.billing_shadow_verification import BillingShadowDeliveryEvidence
+from app.models.catalog import (
+    BillingCycle,
+    BillingMode,
+    Subscription,
+    SubscriptionStatus,
+)
 from app.models.customer_experience import (
     CustomerExperienceHandoff,
     CustomerExperienceHandoffStatus,
 )
 from app.models.event_store import EventStatus, EventStore
+from app.models.owner_output import OwnerOutputReceipt
 from app.models.project import Project, ProjectStatus
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus, ServiceOrderType
 from app.models.sales import (
@@ -42,6 +50,10 @@ from app.schemas.sales_order import (
 from app.services import crm_api, customer_experience_handoffs
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_order_service
+from app.services.events.handlers.sales_lifecycle_projection import (
+    SalesLifecycleProjectionHandler,
+)
+from app.services.events.types import Event, EventType
 from app.services.sales import selfserve
 
 
@@ -76,6 +88,12 @@ def chain_billing(monkeypatch, catalog_offer):
             subscriber_id=uuid.UUID(str(kwargs["subscriber_id"])),
             offer_id=offer_id,
             status=SubscriptionStatus.pending,
+            billing_cycle=BillingCycle(
+                str(kwargs.get("billing_cycle") or BillingCycle.monthly.value)
+            ),
+            billing_mode=BillingMode.prepaid,
+            start_at=datetime.now(UTC),
+            unit_price=Decimal(str(kwargs.get("unit_price") or "0")),
         )
         db.add(subscription)
         db.flush()
@@ -169,13 +187,57 @@ def test_full_funding_chains_subscription_and_service_order(
     )
     names = [name for name, _ in chain_billing]
     assert names.index("create_subscription") < names.index("record_external_payment")
-
-    # Replaying the consequence is an exact no-op.
-    chain_billing.clear()
-    outcome = sales_order_service.apply_funding_consequences(
-        db_session, sales_order_id=order.id, actor_id="pytest"
+    receipt = (
+        db_session.query(OwnerOutputReceipt)
+        .filter(
+            OwnerOutputReceipt.consumer == "sales.fulfillment",
+            OwnerOutputReceipt.event_id == event.event_id,
+        )
+        .one()
     )
-    assert outcome == "applied"
+    assert receipt.outcome.value == "succeeded"
+    assert db_session.query(BillingContract).count() == 1
+    assert db_session.query(BillingObligation).count() == 1
+    assert db_session.query(BillingShadowDeliveryEvidence).count() == 1
+    output_events = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == EventType.custom.value)
+        .all()
+    )
+    for consumer, output in (
+        ("billing.contracts", "sales.fulfillment.funding_applied"),
+        ("billing.obligations", "billing.contracts.shadow_recorded"),
+        (
+            "billing.shadow_verification",
+            "billing.obligations.shadow_scheduled",
+        ),
+    ):
+        matching = [
+            item for item in output_events if item.payload.get("output") == output
+        ]
+        assert len(matching) == 1
+        assert (
+            db_session.query(OwnerOutputReceipt)
+            .filter(
+                OwnerOutputReceipt.consumer == consumer,
+                OwnerOutputReceipt.event_id == matching[0].event_id,
+            )
+            .count()
+            == 1
+        )
+
+    # Redelivering the same owner output is an exact no-op because the
+    # consumer effect and its receipt committed atomically.
+    chain_billing.clear()
+    SalesLifecycleProjectionHandler().handle(
+        db_session,
+        Event(
+            EventType.sales_order_funding_satisfied,
+            event.payload,
+            event_id=event.event_id,
+            actor="pytest",
+        ),
+    )
     assert db_session.query(Subscription).count() == 1
     assert db_session.query(ServiceOrder).count() == 1
     assert "create_subscription" not in [name for name, _ in chain_billing]

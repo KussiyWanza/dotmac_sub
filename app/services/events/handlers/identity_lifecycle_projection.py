@@ -13,14 +13,11 @@ failed and retryable instead of a warning log.
 
 from __future__ import annotations
 
-import logging
-
 from sqlalchemy.orm import Session
 
 from app.services.events.handlers.owner_session import owner_session as _owner_session
+from app.services.events.owner_outputs import require_output_text
 from app.services.events.types import Event, EventType
-
-logger = logging.getLogger(__name__)
 
 HANDLED_EVENT_TYPES = frozenset({EventType.custom})
 
@@ -36,9 +33,13 @@ class IdentityLifecycleProjectionHandler:
         if event.payload.get("trigger") != _INVITATION_EXPIRY_TRIGGER:
             # Every other custom payload belongs to other adapters.
             return
-        invitation_id = event.payload.get("entity_id")
-        if not invitation_id:
-            return
+        invitation_id = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer="auth.access_invitations",
+            event_id=event.event_id,
+            event_type=_INVITATION_EXPIRY_TRIGGER,
+        )
         from app.services import access_invitations
         from app.services.owner_commands import CommandContext
 

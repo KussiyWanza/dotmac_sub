@@ -2170,6 +2170,7 @@ def sync_additional_routes_for_subscription(
     metrics: list[str] | None = None,
     add_on_id: str | None = None,
     quantity: str | int | None = None,
+    commit: bool = True,
 ) -> list[str]:
     """Upsert active subscriber additional routes and deactivate removed ones."""
     if not subscription_obj.subscriber_id:
@@ -2254,17 +2255,21 @@ def sync_additional_routes_for_subscription(
         if str(route.cidr) not in desired_map and route.is_active:
             route.is_active = False
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
     # Routes changed -> reconcile RADIUS and kick live sessions so the BNG
     # re-learns the Framed-Routes. No-op if the route set is unchanged or the
     # subscription isn't active.
-    reauth_subscription_on_identity_change(
-        db,
-        str(subscription_obj.id),
-        before=before_sig,
-        reason="additional_routes_change",
-    )
+    if commit:
+        reauth_subscription_on_identity_change(
+            db,
+            str(subscription_obj.id),
+            before=before_sig,
+            reason="additional_routes_change",
+        )
     return list(desired_map)
 
 

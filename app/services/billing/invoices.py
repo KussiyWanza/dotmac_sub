@@ -540,8 +540,10 @@ class Invoices(ListResponseMixin):
         db: Session,
         payload: InvoiceCreate,
         lines: tuple[InvoiceLineCreate, ...],
+        *,
+        commit: bool = True,
     ) -> Invoice:
-        """Create one complete draft or issued document in a single commit."""
+        """Create one complete draft or issued document atomically."""
         if payload.status not in {InvoiceStatus.draft, InvoiceStatus.issued}:
             raise HTTPException(
                 status_code=409,
@@ -609,11 +611,15 @@ class Invoices(ListResponseMixin):
                 invoice_id=invoice.id,
             )
             _apply_available_account_credit(db, invoice)
-            db.commit()
-            db.refresh(invoice)
+            if commit:
+                db.commit()
+                db.refresh(invoice)
+            else:
+                db.flush()
             return invoice
         except Exception:
-            db.rollback()
+            if commit:
+                db.rollback()
             raise
 
     @staticmethod
@@ -1864,6 +1870,7 @@ class Invoices(ListResponseMixin):
         subscription_id: str,
         *,
         allow_prepaid: bool = False,
+        commit: bool = True,
     ) -> Invoice:
         """Create an invoice with line items auto-populated from a subscription's offer price.
 
@@ -1992,8 +1999,11 @@ class Invoices(ListResponseMixin):
             invoice_id=invoice.id,
         )
         _apply_available_account_credit(db, invoice)
-        db.commit()
-        db.refresh(invoice)
+        if commit:
+            db.commit()
+            db.refresh(invoice)
+        else:
+            db.flush()
 
         logger.info(
             "Created invoice %s for subscription %s: %s %s",

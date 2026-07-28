@@ -1693,8 +1693,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "access.subscription_lifecycle",
                     "events.dispatcher",
+                    "events.owner_outputs",
                     "financial.tax_configuration",
                     "sales.orders",
+                    "sales.fulfillment",
                 ),
                 notes=(
                     "ADR 0007 Phase 1. Customer-specific contracted terms are "
@@ -1703,6 +1705,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "stay BillingRecordAuthority.shadow while this contract "
                     "declares migration state 'shadowing', so nothing reads "
                     "them as money before the Phase 1 cutover gate."
+                    " The receipted sales.fulfillment shadow output now creates "
+                    "the proposed version and atomically emits the obligation "
+                    "inputs; it still has no financial consequence."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -1714,6 +1719,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical subscription projection",
                                 "effective tax treatment inputs",
                                 "recorded billing contract terms",
+                                "receipted owner-output deliveries",
                             ),
                             canonical_writer="billing.contracts",
                         ),
@@ -1754,6 +1760,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="effective tax rate and treatment vocabulary",
                         ),
                         AuthorityInput(
+                            name="receipted owner-output deliveries",
+                            owner="events.owner_outputs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the exact sales.fulfillment output and unique "
+                                "(billing.contracts, event_id) receipt"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="recorded billing contract terms",
                             owner="billing.contracts",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -1767,8 +1782,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
                             "Adapters own the session; record_version and "
-                            "cancel_version each enter execute_owner_command once "
-                            "on a transaction-free session."
+                            "cancel_version, and consume_sales_funding each enter "
+                            "execute_owner_command once on a transaction-free "
+                            "session."
                         ),
                         locking=(
                             "The BillingContract row and the current effective "
@@ -1792,6 +1808,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.contracts.contract_account_mismatch",
                             "billing.contracts.contract_version_not_found",
                             "billing.contracts.duplicate_contract_line",
+                            "billing.contracts.duplicate_subscription_output",
                             "billing.contracts.invalid_command_context",
                             "billing.contracts.invalid_contract_terms",
                             "billing.contracts.missing_idempotency_key",
@@ -1808,11 +1825,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     events=EventContract(
-                        event_types=(
-                            "billing.contract.activated",
-                            "billing.contract.superseded",
-                            "billing.contract.canceled",
-                        ),
+                        event_types=("billing.contracts.shadow_recorded",),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -1820,10 +1833,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "never re-decide the producer's contracted terms."
                         ),
                         replay=(
-                            "Rebuildable from billing_contract_versions. Phase 1 is "
-                            "shadow and stages no delivery; ADR 0007 Phase 4 adds "
-                            "the transactional outbox and consumer receipts that "
-                            "make these outputs durable."
+                            "The sales output receipt, contract rows, and staged "
+                            "billing.contracts.shadow_recorded output commit in "
+                            "one owner transaction. Redelivery is an exact no-op."
                         ),
                     ),
                     migration=MigrationContract(
@@ -1870,6 +1882,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "billing.contracts",
                     "events.dispatcher",
+                    "events.owner_outputs",
                 ),
                 notes=(
                     "ADR 0007 Phase 1. The obligation is the finite billable "
@@ -1878,6 +1891,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "rather than a duplicate charge. An obligation is not an "
                     "invoice, a payment, or an entitlement, and its state is "
                     "never inferred from an invoice label or payment origin."
+                    " Phase 1 consumes the contract owner's output through a "
+                    "receipt and emits a terminal shadow result atomically."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -1887,6 +1902,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded billing contract terms",
                                 "recorded billing obligations",
+                                "receipted owner-output deliveries",
                             ),
                             canonical_writer="billing.obligations",
                         ),
@@ -1908,6 +1924,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="receipted owner-output deliveries",
+                            owner="events.owner_outputs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "the exact billing.contracts output and unique "
+                                "(billing.obligations, event_id) receipt"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="recorded billing obligations",
                             owner="billing.obligations",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -1917,9 +1942,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Adapters own the session; schedule, open, and resolve "
-                            "each enter execute_owner_command once on a "
-                            "transaction-free session."
+                            "Adapters own the session; schedule, open, resolve, "
+                            "and consume_contract_shadow each enter "
+                            "execute_owner_command once on a transaction-free "
+                            "session."
                         ),
                         locking=(
                             "The contract version is locked before an obligation is "
@@ -1962,11 +1988,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     events=EventContract(
-                        event_types=(
-                            "billing.obligation.opened",
-                            "billing.obligation.resolved",
-                            "billing.obligation.canceled",
-                        ),
+                        event_types=("billing.obligations.shadow_scheduled",),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -1974,9 +1996,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "obligation identity and never re-decide its state."
                         ),
                         replay=(
-                            "Rebuildable from billing_obligations. Phase 1 is shadow "
-                            "and stages no delivery; ADR 0007 Phase 4 adds the "
-                            "transactional outbox and consumer receipts."
+                            "The contract-output receipt, obligations, and staged "
+                            "terminal shadow result commit in one owner transaction."
                         ),
                     ),
                     migration=MigrationContract(
@@ -2009,6 +2030,193 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_obligations.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="billing.shadow_verification",
+                module="app.services.billing.shadow_verification",
+                owns=(
+                    "shadow pipeline delivery evidence",
+                    "phase cutover verification evidence",
+                ),
+                depends_on=(
+                    "access.subscription_lifecycle",
+                    "billing.contracts",
+                    "billing.obligations",
+                    "events.dispatcher",
+                    "events.owner_outputs",
+                ),
+                notes=(
+                    "ADR 0007 migration evidence only. The owner receipts the "
+                    "terminal Sale→Contract→Obligation shadow output and records "
+                    "content-addressed delivery evidence. Complete-cohort runs "
+                    "store source/result fingerprints, exhaustive blocker "
+                    "classifications, currency totals, delivery outcomes, and "
+                    "code/schema identity. It never repairs another owner or "
+                    "changes authority; operator and finance approvals are "
+                    "separate commands and are forbidden while blockers remain."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="shadow pipeline delivery evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "terminal shadow obligation output",
+                                "receipted owner-output deliveries",
+                                "recorded shadow verification evidence",
+                            ),
+                            canonical_writer="billing.shadow_verification",
+                        ),
+                        ConcernContract(
+                            name="phase cutover verification evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "complete active subscription cohort",
+                                "recorded billing contract terms",
+                                "receipted owner-output deliveries",
+                                "recorded shadow verification evidence",
+                            ),
+                            canonical_writer="billing.shadow_verification",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="terminal shadow obligation output",
+                            owner="billing.obligations",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "billing.obligations.shadow_scheduled with exact "
+                                "sales order and obligation identities"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="complete active subscription cohort",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "all active Subscription roots locked and classified "
+                                "at the verification cutoff"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded billing contract terms",
+                            owner="billing.contracts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "current proposed BillingContractVersion rows for "
+                                "the complete active cohort"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="receipted owner-output deliveries",
+                            owner="events.owner_outputs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "unique consumer receipts and durable EventStore "
+                                "delivery outcomes"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded shadow verification evidence",
+                            owner="billing.shadow_verification",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "billing_shadow_delivery_evidence and "
+                                "billing_cutover_verification_runs"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each terminal consumption, complete-cohort run, or "
+                            "approval enters execute_owner_command once on a "
+                            "transaction-free session."
+                        ),
+                        locking=(
+                            "Terminal delivery uniqueness is database-enforced; "
+                            "verification locks the complete selected Subscription "
+                            "and contract-version cohort; approvals lock one run."
+                        ),
+                        idempotency=(
+                            "One terminal evidence row per event and one run per "
+                            "business idempotency key. Replays return stored evidence."
+                        ),
+                        retries=(
+                            "Delivery and run commands are retryable. Approval "
+                            "fails closed until all stored blocker counts are zero."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "billing.shadow_verification.active_caller_transaction",
+                            "billing.shadow_verification.approval_already_recorded",
+                            "billing.shadow_verification.command_contract_violation",
+                            "billing.shadow_verification.idempotency_conflict",
+                            "billing.shadow_verification.invalid_approval",
+                            "billing.shadow_verification.invalid_command_context",
+                            "billing.shadow_verification.invalid_observation_window",
+                            "billing.shadow_verification.invalid_run_identity",
+                            "billing.shadow_verification.missing_idempotency_key",
+                            "billing.shadow_verification.nested_owner_command",
+                            "billing.shadow_verification.nested_transaction_completion",
+                            "billing.shadow_verification.operator_approval_required",
+                            "billing.shadow_verification.verification_blockers_present",
+                            "billing.shadow_verification.verification_run_not_found",
+                        ),
+                        mapping_owner="billing migration operator adapters",
+                        fail_closed_on=(
+                            "an incomplete or non-timezone-aware observation window",
+                            "any non-zero blocker category",
+                            "finance approval without operator approval",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "billing.shadow_delivery.recorded",
+                            "billing.cutover_verification.recorded",
+                            "billing.cutover_verification.approved",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries evidence identity, immutable "
+                            "fingerprints/counts, or one explicit approval kind."
+                        ),
+                        replay=(
+                            "Delivery evidence and runs are idempotent on terminal "
+                            "event or business key; approvals update only the named "
+                            "run and emit their exact actor and instant."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner="WARNING logs and ad-hoc billing comparison output",
+                        new_owner="billing.shadow_verification",
+                        verification=(
+                            "Terminal receipt replay, complete-cohort classification, "
+                            "fingerprint, blocker, and approval-gate tests."
+                        ),
+                        cutover_gate=(
+                            "A durable run meets ADR 0007's evidence standard, all "
+                            "blockers are zero, and operator and finance approvals "
+                            "are recorded. This evidence does not itself move authority."
+                        ),
+                        fallback_retirement=(
+                            "Log-only shadow completion and undocumented cutover "
+                            "claims are rejected."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_billing_shadow_pipeline.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -14520,6 +14728,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         domain_codes=(
                             "events.owner_outputs.missing_failure_reason",
                             "events.owner_outputs.missing_idempotency_key",
+                            "events.owner_outputs.missing_required_payload",
+                            "events.owner_outputs.invalid_required_payload",
                             "events.owner_outputs.output_requires_owner_command",
                             "events.owner_outputs.receipt_already_recorded",
                             "events.owner_outputs.receipt_requires_owner_command",
@@ -14528,6 +14738,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "staging or receipting outside an owner command",
                             "a second outcome for one (consumer, event_id)",
+                            "a required consumer identity missing from an output",
+                            "a required consumer input having the wrong shape or type",
                             "a terminal failure without reviewable evidence",
                         ),
                     ),
@@ -28665,10 +28877,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "Coordinates exact structural identifiers while each domain "
                     "owner remains the only writer of its own root. The "
-                    "verified-implementation, service-order-release, and CX-"
-                    "acceptance outputs are consumed through receipted owner "
-                    "commands so each effect commits atomically with its "
-                    "unique (consumer, event_id) receipt."
+                    "funding, verified-implementation, service-order-release, "
+                    "and CX-acceptance outputs are consumed through receipted "
+                    "owner commands so each effect commits atomically with its "
+                    "unique (consumer, event_id) receipt. Funding completion "
+                    "also stages the structural Phase 1 shadow-contract input; "
+                    "it does not write billing records itself."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -28818,6 +29032,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "installation_scope.created",
                             "implementation.released",
                             "service_order.released",
+                            "sales.fulfillment.funding_applied",
                         ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
@@ -28838,8 +29053,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="sales.fulfillment",
                         verification=(
-                            "Scope, replay, funding gate, vendor verification, release, "
-                            "PostgreSQL constraints, and end-to-end lifecycle tests."
+                            "Scope, funding receipt and shadow output, replay, funding "
+                            "gate, vendor verification, release, PostgreSQL constraints, "
+                            "and end-to-end lifecycle tests."
                         ),
                         cutover_gate=(
                             "Every non-cancelled SalesOrder has one structural Project and "
@@ -28860,6 +29076,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_sales_to_service_lifecycle.py",
                         "tests/test_sales_orders_services.py",
                         "tests/test_sales_lifecycle_migration.py",
+                        "tests/test_billing_shadow_pipeline.py",
                         "tests/architecture/test_service_http_boundary.py",
                     ),
                 ),

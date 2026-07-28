@@ -416,7 +416,12 @@ def _resolve_installation_amount(db: Session, project: Project) -> Decimal:
     )
 
 
-def ensure_installation_invoice_for_sales_order(db: Session, sales_order_id) -> None:
+def ensure_installation_invoice_for_sales_order(
+    db: Session,
+    sales_order_id,
+    *,
+    commit: bool = True,
+) -> None:
     """Create the installation invoice for a sales order's project.
 
     Native rewire of the CRM's ``ensure_installation_invoice_for_sales_order``:
@@ -454,8 +459,11 @@ def ensure_installation_invoice_for_sales_order(db: Session, sales_order_id) -> 
         invoice_id, amount = related_invoice
         _store_invoice_metadata(project, invoice_id, amount)
         db.add(project)
-        db.commit()
-        db.refresh(project)
+        if commit:
+            db.commit()
+            db.refresh(project)
+        else:
+            db.flush()
         logger.info(
             "installation_invoice_reused project_id=%s invoice_id=%s",
             project.id,
@@ -482,8 +490,11 @@ def ensure_installation_invoice_for_sales_order(db: Session, sales_order_id) -> 
             description="Installation cost",
             external_ref=f"project:{project.id}",
             currency=sales_order.currency or "NGN",
+            commit=commit,
         )
     except LookupError as exc:
+        if not commit:
+            raise
         # Record the failure so it surfaces and a later trigger (or operator)
         # can retry — the external_ref dedup makes the retry safe.
         _record_invoice_failure(project, str(exc))
@@ -498,8 +509,11 @@ def ensure_installation_invoice_for_sales_order(db: Session, sales_order_id) -> 
 
     _store_invoice_metadata(project, str(invoice.id), amount)
     db.add(project)
-    db.commit()
-    db.refresh(project)
+    if commit:
+        db.commit()
+        db.refresh(project)
+    else:
+        db.flush()
     logger.info(
         "installation_invoice_created project_id=%s subscriber_id=%s "
         "invoice_id=%s amount=%s",
@@ -840,6 +854,7 @@ def _sync_sales_order_add_ons(
                     quantity=quantity,
                     start_at=datetime.now(UTC),
                 ),
+                commit=False,
             )
         else:
             existing.quantity = quantity
@@ -875,6 +890,7 @@ def _sync_sales_order_add_ons(
                 cidrs=[item[0] for item in normalized],
                 add_on_id=str(add_on.id),
                 quantity=quantity,
+                commit=False,
             )
 
         next_meta = dict(line.metadata_ or {})
@@ -882,7 +898,7 @@ def _sync_sales_order_add_ons(
         next_meta["subscription_add_on_id"] = str(existing.id)
         line.metadata_ = next_meta
         db.add(line)
-    db.commit()
+    db.flush()
 
 
 def apply_funding_consequences(
@@ -960,6 +976,7 @@ def apply_funding_consequences(
                     unit_price=line.unit_price,
                     service_address_id=meta.get("service_address_id"),
                     billing_cycle=_line_billing_cycle(line),
+                    commit=False,
                 )
             except LookupError as exc:
                 raise SalesOrderLifecycleError(
@@ -1004,12 +1021,17 @@ def apply_funding_consequences(
                 subscription=subscription,
             )
     if record_order_payment:
-        _record_order_payment_evidence(db, sales_order)
+        _record_order_payment_evidence(db, sales_order, commit=False)
     db.flush()
     return "applied"
 
 
-def _record_order_payment_evidence(db: Session, sales_order: SalesOrder) -> None:
+def _record_order_payment_evidence(
+    db: Session,
+    sales_order: SalesOrder,
+    *,
+    commit: bool = True,
+) -> None:
     """Record the customer's payment against their account.
 
     Native rewire of ``push_sales_order_payment_to_selfcare``:
@@ -1036,7 +1058,11 @@ def _record_order_payment_evidence(db: Session, sales_order: SalesOrder) -> None
     # to settle. On the funded path the subscription's first invoice is
     # created by the funding consumer before this, so a single payment can
     # settle both.
-    ensure_installation_invoice_for_sales_order(db, sales_order_id)
+    ensure_installation_invoice_for_sales_order(
+        db,
+        sales_order_id,
+        commit=commit,
+    )
 
     crm_api.record_external_payment(
         db,
@@ -1046,6 +1072,7 @@ def _record_order_payment_evidence(db: Session, sales_order: SalesOrder) -> None
         paid_at=sales_order.paid_at,
         memo=f"Sales order {sales_order.order_number or sales_order_id}",
         currency=sales_order.currency or "NGN",
+        commit=commit,
     )
 
 

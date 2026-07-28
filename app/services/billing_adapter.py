@@ -100,6 +100,8 @@ class BillingAdapter:
         db: Session,
         intent: InvoiceIntent,
         lines: list[InvoiceLineIntent],
+        *,
+        commit: bool = True,
     ):
         billing_service = self._service()
         payload = InvoiceCreate(
@@ -128,6 +130,7 @@ class BillingAdapter:
             db,
             payload,
             line_payloads,
+            commit=commit,
         )
 
     def record_payment(self, db: Session, intent: PaymentIntent):

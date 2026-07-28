@@ -42,6 +42,12 @@ from app.models.billing_contract import (
 from app.services.billing.cadence import Interval, service_period
 from app.services.billing.contracts import BillingContracts
 from app.services.domain_errors import DomainError
+from app.services.events.owner_outputs import (
+    OwnerOutputEnvelope,
+    consume_owner_output,
+    stage_owner_output,
+)
+from app.services.events.types import EventType
 from app.services.locking import lock_for_update
 from app.services.owner_commands import (
     CommandContext,
@@ -61,6 +67,11 @@ _OPEN_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="billing obligation state transition",
     name="open_billing_obligation",
+)
+_CONSUME_CONTRACT_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="unique billing obligation identity",
+    name="consume_contract_shadow",
 )
 
 # States from which an explicit terminal resolution is still allowed.
@@ -169,6 +180,64 @@ class BillingObligations:
             operation=lambda: BillingObligations._schedule(
                 db, command=command, context=context
             ),
+        )
+
+    @staticmethod
+    def consume_contract_shadow(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        commands: tuple[ScheduleObligationCommand, ...],
+        event_id: UUID,
+        context: CommandContext,
+    ) -> tuple[ObligationResult, ...] | None:
+        """Receipt recorded contract versions and schedule shadow obligations."""
+
+        def _effect() -> tuple[ObligationResult, ...]:
+            results = tuple(
+                BillingObligations._schedule(db, command=command, context=context)
+                for command in commands
+            )
+            stage_owner_output(
+                db,
+                OwnerOutputEnvelope(
+                    event_type=EventType.custom,
+                    producer_owner=OWNER,
+                    source_kind="sales_order",
+                    source_id=sales_order_id,
+                ),
+                {
+                    "output": "billing.obligations.shadow_scheduled",
+                    "sales_order_id": str(sales_order_id),
+                    "obligations": [
+                        {
+                            "obligation_id": str(result.obligation_id),
+                            "authority": result.authority.value,
+                            "state": result.state.value,
+                            "period_start": result.period.starts_at.isoformat(),
+                            "period_end": result.period.ends_at.isoformat(),
+                            "gross_amount": str(result.gross_amount),
+                        }
+                        for result in results
+                    ],
+                },
+                context=context,
+            )
+            return results
+
+        return execute_owner_command(
+            db,
+            definition=_CONSUME_CONTRACT_COMMAND,
+            context=context,
+            operation=lambda: consume_owner_output(
+                db,
+                consumer=OWNER,
+                event_id=event_id,
+                event_type="billing.contracts.shadow_recorded",
+                producer_owner="billing.contracts",
+                context=context,
+                operation=_effect,
+            )[0],
         )
 
     @staticmethod

@@ -14,15 +14,20 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: the ADR 0007 billing target chain (434..430) now sits
-    # on inbox conversation participants (429), which chains through vendor
-    # material release and advances (428), vendor principal user type (427),
+    # Single linear head: billing shadow verification evidence (436) sits on
+    # access invitations (435) and the ADR 0007 billing target chain (434..430),
+    # which sits on inbox conversation participants (429), and chains through
+    # vendor material release and advances (428), vendor principal user type (427),
     # service-team lifecycle (426), vendor project intake evidence (425),
     # proposed-route review evidence (424), prepaid opening-funding
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["435_access_invitations"]
+    assert script.get_heads() == ["436_billing_shadow_verification_evidence"]
+    assert (
+        script.get_revision("436_billing_shadow_verification_evidence").down_revision
+        == "435_access_invitations"
+    )
     assert (
         script.get_revision("435_access_invitations").down_revision
         == "434_sales_funding_erp_exports"

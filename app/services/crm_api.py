@@ -1450,6 +1450,7 @@ def create_installation_invoice(
     description: str,
     external_ref: str | None = None,
     currency: str = "NGN",
+    commit: bool = True,
 ) -> Invoice:
     """Create a one-time installation invoice (header + single line) for a
     CRM-driven subscriber. Replaces the old Splynx installation-invoice path.
@@ -1492,6 +1493,7 @@ def create_installation_invoice(
                 description=description, quantity=Decimal("1"), unit_price=amount
             )
         ],
+        commit=commit,
     )
     metadata = dict(invoice.metadata_ or {})
     metadata["source"] = "dotmac_crm"
@@ -1502,18 +1504,22 @@ def create_installation_invoice(
     db.add(invoice)
     from sqlalchemy.exc import IntegrityError
 
-    try:
-        db.commit()
-    except IntegrityError:
-        # A concurrent duplicate lost the race on uq_invoices_active_crm_external_ref
-        # — the create is idempotent, so return the invoice the winner wrote.
-        db.rollback()
-        if external_ref:
-            existing = _find_invoice_by_crm_ref(db, external_ref)
-            if existing is not None:
-                return existing
-        raise
-    db.refresh(invoice)
+    if commit:
+        try:
+            db.commit()
+        except IntegrityError:
+            # A concurrent duplicate lost the race on
+            # uq_invoices_active_crm_external_ref — the create is idempotent,
+            # so return the invoice the winner wrote.
+            db.rollback()
+            if external_ref:
+                existing = _find_invoice_by_crm_ref(db, external_ref)
+                if existing is not None:
+                    return existing
+            raise
+        db.refresh(invoice)
+    else:
+        db.flush()
     return invoice
 
 
@@ -1765,6 +1771,7 @@ def record_external_payment(
     memo: str | None = None,
     invoice_external_ref: str | None = None,
     currency: str = "NGN",
+    commit: bool = True,
 ) -> Any:
     """Record a payment the customer made in the CRM (installation / subscription)
     into this app's ledger, so it settles the matching invoice and shows in the
@@ -1827,9 +1834,14 @@ def record_external_payment(
 
     try:
         return billing_service.payments.create(
-            session, payload, auto_allocate=(allocations is None)
+            session,
+            payload,
+            auto_allocate=(allocations is None),
+            commit=commit,
         )
     except IntegrityError:
+        if not commit:
+            raise
         # A concurrent /crm/payments push won the race on
         # uq_payments_active_crm_external_id. The write is idempotent — roll back
         # our losing insert and return the already-recorded payment.
@@ -1921,6 +1933,7 @@ def create_subscription(
     start_at: datetime | None = None,
     service_address_id: Any = None,
     billing_cycle: Any = None,
+    commit: bool = True,
 ) -> dict:
     """Create a subscription for a subscriber from a CRM sale and generate its
     first (subscription-tagged) invoice, so the plan + its charge show in the
@@ -1986,6 +1999,7 @@ def create_subscription(
             # ServiceOrder.  The generic subscription helper must not create a
             # second, context-free order for the same service.
             create_service_order=False,
+            commit=commit,
         )
     except HTTPException:
         # enforce_single_active_subscription treats pending as active and rejects
@@ -1998,35 +2012,44 @@ def create_subscription(
         raise
 
     invoice = Invoices.create_for_subscription(
-        session, str(subscriber.id), str(subscription.id), allow_prepaid=True
+        session,
+        str(subscriber.id),
+        str(subscription.id),
+        allow_prepaid=True,
+        commit=commit,
     )
     meta = dict(invoice.metadata_ or {})
     meta["source"] = "dotmac_crm"
     meta["crm_external_ref"] = str(external_ref)
     meta["crm_subscription_id"] = str(subscription.id)
     invoice.metadata_ = meta
-    # DB backstop: uq_invoices_active_crm_external_ref (migration 212). Both
-    # creators commit internally, so on a true-concurrency collision the sub +
-    # invoice are already persisted — cancel the orphan and return the winner.
+    # DB backstop: uq_invoices_active_crm_external_ref (migration 212). Legacy
+    # root mode commits each creator, so on a true-concurrency collision the
+    # sub + invoice are already persisted — cancel the orphan and return the
+    # winner. Owner-participant mode flushes only and lets its outer transaction
+    # roll back and retry as one unit.
     invoice.crm_external_ref = str(external_ref)
-    try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        cancel_subscription(
-            session,
-            str(subscription.id),
-            "Duplicate CRM external reference",
-            "crm_subscription_create",
-            emit=False,
-            generate_credit=False,
-        )
-        invoice.is_active = False
-        session.commit()
-        existing = _find_crm_subscription(session, subscriber.id, external_ref)
-        if existing is not None:
-            return existing
-        raise
+    if commit:
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            cancel_subscription(
+                session,
+                str(subscription.id),
+                "Duplicate CRM external reference",
+                "crm_subscription_create",
+                emit=False,
+                generate_credit=False,
+            )
+            invoice.is_active = False
+            session.commit()
+            existing = _find_crm_subscription(session, subscriber.id, external_ref)
+            if existing is not None:
+                return existing
+            raise
+    else:
+        session.flush()
     return {"subscription": subscription, "invoice": invoice, "created": True}
 
 

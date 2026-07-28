@@ -403,6 +403,9 @@ def reset_dispatcher() -> None:
 def _initialize_handlers(dispatcher: EventDispatcher) -> None:
     """Initialize and register all event handlers."""
     from app.services.events.handlers.arrangements import ArrangementHandler
+    from app.services.events.handlers.billing_lifecycle_projection import (
+        BillingLifecycleProjectionHandler,
+    )
     from app.services.events.handlers.credential_session_projection import (
         CredentialSessionProjectionHandler,
     )
@@ -440,6 +443,7 @@ def _initialize_handlers(dispatcher: EventDispatcher) -> None:
     dispatcher.register_handler(NotificationHandler())
     dispatcher.register_handler(ProvisioningHandler())
     dispatcher.register_handler(SalesLifecycleProjectionHandler())
+    dispatcher.register_handler(BillingLifecycleProjectionHandler())
     dispatcher.register_handler(OutageLifecycleProjectionHandler())
     dispatcher.register_handler(SupportLifecycleProjectionHandler())
     dispatcher.register_handler(MaterialsLifecycleProjectionHandler())

@@ -40,8 +40,15 @@ from app.models.billing_contract import (
     ProrationPolicy,
     RateBasis,
 )
+from app.models.catalog import BillingCycle, BillingMode
 from app.services.billing.cadence import BillingCadence
 from app.services.domain_errors import DomainError
+from app.services.events.owner_outputs import (
+    OwnerOutputEnvelope,
+    consume_owner_output,
+    stage_owner_output,
+)
+from app.services.events.types import EventType
 from app.services.locking import lock_for_update
 from app.services.owner_commands import (
     CommandContext,
@@ -61,6 +68,11 @@ _SUPERSEDE_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="billing contract version supersession",
     name="supersede_billing_contract_version",
+)
+_CONSUME_SALES_FUNDING_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="versioned billing contract terms",
+    name="consume_sales_funding_contracts",
 )
 
 
@@ -159,6 +171,80 @@ class ContractVersionResult:
     replayed: bool
 
 
+@dataclass(frozen=True)
+class SalesFundingContractSnapshot:
+    """Exact legacy sale/subscription terms carried by the fulfilment output."""
+
+    sales_order_line_id: UUID
+    account_id: UUID
+    subscription_id: UUID
+    starts_at: datetime
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    currency: str
+    billing_cycle: BillingCycle
+    billing_mode: BillingMode
+
+
+_CYCLE_INTERVAL: dict[BillingCycle, tuple[IntervalUnit, int]] = {
+    BillingCycle.daily: (IntervalUnit.day, 1),
+    BillingCycle.weekly: (IntervalUnit.week, 1),
+    BillingCycle.monthly: (IntervalUnit.month, 1),
+    BillingCycle.quarterly: (IntervalUnit.month, 3),
+    BillingCycle.annual: (IntervalUnit.year, 1),
+}
+
+
+def _sales_funding_command(
+    snapshot: SalesFundingContractSnapshot,
+) -> RecordContractVersionCommand:
+    interval_unit, interval_count = _CYCLE_INTERVAL[snapshot.billing_cycle]
+    currency = snapshot.currency.strip().upper()
+    prepaid = snapshot.billing_mode is BillingMode.prepaid
+    cadence = BillingCadence(
+        rate_basis=RateBasis.fixed_per_service_period,
+        rate_unit=interval_unit,
+        rate_quantity=Decimal("1"),
+        service_interval_unit=interval_unit,
+        service_interval_count=interval_count,
+        invoice_interval_unit=interval_unit,
+        invoice_interval_count=interval_count,
+        collection_timing=(
+            CollectionTiming.advance if prepaid else CollectionTiming.arrears
+        ),
+        alignment=CadenceAlignment.contract_anniversary,
+        timezone_name="Africa/Lagos",
+        end_of_month_rule=EndOfMonthRule.clamp_to_month_end,
+        proration_policy=ProrationPolicy.none,
+    )
+    return RecordContractVersionCommand(
+        account_id=snapshot.account_id,
+        subscription_id=snapshot.subscription_id,
+        source_kind=BillingContractSourceKind.sales_order_line,
+        source_id=snapshot.sales_order_line_id,
+        starts_at=snapshot.starts_at,
+        contracted_price=snapshot.unit_price,
+        currency=currency,
+        cadence=cadence,
+        lines=(
+            ContractLineInput(
+                charge_component=ChargeComponent.recurring_service,
+                component_key=str(snapshot.sales_order_line_id),
+                description=snapshot.description,
+                quantity=snapshot.quantity,
+                unit_price=snapshot.unit_price,
+                currency=currency,
+                accounting_treatment=(
+                    AccountingTreatment.prepaid_consumption
+                    if prepaid
+                    else AccountingTreatment.receivable
+                ),
+            ),
+        ),
+    )
+
+
 def _validate(command: RecordContractVersionCommand) -> None:
     if command.starts_at.tzinfo is None:
         raise _error(
@@ -226,6 +312,90 @@ class BillingContracts:
             operation=lambda: BillingContracts._record_version(
                 db, command=command, context=context
             ),
+        )
+
+    @staticmethod
+    def consume_sales_funding(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        snapshots: tuple[SalesFundingContractSnapshot, ...],
+        event_id: UUID,
+        context: CommandContext,
+    ) -> tuple[ContractVersionResult, ...] | None:
+        """Receipt fulfilment terms and emit the next shadow-pipeline output."""
+
+        def _effect() -> tuple[ContractVersionResult, ...]:
+            subscription_ids = [snapshot.subscription_id for snapshot in snapshots]
+            if len(subscription_ids) != len(set(subscription_ids)):
+                raise _error(
+                    "duplicate_subscription_output",
+                    "One fulfilment output repeats a subscription contract.",
+                    sales_order_id=str(sales_order_id),
+                )
+            results = tuple(
+                BillingContracts._record_version(
+                    db,
+                    command=_sales_funding_command(snapshot),
+                    context=context,
+                )
+                for snapshot in snapshots
+            )
+            obligation_inputs: list[dict[str, object]] = []
+            for result in results:
+                lines = db.execute(
+                    select(BillingContractLine).where(
+                        BillingContractLine.id.in_(result.line_ids)
+                    )
+                ).scalars()
+                for line in lines:
+                    obligation_inputs.append(
+                        {
+                            "contract_version_id": str(result.version_id),
+                            "contract_line_key": str(line.contract_line_key),
+                            "period_index": 0,
+                            "net_amount": str(line.quantity * line.unit_price),
+                            "tax_amount": "0",
+                        }
+                    )
+            stage_owner_output(
+                db,
+                OwnerOutputEnvelope(
+                    event_type=EventType.custom,
+                    producer_owner=OWNER,
+                    source_kind="sales_order",
+                    source_id=sales_order_id,
+                ),
+                {
+                    "output": "billing.contracts.shadow_recorded",
+                    "sales_order_id": str(sales_order_id),
+                    "contracts": [
+                        {
+                            "contract_id": str(result.contract_id),
+                            "contract_version_id": str(result.version_id),
+                            "authority": result.authority.value,
+                        }
+                        for result in results
+                    ],
+                    "obligations": obligation_inputs,
+                },
+                context=context,
+            )
+            return results
+
+        return execute_owner_command(
+            db,
+            definition=_CONSUME_SALES_FUNDING_COMMAND,
+            context=context,
+            operation=lambda: consume_owner_output(
+                db,
+                consumer=OWNER,
+                event_id=event_id,
+                event_type="sales.fulfillment.funding_applied",
+                producer_owner="sales.fulfillment",
+                context=context,
+                operation=_effect,
+            )[0],
         )
 
     @staticmethod

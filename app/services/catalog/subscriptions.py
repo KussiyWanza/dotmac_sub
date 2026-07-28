@@ -842,6 +842,7 @@ class Subscriptions(ListResponseMixin):
         payload: SubscriptionCreate,
         *,
         create_service_order: bool = True,
+        commit: bool = True,
     ):
         catalog_validators.validate_subscription_links(
             db,
@@ -991,11 +992,16 @@ class Subscriptions(ListResponseMixin):
             else:
                 db.flush()
             compute_account_status(db, str(payload.subscriber_id))
-            db.commit()
+            if commit:
+                db.commit()
+            else:
+                db.flush()
         except Exception:
-            db.rollback()
+            if commit:
+                db.rollback()
             raise
-        db.refresh(subscription)
+        if commit:
+            db.refresh(subscription)
 
         # Auto-create Service Order for pending subscriptions that need provisioning
         if create_service_order and subscription.status == SubscriptionStatus.pending:
@@ -1577,7 +1583,12 @@ class SubscriptionAddOns(CRUDManager[SubscriptionAddOn]):
     not_found_detail = "Subscription add-on not found"
 
     @staticmethod
-    def create(db: Session, payload: SubscriptionAddOnCreate):
+    def create(
+        db: Session,
+        payload: SubscriptionAddOnCreate,
+        *,
+        commit: bool = True,
+    ):
         catalog_validators.validate_subscription_add_on(
             db, str(payload.subscription_id), str(payload.add_on_id), payload.quantity
         )
@@ -1591,8 +1602,11 @@ class SubscriptionAddOns(CRUDManager[SubscriptionAddOn]):
                 data["quantity"] = default_quantity
         subscription_add_on = SubscriptionAddOn(**data)
         db.add(subscription_add_on)
-        db.commit()
-        db.refresh(subscription_add_on)
+        if commit:
+            db.commit()
+            db.refresh(subscription_add_on)
+        else:
+            db.flush()
         return subscription_add_on
 
     @classmethod

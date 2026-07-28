@@ -15,14 +15,11 @@ failed and retryable instead of a warning log.
 
 from __future__ import annotations
 
-import logging
-
 from sqlalchemy.orm import Session
 
 from app.services.events.handlers.owner_session import owner_session as _owner_session
+from app.services.events.owner_outputs import require_output_text
 from app.services.events.types import Event, EventType
-
-logger = logging.getLogger(__name__)
 
 HANDLED_EVENT_TYPES = frozenset(
     {
@@ -56,12 +53,13 @@ class MaterialsLifecycleProjectionHandler:
         )
 
     def _request_erp_issue(self, db: Session, event: Event) -> None:
-        material_request_id = event.payload.get("material_request_id")
-        if not material_request_id:
-            logger.warning(
-                "material approval event %s has no request id", event.event_id
-            )
-            return
+        material_request_id = require_output_text(
+            event.payload,
+            "material_request_id",
+            consumer="operations.field_material_requests",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
         from app.services.field import material_requests
 
         with _owner_session(db) as owner_db:
@@ -73,12 +71,13 @@ class MaterialsLifecycleProjectionHandler:
             )
 
     def _request_payables_export(self, db: Session, event: Event) -> None:
-        invoice_id = event.payload.get("invoice_id")
-        if not invoice_id:
-            logger.warning(
-                "invoice approval event %s has no invoice id", event.event_id
-            )
-            return
+        invoice_id = require_output_text(
+            event.payload,
+            "invoice_id",
+            consumer="operations.vendor_purchase_invoices",
+            event_id=event.event_id,
+            event_type=event.event_type.value,
+        )
         from app.services import vendor_purchase_invoices
 
         with _owner_session(db) as owner_db:

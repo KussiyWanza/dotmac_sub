@@ -25,9 +25,12 @@ signed interaction / staff capture
   -> ongoing support / service history
 ```
 
-The chain uses structural foreign keys. Metadata identifiers remain migration
-provenance and compatibility evidence; they are not canonical joins for new
-writes.
+The Sales-to-Service chain uses structural foreign keys. The still-authoritative
+legacy invoice/payment side does not yet satisfy that rule: installation
+invoice provenance and CRM payment idempotency still use metadata/external
+identifiers until ADR 0007's financial phases cut over. The Phase 1 shadow
+chain below uses `SalesOrderLine -> ServiceOrder -> Subscription` plus structural
+contract/obligation identities; it does not make the legacy joins canonical.
 
 ## Owner-output chain
 
@@ -37,21 +40,31 @@ retry, and the registered `SalesLifecycleProjectionHandler` adapter asks the
 next owner to apply the consequence. A failed consequence stays a failed
 event delivery — visible and retryable — never a warning log.
 
-The verified-implementation, service-order-release, and CX-acceptance hops
-are consumed through `sales.fulfillment`'s receipted owner commands
-(`consume_verified_implementation` / `consume_service_order_release` /
-`consume_cx_acceptance`): each effect commits atomically with its unique
-`(consumer, event_id)` receipt via `events.owner_outputs` (ADR 0007 §2), so
-a redelivery is an exact no-op. The funding consequence remains idempotent
-on business keys only — its effect creates subscriptions and invoices
-through billing/catalog creators that commit internally, which an owner
-command correctly forbids; it adopts a receipt when those creators become
-commit-free participants.
+Funding, verified implementation, service-order release, and CX acceptance are
+consumed through `sales.fulfillment`'s receipted owner commands
+(`consume_funding_satisfaction` / `consume_verified_implementation` /
+`consume_service_order_release` / `consume_cx_acceptance`). The funding
+consumer's catalog, invoice, add-on, route, service-order, and payment helpers
+are flush-only participants; its complete effect and unique
+`(consumer, event_id)` receipt commit atomically via `events.owner_outputs`
+(ADR 0007 §2), so redelivery is an exact no-op.
+
+After the legacy funded consequence is staged, `sales.fulfillment` emits a
+structural Phase 1 shadow input. `billing.contracts` receipts it, records
+proposed terms, and emits obligation inputs; `billing.obligations` receipts
+those, records the first proposed period, and emits the terminal result;
+`billing.shadow_verification` receipts the terminal output and records
+content-addressed evidence. Every row remains `shadow` and no target record
+drives an invoice, payment, balance, access decision, or funding transition.
 
 ```text
 sales_order.funding_satisfied   (sales.orders, atomically with the paid edge)
   -> pending Subscription + draft ServiceOrder per service line
-     + order payment evidence            [apply_funding_consequences]
+     + order payment evidence            [sales.fulfillment, receipted]
+  -> sales.fulfillment.funding_applied
+  -> proposed BillingContractVersion     [billing.contracts, shadow + receipted]
+  -> proposed first-period obligation    [billing.obligations, shadow + receipted]
+  -> terminal delivery evidence          [billing.shadow_verification, receipted]
 vendor_project.verified         (operations.vendor_project_lifecycle)
   -> project completion + ServiceOrder release  [sales.fulfillment]
 service_order.released          (operations.service_order_lifecycle)
@@ -80,6 +93,9 @@ verified deposit-invoice payment.
 | Exact Lead/Party to account conversion | `sales.account_conversion` |
 | Pipeline and Quote | `sales.service` |
 | Sales Order and financial status | `sales.orders` |
+| Structural shadow contract terms | `billing.contracts` |
+| Structural shadow obligation identity | `billing.obligations` |
+| Shadow delivery and cutover-run evidence | `billing.shadow_verification` |
 | Project and implementation-scope coordination | `sales.fulfillment` calling `operations.project_lifecycle` |
 | Vendor execution and verification evidence | `operations.vendor_project_lifecycle` |
 | Committed cross-owner consequence delivery | registered `SalesLifecycleProjectionHandler` adapter |
@@ -123,7 +139,8 @@ configuration. Changing one requires a migration/versioned contract and tests.
    or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
    atomically with the paid transition; the lifecycle projection handler
    creates one pending Subscription and one idempotent ServiceOrder per
-   service line through `sales.orders.apply_funding_consequences`. An
+   service line through `sales.fulfillment.consume_funding_satisfaction`. The
+   same receipted transaction stages the Phase 1 structural shadow input. An
    unresolved consequence (for example an offer that no longer resolves)
    fails the delivery visibly instead of being skipped.
 5. Sales ServiceOrders remain `draft` until the vendor-project owner records an

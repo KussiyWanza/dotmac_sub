@@ -7,21 +7,27 @@ identifiers and commits the combined project/installation handoff once.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.catalog import Subscription
 from app.models.domain_settings import SettingDomain
 from app.models.project import Project, ProjectType
 from app.models.provisioning import ServiceOrder
-from app.models.sales import SalesOrder, SalesOrderStatus
+from app.models.sales import SalesOrder, SalesOrderLine, SalesOrderStatus
 from app.models.subscriber import Subscriber
 from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
 from app.services import installation_projects, projects, settings_spec
 from app.services import service_address as service_address_service
 from app.services.events import EventType, emit_event
-from app.services.events.owner_outputs import consume_owner_output
+from app.services.events.owner_outputs import (
+    OwnerOutputEnvelope,
+    consume_owner_output,
+    stage_owner_output,
+)
 from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
@@ -231,6 +237,11 @@ def release_verified_implementation(
 _CONSUMER = "sales.fulfillment"
 _CONSUME_CONCERN = "committed lifecycle output consumption"
 
+_CONSUME_FUNDING_COMMAND = OwnerCommandDefinition(
+    owner=_CONSUMER,
+    concern=_CONSUME_CONCERN,
+    name="consume_funding_satisfaction",
+)
 _CONSUME_VERIFIED_COMMAND = OwnerCommandDefinition(
     owner=_CONSUMER,
     concern=_CONSUME_CONCERN,
@@ -246,6 +257,137 @@ _CONSUME_ACCEPTANCE_COMMAND = OwnerCommandDefinition(
     concern=_CONSUME_CONCERN,
     name="consume_cx_acceptance",
 )
+
+
+def _enum_value(value: object) -> str:
+    resolved = getattr(value, "value", value)
+    return str(resolved or "").strip()
+
+
+def _funding_contract_snapshots(
+    db: Session,
+    *,
+    sales_order_id: UUID,
+) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    """Snapshot structurally linked legacy terms for the Phase 1 shadow owner."""
+
+    rows = db.execute(
+        select(SalesOrderLine, ServiceOrder, Subscription, SalesOrder)
+        .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+        .join(
+            ServiceOrder,
+            ServiceOrder.sales_order_line_id == SalesOrderLine.id,
+        )
+        .join(Subscription, Subscription.id == ServiceOrder.subscription_id)
+        .where(
+            SalesOrderLine.sales_order_id == sales_order_id,
+            SalesOrderLine.is_active.is_(True),
+        )
+        .order_by(SalesOrderLine.created_at, SalesOrderLine.id)
+    ).all()
+    snapshots: list[dict[str, object]] = []
+    exceptions: list[dict[str, str]] = []
+    seen_lines: set[UUID] = set()
+    for line, _service_order, subscription, sales_order in rows:
+        if line.id in seen_lines:
+            continue
+        seen_lines.add(line.id)
+        if subscription.start_at is None:
+            exceptions.append(
+                {
+                    "sales_order_line_id": str(line.id),
+                    "reason": "missing_contract_start",
+                }
+            )
+            continue
+        cycle = _enum_value(subscription.billing_cycle)
+        mode = _enum_value(subscription.billing_mode)
+        if not cycle or not mode:
+            exceptions.append(
+                {
+                    "sales_order_line_id": str(line.id),
+                    "reason": "missing_billing_terms",
+                }
+            )
+            continue
+        starts_at = subscription.start_at
+        if starts_at.tzinfo is None:
+            # SQLite drops timezone metadata in tests. Contract instants are
+            # persisted as UTC and PostgreSQL preserves their offset.
+            starts_at = starts_at.replace(tzinfo=UTC)
+        snapshots.append(
+            {
+                "sales_order_line_id": str(line.id),
+                "account_id": str(subscription.subscriber_id),
+                "subscription_id": str(subscription.id),
+                "starts_at": starts_at.isoformat(),
+                "description": line.description,
+                "quantity": str(line.quantity),
+                "unit_price": str(line.unit_price),
+                "currency": sales_order.currency,
+                "billing_cycle": cycle,
+                "billing_mode": mode,
+            }
+        )
+    return snapshots, exceptions
+
+
+def consume_funding_satisfaction(
+    db: Session,
+    *,
+    sales_order_id: UUID,
+    record_order_payment: bool,
+    event_id: UUID,
+    context: CommandContext,
+) -> str | None:
+    """Receipt one ``sales_order.funding_satisfied`` output into fulfilment."""
+
+    def _effect() -> str:
+        from app.services import sales_orders
+
+        result = sales_orders.apply_funding_consequences(
+            db,
+            sales_order_id=sales_order_id,
+            actor_id=context.actor,
+            record_order_payment=record_order_payment,
+        )
+        snapshots, exceptions = _funding_contract_snapshots(
+            db,
+            sales_order_id=sales_order_id,
+        )
+        stage_owner_output(
+            db,
+            OwnerOutputEnvelope(
+                event_type=EventType.custom,
+                producer_owner=_CONSUMER,
+                source_kind="sales_order",
+                source_id=sales_order_id,
+            ),
+            {
+                "output": "sales.fulfillment.funding_applied",
+                "sales_order_id": str(sales_order_id),
+                "fulfillment_outcome": result,
+                "contracts": snapshots,
+                "exceptions": exceptions,
+            },
+            context=context,
+        )
+        return result
+
+    return execute_owner_command(
+        db,
+        definition=_CONSUME_FUNDING_COMMAND,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer=_CONSUMER,
+            event_id=event_id,
+            event_type=EventType.sales_order_funding_satisfied.value,
+            producer_owner="sales.orders",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
 
 
 def consume_verified_implementation(

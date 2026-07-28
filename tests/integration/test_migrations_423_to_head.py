@@ -1,4 +1,4 @@
-"""Exercise the PostgreSQL migration boundary that introduces revisions 430-434."""
+"""Exercise the PostgreSQL migration boundary that introduces revisions 430-436."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from psycopg import sql
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL, Engine, make_url
 
 from alembic import command
 from app import config as app_config
@@ -22,7 +22,7 @@ from app import config as app_config
 ROOT = Path(__file__).resolve().parents[2]
 REVISION_423 = "423_prepaid_opening_funding_reconciliation"
 
-TABLES_430_TO_434 = (
+TABLES_430_TO_436 = (
     "billing_contracts",
     "billing_contract_versions",
     "billing_contract_lines",
@@ -35,6 +35,8 @@ TABLES_430_TO_434 = (
     "sales_order_funding_gates",
     "sales_order_funding_obligations",
     "erp_billing_exports",
+    "billing_shadow_delivery_evidence",
+    "billing_cutover_verification_runs",
 )
 
 ENUMS_430_TO_434 = (
@@ -69,6 +71,29 @@ def _render_url(url: URL) -> str:
 
 def _psycopg_url(url: URL) -> str:
     return _render_url(url.set(drivername="postgresql"))
+
+
+@pytest.fixture
+def engine() -> Iterator[Engine]:
+    """Satisfy the integration-package guard without creating current schema.
+
+    This module owns a separate disposable database and drives it exclusively
+    through Alembic. The package engine fixture calls ``create_all()``, which
+    would bypass the migration path under test and require PostGIS before the
+    isolated database exists.
+    """
+
+    configured_url = os.getenv("TEST_DATABASE_URL")
+    if not configured_url:
+        pytest.skip("migration-path test requires TEST_DATABASE_URL")
+    database_url = make_url(configured_url)
+    if not database_url.drivername.startswith("postgresql"):
+        pytest.skip("migration-path test requires PostgreSQL")
+    test_engine = create_engine(database_url)
+    try:
+        yield test_engine
+    finally:
+        test_engine.dispose()
 
 
 @pytest.fixture
@@ -139,7 +164,7 @@ def _restore_pre_430_shape(database_url: URL) -> None:
     """
 
     with psycopg.connect(_psycopg_url(database_url), autocommit=True) as connection:
-        for table_name in reversed(TABLES_430_TO_434):
+        for table_name in reversed(TABLES_430_TO_436):
             connection.execute(
                 sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(
                     sql.Identifier(table_name)
@@ -178,7 +203,7 @@ def test_postgres_upgrades_revision_423_through_current_head(
     try:
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
-        assert set(TABLES_430_TO_434) <= table_names
+        assert set(TABLES_430_TO_436) <= table_names
 
         with engine.connect() as connection:
             enum_names = list(

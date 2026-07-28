@@ -140,3 +140,63 @@ def test_sweep_baseline_is_sorted_and_unique() -> None:
     ]
 
     assert entries == sorted(set(entries))
+
+
+def test_phase1_shadow_pipeline_is_receipted_end_to_end() -> None:
+    fulfillment = (
+        Path(__file__).resolve().parents[2] / "app/services/sales_fulfillment.py"
+    ).read_text(encoding="utf-8")
+    contracts = (
+        Path(__file__).resolve().parents[2] / "app/services/billing/contracts.py"
+    ).read_text(encoding="utf-8")
+    obligations = (
+        Path(__file__).resolve().parents[2] / "app/services/billing/obligations.py"
+    ).read_text(encoding="utf-8")
+    handler = (
+        Path(__file__).resolve().parents[2]
+        / "app/services/events/handlers/billing_lifecycle_projection.py"
+    ).read_text(encoding="utf-8")
+
+    assert "consume_funding_satisfaction" in fulfillment
+    assert '"sales.fulfillment.funding_applied"' in fulfillment
+    assert "consume_owner_output" in contracts
+    assert '"billing.contracts.shadow_recorded"' in contracts
+    assert "consume_owner_output" in obligations
+    assert '"billing.obligations.shadow_scheduled"' in obligations
+    for output in (
+        "_FULFILLMENT_OUTPUT",
+        "_CONTRACT_OUTPUT",
+        "_OBLIGATION_OUTPUT",
+    ):
+        assert output in handler
+
+
+def test_cutover_evidence_is_durable_and_cannot_move_authority() -> None:
+    root = Path(__file__).resolve().parents[2]
+    model = (root / "app/models/billing_shadow_verification.py").read_text(
+        encoding="utf-8"
+    )
+    owner = (root / "app/services/billing/shadow_verification.py").read_text(
+        encoding="utf-8"
+    )
+    contracts = (root / "app/services/billing/contracts.py").read_text(encoding="utf-8")
+    obligations = (root / "app/services/billing/obligations.py").read_text(
+        encoding="utf-8"
+    )
+
+    for field in (
+        "source_fingerprint",
+        "result_fingerprint",
+        "cohort_classification",
+        "currency_totals",
+        "event_outcomes",
+        "operator_approved_at",
+        "finance_approved_at",
+    ):
+        assert field in model
+    assert "verification_blockers_present" in owner
+    assert "operator_approval_required" in owner
+    assert "execute_owner_command" in owner
+    assert "BillingRecordAuthority.authoritative" not in owner
+    assert "AuthorityMigrationState.CUT_OVER" in contracts
+    assert "AuthorityMigrationState.CUT_OVER" in obligations
