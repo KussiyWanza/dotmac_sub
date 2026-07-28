@@ -20,8 +20,13 @@ down_revision = "430_billing_contract_obligation_identity"
 branch_labels = None
 depends_on = None
 
-_AUTHORITY = sa.Enum("shadow", "authoritative", name="billingrecordauthority")
-_COMMAND_KIND = sa.Enum(
+_AUTHORITY = postgresql.ENUM(
+    "shadow",
+    "authoritative",
+    name="billingrecordauthority",
+    create_type=False,
+)
+_COMMAND_KIND = postgresql.ENUM(
     "receivable_issue",
     "payment_settlement",
     "credit_note_application",
@@ -35,8 +40,9 @@ _COMMAND_KIND = sa.Enum(
     "opening_position",
     "reversal",
     name="postingcommandkind",
+    create_type=False,
 )
-_EFFECT_KIND = sa.Enum(
+_EFFECT_KIND = postgresql.ENUM(
     "receivable_issued",
     "receivable_settled",
     "customer_credit_created",
@@ -48,12 +54,13 @@ _EFFECT_KIND = sa.Enum(
     "credit_refunded",
     "adjustment_applied",
     name="positioneffectkind",
+    create_type=False,
 )
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    # billingrecordauthority already exists from revision 427.
+    # billingrecordauthority already exists from revision 430.
     _COMMAND_KIND.create(bind, checkfirst=True)
     _EFFECT_KIND.create(bind, checkfirst=True)
 
@@ -152,4 +159,4 @@ def downgrade() -> None:
     bind = op.get_bind()
     _EFFECT_KIND.drop(bind, checkfirst=True)
     _COMMAND_KIND.drop(bind, checkfirst=True)
-    # billingrecordauthority remains owned by revision 427.
+    # billingrecordauthority remains owned by revision 430.

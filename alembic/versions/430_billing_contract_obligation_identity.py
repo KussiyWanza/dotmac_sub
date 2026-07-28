@@ -29,48 +29,73 @@ branch_labels = None
 depends_on = None
 
 
-_AUTHORITY = sa.Enum("shadow", "authoritative", name="billingrecordauthority")
-_SOURCE_KIND = sa.Enum(
+_AUTHORITY = postgresql.ENUM(
+    "shadow",
+    "authoritative",
+    name="billingrecordauthority",
+    create_type=False,
+)
+_SOURCE_KIND = postgresql.ENUM(
     "sales_order_line",
     "plan_change",
     "renewal",
     "staff_correction",
     "migration_backfill",
     name="billingcontractsourcekind",
+    create_type=False,
 )
-_VERSION_STATUS = sa.Enum(
+_VERSION_STATUS = postgresql.ENUM(
     "draft",
     "effective",
     "superseded",
     "canceled",
     name="billingcontractversionstatus",
+    create_type=False,
 )
-_RATE_BASIS = sa.Enum(
+_RATE_BASIS = postgresql.ENUM(
     "fixed_per_service_period",
     "per_rate_unit",
     "per_quantity",
     "usage_metered",
     name="ratebasis",
+    create_type=False,
 )
-_INTERVAL_UNIT = sa.Enum("day", "week", "month", "year", name="intervalunit")
-_COLLECTION_TIMING = sa.Enum("advance", "arrears", name="collectiontiming")
-_ALIGNMENT = sa.Enum(
+_INTERVAL_UNIT = postgresql.ENUM(
+    "day",
+    "week",
+    "month",
+    "year",
+    name="intervalunit",
+    create_type=False,
+)
+_COLLECTION_TIMING = postgresql.ENUM(
+    "advance",
+    "arrears",
+    name="collectiontiming",
+    create_type=False,
+)
+_ALIGNMENT = postgresql.ENUM(
     "contract_anniversary",
     "calendar_period_start",
     "fixed_anchor_day",
     name="cadencealignment",
+    create_type=False,
 )
-_END_OF_MONTH = sa.Enum(
-    "clamp_to_month_end", "strict_same_day_or_skip", name="endofmonthrule"
+_END_OF_MONTH = postgresql.ENUM(
+    "clamp_to_month_end",
+    "strict_same_day_or_skip",
+    name="endofmonthrule",
+    create_type=False,
 )
-_PRORATION = sa.Enum(
+_PRORATION = postgresql.ENUM(
     "none",
     "full_period",
     "actual_calendar_days",
     "actual_elapsed_time",
     name="prorationpolicy",
+    create_type=False,
 )
-_CHARGE_COMPONENT = sa.Enum(
+_CHARGE_COMPONENT = postgresql.ENUM(
     "recurring_service",
     "installation",
     "activation",
@@ -79,14 +104,16 @@ _CHARGE_COMPONENT = sa.Enum(
     "usage",
     "other",
     name="chargecomponent",
+    create_type=False,
 )
-_ACCOUNTING_TREATMENT = sa.Enum(
+_ACCOUNTING_TREATMENT = postgresql.ENUM(
     "receivable",
     "prepaid_consumption",
     "non_cash_grant",
     name="accountingtreatment",
+    create_type=False,
 )
-_OBLIGATION_STATE = sa.Enum(
+_OBLIGATION_STATE = postgresql.ENUM(
     "scheduled",
     "open",
     "partially_resolved",
@@ -94,8 +121,9 @@ _OBLIGATION_STATE = sa.Enum(
     "canceled",
     "written_off",
     name="obligationstate",
+    create_type=False,
 )
-_OBLIGATION_RESOLUTION = sa.Enum(
+_OBLIGATION_RESOLUTION = postgresql.ENUM(
     "settlement",
     "credit",
     "prepaid_consumption",
@@ -105,6 +133,7 @@ _OBLIGATION_RESOLUTION = sa.Enum(
     "pre_earning_cancellation",
     "reversal",
     name="obligationresolutionkind",
+    create_type=False,
 )
 
 _ALL_ENUMS = (

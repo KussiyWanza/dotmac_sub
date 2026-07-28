@@ -20,9 +20,19 @@ down_revision = "433_durable_timers_collections_cases"
 branch_labels = None
 depends_on = None
 
-_AUTHORITY = sa.Enum("shadow", "authoritative", name="billingrecordauthority")
-_GATE_STATE = sa.Enum("pending", "funded", name="fundinggatestate")
-_ERP_FLOW = sa.Enum(
+_AUTHORITY = postgresql.ENUM(
+    "shadow",
+    "authoritative",
+    name="billingrecordauthority",
+    create_type=False,
+)
+_GATE_STATE = postgresql.ENUM(
+    "pending",
+    "funded",
+    name="fundinggatestate",
+    create_type=False,
+)
+_ERP_FLOW = postgresql.ENUM(
     "invoice",
     "credit_note",
     "payment",
@@ -30,9 +40,15 @@ _ERP_FLOW = sa.Enum(
     "tax_withholding",
     "correction",
     name="erpbillingflow",
+    create_type=False,
 )
-_ERP_STATUS = sa.Enum(
-    "pending", "delivered", "acknowledged", "rejected", name="erpexportstatus"
+_ERP_STATUS = postgresql.ENUM(
+    "pending",
+    "delivered",
+    "acknowledged",
+    "rejected",
+    name="erpexportstatus",
+    create_type=False,
 )
 
 

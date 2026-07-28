@@ -20,7 +20,12 @@ down_revision = "431_customer_subledger_postings"
 branch_labels = None
 depends_on = None
 
-_OUTCOME = sa.Enum("succeeded", "terminal_failure", name="receiptoutcome")
+_OUTCOME = postgresql.ENUM(
+    "succeeded",
+    "terminal_failure",
+    name="receiptoutcome",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

@@ -20,18 +20,34 @@ down_revision = "432_owner_output_receipts"
 branch_labels = None
 depends_on = None
 
-_AUTHORITY = sa.Enum("shadow", "authoritative", name="billingrecordauthority")
-_TIMER_STATUS = sa.Enum(
-    "scheduled", "fired", "canceled", "superseded", name="timerstatus"
+_AUTHORITY = postgresql.ENUM(
+    "shadow",
+    "authoritative",
+    name="billingrecordauthority",
+    create_type=False,
 )
-_REASON = sa.Enum("postpaid_overdue", "prepaid_underfunded", name="collectionsreason")
-_CASE_STATE = sa.Enum(
+_TIMER_STATUS = postgresql.ENUM(
+    "scheduled",
+    "fired",
+    "canceled",
+    "superseded",
+    name="timerstatus",
+    create_type=False,
+)
+_REASON = postgresql.ENUM(
+    "postpaid_overdue",
+    "prepaid_underfunded",
+    name="collectionsreason",
+    create_type=False,
+)
+_CASE_STATE = postgresql.ENUM(
     "open",
     "warned",
     "escalated",
     "consequence_requested",
     "closed",
     name="collectionscasestate",
+    create_type=False,
 )
 
 
