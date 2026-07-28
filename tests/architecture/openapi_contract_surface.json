@@ -13738,6 +13738,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/crm/subscribers": {
+   "params": [
+    "header:Idempotency-Key!",
+    "header:X-Api-Key"
+   ],
+   "request": "d9186960cfcf",
+   "responses": {
+    "201": "e5914f9f4054",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/crm/subscribers/{subscriber_id}/referral-code": {
    "params": [
     "header:authorization",
@@ -18478,6 +18489,7 @@
   "CPEDeviceCreate": "47e69a31998c",
   "CPEDeviceRead": "3d3019b85a32",
   "CPEDeviceUpdate": "2738e9ce8887",
+  "CRMSubscriberProvisionRequest": "dd1d29da7928",
   "CampaignAudienceBuildRead": "17e1de9912b5",
   "CampaignCreate": "a794f82cc566",
   "CampaignRead": "bf40b6d23dab",

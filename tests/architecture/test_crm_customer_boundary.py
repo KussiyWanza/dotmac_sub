@@ -19,6 +19,8 @@ ROUTE = ROOT / "app" / "api" / "crm_webhooks.py"
 REPAIR_OWNER = ROOT / "app" / "services" / "customer_name_repairs.py"
 REPAIR_ADAPTER = ROOT / "scripts" / "one_off" / "restore_crm_placeholder_identity.py"
 LEGACY_PROFILE = ROOT / "app" / "services" / "web_customer_actions.py"
+PROVISIONING_OWNER = ROOT / "app" / "services" / "crm_subscriber_provisioning.py"
+CRM_API = ROOT / "app" / "api" / "crm.py"
 
 
 def _source(path: Path) -> str:
@@ -60,6 +62,29 @@ def test_crm_customer_route_cannot_create_or_update_an_account() -> None:
         ".commit(",
     ):
         assert forbidden not in route
+
+
+def test_explicit_crm_provisioning_is_separate_from_observation_webhook() -> None:
+    observer = _source(OBSERVER)
+    webhook = _source(ROUTE)
+    owner = _source(PROVISIONING_OWNER)
+    api = _source(CRM_API)
+
+    assert "crm_subscriber_provisioning" not in observer
+    assert "crm_subscriber_provisioning" not in webhook
+    assert "prepare_new_account(" in owner
+    assert owner.count("execute_owner_command(") == 1
+    assert '@router.post(\n    "/subscribers",' in api
+    assert "Depends(require_crm_service_auth)" in api
+    assert "ProvisionCRMSubscriberCommand(" in api
+    for forbidden in (
+        "fastapi",
+        "HTTPException",
+        ".commit(",
+        ".rollback(",
+        "begin_nested",
+    ):
+        assert forbidden not in owner
 
 
 def test_customer_name_repair_owner_has_complete_contract() -> None:
