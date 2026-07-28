@@ -10,11 +10,15 @@ from app.services.device_operational_status import mismatch_worklist
 
 
 def _device(db, name, *, status, live):
+    observed_at = datetime.now(UTC) if live is not None else None
     d = NetworkDevice(
         name=name,
         status=status,
         live_status=live,
-        live_status_at=datetime.now(UTC) if live is not None else None,
+        live_status_at=observed_at,
+        ping_enabled=live is not None,
+        last_ping_ok=live == "up" if live is not None else None,
+        last_ping_at=observed_at,
     )
     db.add(d)
     db.flush()

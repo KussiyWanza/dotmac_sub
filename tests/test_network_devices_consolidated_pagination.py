@@ -81,6 +81,9 @@ def test_consolidated_page_data_includes_core_table_maps(db_session):
         status=DeviceStatus.online,
         live_status="up",
         live_status_at=datetime.now(UTC),
+        ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=datetime.now(UTC),
         is_active=True,
     )
     db_session.add(device)

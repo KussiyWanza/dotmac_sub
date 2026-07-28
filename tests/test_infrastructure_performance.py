@@ -205,12 +205,18 @@ def test_wallboard_counts_devices_by_live_status(db_session):
                 device_type=DeviceType.access_point,
                 live_status="up",
                 live_status_at=observed_at,
+                ping_enabled=True,
+                last_ping_ok=True,
+                last_ping_at=observed_at,
             ),
             NetworkDevice(
                 name="AP down",
                 device_type=DeviceType.access_point,
                 live_status="down",
                 live_status_at=observed_at,
+                ping_enabled=True,
+                last_ping_ok=False,
+                last_ping_at=observed_at,
             ),
             NetworkDevice(
                 name="AP no-cache",

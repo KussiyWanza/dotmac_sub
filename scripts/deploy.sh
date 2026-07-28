@@ -544,6 +544,11 @@ APP_IMAGE="${IMAGE}" GIT_SHA="${FULL_SHA}" \
   "${COMPOSE[@]}" run --rm --no-deps app \
   python -m scripts.migration.reconcile_service_extension_duplicates --check
 
+log "Verifying pre-migration service-team Party cutover readiness"
+APP_IMAGE="${IMAGE}" GIT_SHA="${FULL_SHA}" \
+  "${COMPOSE[@]}" run --rm --no-deps app \
+  python -m scripts.migration.audit_service_team_party_cutover --check
+
 log "Pinning APP_IMAGE=${IMAGE} and GIT_SHA=${FULL_SHA}"
 set_env_value APP_IMAGE "${IMAGE}"
 set_env_value GIT_SHA "${FULL_SHA}"

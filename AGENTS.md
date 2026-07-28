@@ -70,6 +70,9 @@ authoritative documents in the same change that updates the contract.
 - Work on a feature branch; never commit directly to `main`.
 - Keep each implementation slice coherent and reviewable even when several
   slices are assembled into a larger release.
+- Every pull request must include the appropriate repository `VERSION` bump,
+  following the established release-version sequence and using a separate
+  `chore: bump version to X.Y.Z` commit.
 - Do not commit, push, open or update a pull request, merge, release, deploy, or
   perform production work unless Michael explicitly requests that action.
 - Production or SSH work requires Michael to name the target host.

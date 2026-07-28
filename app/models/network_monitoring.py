@@ -298,6 +298,9 @@ class NetworkDevice(Base):
     # from the ping/snmp `status` column (different writer). One of
     # up/down/problem/unknown.
     live_status: Mapped[str | None] = mapped_column(String(20))
+    # When live_status entered its current value (transition/dwell time), not
+    # when reachability was last observed. Collector freshness is carried by
+    # last_ping_at / last_snmp_at.
     live_status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     topology_x: Mapped[float | None] = mapped_column(Float)
     topology_y: Mapped[float | None] = mapped_column(Float)

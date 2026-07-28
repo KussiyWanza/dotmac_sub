@@ -285,6 +285,8 @@ def test_network_device_read_serializes_operational_presentation() -> None:
         live_status="up",
         live_status_at=now,
         ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=now,
         snmp_enabled=False,
         send_notifications=True,
         notification_delay_minutes=0,

@@ -11,6 +11,7 @@ from app.models.audit import AuditEvent
 from app.models.auth import AuthProvider, UserCredential
 from app.models.event_store import EventStore
 from app.models.notification import CommunicationIntentRecord, Notification
+from app.models.party import Party, PartyType
 from app.models.rbac import Role, SystemUserRole
 from app.models.system_user import SystemUser
 from app.services import credential_recovery, staff_provisioning
@@ -87,6 +88,14 @@ def test_provision_commits_identity_grant_audit_and_event_together(db_session) -
     )
 
     assert user.email == "owner.test@dotmac.io"
+    assert result.person_party_id is not None
+    assert user.person_party_id == result.person_party_id
+    person = db_session.get(Party, result.person_party_id)
+    assert person is not None
+    assert person.party_type == PartyType.person.value
+    assert person.display_name == "Owner Test"
+    assert user.party_binding_source == "auth.staff_provisioning:erp_hr"
+    assert user.party_binding_reason == "verify staff owner semantics"
     assert credential.provider == AuthProvider.local
     assert credential.must_change_password is True
     assert credential.password_hash
@@ -118,6 +127,7 @@ def test_late_failure_rolls_back_every_staff_write(db_session, monkeypatch) -> N
     )
     assert db_session.query(UserCredential).count() == 0
     assert db_session.query(SystemUserRole).count() == 0
+    assert db_session.query(Party).count() == 0
     assert db_session.query(AuditEvent).count() == 0
     assert db_session.query(EventStore).count() == 0
 
@@ -244,8 +254,13 @@ def test_local_admin_create_uses_same_atomic_provisioning_boundary(
         .one()
     )
     assert result.created is True
+    assert result.person_party_id is not None
     assert result.role_names == ("local-staff",)
     assert grant.source == "local"
+    user = db_session.get(SystemUser, result.user_id)
+    assert user is not None
+    assert user.person_party_id == result.person_party_id
+    assert user.party_binding_source == "auth.staff_provisioning:local"
     assert (
         db_session.query(AuditEvent)
         .filter(AuditEvent.entity_id == str(result.user_id))

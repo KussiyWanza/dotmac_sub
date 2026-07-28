@@ -7725,6 +7725,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/projects/{project_id}/cost-summary": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:project_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "5d4207ea8356",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/provisioning-runs": {
    "params": [
     "header:authorization",
@@ -19280,6 +19292,7 @@
   "PriceBasis": "f0f72bcdeeae",
   "PriceType": "991176fa607a",
   "PriceUnit": "8587e7348110",
+  "ProjectCostSummary": "f953c7ceefa5",
   "ProjectCreate": "d3f9bf5d5ed7",
   "ProjectGanttUpdate": "38b022ae411d",
   "ProjectItem": "df3035be834b",

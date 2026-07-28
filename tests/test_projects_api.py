@@ -16,6 +16,7 @@ EXPECTED_ROUTES = {
     ("POST", "/projects/gantt/due-date"),
     ("POST", "/projects/kanban/move"),
     ("GET", "/projects/{project_id}"),
+    ("GET", "/projects/{project_id}/cost-summary"),
     ("POST", "/project-tasks"),
     ("GET", "/project-tasks"),
     ("GET", "/project-tasks/{task_id}"),
@@ -34,6 +35,7 @@ EXPECTED_PERMISSIONS = {
     ("POST", "/projects/gantt/due-date"): "project:update",
     ("POST", "/projects/kanban/move"): "project:update",
     ("GET", "/projects/{project_id}"): "project:read",
+    ("GET", "/projects/{project_id}/cost-summary"): "project:read",
     ("POST", "/project-tasks"): "project:task:write",
     ("GET", "/project-tasks"): "project:task:read",
     ("GET", "/project-tasks/{task_id}"): "project:task:read",
@@ -50,11 +52,6 @@ def _routes():
 
 def test_all_expected_routes_registered():
     assert {key for key, _route in _routes()} == EXPECTED_ROUTES
-
-
-def test_cost_summary_not_ported():
-    """`GET /projects/{id}/cost-summary` is deferred to Phase 5 (§1.10)."""
-    assert all("cost-summary" not in route.path for route in router.routes)
 
 
 def _permission_keys(route) -> set[str]:

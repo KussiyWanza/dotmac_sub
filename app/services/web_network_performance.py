@@ -285,6 +285,12 @@ def _device_state(
     status,
     live_status: str | None,
     live_status_at: datetime | None,
+    ping_enabled: bool,
+    last_ping_ok: bool | None,
+    last_ping_at: datetime | None,
+    snmp_enabled: bool,
+    last_snmp_ok: bool | None,
+    last_snmp_at: datetime | None,
     *,
     warm_stale: bool,
 ) -> str:
@@ -299,6 +305,12 @@ def _device_state(
             status=status,
             live_status=live_status,
             live_status_at=live_status_at,
+            ping_enabled=ping_enabled,
+            last_ping_ok=last_ping_ok,
+            last_ping_at=last_ping_at,
+            snmp_enabled=snmp_enabled,
+            last_snmp_ok=last_snmp_ok,
+            last_snmp_at=last_snmp_at,
         ),
         warm_stale=warm_stale,
     )
@@ -330,6 +342,12 @@ def wallboard(db: Session) -> dict:
             NetworkDevice.pop_site_id,
             NetworkDevice.live_status,
             NetworkDevice.live_status_at,
+            NetworkDevice.ping_enabled,
+            NetworkDevice.last_ping_ok,
+            NetworkDevice.last_ping_at,
+            NetworkDevice.snmp_enabled,
+            NetworkDevice.last_snmp_ok,
+            NetworkDevice.last_snmp_at,
             NetworkDevice.status,
         )
         .filter(NetworkDevice.is_active.is_(True))
@@ -350,12 +368,24 @@ def wallboard(db: Session) -> dict:
         pop_site_id,
         live_status,
         live_status_at,
+        ping_enabled,
+        last_ping_ok,
+        last_ping_at,
+        snmp_enabled,
+        last_snmp_ok,
+        last_snmp_at,
         status,
     ) in devices:
         state = _device_state(
             status,
             live_status,
             live_status_at,
+            ping_enabled,
+            last_ping_ok,
+            last_ping_at,
+            snmp_enabled,
+            last_snmp_ok,
+            last_snmp_at,
             warm_stale=warm_stale,
         )
         if matched == "olt":

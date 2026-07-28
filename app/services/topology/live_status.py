@@ -132,6 +132,50 @@ def derive_live_status(
     return UNKNOWN
 
 
+def live_status_observed_at(
+    node: NetworkDevice,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = STALE_POLL_AFTER_SECONDS,
+) -> datetime | None:
+    """Return the native timestamp relevant to the current ``live_status``.
+
+    ``live_status_at`` is deliberately not an observation timestamp: it records
+    when the derived status last changed for debounce and availability dwell
+    calculations. Freshness decisions must follow the same ping/SNMP precedence
+    as :func:`derive_live_status` and use the selected collector timestamp. If
+    no collector result is fresh enough to produce a conclusive status, return
+    the preferred stale timestamp so callers can distinguish expired evidence
+    from a legacy row that has no per-device observation evidence.
+    """
+    now = now or _now()
+    if getattr(node, "status", None) == DeviceStatus.maintenance:
+        return None
+    if (
+        getattr(node, "ping_enabled", False)
+        and getattr(node, "last_ping_ok", None) is not None
+        and _fresh(getattr(node, "last_ping_at", None), now, stale_after_seconds)
+    ):
+        return getattr(node, "last_ping_at", None)
+    if (
+        getattr(node, "snmp_enabled", False)
+        and getattr(node, "last_snmp_ok", None) is not None
+        and _fresh(getattr(node, "last_snmp_at", None), now, stale_after_seconds)
+    ):
+        return getattr(node, "last_snmp_at", None)
+    if (
+        getattr(node, "ping_enabled", False)
+        and getattr(node, "last_ping_ok", None) is not None
+    ):
+        return getattr(node, "last_ping_at", None)
+    if (
+        getattr(node, "snmp_enabled", False)
+        and getattr(node, "last_snmp_ok", None) is not None
+    ):
+        return getattr(node, "last_snmp_at", None)
+    return None
+
+
 def warm_topology_status(
     session: Session,
     *,

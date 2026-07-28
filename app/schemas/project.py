@@ -10,6 +10,7 @@ The sub models store enum values as strings; pydantic coerces both ways.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -99,6 +100,16 @@ class ProjectRead(ProjectBase):
     number: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ProjectCostSummary(BaseModel):
+    project_id: UUID
+    currency: str
+    labor_minutes: int
+    labor_hourly_rate: Decimal
+    labor_cost: Decimal
+    expense_total: Decimal
+    total_cost: Decimal
 
 
 class ProjectTemplateBase(BaseModel):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.models.catalog import (
@@ -75,6 +75,9 @@ def test_fresh_monitoring_can_reactivate_inactive_active_intent(
         is_active=True,
         live_status="up",
         live_status_at=datetime.now(UTC),
+        ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=datetime.now(UTC),
     )
     db_session.add(node)
     db_session.flush()
@@ -94,6 +97,42 @@ def test_fresh_monitoring_can_reactivate_inactive_active_intent(
     assert plan.blocked == 0
     assert plan.action_counts == {"reactivate": 1}
     assert plan.items[0].reason == "fresh_monitoring_proves_active"
+
+
+def test_recent_transition_does_not_replace_stale_native_monitoring(
+    db_session, monkeypatch
+):
+    _mock_radius_states(monkeypatch)
+    now = datetime.now(UTC)
+    node = NetworkDevice(
+        name="stale-monitored-router",
+        hostname="stale-monitored-router",
+        mgmt_ip="10.30.0.22",
+        is_active=True,
+        live_status="up",
+        live_status_at=now,
+        ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=(now - nas_lifecycle._MONITORING_FRESHNESS - timedelta(seconds=1)),
+    )
+    db_session.add(node)
+    db_session.flush()
+    device = NasDevice(
+        name="do-not-reactivate-router",
+        is_active=False,
+        status=NasDeviceStatus.active,
+        nas_ip="10.30.0.22",
+        network_device_id=node.id,
+        shared_secret="plain:secret",
+    )
+    db_session.add(device)
+    db_session.commit()
+
+    plan = nas_lifecycle.build_nas_lifecycle_plan(db_session)
+
+    assert plan.action_counts != {"reactivate": 1}
+    assert plan.items[0].monitoring_up is False
+    assert plan.items[0].monitoring_state == "stale_or_unknown"
 
 
 def test_exact_live_session_can_relink_and_decommission_source(

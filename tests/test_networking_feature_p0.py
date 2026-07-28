@@ -1587,6 +1587,9 @@ def test_network_map_context_includes_network_device_markers(db_session):
             status=DeviceStatus.online,
             live_status="up",
             live_status_at=datetime.now(UTC),
+            ping_enabled=True,
+            last_ping_ok=True,
+            last_ping_at=datetime.now(UTC),
             is_active=True,
         )
     )

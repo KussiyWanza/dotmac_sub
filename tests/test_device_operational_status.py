@@ -1,5 +1,6 @@
 """Behavior tests for the binary device operational owner."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.services.device_operational_status import (
@@ -15,13 +16,27 @@ class _Enum:
         self.value = value
 
 
-def _dev(status=None, live=None, enum=True):
+NOW = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+
+
+def _dev(status=None, live=None, enum=True, **overrides):
     def wrap(value):
         if value is None:
             return None
         return _Enum(value) if enum else value
 
-    return SimpleNamespace(status=wrap(status), live_status=wrap(live))
+    values = {
+        "status": wrap(status),
+        "live_status": wrap(live),
+        "ping_enabled": False,
+        "last_ping_ok": None,
+        "last_ping_at": None,
+        "snmp_enabled": False,
+        "last_snmp_ok": None,
+        "last_snmp_at": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def test_lifecycle_maintenance_is_not_working_and_non_alarming():
@@ -82,6 +97,38 @@ def test_positive_observation_is_working():
     assert op.status == WORKING
     assert op.reason == "observed_working"
     assert op.alarming is False
+
+
+def test_transition_timestamp_is_not_used_as_observation_freshness():
+    device = _dev(
+        "online",
+        "up",
+        live_status_at=NOW,
+        ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=NOW - timedelta(hours=1),
+    )
+
+    op = derive_operational_status(device, warm_stale=False, now=NOW)
+
+    assert op.status == NOT_WORKING
+    assert op.reason == "verification_expired"
+
+
+def test_old_transition_remains_working_when_native_observation_is_current():
+    device = _dev(
+        "online",
+        "up",
+        live_status_at=NOW - timedelta(days=30),
+        ping_enabled=True,
+        last_ping_ok=True,
+        last_ping_at=NOW - timedelta(minutes=2),
+    )
+
+    op = derive_operational_status(device, warm_stale=True, now=NOW)
+
+    assert op.status == WORKING
+    assert op.reason == "observed_working"
 
 
 def test_plain_string_attributes_are_supported():

@@ -8,6 +8,7 @@ from app.models.network_monitoring import DeviceStatus, NetworkDevice
 from app.services.topology.live_status import (
     STALE_POLL_AFTER_SECONDS,
     derive_live_status,
+    live_status_observed_at,
     warm_topology_status,
 )
 
@@ -275,3 +276,22 @@ def test_live_status_at_stamped_only_on_change(db_session):
     db_session.refresh(n)
     assert n.live_status == "down"
     assert n.live_status_at != datetime(2020, 1, 1, tzinfo=UTC)
+
+
+def test_live_status_observed_at_uses_selected_native_collector_timestamp():
+    now = _now()
+    stale_ping = now - timedelta(seconds=STALE_POLL_AFTER_SECONDS + 60)
+    fresh_snmp = now - timedelta(seconds=30)
+    node = _node(
+        "observation-time",
+        ping_enabled=True,
+        last_ping_ok=False,
+        last_ping_at=stale_ping,
+        snmp_enabled=True,
+        last_snmp_ok=True,
+        last_snmp_at=fresh_snmp,
+        live_status="up",
+        live_status_at=now - timedelta(days=30),
+    )
+
+    assert live_status_observed_at(node, now=now) == fresh_snmp
