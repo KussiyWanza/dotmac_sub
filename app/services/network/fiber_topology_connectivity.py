@@ -194,7 +194,9 @@ def _load_decision(
         )
     )
     if for_update:
-        statement = statement.with_for_update()
+        # Lock only the decision row: the joinedload outer joins make an
+        # unqualified FOR UPDATE fail on PostgreSQL (nullable side of join).
+        statement = statement.with_for_update(of=FiberTopologyConnectivityDecision)
     decision = db.scalar(statement)
     if decision is None:
         raise FiberTopologyConnectivityError("connectivity decision not found")
