@@ -67,6 +67,12 @@
                     Record Payment
                 </a>
                 {% endif %}
+                {% if prepaid_recovery_settlement and invoice.status.value == 'draft' %}
+                <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/prepaid-pay-now/preview">
+                    {% include "components/forms/csrf_input.html" %}
+                    <button type="submit" class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20">Pay now from account credit</button>
+                </form>
+                {% endif %}
                 {% if status_val in ['issued', 'overdue', 'partially_paid'] and not is_proforma %}
                 <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/send-and-return">
                     {% include "components/forms/csrf_input.html" %}

@@ -140,7 +140,9 @@ def _load_decision(
         .where(FiberTopologyIdentityDecision.id == normalized_id)
     )
     if for_update:
-        statement = statement.with_for_update()
+        # Lock only the decision row: the joinedload outer joins make an
+        # unqualified FOR UPDATE fail on PostgreSQL (nullable side of join).
+        statement = statement.with_for_update(of=FiberTopologyIdentityDecision)
     decision = db.scalar(statement)
     if not decision:
         raise FiberTopologyIdentityError("identity decision not found")
