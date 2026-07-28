@@ -104,7 +104,10 @@ def test_invoice_record_owner_only_locks_flushes_and_stages_events() -> None:
     assert ".flush(" in source
     assert "emit_event(" in source
     assert '"schema_version": 1' in source
-    assert "enqueue_purchase_invoice(db, invoice)" in source
+    # The approval's committed output drives the payables export through
+    # the receipted consumer; the record owner never enqueues directly.
+    assert "EventType.vendor_purchase_invoice_approved" in source
+    assert "enqueue_purchase_invoice" not in source
     assert "except Exception" not in source
 
 

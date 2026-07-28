@@ -6,7 +6,10 @@ time. Declared either by an operator (manual console) or by the auto-detect
 scan (retired; see ``outage_reconcile``), which marked incidents via ``declared_by ==
 AUTO_DETECT_ACTOR`` + an ``AUTO_NOTE_PREFIX`` note — deliberately NOT a new
 column (no migration needed; the model stays lean). No notification sending
-here; incident create/resolve fan out to the event system (webhooks) only.
+here; every lifecycle transition stages its typed outage event (plus the
+legacy ``network.alert`` webhook fan-out) atomically with the status write,
+and the registered outage lifecycle projection handler applies cross-owner
+consequences after commit (docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md).
 """
 
 from __future__ import annotations
@@ -20,17 +23,10 @@ from sqlalchemy.orm import Session
 
 from app.models.network import FdhCabinet
 from app.models.network_monitoring import NetworkDevice, OutageIncident, PopSite
-from app.models.operational_escalation import OperationalEntityType
-from app.services import operational_escalation
 from app.services.topology.affected import (
     _dist_to_core,
     downstream_nodes,
     forwarding_graph_projection,
-)
-from app.services.topology.outage_operations import (
-    ensure_outage_customer_watchers,
-    ensure_outage_operations,
-    plan_outage_escalations,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,68 +134,72 @@ def _match_timestamp_style(value: datetime, reference: datetime | None) -> datet
     return value
 
 
+def _outage_event_payload(
+    session: Session, incident: OutageIncident, kind: str
+) -> dict:
+    scope: dict = {"type": None, "id": None, "name": None}
+    if incident.root_node_id is not None:
+        node = session.get(NetworkDevice, incident.root_node_id)
+        scope = {
+            "type": "node",
+            "id": str(incident.root_node_id),
+            "name": getattr(node, "name", None),
+        }
+    elif incident.basestation_id is not None:
+        pop = session.get(PopSite, incident.basestation_id)
+        scope = {
+            "type": "basestation",
+            "id": str(incident.basestation_id),
+            "name": getattr(pop, "name", None),
+        }
+    elif incident.fdh_cabinet_id is not None:
+        fdh = session.get(FdhCabinet, incident.fdh_cabinet_id)
+        scope = {
+            "type": "fdh",
+            "id": str(incident.fdh_cabinet_id),
+            "name": getattr(fdh, "name", None),
+        }
+    return {
+        "alert_type": kind,  # e.g. "outage.created" | "outage.resolved"
+        "incident_id": str(incident.id),
+        "status": incident.status,
+        "detection_source": detection_source(incident),
+        "provenance": incident.detection_source,
+        "scope": scope,
+        "severity": incident.severity,
+        "affected_count": incident.affected_count,
+        "started_at": incident.started_at.isoformat() if incident.started_at else None,
+        "resolved_at": incident.resolved_at.isoformat()
+        if incident.resolved_at
+        else None,
+    }
+
+
 def _emit_outage_event(session: Session, incident: OutageIncident, kind: str) -> None:
-    """Fan an incident lifecycle change into the event system.
+    """Stage an incident lifecycle change as durable owner outputs.
 
-    Reuses the established outbound machinery: ``emit_event`` -> WebhookHandler
-    -> capability-bound ``IntegrationDelivery`` rows -> the integration delivery
-    worker (HMAC signature, bounded exponential retries, delivery log).
-    CRM/mobile backends subscribe an HTTP webhook installation to the
-    ``network.alert`` event type and filter on ``alert_type``. Fired on create
-    and resolve only — never per-update.
-    No PII in the payload beyond counts; detail comes from the CRM outage API.
-    Best-effort: an event/webhook failure must never fail a declare/resolve.
+    Two outputs commit atomically with the transition and dispatch after
+    commit:
+
+    - the typed lifecycle event (``outage.created``/``outage.confirmed``/…)
+      that the registered outage lifecycle projection handler consumes to
+      apply cross-owner consequences (operational owners/watchers, SLA
+      escalation planning and cancellation) with durable retry;
+    - the legacy ``network.alert`` fan-out with its unchanged payload, kept
+      for external webhook subscribers (WebhookHandler → ``IntegrationDelivery``
+      rows → HMAC delivery worker; CRM/mobile filter on ``alert_type``).
+
+    No PII in the payload beyond counts; detail comes from the CRM outage
+    API. A staging failure raises: the transition and its outputs are one
+    atomic fact, never a warning log.
     """
-    try:
-        from app.services.events import emit_event
-        from app.services.events.types import EventType
+    from app.services.events import emit_event
+    from app.services.events.types import EventType
 
-        scope: dict = {"type": None, "id": None, "name": None}
-        if incident.root_node_id is not None:
-            node = session.get(NetworkDevice, incident.root_node_id)
-            scope = {
-                "type": "node",
-                "id": str(incident.root_node_id),
-                "name": getattr(node, "name", None),
-            }
-        elif incident.basestation_id is not None:
-            pop = session.get(PopSite, incident.basestation_id)
-            scope = {
-                "type": "basestation",
-                "id": str(incident.basestation_id),
-                "name": getattr(pop, "name", None),
-            }
-        elif incident.fdh_cabinet_id is not None:
-            fdh = session.get(FdhCabinet, incident.fdh_cabinet_id)
-            scope = {
-                "type": "fdh",
-                "id": str(incident.fdh_cabinet_id),
-                "name": getattr(fdh, "name", None),
-            }
-        emit_event(
-            session,
-            EventType.network_alert,
-            {
-                "alert_type": kind,  # "outage.created" | "outage.resolved"
-                "incident_id": str(incident.id),
-                "status": incident.status,
-                "detection_source": detection_source(incident),
-                "provenance": incident.detection_source,
-                "scope": scope,
-                "severity": incident.severity,
-                "affected_count": incident.affected_count,
-                "started_at": incident.started_at.isoformat()
-                if incident.started_at
-                else None,
-                "resolved_at": incident.resolved_at.isoformat()
-                if incident.resolved_at
-                else None,
-            },
-            actor=incident.declared_by or "system",
-            defer_until_commit=False,
-        )
-    except Exception:  # noqa: BLE001 - webhook fan-out must never break the write
-        logger.exception("outage_event_emit_failed")
+    payload = _outage_event_payload(session, incident, kind)
+    actor = incident.declared_by or "system"
+    emit_event(session, EventType(kind), payload, actor=actor)
+    emit_event(session, EventType.network_alert, payload, actor=actor)
 
 
 def declare_outage(
@@ -248,9 +248,8 @@ def declare_outage(
     )
     session.add(incident)
     session.flush()
-    ensure_outage_operations(session, incident)
-    ensure_outage_customer_watchers(session, incident, impact=impact)
-    plan_outage_escalations(session, incident, trigger="outage.created")
+    # Operational owners/watchers and escalation planning are applied by the
+    # outage lifecycle projection handler consuming this committed output.
     _emit_outage_event(session, incident, "outage.created")
     return incident
 
@@ -265,12 +264,8 @@ def resolve_outage(session: Session, incident_id) -> OutageIncident | None:
         return incident
     if set_outage_status(incident, OutageStatus.resolved.value):
         session.flush()
-        operational_escalation.cancel_entity_events(
-            session,
-            entity_type=OperationalEntityType.outage,
-            entity_id=incident.id,
-            reason="outage.resolved",
-        )
+        # Escalation cancellation is applied by the outage lifecycle
+        # projection handler consuming this committed output.
         _emit_outage_event(session, incident, "outage.resolved")
     return incident
 
@@ -406,9 +401,6 @@ def confirm_incident(
     incident.status = OutageStatus.confirmed.value
     incident.confirmed_at = now
     session.flush()
-    ensure_outage_operations(session, incident)
-    ensure_outage_customer_watchers(session, incident)
-    plan_outage_escalations(session, incident, trigger="outage.confirmed")
     _emit_outage_event(session, incident, "outage.confirmed")
 
 
@@ -417,12 +409,6 @@ def discard_incident(session: Session, incident: OutageIncident) -> None:
     No confirmed event ever fires for a discarded incident."""
     incident.status = OutageStatus.discarded.value
     session.flush()
-    operational_escalation.cancel_entity_events(
-        session,
-        entity_type=OperationalEntityType.outage,
-        entity_id=incident.id,
-        reason="outage.discarded",
-    )
     _emit_outage_event(session, incident, "outage.discarded")
 
 
@@ -454,13 +440,6 @@ def resolve_classifier_incident(
     incident.status = OutageStatus.resolved.value
     incident.resolved_at = _match_timestamp_style(now, incident.confirmed_at)
     session.flush()
-    operational_escalation.cancel_entity_events(
-        session,
-        entity_type=OperationalEntityType.outage,
-        entity_id=incident.id,
-        reason="outage.resolved",
-        canceled_at=now,
-    )
     _emit_outage_event(session, incident, "outage.resolved")
 
 
@@ -645,4 +624,123 @@ def list_stale_open_incidents(
         )
         .order_by(OutageIncident.started_at.asc())
         .all()
+    )
+
+
+# --- receipted lifecycle-output consumption --------------------------------
+#
+# The registered OutageLifecycleProjectionHandler delivers this owner's
+# committed outputs back to these commands. Each runs on a transaction-free
+# owner-command session and wraps its cross-owner effect (operational
+# escalation participants) in a unique ``(consumer, event_id)`` receipt via
+# ``events.owner_outputs`` — the effect and receipt commit atomically, a
+# redelivery is an exact no-op, and a raised failure leaves the delivery
+# durably failed and retryable. The incident transitions above never apply
+# these consequences inline.
+
+
+def _consume_definition(name: str):
+    from app.services.owner_commands import OwnerCommandDefinition
+
+    return OwnerCommandDefinition(
+        owner="network.outage_lifecycle",
+        concern="committed outage output consumption",
+        name=name,
+    )
+
+
+def consume_outage_activation(
+    session: Session,
+    *,
+    incident_id,
+    event_id,
+    event_type: str,
+    context,
+) -> str | None:
+    """Receipt one declared/confirmed output into operational consequences."""
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import execute_owner_command
+
+    def _effect() -> str:
+        from app.services.topology.outage_operations import (
+            ensure_outage_customer_watchers,
+            ensure_outage_operations,
+            plan_outage_escalations,
+        )
+
+        incident = session.get(OutageIncident, incident_id)
+        if incident is None:
+            logger.warning(
+                "outage activation consequence: incident %s missing", incident_id
+            )
+            return "skipped_missing"
+        # A stale replay after the incident already terminated must not plan
+        # fresh escalations that nothing would cancel.
+        if incident.status in CLASSIFIER_TERMINAL_STATUSES:
+            return "skipped_terminal"
+        ensure_outage_operations(session, incident)
+        ensure_outage_customer_watchers(session, incident)
+        plan_outage_escalations(session, incident, trigger=event_type)
+        return "applied"
+
+    return execute_owner_command(
+        session,
+        definition=_consume_definition("consume_outage_activation"),
+        context=context,
+        operation=lambda: consume_owner_output(
+            session,
+            consumer="network.outage_lifecycle",
+            event_id=event_id,
+            event_type=event_type,
+            producer_owner="network.outage_lifecycle",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
+
+
+def consume_outage_termination(
+    session: Session,
+    *,
+    incident_id,
+    event_id,
+    event_type: str,
+    resolved_at: datetime | None,
+    context,
+) -> str | None:
+    """Receipt one resolved/discarded output into escalation cancellation."""
+    from app.models.operational_escalation import OperationalEntityType
+    from app.services import operational_escalation
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import execute_owner_command
+
+    def _effect() -> str:
+        incident = session.get(OutageIncident, incident_id)
+        if incident is None:
+            logger.warning(
+                "outage termination consequence: incident %s missing", incident_id
+            )
+            return "skipped_missing"
+        operational_escalation.cancel_entity_events(
+            session,
+            entity_type=OperationalEntityType.outage,
+            entity_id=incident.id,
+            reason=event_type,
+            canceled_at=resolved_at,
+        )
+        return "applied"
+
+    return execute_owner_command(
+        session,
+        definition=_consume_definition("consume_outage_termination"),
+        context=context,
+        operation=lambda: consume_owner_output(
+            session,
+            consumer="network.outage_lifecycle",
+            event_id=event_id,
+            event_type=event_type,
+            producer_owner="network.outage_lifecycle",
+            context=context,
+            operation=_effect,
+        )[0],
     )

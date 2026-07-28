@@ -29,6 +29,47 @@ The chain uses structural foreign keys. Metadata identifiers remain migration
 provenance and compatibility evidence; they are not canonical joins for new
 writes.
 
+## Owner-output chain
+
+Each owner's committed transition stages its versioned output event in the
+same transaction; the event dispatcher delivers it after commit with durable
+retry, and the registered `SalesLifecycleProjectionHandler` adapter asks the
+next owner to apply the consequence. A failed consequence stays a failed
+event delivery — visible and retryable — never a warning log.
+
+The verified-implementation, service-order-release, and CX-acceptance hops
+are consumed through `sales.fulfillment`'s receipted owner commands
+(`consume_verified_implementation` / `consume_service_order_release` /
+`consume_cx_acceptance`): each effect commits atomically with its unique
+`(consumer, event_id)` receipt via `events.owner_outputs` (ADR 0007 §2), so
+a redelivery is an exact no-op. The funding consequence remains idempotent
+on business keys only — its effect creates subscriptions and invoices
+through billing/catalog creators that commit internally, which an owner
+command correctly forbids; it adopts a receipt when those creators become
+commit-free participants.
+
+```text
+sales_order.funding_satisfied   (sales.orders, atomically with the paid edge)
+  -> pending Subscription + draft ServiceOrder per service line
+     + order payment evidence            [apply_funding_consequences]
+vendor_project.verified         (operations.vendor_project_lifecycle)
+  -> project completion + ServiceOrder release  [sales.fulfillment]
+service_order.released          (operations.service_order_lifecycle)
+  -> sales-linked order enters provisioning     [service_order_lifecycle]
+service_order.assigned
+  -> provisioning run starts                    [ProvisioningHandler]
+provisioning.completed/failed
+  -> readiness decision -> activation           [operations.provisioning_lifecycle]
+service_order.completed
+  -> ready CX handoff                           [customer.experience_handoff]
+customer_experience.accepted
+  -> fulfilled SalesOrder                       [sales.orders]
+```
+
+The self-serve deposit path stages the same funding output with
+`record_order_payment=false`, because the deposit's only ledger event is the
+verified deposit-invoice payment.
+
 ## Named owners
 
 | Decision or fact | Owner |
@@ -79,21 +120,29 @@ configuration. Changing one requires a migration/versioned contract and tests.
    Project and InstallationProject. ProjectTask may own several WorkOrders;
    WorkOrder owns the foreign key.
 4. A partially paid SalesOrder records the receipt but creates no Subscription
-   or ServiceOrder. Full funding creates one pending Subscription and one
-   idempotent ServiceOrder per service line.
+   or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
+   atomically with the paid transition; the lifecycle projection handler
+   creates one pending Subscription and one idempotent ServiceOrder per
+   service line through `sales.orders.apply_funding_consequences`. An
+   unresolved consequence (for example an offer that no longer resolves)
+   fails the delivery visibly instead of being skipped.
 5. Sales ServiceOrders remain `draft` until the vendor-project owner records an
    append-only staff verification event. After that fact commits, the registered
    lifecycle projection handler asks `sales.fulfillment` to complete the native
    Project and release linked ServiceOrders. Replay is idempotent and failure is
    retryable; the vendor owner never writes project or provisioning roots.
+   The committed `service_order.released` output then moves the sales-linked
+   ServiceOrder into `provisioning` through its lifecycle owner; repair and
+   reprovisioning orders keep manual progression.
 6. Billing cannot directly activate a sales-created pending Subscription.
    Only a successful provisioning result may transition the linked ServiceOrder
    to `active`; that transition asks the subscription owner to activate access.
 7. Successful activation emits the committed service-order completion fact.
    The lifecycle projection handler asks the CX owner to create a handoff only
    when funding, implementation, provisioning, and Subscription evidence all
-   agree. CX staff acceptance is separately actor/time/reason evidenced and
-   fulfils the SalesOrder.
+   agree. CX staff acceptance is separately actor/time/reason evidenced; its
+   committed `customer_experience.accepted` output asks `sales.orders` to
+   fulfil the SalesOrder. The CX owner does not write sales state inline.
 8. Support Tickets and ticket-origin WorkOrders stay attached to the same
    Subscriber/Party history but do not rewrite sales attribution.
 

@@ -185,7 +185,6 @@ def test_vendor_invoice_lifecycle_and_neutral_erp_contract(db_session):
 def test_vendor_invoice_review_rolls_back_when_erp_enqueue_fails(
     db_session, monkeypatch
 ):
-    from app.services.dotmac_erp import purchase_invoice_sync
 
     install, vendor, reviewer = _chain(db_session)
     invoice = VendorPurchaseInvoice(
@@ -214,9 +213,11 @@ def test_vendor_invoice_review_rolls_back_when_erp_enqueue_fails(
     def _fail_enqueue(*_args, **_kwargs):
         raise RuntimeError("synthetic ERP enqueue failure")
 
+    from app.services import backoffice
+
     monkeypatch.setattr(
-        purchase_invoice_sync,
-        "enqueue_purchase_invoice",
+        backoffice,
+        "enqueue_purchase_invoice_outbox",
         _fail_enqueue,
     )
     command = ReviewVendorPurchaseInvoiceCommand(
@@ -231,15 +232,24 @@ def test_vendor_invoice_review_rolls_back_when_erp_enqueue_fails(
         review_notes="Must roll back",
     )
 
-    with pytest.raises(RuntimeError, match="synthetic ERP enqueue failure"):
-        vendor_purchase_invoices.review(db_session, command)
+    vendor_purchase_invoices.review(db_session, command)
+    db_session.expire_all()
 
+    # The approval is the owner's committed fact; the payables export is a
+    # receipted consequence, so an ERP-transport failure leaves the approval
+    # intact and the delivery durably failed and retryable.
     persisted = db_session.get(VendorPurchaseInvoice, invoice.id)
     assert persisted is not None
-    assert persisted.status == "submitted"
-    assert persisted.reviewed_at is None
-    assert persisted.reviewed_by_system_user_id is None
-    assert persisted.review_notes is None
+    assert persisted.status == "approved"
+    assert persisted.reviewed_at is not None
+    from app.models.event_store import EventStatus, EventStore
+
+    delivery = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "vendor_purchase_invoice.approved")
+        .one()
+    )
+    assert delivery.status == EventStatus.failed
 
 
 def test_vendor_invoice_attachment_metadata_rolls_back_after_staging_failure(

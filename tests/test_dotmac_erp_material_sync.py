@@ -30,7 +30,6 @@ from app.models.field_material import (
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
-from app.services import backoffice
 from app.services.dotmac_erp import material_sync, outbox
 from app.services.field.material_requests import field_material_requests
 from app.services.integrations.backoffice_contracts import ERP_OUTBOX_CAPABILITY
@@ -296,16 +295,26 @@ def test_adapter_failure_does_not_reverse_sub_approval(db_session, monkeypatch):
     def fail_enqueue(*args, **kwargs):
         raise RuntimeError("outbox unavailable")
 
-    monkeypatch.setattr(backoffice, "enqueue_material_support", fail_enqueue)
+    monkeypatch.setattr(material_sync, "enqueue_material_request", fail_enqueue)
     field_material_requests.approve(db_session, str(request.id))
     db_session.expire_all()
     persisted = db_session.get(FieldMaterialRequest, request.id)
+    # The Sub approval is never reversed by an ERP-transport failure; the
+    # consequence is a durably failed, retryable event delivery instead of
+    # a metadata breadcrumb.
     assert persisted.status == "approved"
     assert persisted.approved_at is not None
-    assert (persisted.metadata_ or {})["manager_events"][-1]["event"] == (
-        "backoffice_delivery_pending"
-    )
     assert _outbox_rows(db_session, persisted) == []
+    from app.models.event_store import EventStatus, EventStore
+
+    delivery = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "field_material_request.approved")
+        .order_by(EventStore.created_at.desc())
+        .first()
+    )
+    assert delivery is not None
+    assert delivery.status == EventStatus.failed
 
 
 def test_approval_survives_when_provider_capability_is_disabled(db_session):
@@ -317,10 +326,12 @@ def test_approval_survives_when_provider_capability_is_disabled(db_session):
 
     result = field_material_requests.approve(db_session, str(request.id))
     assert result["status"] == "approved"
-    assert _outbox_rows(db_session, request) == []
-    assert (request.metadata_ or {})["manager_events"][-1]["event"] == (
-        "backoffice_delivery_pending"
-    )
+    # The outbox intent is created regardless of provider capability; the
+    # capability gates delivery, so the row waits as a durable pending
+    # delivery instead of a lost breadcrumb.
+    rows = _outbox_rows(db_session, request)
+    assert len(rows) == 1
+    assert rows[0].status == FieldErpSyncStatus.pending.value
 
 
 def test_reenqueue_reuses_the_same_outbox_row(db_session):

@@ -183,7 +183,7 @@ def material_request_eligibility_error(request: FieldMaterialRequest) -> str | N
 
 
 def enqueue_material_request(
-    db: Session, request: FieldMaterialRequest
+    db: Session, request: FieldMaterialRequest, *, isolate: bool = True
 ) -> FieldErpSyncEvent | None:
     """Enqueue the material-request outbox intent for an approved request.
 
@@ -207,6 +207,7 @@ def enqueue_material_request(
         entity_id=request.id,
         idempotency_key=material_request_idempotency_key(request),
         payload=payload,
+        isolate=isolate,
     )
 
 

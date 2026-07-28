@@ -58,7 +58,6 @@ app.services.field.fiber
 app.services.field.jobs
 app.services.field.location_tracking
 app.services.field.map_assets
-app.services.field.materials
 app.services.field.movements
 app.services.field.notes
 app.services.field.vendor_devices

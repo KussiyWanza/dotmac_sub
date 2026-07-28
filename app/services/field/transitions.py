@@ -213,19 +213,30 @@ class FieldTransitions:
             event_payload,
         )
         if event_value in {"complete", "unable_to_complete"}:
-            # The handoff projection shares this transaction: field outcome
-            # evidence and the official ticket timeline cannot drift apart.
+            # The field outcome is this owner's committed output. It stages
+            # atomically with the transition; the support lifecycle
+            # projection handler delivers it to the handoff owner's receipted
+            # consumer, which appends the ticket timeline evidence. Field
+            # completion never changes ticket status.
             db.flush()
-            from app.services import ticket_work_order_handoff
+            from app.services.events import EventType, emit_event
 
-            ticket_work_order_handoff.stage_field_outcome(
+            emit_event(
                 db,
-                work_order=row,
-                field_event_id=event_row.id,
-                event=event_value,
-                occurred_at=occurred,
-                note=event_row.note,
-                actor_id=profile.system_user_id or profile.person_id,
+                EventType.work_order_field_outcome_recorded,
+                {
+                    "work_order_id": str(row.id),
+                    "origin_ticket_id": str(row.origin_ticket_id)
+                    if row.origin_ticket_id
+                    else None,
+                    "field_event_id": str(event_row.id),
+                    "outcome": event_value,
+                    "occurred_at": occurred.isoformat(),
+                    "note": event_row.note,
+                    "actor_id": str(profile.system_user_id or profile.person_id),
+                },
+                actor=str(profile.system_user_id or profile.person_id),
+                subscriber_id=row.subscriber_id,
             )
         if event_value in {"en_route", "arrived", "complete", "unable_to_complete"}:
             from app.services import customer_experience_communications

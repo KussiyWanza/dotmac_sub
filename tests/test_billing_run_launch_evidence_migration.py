@@ -22,7 +22,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["434_sales_funding_erp_exports"]
+    assert script.get_heads() == ["435_access_invitations"]
+    assert (
+        script.get_revision("435_access_invitations").down_revision
+        == "434_sales_funding_erp_exports"
+    )
     assert (
         script.get_revision("434_sales_funding_erp_exports").down_revision
         == "433_durable_timers_collections_cases"

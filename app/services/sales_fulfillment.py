@@ -21,6 +21,12 @@ from app.models.vendor_routes import InstallationProject, InstallationProjectSta
 from app.services import installation_projects, projects, settings_spec
 from app.services import service_address as service_address_service
 from app.services.events import EventType, emit_event
+from app.services.events.owner_outputs import consume_owner_output
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
 
 
 class SalesFulfillmentError(ValueError):
@@ -210,3 +216,157 @@ def release_verified_implementation(
     if commit:
         db.commit()
     return released
+
+
+# --- receipted lifecycle-output consumption --------------------------------
+#
+# The registered SalesLifecycleProjectionHandler delivers committed producer
+# outputs to these owner commands. Each command runs on a transaction-free
+# owner-command session and wraps its effect in a unique
+# ``(consumer, event_id)`` receipt via ``events.owner_outputs``, so the
+# effect and its receipt commit atomically and a redelivery is an exact
+# no-op. A raised failure leaves no receipt: the delivery stays durably
+# failed and retryable in the outbox.
+
+_CONSUMER = "sales.fulfillment"
+_CONSUME_CONCERN = "committed lifecycle output consumption"
+
+_CONSUME_VERIFIED_COMMAND = OwnerCommandDefinition(
+    owner=_CONSUMER,
+    concern=_CONSUME_CONCERN,
+    name="consume_verified_implementation",
+)
+_CONSUME_RELEASE_COMMAND = OwnerCommandDefinition(
+    owner=_CONSUMER,
+    concern=_CONSUME_CONCERN,
+    name="consume_service_order_release",
+)
+_CONSUME_ACCEPTANCE_COMMAND = OwnerCommandDefinition(
+    owner=_CONSUMER,
+    concern=_CONSUME_CONCERN,
+    name="consume_cx_acceptance",
+)
+
+
+def consume_verified_implementation(
+    db: Session,
+    *,
+    installation_project_id: UUID,
+    verification_event_id: UUID,
+    event_id: UUID,
+    context: CommandContext,
+) -> int | None:
+    """Receipt one ``vendor_project.verified`` output into a release."""
+
+    def _effect() -> int:
+        return release_verified_implementation(
+            db,
+            installation_project_id=installation_project_id,
+            verification_event_id=verification_event_id,
+            actor_id=context.actor,
+            commit=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_CONSUME_VERIFIED_COMMAND,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer=_CONSUMER,
+            event_id=event_id,
+            event_type=EventType.vendor_project_verified.value,
+            producer_owner="operations.vendor_project_lifecycle",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
+
+
+def consume_service_order_release(
+    db: Session,
+    *,
+    service_order_id: UUID,
+    event_id: UUID,
+    context: CommandContext,
+) -> bool | None:
+    """Receipt one ``service_order.released`` output into provisioning.
+
+    Only sales-linked orders auto-enter provisioning; repair and
+    reprovisioning orders keep manual progression, and an order an operator
+    already progressed is left untouched.
+    """
+
+    def _effect() -> bool:
+        from app.models.provisioning import ServiceOrder, ServiceOrderStatus
+        from app.services import service_order_lifecycle
+
+        order = db.get(ServiceOrder, service_order_id)
+        if (
+            order is None
+            or order.sales_order_id is None
+            or order.status
+            not in {ServiceOrderStatus.submitted, ServiceOrderStatus.scheduled}
+        ):
+            return False
+        service_order_lifecycle.transition_service_order(
+            db,
+            service_order_id=order.id,
+            target_status=ServiceOrderStatus.provisioning,
+            actor_id=context.actor,
+            reason="Released implementation enters provisioning",
+            event_evidence={"released_event_id": str(event_id)},
+            commit=False,
+        )
+        return True
+
+    return execute_owner_command(
+        db,
+        definition=_CONSUME_RELEASE_COMMAND,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer=_CONSUMER,
+            event_id=event_id,
+            event_type=EventType.service_order_released.value,
+            producer_owner="operations.service_order_lifecycle",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
+
+
+def consume_cx_acceptance(
+    db: Session,
+    *,
+    sales_order_id: UUID,
+    handoff_id: UUID,
+    event_id: UUID,
+    context: CommandContext,
+) -> bool | None:
+    """Receipt one ``customer_experience.accepted`` output into fulfilment."""
+
+    def _effect() -> bool:
+        from app.services import sales_orders
+
+        return sales_orders.fulfill_from_customer_experience(
+            db,
+            sales_order_id=sales_order_id,
+            handoff_id=handoff_id,
+            actor_id=context.actor,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_CONSUME_ACCEPTANCE_COMMAND,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer=_CONSUMER,
+            event_id=event_id,
+            event_type=EventType.customer_experience_accepted.value,
+            producer_owner="customer.experience_handoff",
+            context=context,
+            operation=_effect,
+        )[0],
+    )

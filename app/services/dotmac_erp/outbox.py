@@ -118,6 +118,7 @@ def enqueue(
     entity_id: object,
     idempotency_key: str,
     payload: dict,
+    isolate: bool = True,
 ) -> FieldErpSyncEvent:
     """Enqueue (or return the existing) outbox row for ``idempotency_key``.
 
@@ -144,6 +145,13 @@ def enqueue(
         status=FieldErpSyncStatus.pending.value,
         attempts=0,
     )
+    if not isolate:
+        # Inside an owner command a helper savepoint is forbidden; the
+        # pre-check above dedupes, and a true concurrent race fails the
+        # command, whose redelivery returns the winner idempotently.
+        db.add(event)
+        db.flush()
+        return event
     try:
         # Isolate the unique-key race to a savepoint.  A full session rollback
         # here would also discard the source business transition that is meant

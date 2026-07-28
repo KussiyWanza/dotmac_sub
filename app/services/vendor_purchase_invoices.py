@@ -612,3 +612,50 @@ class VendorPurchaseInvoices:
 
 
 vendor_purchase_invoices = VendorPurchaseInvoices()
+
+# --- receipted lifecycle-output consumption --------------------------------
+
+
+def consume_invoice_approved(
+    db,
+    *,
+    invoice_id,
+    event_id,
+    context,
+) -> str | None:
+    """Receipt one committed invoice approval into the payables export.
+
+    The outbox intent and its unique ``(consumer, event_id)`` receipt commit
+    atomically; ERP failure stays a durable pending delivery — Sub never
+    infers payment.
+    """
+    from app.models.vendor_routes import VendorPurchaseInvoice
+    from app.services.common import coerce_uuid
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def _effect() -> str:
+        from app.services.backoffice import enqueue_purchase_invoice_outbox
+
+        invoice = db.get(VendorPurchaseInvoice, coerce_uuid(str(invoice_id)))
+        if invoice is None:
+            return "skipped_missing"
+        if invoice.status != "approved":
+            # Stale replay after a later revision request.
+            return "skipped_state"
+        event = enqueue_purchase_invoice_outbox(db, invoice)
+        return "enqueued" if event is not None else "skipped_not_owned"
+
+    return _execute(
+        db,
+        context=context,
+        name="consume_invoice_approved",
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="operations.vendor_purchase_invoices",
+            event_id=event_id,
+            event_type="vendor_purchase_invoice.approved",
+            producer_owner="operations.vendor_purchase_invoice_records",
+            context=context,
+            operation=_effect,
+        )[0],
+    )

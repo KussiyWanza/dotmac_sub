@@ -1627,6 +1627,48 @@ class Tickets:
         meta["resolution_confirmation"] = confirmation
         ticket.metadata_ = meta
 
+        # The grace deadline is a durable per-ticket timer staged atomically
+        # with this transition (ADR 0007 §7); its fired trigger drives the
+        # receipted auto-confirm consumer. Re-requesting replaces the timer;
+        # confirm/dispute make a stale firing a state-guarded no-op.
+        from app.services.owner_commands import CommandContext
+        from app.services.runtime_durable_timers import (
+            ScheduleTimerCommand,
+            schedule_timer,
+        )
+
+        schedule_timer(
+            db,
+            ScheduleTimerCommand(
+                owner="support.ticket_lifecycle",
+                entity_kind="support_ticket",
+                entity_id=ticket.id,
+                purpose="resolution_confirmation_due",
+                due_at=now + timedelta(hours=int(grace_hours)),
+                output_event_type="support.resolution_confirmation_due",
+            ),
+            context=CommandContext.system(
+                actor=str(actor_id or "support.ticket_lifecycle"),
+                scope=str(ticket.id),
+                reason="resolution confirmation grace deadline",
+                idempotency_key=(f"resolution-grace:{ticket.id}:{now.isoformat()}"),
+            ),
+        )
+        from app.services.events import EventType, emit_event
+
+        emit_event(
+            db,
+            EventType.ticket_resolution_requested,
+            {
+                "ticket_id": str(ticket.id),
+                "grace_hours": int(grace_hours),
+                "requested_by": actor_id,
+                "requested_at": now.isoformat(),
+            },
+            actor=str(actor_id or "support.ticket_lifecycle"),
+            subscriber_id=ticket.subscriber_id,
+        )
+
         token_row = ticket_access_tokens.mint(
             db,
             ticket,
@@ -1714,6 +1756,19 @@ class Tickets:
             entity_id=str(ticket.id),
             actor_id=None,
             metadata={"token_id": str(token_row.id), "auto": bool(auto)},
+        )
+        from app.services.events import EventType, emit_event
+
+        emit_event(
+            db,
+            EventType.ticket_resolution_confirmed,
+            {
+                "ticket_id": str(ticket.id),
+                "auto": bool(auto),
+                "confirmed_at": now.isoformat(),
+            },
+            actor="support.ticket_lifecycle",
+            subscriber_id=ticket.subscriber_id,
         )
         db.flush()
         db.refresh(ticket)
@@ -1823,6 +1878,19 @@ class Tickets:
             actor_id=None,
             metadata={"token_id": str(token_row.id), "has_reason": bool(clean_reason)},
         )
+        from app.services.events import EventType, emit_event
+
+        emit_event(
+            db,
+            EventType.ticket_resolution_disputed,
+            {
+                "ticket_id": str(ticket.id),
+                "disputed_at": now.isoformat(),
+                "has_reason": bool(clean_reason),
+            },
+            actor="support.ticket_lifecycle",
+            subscriber_id=ticket.subscriber_id,
+        )
         db.flush()
         db.refresh(ticket)
         return ticket
@@ -1883,6 +1951,108 @@ class Tickets:
                     },
                 )
         return confirmed
+
+    @staticmethod
+    @ticket_owner_command("consume_resolution_confirmation_due")
+    def consume_resolution_confirmation_due(
+        db: Session,
+        *,
+        ticket_id: str,
+        event_id,
+        context,
+    ) -> str:
+        """Receipt one fired grace timer into an auto-confirmation.
+
+        The effect and its unique (consumer, event_id) receipt commit
+        atomically; a stale firing after confirm/dispute/re-request is a
+        state-guarded no-op.
+        """
+        from app.services.events.owner_outputs import consume_owner_output
+
+        def _effect() -> str:
+            uid = _coerce_uuid(str(ticket_id))
+            ticket = db.get(Ticket, uid) if uid is not None else None
+            if ticket is None or not ticket.is_active:
+                return "skipped_missing"
+            if ticket.status != TicketStatus.pending_confirmation.value:
+                return "skipped_state"
+            meta = dict(ticket.metadata_ or {})
+            confirmation = dict(meta.get("resolution_confirmation") or {})
+            grace_raw = confirmation.get("grace_hours")
+            grace_hours = int(grace_raw) if grace_raw is not None else 24
+            resolved_at = _as_utc(ticket.resolved_at)
+            if resolved_at is None or (
+                resolved_at + timedelta(hours=grace_hours) > _now()
+            ):
+                return "skipped_not_due"
+            token_row = (
+                db.query(TicketAccessToken)
+                .filter(TicketAccessToken.ticket_id == ticket.id)
+                .filter(TicketAccessToken.purpose == "resolution_confirm")
+                .filter(TicketAccessToken.is_active.is_(True))
+                .order_by(TicketAccessToken.created_at.desc())
+                .first()
+            )
+            if token_row is None:
+                token_row = ticket_access_tokens.mint(
+                    db,
+                    ticket,
+                    purpose="resolution_confirm",
+                    ttl_days=max(1, grace_hours // 24 or 1),
+                )
+                db.flush()
+            Tickets.confirm_resolution(db, token_row, auto=True)
+            return "confirmed"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="support.ticket_lifecycle",
+            event_id=event_id,
+            event_type="support.resolution_confirmation_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=_effect,
+        )
+        return result if result is not None else "replayed"
+
+    @staticmethod
+    @ticket_owner_command("consume_sla_breach_due")
+    def consume_sla_breach_due(
+        db: Session,
+        *,
+        clock_id: str,
+        event_id,
+        context,
+    ) -> str:
+        """Receipt one fired SLA-clock timer into breach evaluation.
+
+        The breach records, escalation planning, and the unique
+        (consumer, event_id) receipt commit atomically; a clock that was
+        paused, completed, or re-targeted makes a stale firing a
+        state-guarded no-op inside check_sla_breaches.
+        """
+        from app.models.ticket_workflow import SlaClock
+        from app.services.events.owner_outputs import consume_owner_output
+        from app.services.sla_assignment import check_sla_breaches
+
+        def _effect() -> str:
+            uid = _coerce_uuid(str(clock_id))
+            clock = db.get(SlaClock, uid) if uid is not None else None
+            if clock is None:
+                return "skipped_missing"
+            breached = check_sla_breaches(db, clock.entity_id)
+            return "breached" if breached else "skipped_state"
+
+        result, _receipt = consume_owner_output(
+            db,
+            consumer="support.ticket_lifecycle",
+            event_id=event_id,
+            event_type="support.ticket_sla_breach_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=_effect,
+        )
+        return result if result is not None else "replayed"
 
     @staticmethod
     @ticket_owner_command("add_attachments")

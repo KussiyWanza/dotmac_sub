@@ -140,6 +140,17 @@ class EventType(enum.Enum):
     workqueue_action_coordinated = "workqueue.action_coordinated"
 
     # Operations - vendor installation project lifecycle
+    # Materials / vendor / ERP chain outputs
+    # (docs/designs/MATERIALS_VENDOR_ERP_CHAIN.md). Staged atomically with
+    # each owning transition; the materials lifecycle projection handler
+    # applies cross-owner consequences with durable receipts.
+    field_material_request_approved = "field_material_request.approved"
+    field_material_request_fulfilled = "field_material_request.fulfilled"
+    field_material_consumption_recorded = "field_material.consumption_recorded"
+    vendor_purchase_invoice_approved = "vendor_purchase_invoice.approved"
+    vendor_purchase_invoice_payment_observed = (
+        "vendor_purchase_invoice.payment_observed"
+    )
     vendor_material_release_requested = "vendor_material_release.requested"
     vendor_material_release_reviewed = "vendor_material_release.reviewed"
     vendor_material_release_issued = "vendor_material_release.issued"
@@ -173,6 +184,7 @@ class EventType(enum.Enum):
     lead_account_converted = "lead.account_converted"
     quote_accepted = "quote.accepted"
     sales_order_paid = "sales_order.paid"
+    sales_order_funding_satisfied = "sales_order.funding_satisfied"
     sales_order_fulfilled = "sales_order.fulfilled"
     project_created = "project.created"
     installation_scope_created = "installation_scope.created"
@@ -243,6 +255,23 @@ class EventType(enum.Enum):
     customer_login = "customer.login"
     customer_logout = "customer.logout"
     customer_ticket_created = "customer.ticket_created"
+
+    # Identity / onboarding invitation lifecycle
+    # (docs/designs/IDENTITY_ONBOARDING_CHAIN.md)
+    access_invitation_issued = "access_invitation.issued"
+    access_invitation_accepted = "access_invitation.accepted"
+    access_invitation_expired = "access_invitation.expired"
+
+    # Support ticket / work-order lifecycle outputs
+    # (docs/designs/TICKET_WORK_ORDER_HANDOFF_SOT.md). Staged atomically with
+    # each owning transition; the support lifecycle projection handler
+    # applies cross-owner consequences with durable receipts.
+    ticket_resolution_requested = "ticket.resolution_requested"
+    ticket_resolution_confirmed = "ticket.resolution_confirmed"
+    ticket_resolution_disputed = "ticket.resolution_disputed"
+    ticket_merged = "ticket.merged"
+    ticket_work_order_issued = "ticket.work_order_issued"
+    work_order_field_outcome_recorded = "work_order.field_outcome_recorded"
     customer_password_changed = "customer.password_changed"  # noqa: S105
 
     # Reseller events (5)
@@ -316,6 +345,20 @@ class EventType(enum.Enum):
     # selection + per-subscriber preferences; the notifier only supplies content.
     outage_area = "outage.area"
     outage_last_mile = "outage.last_mile"
+
+    # Outage incident lifecycle outputs
+    # (docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md). Staged atomically
+    # with each incident transition; the registered outage lifecycle
+    # projection handler applies cross-owner consequences. The legacy
+    # ``network.alert`` fan-out keeps its payload for external webhooks.
+    outage_created = "outage.created"
+    outage_suspected = "outage.suspected"
+    outage_confirmed = "outage.confirmed"
+    outage_clearing = "outage.clearing"
+    outage_reopened = "outage.reopened"
+    outage_rerooted = "outage.rerooted"
+    outage_discarded = "outage.discarded"
+    outage_resolved = "outage.resolved"
 
     # Custom event type for extensibility
     custom = "custom"

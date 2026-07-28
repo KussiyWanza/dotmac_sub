@@ -237,14 +237,9 @@ def accept_handoff(
     handoff.accepted_by_actor_type = str(actor_type or "staff_user")
     handoff.accepted_by_actor_id = actor
     handoff.attention_reason = None
-    from app.services import sales_orders
-
-    sales_orders.fulfill_from_customer_experience(
-        db,
-        sales_order_id=handoff.sales_order_id,
-        handoff_id=handoff.id,
-        actor_id=actor,
-    )
+    # The accepted output below is the durable trigger for SalesOrder
+    # fulfilment: the registered lifecycle projection handler asks the
+    # sales-order owner to apply it after this owner's fact commits.
     _event(
         db,
         handoff=handoff,
@@ -336,4 +331,154 @@ def list_handoffs(
             .offset(offset)
             .limit(limit)
         ).all()
+    )
+
+
+# --- receipted lifecycle-output consumption --------------------------------
+
+_READINESS_DEFINITION = None  # built lazily to avoid import cycles
+
+
+def consume_service_order_completion(
+    db: Session,
+    *,
+    service_order_id: UUID,
+    event_id,
+    context,
+) -> CustomerExperienceHandoff | None:
+    """Receipt one committed service-order completion into CX readiness.
+
+    The handoff readiness decision, its acceptance-deadline timer, and the
+    unique ``(consumer, event_id)`` receipt commit atomically; a redelivery
+    is an exact no-op.
+    """
+    from app.models.domain_settings import SettingDomain
+    from app.services import settings_spec
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import (
+        OwnerCommandDefinition,
+        execute_owner_command,
+    )
+
+    definition = OwnerCommandDefinition(
+        owner="customer.experience_handoff",
+        concern=("implementation-to-customer-experience readiness decision"),
+        name="consume_service_order_completion",
+    )
+
+    def _effect() -> CustomerExperienceHandoff:
+        handoff = ensure_ready_for_service_order(
+            db,
+            service_order_id=service_order_id,
+            actor_id="sales.lifecycle_projection",
+        )
+        if handoff.status == CustomerExperienceHandoffStatus.ready.value:
+            # The acceptance deadline is a durable per-handoff timer; a
+            # handoff accepted or blocked before it fires makes the firing
+            # a state-guarded no-op.
+            from datetime import timedelta
+
+            from app.services.owner_commands import CommandContext
+            from app.services.runtime_durable_timers import (
+                ScheduleTimerCommand,
+                schedule_timer,
+            )
+
+            hours = int(
+                settings_spec.resolve_value(
+                    db, SettingDomain.workflow, "cx_acceptance_attention_hours"
+                )
+                or 72
+            )
+            due_at = datetime.now(UTC) + timedelta(hours=max(1, hours))
+            schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner="customer.experience_handoff",
+                    entity_kind="cx_handoff",
+                    entity_id=handoff.id,
+                    purpose="cx_acceptance_due",
+                    due_at=due_at,
+                    output_event_type="sales.cx_acceptance_due",
+                ),
+                context=CommandContext.system(
+                    actor="customer.experience_handoff",
+                    scope=str(handoff.id),
+                    reason="CX acceptance deadline",
+                    idempotency_key=(
+                        f"cx-acceptance:{handoff.id}:{due_at.isoformat()}"
+                    ),
+                ),
+            )
+        return handoff
+
+    return execute_owner_command(
+        db,
+        definition=definition,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="customer.experience_handoff",
+            event_id=event_id,
+            event_type="service_order.completed",
+            producer_owner="operations.service_order_lifecycle",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
+
+
+def consume_cx_acceptance_due(
+    db: Session,
+    *,
+    handoff_id: UUID,
+    event_id,
+    context,
+) -> str | None:
+    """Receipt one fired acceptance-deadline timer into needs-attention.
+
+    A handoff already accepted, blocked, or canceled makes a stale firing
+    an exact no-op; acceptance itself always remains a staff decision.
+    """
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import (
+        OwnerCommandDefinition,
+        execute_owner_command,
+    )
+
+    definition = OwnerCommandDefinition(
+        owner="customer.experience_handoff",
+        concern="CX acceptance and needs-attention lifecycle",
+        name="consume_cx_acceptance_due",
+    )
+
+    def _effect() -> str:
+        handoff = db.get(CustomerExperienceHandoff, handoff_id)
+        if handoff is None:
+            return "skipped_missing"
+        if handoff.status != CustomerExperienceHandoffStatus.ready.value:
+            return "skipped_state"
+        mark_needs_attention(
+            db,
+            handoff_id=handoff.id,
+            actor_type="system",
+            actor_id="customer.experience_handoff",
+            reason="Customer acceptance overdue",
+            commit=False,
+        )
+        return "flagged"
+
+    return execute_owner_command(
+        db,
+        definition=definition,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="customer.experience_handoff",
+            event_id=event_id,
+            event_type="sales.cx_acceptance_due",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=_effect,
+        )[0],
     )

@@ -336,11 +336,24 @@ def stage_review(db: Session, command: ReviewVendorPurchaseInvoiceCommand) -> di
             or invoice.procurement_order_reference
         )
         db.flush()
-        from app.services.dotmac_erp.purchase_invoice_sync import (
-            enqueue_purchase_invoice,
-        )
+        # The approval's committed output drives the receipted payables
+        # export through the materials lifecycle projection handler; ERP
+        # failure stays a durable pending delivery, never an inferred
+        # payment.
+        from app.services.events import EventType, emit_event
 
-        enqueue_purchase_invoice(db, invoice)
+        emit_event(
+            db,
+            EventType.vendor_purchase_invoice_approved,
+            {
+                "invoice_id": str(invoice.id),
+                "project_id": str(invoice.project_id),
+                "vendor_id": str(invoice.vendor_id) if invoice.vendor_id else None,
+                "invoice_number": invoice.invoice_number,
+                "procurement_order_reference": invoice.procurement_order_reference,
+            },
+            actor="operations.vendor_purchase_invoice_records",
+        )
     else:
         invoice.status = VendorPurchaseInvoiceStatus.revision_requested.value
     db.flush()

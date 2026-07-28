@@ -180,6 +180,39 @@ def create_sla_clock_for_ticket(db: Session, ticket: Ticket) -> SlaClock | None:
         due_at=due_at,
     )
     db.add(clock)
+    db.flush()
+    # The breach deadline is a durable per-clock timer staged atomically
+    # with the clock (ADR 0007 §7); its fired trigger drives the receipted
+    # breach consumer. A paused, completed, or already-breached clock makes
+    # a stale firing a state-guarded no-op.
+    from app.services.owner_commands import CommandContext, owner_command_active
+    from app.services.runtime_durable_timers import (
+        ScheduleTimerCommand,
+        schedule_timer,
+    )
+
+    if not owner_command_active(db):
+        # Direct participant callers (tests, migrations) create the clock
+        # without the owning ticket command; the timer is staged only where
+        # the transition owner can commit it atomically.
+        return clock
+    schedule_timer(
+        db,
+        ScheduleTimerCommand(
+            owner="support.ticket_lifecycle",
+            entity_kind="sla_clock",
+            entity_id=clock.id,
+            purpose="sla_breach_due",
+            due_at=due_at,
+            output_event_type="support.ticket_sla_breach_due",
+        ),
+        context=CommandContext.system(
+            actor="support.ticket_sla_clock",
+            scope=str(clock.id),
+            reason="ticket SLA breach deadline",
+            idempotency_key=f"sla-breach:{clock.id}:{due_at.isoformat()}",
+        ),
+    )
     return clock
 
 

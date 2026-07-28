@@ -366,6 +366,21 @@ def _issue_work_order(
             "transport_request_id": command.request_id,
         },
     )
+    from app.services.events import EventType, emit_event
+
+    emit_event(
+        db,
+        EventType.ticket_work_order_issued,
+        {
+            "ticket_id": str(ticket.id),
+            "work_order_id": str(work_order.id),
+            "work_order_public_id": work_order.public_id,
+            "assigned_team_id": str(ticket.service_team_id),
+            "issued_by": str(actor_uuid),
+        },
+        actor=str(actor_uuid),
+        subscriber_id=ticket.subscriber_id,
+    )
     return TicketWorkOrderIssueResult(work_order=work_order, replayed=False)
 
 
@@ -410,4 +425,64 @@ def stage_field_outcome(
             "field_event_id": str(field_event_id),
             "outcome": event,
         },
+    )
+
+
+# --- receipted lifecycle-output consumption --------------------------------
+
+_CONSUME_FIELD_OUTCOME_DEFINITION = OwnerCommandDefinition(
+    owner="support.ticket_work_order_handoff",
+    concern="committed field outcome consumption",
+    name="consume_field_outcome",
+)
+
+
+def consume_field_outcome(
+    db: Session,
+    *,
+    work_order_id: UUID,
+    field_event_id: UUID,
+    outcome: str,
+    occurred_at,
+    note: str | None,
+    actor_id: object | None,
+    event_id: UUID,
+    context: CommandContext,
+) -> str | None:
+    """Receipt one committed field outcome into the ticket timeline.
+
+    The projection and its unique ``(consumer, event_id)`` receipt commit
+    atomically; a redelivery is an exact no-op. Field completion never
+    changes ticket status — support verifies and resolves separately.
+    """
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def _effect() -> str:
+        work_order = db.get(WorkOrder, work_order_id)
+        if work_order is None:
+            return "skipped_missing"
+        stage_field_outcome(
+            db,
+            work_order=work_order,
+            field_event_id=field_event_id,
+            event=outcome,
+            occurred_at=occurred_at,
+            note=note,
+            actor_id=actor_id,
+        )
+        return "applied"
+
+    return execute_owner_command(
+        db,
+        definition=_CONSUME_FIELD_OUTCOME_DEFINITION,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="support.ticket_work_order_handoff",
+            event_id=event_id,
+            event_type="work_order.field_outcome_recorded",
+            producer_owner="operations.field_completion",
+            context=context,
+            operation=_effect,
+        )[0],
     )

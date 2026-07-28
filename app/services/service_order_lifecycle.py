@@ -156,6 +156,9 @@ def release_implementation(
             "verification_event_id": str(verification_event_id),
             "from_status": previous.value,
             "to_status": order.status.value,
+            "sales_order_id": str(order.sales_order_id)
+            if order.sales_order_id
+            else None,
         },
         actor=actor_id,
         subscriber_id=order.subscriber_id,

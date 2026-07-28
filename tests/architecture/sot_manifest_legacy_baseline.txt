@@ -117,7 +117,6 @@ network.ont_topology_observations
 network.operation_dispatch
 network.operation_ledger
 network.outage_impact
-network.outage_lifecycle
 network.routeros_sot
 network.splitter_inventory
 observability.audit_log

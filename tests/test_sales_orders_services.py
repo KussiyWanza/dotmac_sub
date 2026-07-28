@@ -288,13 +288,13 @@ def test_paid_order_pushes_subscription_then_payment(db_session, billing_calls):
     assert (line.metadata_ or {}).get("selfcare_subscription_id")
     assert (line.metadata_ or {}).get("selfcare_subscription_invoice_id")
 
-    # Re-running the sync skips the already-tagged line but re-records the
-    # payment (idempotent server-side on external_ref).
+    # Re-recording the payment evidence is idempotent server-side on the
+    # external_ref. Full consumer replay with already-tagged lines is
+    # exercised in tests/test_sales_lifecycle_chain.py with a persisted
+    # subscription; the mocked one here is not in the database.
     billing_calls.clear()
-    sales_order_service._sync_sales_order_financials(db_session, order)
-    names = [name for name, _ in billing_calls]
-    assert "create_subscription" not in names
-    assert names == ["record_external_payment"]
+    sales_order_service._record_sales_order_payment(db_session, order)
+    assert [name for name, _ in billing_calls] == ["record_external_payment"]
 
 
 def test_partial_order_records_money_without_creating_service(

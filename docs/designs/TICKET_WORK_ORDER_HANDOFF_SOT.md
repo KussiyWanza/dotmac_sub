@@ -86,3 +86,33 @@ Cutover gates are:
 There is no runtime fallback. Repair consists of reconciling the native foreign
 key from retained audit evidence, never re-enabling tag automation or metadata
 caches.
+
+
+## Owner-output chain and durable timers (2026-07-27)
+
+Each owner's committed transition stages its typed output atomically
+(`ticket.work_order_issued`, `work_order.field_outcome_recorded`,
+`ticket.resolution_requested/confirmed/disputed`); the registered
+`SupportLifecycleProjectionHandler` delivers outputs — and fired
+`runtime.durable_timers` triggers — to receipted consumer commands
+(`events.owner_outputs`), so each effect commits atomically with its unique
+`(consumer, event_id)` receipt and a redelivery is an exact no-op.
+
+- The field owner no longer projects onto the ticket timeline inline: field
+  completion emits `work_order.field_outcome_recorded`, consumed by the
+  handoff owner's `consume_field_outcome`. Field completion still never
+  changes ticket status; support verifies and resolves separately.
+- The resolution-confirmation grace period is a durable per-ticket timer
+  (`resolution_confirmation_due`) staged with the request; its fired trigger
+  drives the receipted auto-confirm consumer. The unscheduled
+  `auto_confirm_pending` sweep remains legacy repair only.
+- Conversation snooze wake is a durable per-conversation timer
+  (`snooze_wake`) staged with the snooze; the 300s `team_inbox_snooze_waker`
+  scan remains as legacy repair for pre-timer rows until its retirement
+  gate (all live snoozes carry timers).
+- Due-timer dispatch (`durable_timer_dispatch_runner`, permanent) is the
+  first production driver of `runtime.durable_timers`.
+- Deferred: response-SLA and appointment timers (no owner-command producer
+  on the inbound path / no appointment entity on this chain yet); the
+  CX-comms and inbox field-job consequences remain inline flush-only
+  participants of the field transaction.

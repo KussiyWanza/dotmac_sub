@@ -96,6 +96,9 @@ def test_declare_outage_creates_default_owner_watchers_and_room(db_session):
         severity="high",
         impact={"count": 184},
     )
+    # The declared output commits atomically with the incident; the outage
+    # lifecycle projection handler applies the operational consequences.
+    db_session.commit()
 
     owner = db_session.query(OperationalOwner).one()
     watchers = db_session.query(OperationalWatcher).all()
@@ -130,11 +133,13 @@ def test_classifier_outage_creates_operations_state_only_when_confirmed(db_sessi
         affected_count=20,
         now=now,
     )
+    db_session.commit()
 
     assert db_session.query(OperationalOwner).count() == 0
     assert db_session.query(OperationalWatcher).count() == 0
 
     confirm_incident(db_session, incident, now=now)
+    db_session.commit()
 
     assert db_session.query(OperationalOwner).count() == 1
     assert db_session.query(OperationalWatcher).count() == 3
@@ -191,6 +196,7 @@ def test_declare_outage_plans_deliveries_from_matching_policy(db_session):
         severity="critical",
         impact={"count": 184},
     )
+    db_session.commit()
 
     event = db_session.query(OperationalEscalationEvent).one()
     deliveries = db_session.query(OperationalEscalationDelivery).all()
@@ -227,6 +233,7 @@ def test_outage_policy_threshold_prevents_delivery_noise(db_session):
         severity="medium",
         impact={"count": 99},
     )
+    db_session.commit()
 
     assert db_session.query(OperationalEscalationEvent).count() == 0
     assert db_session.query(OperationalEscalationDelivery).count() == 0
@@ -254,6 +261,7 @@ def test_outage_policy_scope_matches_network_device(db_session):
         severity="critical",
         impact={"count": 200},
     )
+    db_session.commit()
 
     assert db_session.query(OperationalEscalationEvent).count() == 0
 
@@ -274,6 +282,7 @@ def test_outage_escalation_planning_is_idempotent_for_same_trigger(db_session):
         severity="high",
         impact={"count": 20},
     )
+    db_session.commit()
 
     plan_outage_escalations(db_session, incident, trigger="outage.created")
 
@@ -284,10 +293,28 @@ def test_outage_escalation_planning_is_idempotent_for_same_trigger(db_session):
 def test_customer_targeted_policy_adds_affected_subscribers_as_watchers(
     db_session,
     catalog_offer,
+    monkeypatch,
 ):
     _seed_ops_teams(db_session)
     node = _node(db_session)
     subscriptions = _subscriptions(db_session, catalog_offer.id, 2)
+    # The projection handler re-resolves impact from topology; this test node
+    # has no real topology, so pin the impact resolver to the seeded set.
+    # Plain rows: the resolver runs inside the dispatch session's callback,
+    # where touching ORM objects bound to the committed test session fails.
+    from types import SimpleNamespace
+
+    from app.services.topology import outage_operations
+
+    impact_rows = [
+        SimpleNamespace(subscriber_id=subscription.subscriber_id)
+        for subscription in subscriptions
+    ]
+    monkeypatch.setattr(
+        outage_operations,
+        "affected_customers",
+        lambda session, **kwargs: {"count": 2, "subscriptions": impact_rows},
+    )
     operational_escalation.create_policy(
         db_session,
         name="Customer outage update",
@@ -309,6 +336,7 @@ def test_customer_targeted_policy_adds_affected_subscribers_as_watchers(
         severity="high",
         impact={"count": 2, "subscriptions": subscriptions},
     )
+    db_session.commit()
 
     subscriber_watchers = [
         watcher
@@ -331,10 +359,24 @@ def test_customer_targeted_policy_adds_affected_subscribers_as_watchers(
 def test_customer_watcher_limit_prevents_bulk_customer_enrollment(
     db_session,
     catalog_offer,
+    monkeypatch,
 ):
     _seed_ops_teams(db_session)
     node = _node(db_session)
     subscriptions = _subscriptions(db_session, catalog_offer.id, 3)
+    from types import SimpleNamespace
+
+    from app.services.topology import outage_operations
+
+    impact_rows = [
+        SimpleNamespace(subscriber_id=subscription.subscriber_id)
+        for subscription in subscriptions
+    ]
+    monkeypatch.setattr(
+        outage_operations,
+        "affected_customers",
+        lambda session, **kwargs: {"count": 3, "subscriptions": impact_rows},
+    )
     operational_escalation.create_policy(
         db_session,
         name="Small customer outage update only",
@@ -356,6 +398,7 @@ def test_customer_watcher_limit_prevents_bulk_customer_enrollment(
         severity="high",
         impact={"count": 3, "subscriptions": subscriptions},
     )
+    db_session.commit()
 
     assert (
         db_session.query(OperationalWatcher)
@@ -382,8 +425,10 @@ def test_resolve_outage_cancels_pending_escalations(db_session):
         severity="high",
         impact={"count": 20},
     )
+    db_session.commit()
 
     resolve_outage(db_session, incident.id)
+    db_session.commit()
 
     event = db_session.query(OperationalEscalationEvent).one()
     deliveries = db_session.query(OperationalEscalationDelivery).all()
@@ -415,8 +460,10 @@ def test_resolve_classifier_incident_cancels_pending_escalations(db_session):
         now=now,
     )
     confirm_incident(db_session, incident, now=now)
+    db_session.commit()
 
     resolve_classifier_incident(db_session, incident, now=now)
+    db_session.commit()
 
     event = db_session.query(OperationalEscalationEvent).one()
     assert event.status == OperationalEscalationStatus.canceled

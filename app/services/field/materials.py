@@ -113,6 +113,29 @@ class FieldMaterials:
             updated.append(material)
 
         _mark_sub_authoritative(row)
+        # Consumption evidence is this owner's committed output, staged
+        # atomically with the allocation writes for downstream reconcilers.
+        from app.services.events import EventType, emit_event
+
+        emit_event(
+            db,
+            EventType.field_material_consumption_recorded,
+            {
+                "work_order_mirror_id": str(row.id),
+                "work_order_public_id": row.public_id,
+                "items": [
+                    {
+                        "material_id": str(material.id),
+                        "allocated_quantity": material.allocated_quantity,
+                        "consumed_quantity": material.consumed_quantity,
+                        "status": material.status,
+                    }
+                    for material in updated
+                ],
+            },
+            actor="operations.material_consumption",
+            subscriber_id=row.subscriber_id,
+        )
         db.commit()
         for material in updated:
             db.refresh(material)

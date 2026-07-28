@@ -141,24 +141,20 @@ def test_verified_implementation_to_provisioning_to_cx_acceptance(
     )
     # The vendor owner commits only its fact. The registered lifecycle
     # projection consumes that durable event and asks downstream owners to
-    # release implementation in a separate idempotent transaction.
+    # release implementation in a separate idempotent transaction; the
+    # committed release output then auto-advances the sales-linked order
+    # into provisioning through its lifecycle owner.
     db_session.commit()
     db_session.refresh(project)
     db_session.refresh(service_order)
     assert project.status == ProjectStatus.completed.value
     assert installation.status == InstallationProjectStatus.verified.value
-    assert service_order.status == ServiceOrderStatus.submitted
+    assert service_order.status == ServiceOrderStatus.provisioning
     assert (
         str(service_order.implementation_verification_event_id)
         == verification["domain_event_id"]
     )
 
-    service_order_lifecycle.transition_service_order(
-        db_session,
-        service_order_id=service_order.id,
-        target_status=ServiceOrderStatus.provisioning,
-        actor_id="pytest",
-    )
     service_order_lifecycle.record_provisioning_result(
         db_session,
         service_order_id=service_order.id,
@@ -201,13 +197,9 @@ def test_cx_lifecycle_evidence_is_append_only(db_session, subscriber, catalog_of
         actor_id=str(reviewer.id),
     )
     db_session.commit()
-    service_order_lifecycle.transition_service_order(
-        db_session,
-        service_order_id=service_order.id,
-        target_status=ServiceOrderStatus.provisioning,
-        actor_id="pytest",
-        commit=False,
-    )
+    # The committed release output already advanced the order to provisioning.
+    db_session.refresh(service_order)
+    assert service_order.status == ServiceOrderStatus.provisioning
     service_order_lifecycle.record_provisioning_result(
         db_session,
         service_order_id=service_order.id,

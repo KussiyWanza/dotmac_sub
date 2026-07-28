@@ -1210,6 +1210,46 @@ def wake_due_snoozed_conversations(
     return woken
 
 
+def wake_conversation(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    source: str,
+) -> bool:
+    """Wake one snoozed conversation now (durable-timer consumer effect).
+
+    Mirrors ``wake_due_snoozed_conversations`` for a single row: clears the
+    wake time, reopens only a still-snoozed conversation, and appends the
+    workflow history fact. A resolved conversation stays resolved.
+    """
+    if conversation.snoozed_until is None and conversation.status != "snoozed":
+        return False
+    metadata = dict(conversation.metadata_ or {})
+    history = metadata.get("workflow_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "at": _now_iso(),
+            "actor_id": None,
+            "source": source,
+            "snoozed_until": {
+                "from": conversation.snoozed_until.isoformat()
+                if conversation.snoozed_until
+                else None,
+                "to": None,
+            },
+        }
+    )
+    metadata["workflow_history"] = history[-50:]
+    conversation.metadata_ = metadata
+    conversation.snoozed_until = None
+    if conversation.status == "snoozed":
+        conversation.status = "open"
+    db.flush()
+    return True
+
+
 def wake_on_inbound(db: Session, *, conversation: InboxConversation) -> bool:
     """Wake a conversation that was snoozed until the customer replied.
 

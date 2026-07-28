@@ -526,6 +526,36 @@ def update_workflow(
             snooze_until=snooze_until,
             actor_person_id=actor_person_id,
         )
+        if conversation.snoozed_until is not None:
+            # The wake is a durable per-conversation timer staged atomically
+            # with the snooze (ADR 0007 §7). Re-snoozing replaces it; an
+            # inbound reply or resolution makes a stale firing a
+            # state-guarded no-op in the receipted consumer.
+            from app.services.runtime_durable_timers import (
+                ScheduleTimerCommand,
+                schedule_timer,
+            )
+
+            schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner="communications.team_inbox_commands",
+                    entity_kind="inbox_conversation",
+                    entity_id=conversation.id,
+                    purpose="snooze_wake",
+                    due_at=conversation.snoozed_until,
+                    output_event_type="team_inbox.snooze_wake",
+                ),
+                context=CommandContext.system(
+                    actor=str(actor_person_id or "communications.team_inbox_commands"),
+                    scope=str(conversation.id),
+                    reason="conversation snooze wake",
+                    idempotency_key=(
+                        f"snooze-wake:{conversation.id}:"
+                        f"{conversation.snoozed_until.isoformat()}"
+                    ),
+                ),
+            )
 
     _commit(db, action)
 
@@ -1290,3 +1320,52 @@ def record_field_job_customer_message(
         )
 
     return _commit(db, action)
+
+
+def consume_snooze_wake(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    event_id: UUID,
+    context: CommandContext,
+) -> str | None:
+    """Receipt one fired snooze timer into a conversation wake.
+
+    State-guarded: a conversation that already woke (inbound reply, manual
+    open, resolve) or re-snoozed to a later instant is left untouched.
+    """
+    from app.services.events.owner_outputs import consume_owner_output
+
+    def _effect() -> str:
+        from datetime import UTC, datetime
+
+        from app.models.team_inbox import InboxConversation
+
+        conversation = db.get(InboxConversation, conversation_id)
+        if conversation is None:
+            return "skipped_missing"
+        if conversation.status != "snoozed" or conversation.snoozed_until is None:
+            return "skipped_state"
+        wake_at = conversation.snoozed_until
+        if wake_at.tzinfo is None:
+            wake_at = wake_at.replace(tzinfo=UTC)
+        if wake_at > datetime.now(UTC):
+            # Re-snoozed to a later instant after this timer fired.
+            return "skipped_resnoozed"
+        team_inbox_operations.wake_conversation(
+            db, conversation=conversation, source="durable_timer"
+        )
+        return "woken"
+
+    def _operation() -> str | None:
+        return consume_owner_output(
+            db,
+            consumer="communications.team_inbox_commands",
+            event_id=event_id,
+            event_type="team_inbox.snooze_wake",
+            producer_owner="runtime.durable_timers",
+            context=context,
+            operation=_effect,
+        )[0]
+
+    return _commit(db, _operation, context=context)

@@ -196,6 +196,19 @@ def send_user_invite_for_user(db: Session, *, user_id: str) -> str:
         principal_id=principal_id,
         ttl_minutes=_user_invite_expiry_minutes(db),
     )
+    if reset is not None:
+        from app.services import access_invitations
+
+        access_invitations.record_issued(
+            db,
+            principal_type="system_user",
+            principal_id=reset.principal_id,
+            purpose="user_invite",
+            email=reset.email,
+            ttl_minutes=reset.ttl_minutes,
+            source="admin_web",
+        )
+        db.commit()
     return _send_user_invite_capability(
         db,
         reset=reset,

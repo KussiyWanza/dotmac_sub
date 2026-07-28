@@ -630,6 +630,7 @@ def _record_deposit_on_sales_order(
         return None
     total = _money(sales_order.total)
     paid = _money(deposit_amount)
+    previous_payment_status = sales_order.payment_status
     sales_order.deposit_required = True
     sales_order.deposit_paid = True
     sales_order.amount_paid = paid
@@ -641,6 +642,18 @@ def _record_deposit_on_sales_order(
     )
     if sales_order.payment_status == SalesOrderPaymentStatus.paid.value:
         sales_order.status = SalesOrderStatus.paid.value
+    from app.services import sales_orders as sales_order_service
+
+    # A deposit that fully funds the order crosses the same funding edge as a
+    # staff-recorded payment and must stage the same durable output. The
+    # deposit's only ledger event stays the verified deposit-invoice payment
+    # (risk #2), so the consumer must not record a second order payment.
+    sales_order_service.stage_funding_transition(
+        db,
+        sales_order,
+        previous_payment_status=previous_payment_status,
+        record_order_payment=False,
+    )
     db.commit()
     db.refresh(sales_order)
     return sales_order

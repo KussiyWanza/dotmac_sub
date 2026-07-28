@@ -752,3 +752,14 @@ def materialize_reseller_invite_email(
         body_text=rendered.body_text,
         activity="auth_reseller_invite",
     )
+    from app.services import access_invitations
+
+    access_invitations.record_issued(
+        db,
+        principal_type=reset.principal_type,
+        principal_id=reset.principal_id,
+        purpose="reseller_invite",
+        email=reset.email,
+        ttl_minutes=reset.ttl_minutes,
+        source="reseller_onboarding",
+    )

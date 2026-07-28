@@ -65,6 +65,8 @@ def test_declare_creates_delivery_with_outage_payload(db_session):
     _subscribe(db_session)
     node = _node(db_session)
     incident = declare_outage(db_session, node=node, declared_by="noc@x")
+    # Events stage in the declare transaction and dispatch after commit.
+    db_session.commit()
 
     deliveries = _deliveries(db_session)
     assert len(deliveries) == 1
@@ -81,9 +83,11 @@ def test_resolve_creates_second_delivery_only_on_transition(db_session):
     _subscribe(db_session)
     node = _node(db_session)
     incident = declare_outage(db_session, node=node)
+    db_session.commit()
 
     resolve_outage(db_session, incident.id)
     resolve_outage(db_session, incident.id)  # idempotent: no third delivery
+    db_session.commit()
 
     deliveries = _deliveries(db_session)
     assert len(deliveries) == 2
@@ -101,6 +105,7 @@ def test_auto_detected_incident_marked_in_payload(db_session):
     _subscribe(db_session)
     node = _node(db_session)
     declare_outage(db_session, node=node, declared_by=AUTO_DETECT_ACTOR)
+    db_session.commit()
     payload = _deliveries(db_session)[0].payload_json["payload"]
     assert payload["detection_source"] == "auto"
 
@@ -111,5 +116,7 @@ def test_no_subscription_means_no_delivery_and_no_error(db_session):
     node = _node(db_session)
     incident = declare_outage(db_session, node=node)
     resolve_outage(db_session, incident.id)
+    db_session.commit()
     assert _deliveries(db_session) == []
+    db_session.refresh(incident)
     assert incident.status == "resolved"

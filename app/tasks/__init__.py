@@ -48,6 +48,7 @@ from app.tasks.dotmac_erp_outbox import (
     repair_purchase_invoice_sync,
     sync_erp_operational_domains,
 )
+from app.tasks.durable_timers import fire_due_durable_timers
 from app.tasks.enforcement import cleanup_subscription_block_sessions
 from app.tasks.events import (
     cleanup_old_events,
@@ -289,6 +290,7 @@ __all__ = [
     "run_olt_mac_harvest",
     "run_single_olt_mac_harvest",
     "dispatch_operational_escalation_deliveries",
+    "fire_due_durable_timers",
     "retry_failed_olt_connections",
     "retry_single_olt",
     "trigger_immediate_retry",

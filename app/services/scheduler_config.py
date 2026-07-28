@@ -1860,6 +1860,20 @@ def build_beat_schedule() -> dict:
         event_dispatch_interval = resolve_integer(
             session, SettingDomain.scheduler, "event_dispatch_interval_seconds"
         )
+        # Due-timer dispatch — permanent lifecycle infrastructure (ADR 0007
+        # invariant 23). Cadence is configurable; the authority path is not.
+        timer_dispatch_interval = resolve_integer(
+            session, SettingDomain.scheduler, "durable_timer_dispatch_interval_seconds"
+        )
+        timer_dispatch_interval = max(timer_dispatch_interval, 30)
+        _sync_scheduled_task(
+            session,
+            name="durable_timer_dispatch_runner",
+            task_name="app.tasks.durable_timers.fire_due_durable_timers",
+            enabled=True,
+            interval_seconds=timer_dispatch_interval,
+        )
+
         _sync_scheduled_task(
             session,
             name="event_dispatch_runner",

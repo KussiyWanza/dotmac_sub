@@ -211,7 +211,7 @@ def build_purchase_invoice_payload(invoice: VendorPurchaseInvoice) -> dict:
 
 
 def enqueue_purchase_invoice(
-    db: Session, invoice: VendorPurchaseInvoice
+    db: Session, invoice: VendorPurchaseInvoice, *, isolate: bool = True
 ) -> FieldErpSyncEvent | None:
     """Queue a new-only invoice only after this flow has moved to Sub."""
     if not flow_owned_by_sub(db, FieldErpSyncFlow.purchase_invoice):
@@ -230,6 +230,7 @@ def enqueue_purchase_invoice(
         entity_id=invoice.id,
         idempotency_key=purchase_invoice_idempotency_key(invoice),
         payload=build_purchase_invoice_payload(invoice),
+        isolate=isolate,
     )
 
 
@@ -483,6 +484,27 @@ def refresh_purchase_invoice_statuses(
                 observed += 1
                 if before != after:
                     changed += 1
+                    # First projection of a changed payables observation is
+                    # a committed output: evidence, never a Sub decision.
+                    from app.services.events import EventType, emit_event
+
+                    emit_event(
+                        db,
+                        EventType.vendor_purchase_invoice_payment_observed,
+                        {
+                            "invoice_id": str(current.id),
+                            "payables_system": current.payables_system,
+                            "payables_reference": (current.payables_document_reference),
+                            "payment_status": current.payment_status,
+                            "amount_paid": str(current.payment_amount_paid)
+                            if current.payment_amount_paid is not None
+                            else None,
+                            "balance_due": str(current.payment_balance_due)
+                            if current.payment_balance_due is not None
+                            else None,
+                        },
+                        actor="integration.dotmac_erp_payables_adapter",
+                    )
                 db.commit()
             except Exception as exc:  # noqa: BLE001 - rows retry independently
                 if db.in_transaction():

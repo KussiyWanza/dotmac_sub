@@ -232,7 +232,24 @@ class FieldMaterialRequests:
         request.approved_at = datetime.now(UTC)
         _note_request_event(request, "approved")
         _mark_sub_authoritative(request.work_order_mirror)
-        _maybe_enqueue_backoffice_support(db, request)
+        # The approval's committed output drives the receipted ERP-issue
+        # request through the materials lifecycle projection handler; a
+        # failed enqueue stays a failed retryable delivery instead of a
+        # metadata breadcrumb.
+        from app.services.events import EventType, emit_event
+
+        emit_event(
+            db,
+            EventType.field_material_request_approved,
+            {
+                "material_request_id": str(request.id),
+                "work_order_mirror_id": str(request.work_order_mirror_id),
+                "client_ref": request.client_ref,
+                "source_warehouse_code": request.source_warehouse_code,
+                "approved_at": request.approved_at.isoformat(),
+            },
+            actor="operations.material_dependencies",
+        )
         db.commit()
         db.refresh(request)
         return serialize_material_request(request)
@@ -337,6 +354,20 @@ class FieldMaterialRequests:
                 request.status = "fulfilled"
                 request.fulfilled_at = request.fulfilled_at or datetime.now(UTC)
                 _note_request_event(request, "backoffice_material_issued")
+                from app.services.events import EventType, emit_event
+
+                emit_event(
+                    db,
+                    EventType.field_material_request_fulfilled,
+                    {
+                        "material_request_id": str(request.id),
+                        "work_order_mirror_id": str(request.work_order_mirror_id),
+                        "support_system": request.support_system,
+                        "support_reference": request.support_reference,
+                        "support_status": request.support_status,
+                    },
+                    actor="operations.material_dependencies",
+                )
                 changed = True
         elif normalized_status in _BACKOFFICE_REFUSED_STATUSES:
             if request.status in {"approved", "issued"}:
@@ -538,24 +569,61 @@ def _mark_sub_authoritative(row: WorkOrder) -> None:
     _mark_source_authoritative(row, "material_requests")
 
 
-def _maybe_enqueue_backoffice_support(
-    db: Session, request: FieldMaterialRequest
-) -> None:
-    """Best-effort adapter handoff without transferring Sub decision authority."""
-    from app.services.backoffice import enqueue_material_support
+# --- receipted lifecycle-output consumption --------------------------------
 
-    try:
-        with db.begin_nested():
-            result = enqueue_material_support(db, request)
-        if result.requires_attention:
-            _note_request_event(request, "backoffice_delivery_pending")
-    except Exception:
-        _note_request_event(request, "backoffice_delivery_pending")
-        logger.warning(
-            "field material %s: back-office enqueue failed; approval retained",
-            request.id,
-            exc_info=True,
-        )
+
+def consume_material_request_approved(
+    db: Session,
+    *,
+    material_request_id: str,
+    event_id,
+    context,
+) -> str | None:
+    """Receipt one committed approval into the ERP-issue request.
+
+    The outbox intent and its unique ``(consumer, event_id)`` receipt commit
+    atomically; a redelivery is an exact no-op, and a failed enqueue stays a
+    failed retryable delivery. Sub never infers issuance — the ERP outcome
+    returns through the durable outbox observation projection.
+    """
+    from app.services.events.owner_outputs import consume_owner_output
+    from app.services.owner_commands import (
+        OwnerCommandDefinition,
+        execute_owner_command,
+    )
+
+    definition = OwnerCommandDefinition(
+        owner="operations.material_dependencies",
+        concern="committed material output consumption",
+        name="consume_material_request_approved",
+    )
+
+    def _effect() -> str:
+        from app.services.backoffice import enqueue_material_request_outbox
+
+        request = db.get(FieldMaterialRequest, coerce_uuid(material_request_id))
+        if request is None:
+            return "skipped_missing"
+        if request.status != "approved":
+            # Stale replay after refusal, fulfilment, or cancellation.
+            return "skipped_state"
+        event = enqueue_material_request_outbox(db, request)
+        return "enqueued" if event is not None else "skipped_not_owned"
+
+    return execute_owner_command(
+        db,
+        definition=definition,
+        context=context,
+        operation=lambda: consume_owner_output(
+            db,
+            consumer="operations.material_dependencies",
+            event_id=event_id,
+            event_type="field_material_request.approved",
+            producer_owner="operations.material_dependencies",
+            context=context,
+            operation=_effect,
+        )[0],
+    )
 
 
 field_material_requests = FieldMaterialRequests()

@@ -782,6 +782,15 @@ def complete_password_reset(
         credential.must_change_password = False
         credential.failed_login_attempts = 0
         credential.locked_until = None
+        # A completed reset is invitation acceptance when an issued
+        # invitation exists for this principal; a pure recovery is a no-op.
+        from app.services import access_invitations
+
+        access_invitations.mark_accepted(
+            db,
+            principal_type=principal_type,
+            principal_id=principal_id,
+        )
 
         session_filter = _session_filter(principal_type, principal_id)
         if session_filter is None:

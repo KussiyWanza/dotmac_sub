@@ -310,8 +310,12 @@ class ProvisioningHandler:
                 ),
             )
         except Exception as exc:
+            # Propagate so the event delivery stays failed and retryable —
+            # a swallowed start would leave the assigned order with no run
+            # and no visible pending work.
             logger.exception(
                 "Provisioning run failed for service order %s: %s",
                 service_order_id,
                 exc,
             )
+            raise

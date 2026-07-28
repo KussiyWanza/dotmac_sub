@@ -470,6 +470,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
     "app.tasks.payment_reconciliation.reconcile_topups": _c(
         "billing", STATE, GUARDED, HEALTH
     ),
+    "app.tasks.durable_timers.fire_due_durable_timers": _c(
+        "operations",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Emits due durable-timer triggers through the timer owner's fire "
+        "command; each firing is generation-stamped, so consumers reject "
+        "stale deliveries and re-runs are exact no-ops.",
+    ),
     "app.tasks.operational_escalations.dispatch_operational_escalation_deliveries": _c(
         "operations",
         SWEEP,

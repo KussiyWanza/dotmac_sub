@@ -403,6 +403,8 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     assert sot_relationships.dependencies_for("network.outage_lifecycle") == (
         "network.outage_impact",
         "events.dispatcher",
+        "events.owner_outputs",
+        "operations.sla_escalation",
     )
     assert sot_relationships.dependencies_for("network.device_groups") == (
         "network.identity",
@@ -721,7 +723,6 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "operations.work_orders",
         "operations.work_order_status",
         "control.domain_settings",
-        "support.ticket_work_order_handoff",
     )
     assert sot_relationships.dependencies_for("network.nas_lifecycle") == (
         "network.identity",

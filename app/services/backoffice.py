@@ -172,6 +172,38 @@ def enqueue_expense_claim(db: Session, request: Any) -> BackofficeEnqueueResult:
     return _enqueue_with_provider(db, flow="expense_claim", source=request)
 
 
+def enqueue_material_request_outbox(db: Session, request: Any):
+    """Stage the material-request ERP intent for a receipted consumer.
+
+    Ownership-checked and savepoint-free: inside an owner command the
+    pre-checked idempotent insert flushes directly, and provider capability
+    gates delivery, not staging — the row waits as a durable pending
+    delivery. Returns the outbox row, or ``None`` when the flow is not
+    Sub-owned or the request is ineligible.
+    """
+    if not _flow_owned_by_sub(db, "material_request"):
+        return None
+    from app.services.dotmac_erp.material_sync import enqueue_material_request
+
+    return enqueue_material_request(db, request, isolate=False)
+
+
+def enqueue_purchase_invoice_outbox(db: Session, invoice: Any):
+    """Stage the payables ERP export for a receipted consumer.
+
+    Ownership-checked and savepoint-free; provider capability gates
+    delivery, not staging. Returns the outbox row or ``None`` when the flow
+    is not Sub-owned.
+    """
+    if not _flow_owned_by_sub(db, "purchase_invoice"):
+        return None
+    from app.services.dotmac_erp.purchase_invoice_sync import (
+        enqueue_purchase_invoice,
+    )
+
+    return enqueue_purchase_invoice(db, invoice, isolate=False)
+
+
 def enqueue_material_support(db: Session, request: Any) -> BackofficeEnqueueResult:
     return _enqueue_with_provider(db, flow="material_request", source=request)
 

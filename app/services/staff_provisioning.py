@@ -799,6 +799,17 @@ def materialize_staff_invite_email(
     )
     if reset is None or reset.principal_id != user.id or not reset.token:
         raise EphemeralActionRejected("stale_account_context")
+    from app.services import access_invitations
+
+    access_invitations.record_issued(
+        db,
+        principal_type="system_user",
+        principal_id=reset.principal_id,
+        purpose="staff_invite",
+        email=reset.email,
+        ttl_minutes=reset.ttl_minutes,
+        source="staff_provisioning",
+    )
 
     rendered = email_service.render_user_invite_email(
         db,
