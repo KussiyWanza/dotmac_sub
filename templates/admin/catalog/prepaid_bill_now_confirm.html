@@ -1,0 +1,34 @@
+{% extends "layouts/admin.html" %}
+
+{% block title %}Confirm Bill Now - Admin{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-2xl space-y-6">
+    <div>
+        <a href="/admin/catalog/subscriptions/{{ subscription_id }}" class="text-sm text-primary-600 hover:text-primary-700">← Back to service</a>
+        <h1 class="mt-3 text-2xl font-bold text-slate-900 dark:text-white">Confirm Bill Now</h1>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">This creates a draft only. It does not void an older invoice, take payment, or restore service.</p>
+    </div>
+
+    <div class="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
+        <p class="font-semibold">New billing anniversary</p>
+        <p class="mt-1">The replacement cycle begins at confirmation and runs through the period below. The service remains suspended until the new invoice is fully settled and every remaining lock clears.</p>
+    </div>
+
+    <dl class="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800">
+        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Period starts</dt><dd class="font-medium text-slate-900 dark:text-white">{{ prepaid_bill_now_preview.starts_at | app_datetime('%b %d, %Y %H:%M', include_tz=True) }}</dd></div>
+        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Period ends / next due date</dt><dd class="font-medium text-slate-900 dark:text-white">{{ prepaid_bill_now_preview.ends_at | app_datetime('%b %d, %Y %H:%M', include_tz=True) }}</dd></div>
+        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Subtotal</dt><dd class="font-mono font-medium text-slate-900 dark:text-white">{{ prepaid_bill_now_preview.currency }} {{ '{:,.2f}'.format(prepaid_bill_now_preview.subtotal) }}</dd></div>
+        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Tax</dt><dd class="font-mono font-medium text-slate-900 dark:text-white">{{ prepaid_bill_now_preview.currency }} {{ '{:,.2f}'.format(prepaid_bill_now_preview.tax_total) }}</dd></div>
+        <div class="flex justify-between gap-6 p-4"><dt class="font-semibold text-slate-900 dark:text-white">Draft total</dt><dd class="font-mono text-lg font-bold text-slate-900 dark:text-white">{{ prepaid_bill_now_preview.currency }} {{ '{:,.2f}'.format(prepaid_bill_now_preview.total) }}</dd></div>
+    </dl>
+
+    <form method="post" action="/admin/catalog/subscriptions/{{ subscription_id }}/bill-now/confirm" class="flex justify-end gap-3">
+        {% include "components/forms/csrf_input.html" %}
+        <input type="hidden" name="preview_fingerprint" value="{{ prepaid_bill_now_preview.fingerprint }}">
+        <input type="hidden" name="preview_starts_at" value="{{ prepaid_bill_now_preview.starts_at.isoformat() }}">
+        <a href="/admin/catalog/subscriptions/{{ subscription_id }}" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-200">Cancel</a>
+        <button type="submit" class="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700">Create draft invoice</button>
+    </form>
+</div>
+{% endblock %}

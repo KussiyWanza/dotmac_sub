@@ -2,6 +2,10 @@
 
 All notable changes to DotMac Sub are tracked here.
 
+## 7.57.0 - 2026-07-28
+
+- Add guarded prepaid service recovery billing from the admin service and invoice views.
+
 ## 7.56.0 - 2026-07-28
 
 - Version bump.

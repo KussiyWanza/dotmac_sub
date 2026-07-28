@@ -38,6 +38,12 @@ from app.services.audit_helpers import (
 )
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
+from app.services.prepaid_recovery_billing import (
+    PrepaidRecoveryBillingError,
+    PrepaidRecoverySettlementConfirmation,
+    preview_prepaid_recovery_settlement,
+    settle_prepaid_recovery_invoice,
+)
 from app.services.status_presentation import invoice_status_presentation
 from app.validators.forms import parse_datetime, parse_decimal, parse_uuid
 
@@ -762,6 +768,13 @@ def load_invoice_detail_data(
     pdf_export = billing_invoice_pdf_service.get_latest_export(
         db, invoice_id=invoice_id
     )
+    prepaid_recovery_settlement = None
+    try:
+        prepaid_recovery_settlement = preview_prepaid_recovery_settlement(
+            db, invoice_id=UUID(invoice_id)
+        )
+    except PrepaidRecoveryBillingError:
+        pass
     return {
         "invoice": invoice,
         "invoice_financial_summary": billing_service.invoices.financial_summary(
@@ -785,7 +798,43 @@ def load_invoice_detail_data(
         "invoice_bank_details": invoice_bank_details_service.get_invoice_bank_details(
             db, currency=invoice.currency
         ),
+        "prepaid_recovery_settlement": prepaid_recovery_settlement,
     }
+
+
+def prepaid_recovery_pay_now_preview_context(
+    db: Session, *, invoice_id: str
+) -> dict[str, object]:
+    return {
+        "prepaid_recovery_settlement": preview_prepaid_recovery_settlement(
+            db, invoice_id=UUID(invoice_id)
+        )
+    }
+
+
+def confirm_prepaid_recovery_pay_now(
+    db: Session,
+    *,
+    invoice_id: str,
+    fingerprint: str,
+    actor_id: str | None,
+) -> None:
+    command_id = UUID(bytes=secrets.token_bytes(16))
+    settle_prepaid_recovery_invoice(
+        db,
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor=actor_id or "admin:unknown",
+            scope="billing:invoice:update",
+            reason="Settle a prepaid recovery invoice from confirmed payment credit",
+            idempotency_key=f"prepaid-recovery-settle:{invoice_id}:{fingerprint}",
+        ),
+        confirmation=PrepaidRecoverySettlementConfirmation(
+            invoice_id=UUID(invoice_id),
+            fingerprint=fingerprint,
+        ),
+    )
 
 
 def convert_proforma_to_final_web(

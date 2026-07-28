@@ -1,10 +1,11 @@
 """Admin billing invoice action/detail routes."""
 
 import secrets
+from urllib.parse import quote_plus
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from app.services import (
 )
 from app.services import web_billing_invoices as web_billing_invoices_service
 from app.services.auth_dependencies import require_permission
+from app.services.domain_errors import DomainError
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/billing", tags=["web-admin-billing"])
@@ -83,6 +85,67 @@ def invoice_detail(
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
         },
+    )
+
+
+@router.post(
+    "/invoices/{invoice_id:uuid}/prepaid-pay-now/preview",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:invoice:update"))],
+)
+def invoice_prepaid_pay_now_preview(
+    request: Request, invoice_id: UUID, db: Session = Depends(get_db)
+) -> Response:
+    try:
+        preview_context = (
+            web_billing_invoices_service.prepaid_recovery_pay_now_preview_context(
+                db, invoice_id=str(invoice_id)
+            )
+        )
+    except DomainError as exc:
+        return RedirectResponse(
+            f"/admin/billing/invoices/{invoice_id}?error={quote_plus(exc.message)}",
+            status_code=303,
+        )
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/billing/prepaid_pay_now_confirm.html",
+        {
+            "request": request,
+            **preview_context,
+            "invoice_id": invoice_id,
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+        },
+    )
+
+
+@router.post(
+    "/invoices/{invoice_id:uuid}/prepaid-pay-now/confirm",
+    dependencies=[Depends(require_permission("billing:invoice:update"))],
+)
+def invoice_prepaid_pay_now_confirm(
+    request: Request,
+    invoice_id: UUID,
+    preview_fingerprint: str = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        web_billing_invoices_service.confirm_prepaid_recovery_pay_now(
+            db,
+            invoice_id=str(invoice_id),
+            fingerprint=preview_fingerprint,
+            actor_id=_actor_id(request),
+        )
+    except DomainError as exc:
+        return RedirectResponse(
+            f"/admin/billing/invoices/{invoice_id}?error={quote_plus(exc.message)}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/admin/billing/invoices/{invoice_id}?notice=Recovery+invoice+settled",
+        status_code=303,
     )
 
 
