@@ -407,6 +407,178 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.crm_subscriber_provisioning",
+                module="app.services.crm_subscriber_provisioning",
+                owns=("authenticated CRM Subscriber provisioning coordination",),
+                depends_on=(
+                    "customer.accounts",
+                    "observability.audit_log",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "A separately authenticated CRM command may request one "
+                    "canonical Subscriber account. The verified CRM customer "
+                    "webhook remains observation-only and cannot invoke this owner."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "authenticated CRM Subscriber provisioning coordination"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated CRM provisioning command evidence",
+                                "retained exact CRM Subscriber provenance",
+                                "canonical Subscriber account state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name=("authenticated CRM provisioning command evidence"),
+                            owner="customer.crm_subscriber_provisioning",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "scoped CRM API key, typed customer payload, stable "
+                                "Idempotency-Key, actor, command, and correlation "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="retained exact CRM Subscriber provenance",
+                            owner="customer.crm_subscriber_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "allowlisted crm_person_id, crm_sales_order_id, and "
+                                "crm_quote_id retained on the canonical Subscriber"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Subscriber account state",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked existing Subscriber or transaction-neutral "
+                                "canonical account initialization"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "The command enters execute_owner_command once on a "
+                            "transaction-free API session. Exact-provenance reuse or "
+                            "canonical account initialization, idempotency evidence, "
+                            "audit, and subscriber.created commit or roll back together."
+                        ),
+                        locking=(
+                            "A transaction-scoped advisory lock serializes the exact "
+                            "idempotency key; the reservation and any matched Subscriber "
+                            "are selected FOR UPDATE. Unique scope/key evidence and "
+                            "canonical account constraints arbitrate concurrent winners."
+                        ),
+                        idempotency=(
+                            "A mandatory caller key is fingerprinted against every "
+                            "material command field. Exact replay returns the original "
+                            "Subscriber; changed evidence fails closed."
+                        ),
+                        retries=(
+                            "CRM may retry transient transport or database failures with "
+                            "the same key and payload. Identity ambiguity, changed "
+                            "evidence, and canonical conflicts require review."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            ("customer.crm_subscriber_provisioning.invalid_command"),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "missing_idempotency_key"
+                            ),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "idempotency_conflict"
+                            ),
+                            ("customer.crm_subscriber_provisioning.ambiguous_identity"),
+                            ("customer.crm_subscriber_provisioning.identity_conflict"),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "invalid_command_context"
+                            ),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "command_contract_violation"
+                            ),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "nested_owner_command"
+                            ),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "active_caller_transaction"
+                            ),
+                            (
+                                "customer.crm_subscriber_provisioning."
+                                "nested_transaction_completion"
+                            ),
+                        ),
+                        mapping_owner="app.api.crm adapter",
+                        fail_closed_on=(
+                            "missing or changed idempotency evidence",
+                            "ambiguous retained CRM provenance",
+                            "conflicting canonical customer state",
+                            "active caller transaction or manifest mismatch",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("subscriber.created",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "The existing PII-free subscriber.created schema remains "
+                            "authoritative; CRM command evidence is retained in audit "
+                            "and idempotency records."
+                        ),
+                        replay=(
+                            "Command replay returns the reserved Subscriber without "
+                            "emitting another event or audit record."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "CRM treating the observation-only customer.accepted "
+                            "webhook as an account-creation command"
+                        ),
+                        new_owner="customer.crm_subscriber_provisioning",
+                        verification=(
+                            "Focused command, API, idempotency, concurrency, audit, "
+                            "event, and observation-boundary tests."
+                        ),
+                        cutover_gate=(
+                            "Dotmac CRM calls only the authenticated command endpoint "
+                            "for creation and retains the returned canonical identity."
+                        ),
+                        fallback_retirement=(
+                            "CRM no longer interprets an observation consequence as a "
+                            "customer-creation result."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=(
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/CODING_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_crm_subscriber_provisioning.py",
+                        "tests/test_crm_api.py",
+                        "tests/architecture/test_crm_customer_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="customer.billing_approval",
                 module="app.services.account_billing_approval",
                 owns=(
