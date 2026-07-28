@@ -9,7 +9,7 @@ on:
   push:
     branches: [main, develop, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   merge_group:
   workflow_dispatch:
 

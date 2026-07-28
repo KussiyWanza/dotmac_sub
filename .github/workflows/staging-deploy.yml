@@ -1,0 +1,234 @@
+name: Deploy dev to staging
+
+# The GHCR workflow builds an immutable sha-* image for every dev commit. This
+# workflow waits for that build plus the required dev push checks, proves the
+# candidate is still the current dev tip, and only then hands the exact SHA to
+# the dedicated staging runner.
+#
+# Fail-closed activation contract:
+# - repository variable STAGING_AUTO_DEPLOY_ENABLED must equal "true";
+# - environment variable STAGING_DEPLOY_DIR must equal the pinned host path;
+# - a self-hosted runner must carry the dotmac-sub-staging label.
+on:
+  workflow_run:
+    workflows: ["Build & Push to GHCR"]
+    branches: [dev]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: dotmac-sub-staging
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify exact dev candidate
+    if: >-
+      vars.STAGING_AUTO_DEPLOY_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'dev' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+      image_tag: ${{ steps.candidate.outputs.tag }}
+    steps:
+      - name: Resolve immutable candidate
+        id: candidate
+        env:
+          CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$CANDIDATE_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Invalid workflow-run head SHA." >&2
+            exit 1
+          fi
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${CANDIDATE_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Require current dev tip and green push checks
+        uses: actions/github-script@v7
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        with:
+          script: |
+            const candidate = process.env.CANDIDATE_SHA;
+            const required = ["CI", "Mobile CI"];
+            const deadline = Date.now() + 35 * 60 * 1000;
+            let previousSummary = "";
+
+            while (true) {
+              const branch = await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: "dev",
+              });
+              const devTip = branch.data.commit.sha;
+              if (devTip !== candidate) {
+                core.setFailed(
+                  `Refusing stale staging deploy: dev is ${devTip}, candidate is ${candidate}.`
+                );
+                return;
+              }
+
+              const response = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head_sha: candidate,
+                event: "push",
+                per_page: 100,
+              });
+              const runs = response.data.workflow_runs.filter(
+                (run) => run.head_sha === candidate && run.event === "push"
+              );
+              const states = {};
+              let failed = false;
+              let ready = true;
+
+              for (const workflowName of required) {
+                const matches = runs
+                  .filter((run) => run.name === workflowName)
+                  .sort((left, right) => right.id - left.id);
+                const run = matches[0];
+                if (!run) {
+                  states[workflowName] = "not-reported";
+                  ready = false;
+                  continue;
+                }
+                states[workflowName] = `${run.status}/${run.conclusion || "pending"}`;
+                if (run.status !== "completed") {
+                  ready = false;
+                } else if (run.conclusion !== "success") {
+                  failed = true;
+                }
+              }
+
+              const summary = required
+                .map((name) => `${name}=${states[name]}`)
+                .join(", ");
+              if (summary !== previousSummary) {
+                core.info(summary);
+                previousSummary = summary;
+              }
+              if (failed) {
+                core.setFailed(`A required dev push check failed: ${summary}`);
+                return;
+              }
+              if (ready) {
+                core.info(`Staging candidate ${candidate} is current and green.`);
+                return;
+              }
+              if (Date.now() >= deadline) {
+                core.setFailed(`Timed out waiting for required dev checks: ${summary}`);
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 20000));
+            }
+
+  deploy:
+    name: Deploy exact dev image
+    needs: verify
+    runs-on: [self-hosted, linux, x64, dotmac-sub-staging]
+    environment: staging
+    timeout-minutes: 90
+    steps:
+      - name: Fast-forward the staging checkout to the verified dev commit
+        env:
+          CANDIDATE_SHA: ${{ needs.verify.outputs.candidate_sha }}
+          STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
+        run: |
+          set -euo pipefail
+          expected_dir="/home/dotmac/projects/dotmac_sub"
+          if [ "$STAGING_DEPLOY_DIR" != "$expected_dir" ]; then
+            echo "STAGING_DEPLOY_DIR must be $expected_dir." >&2
+            exit 1
+          fi
+          test -d "$STAGING_DEPLOY_DIR/.git"
+          test -f "$STAGING_DEPLOY_DIR/.env"
+          test -f "$STAGING_DEPLOY_DIR/docker-compose.override.yml"
+          if [ -n "$(git -C "$STAGING_DEPLOY_DIR" status --porcelain --untracked-files=no)" ]; then
+            echo "Tracked staging checkout changes must be resolved before deployment." >&2
+            exit 1
+          fi
+
+          git -C "$STAGING_DEPLOY_DIR" fetch origin dev
+          remote_sha="$(git -C "$STAGING_DEPLOY_DIR" rev-parse FETCH_HEAD)"
+          if [ "$remote_sha" != "$CANDIDATE_SHA" ]; then
+            echo "origin/dev moved after candidate verification." >&2
+            exit 1
+          fi
+          git -C "$STAGING_DEPLOY_DIR" checkout dev
+          git -C "$STAGING_DEPLOY_DIR" merge --ff-only "$CANDIDATE_SHA"
+          test "$(git -C "$STAGING_DEPLOY_DIR" rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - name: Verify staging-only host contract
+        env:
+          STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
+        run: |
+          set -euo pipefail
+          cd "$STAGING_DEPLOY_DIR"
+          grep -qx 'APP_ENV=staging' .env
+          grep -qx 'SERVER_NAME=dotmac-sub-staging' .env
+          grep -qx 'HEALTH_URL=http://10.120.121.20:8001/health' .env
+
+          services="$(docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.override.yml \
+            config --services)"
+          if printf '%s\n' "$services" | grep -qx celery-beat; then
+            echo "Staging must not declare celery-beat." >&2
+            exit 1
+          fi
+          app_port="$(
+            docker compose \
+              -f docker-compose.yml \
+              -f docker-compose.override.yml \
+              config --format json \
+              | jq -r \
+                '.services.app.ports[]
+                 | select(.target == 8001)
+                 | "\(.host_ip):\(.published):\(.target)/\(.protocol)"'
+          )"
+          if [ "$app_port" != '10.120.121.20:8001:8001/tcp' ]; then
+            echo "Unexpected staging app port: $app_port" >&2
+            exit 1
+          fi
+
+      - name: Verify immutable image exists
+        env:
+          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+        run: |
+          docker manifest inspect \
+            "ghcr.io/michaelayoade/dotmac_sub:$IMAGE_TAG" >/dev/null
+
+      - name: Deploy verified dev image
+        env:
+          COMPOSE_PROJECT_NAME: dotmac_sub
+          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+          REQUIRE_PROXY_HANDOFF: "0"
+          STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
+        run: |
+          set -euo pipefail
+          cd "$STAGING_DEPLOY_DIR"
+          bash scripts/deploy.sh "$IMAGE_TAG"
+
+      - name: Verify deployed revision and health
+        env:
+          CANDIDATE_SHA: ${{ needs.verify.outputs.candidate_sha }}
+          IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          expected_image="ghcr.io/michaelayoade/dotmac_sub:$IMAGE_TAG"
+          test "$(docker inspect dotmac_sub_app --format '{{.Config.Image}}')" = \
+            "$expected_image"
+          test "$(
+            docker inspect dotmac_sub_app \
+              --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+          )" = "$CANDIDATE_SHA"
+          curl -fsS --connect-timeout 5 --max-time 10 \
+            http://10.120.121.20:8001/health
