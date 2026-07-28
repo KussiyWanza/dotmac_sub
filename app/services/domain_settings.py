@@ -217,15 +217,28 @@ class DomainSettings(ListResponseMixin):
         SettingsCache.invalidate(setting.domain.value, setting.key)
         return setting
 
-    def get_by_key(self, db: Session, key: str):
+    def get_optional_by_key(
+        self,
+        db: Session,
+        key: str,
+        *,
+        active_only: bool = False,
+    ) -> DomainSetting | None:
+        """Return one scoped setting without transport-specific not-found errors."""
+
         if not self.domain:
             raise HTTPException(status_code=400, detail="Setting domain is required")
-        setting = (
+        query = (
             db.query(DomainSetting)
             .filter(DomainSetting.domain == self.domain)
             .filter(DomainSetting.key == key)
-            .first()
         )
+        if active_only:
+            query = query.filter(DomainSetting.is_active.is_(True))
+        return query.first()
+
+    def get_by_key(self, db: Session, key: str):
+        setting = self.get_optional_by_key(db, key)
         if not setting:
             raise HTTPException(status_code=404, detail="Setting not found")
         return setting

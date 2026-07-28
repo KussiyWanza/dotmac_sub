@@ -22,10 +22,12 @@ from sqlalchemy.orm import Session
 from app.models.audit import AuditActorType
 from app.models.auth import AuthProvider, SessionStatus, UserCredential
 from app.models.auth import Session as AuthSession
+from app.models.party import PartyDataClassification, PartyType
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.services import auth_cache, credential_recovery
 from app.services import auth_flow as auth_flow_service
+from app.services import party as party_registry
 from app.services import system_user_assignments as assignment_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
@@ -131,6 +133,7 @@ class StaffAccountOutcome:
     """Committed staff-account state returned without leaking an ORM entity."""
 
     user_id: UUID
+    person_party_id: UUID | None
     email: str
     display_name: str | None
     is_active: bool
@@ -332,6 +335,7 @@ def _outcome(
 ) -> StaffAccountOutcome:
     return StaffAccountOutcome(
         user_id=user.id,
+        person_party_id=user.person_party_id,
         email=user.email,
         display_name=user.display_name,
         is_active=user.is_active,
@@ -367,17 +371,40 @@ def _create_principal(
     email: str,
     first_name: str,
     last_name: str,
+    context: CommandContext,
+    binding_source: str,
 ) -> SystemUser:
+    display_name = f"{first_name} {last_name}".strip()
     user = SystemUser(
         first_name=first_name,
         last_name=last_name,
-        display_name=f"{first_name} {last_name}".strip(),
+        display_name=display_name,
         email=email,
         user_type=UserType.system_user,
         is_active=True,
     )
     db.add(user)
     db.flush()
+    person = party_registry.create_party(
+        db,
+        party_type=PartyType.person,
+        display_name=display_name,
+        data_classification=PartyDataClassification.production,
+        metadata={
+            "staff_identity_bootstrap": {
+                "schema_version": 1,
+                "owner": "auth.staff_provisioning",
+                "command_id": str(context.command_id),
+            }
+        },
+    )
+    party_registry.bind_system_user_principal(
+        db,
+        system_user_id=user.id,
+        person_party_id=person.id,
+        source=binding_source,
+        reason=context.reason,
+    )
     placeholder = secrets.token_urlsafe(32)
     db.add(
         UserCredential(
@@ -411,6 +438,8 @@ def _provision(
             email=email,
             first_name=first_name,
             last_name=last_name,
+            context=command.context,
+            binding_source="auth.staff_provisioning:erp_hr",
         )
 
     role_result = _sync_roles(db, user=user, role_names=desired_roles)
@@ -523,6 +552,8 @@ def create_local_staff_account(
             email=email,
             first_name=first_name,
             last_name=last_name,
+            context=command.context,
+            binding_source="auth.staff_provisioning:local",
         )
         try:
             role_result = assignment_service.sync_source_roles_by_ids(

@@ -58,12 +58,20 @@ refuses duplicate principals and repoints. It does not activate the user,
 create credentials, or assign a staff/agent Party role, RBAC role, or direct
 permission.
 
-The explicit local-admin bootstrap is the one seeding path that also creates a
-Person Party: `scripts.seed.seed_admin` creates a fresh Person Party for an
-unbound seeded administrator and delegates the reviewed binding to
-`bind_system_user_principal` with operator-bootstrap provenance. It never
-matches an existing Party by name or email. Existing, conflicting bindings
-remain fail-closed.
+New staff principals created through `auth.staff_provisioning` now create a
+fresh Person Party and delegate the binding to
+`bind_system_user_principal` in the same owner transaction. This covers both
+ERP HR provisioning and reviewed local staff creation; it never matches an
+existing Party by name or email. The explicit local-admin seeder follows the
+same fresh-Party rule for bootstrap. Existing staff remain a separate reviewed
+backfill concern, and conflicting bindings remain fail-closed.
+
+The one-time `operations.service_team_party_cutover` coordinator may also
+create predetermined Person Parties and bind explicitly reviewed SystemUsers
+for CRM service-team manager/membership adoption. Its plan preserves CRM Person
+UUIDs as Party IDs, is separately approved and digest-bound, and cannot change
+credentials, RBAC, active state, or identity targets outside the plan. This
+narrow cutover does not authorize a general SystemUser Party backfill.
 
 ### ResellerUser
 
@@ -162,4 +170,6 @@ Runtime cutover requires all of the following:
 Only after parity may legacy person UUID resolution, fake-subscriber principal
 fallbacks, duplicated OrganizationMembership decisions, the unused VendorUser
 path, or compatibility vendor bridges be retired. Migration 353 alone is not a
-cutover and authorizes no production backfill or deployment.
+cutover and authorizes no production backfill or deployment. Each later
+bounded adoption requires its own registered owner, reviewed evidence, and
+cutover gate.

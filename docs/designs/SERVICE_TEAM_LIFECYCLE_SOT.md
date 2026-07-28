@@ -1,6 +1,7 @@
 # Service-team lifecycle source of truth
 
-Status: cutover-ready implementation; production migration evidence pending.
+Status: cutover-ready implementation; reviewed Party/membership adoption and
+production migration evidence pending.
 
 ## Ownership
 
@@ -25,6 +26,13 @@ team or membership state. That follow-up must keep native records
 authoritative, treat provider payloads as observations, and reconcile through
 this owner with explicit completeness, idempotency, provenance, and drift
 repair semantics.
+
+`operations.service_team_party_cutover` is the one-time pre-migration
+coordinator for the already-imported CRM boundary. It consumes an exact,
+reviewed CRM Person-to-SystemUser decision plan, delegates Party creation and
+binding to `party.registry`, and adopts the CRM membership snapshot through a
+serializable transaction. CRM identifiers remain provenance; the coordinator
+does not give CRM continuing write authority.
 
 ## Command and lifecycle rules
 
@@ -84,7 +92,7 @@ repair semantics.
 
 ## Migration and retirement gate
 
-Migration 425:
+Migration 426:
 
 1. rejects duplicate case-insensitive team names;
 2. backfills any remaining workflow-setting teams;
@@ -105,6 +113,12 @@ Production cutover is complete only after migration preflight/apply evidence,
 caller traffic verification, and confirmation that no CRM route/job remains a
 writer. Authenticated browser lifecycle, CSRF, and permission parity is enforced
 by `tests/playwright/e2e/test_service_teams.py` before that production gate.
+
+Before migration 426, the protected workflow in
+`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md` must report zero aggregate
+identity blockers. Empty native membership rows are not completeness evidence:
+the reviewed plan is built from the CRM membership source snapshot and must be
+applied before the migration rehearsal and release authorization.
 
 ## CRM parity disposition
 

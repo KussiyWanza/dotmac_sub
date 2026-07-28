@@ -110,6 +110,7 @@ def test_no_second_application_service_team_writer_exists() -> None:
     allowed = {
         ROOT / "app/models/service_team.py",
         ROOT / "app/services/service_team_lifecycle.py",
+        ROOT / "app/services/service_team_party_cutover.py",
     }
     constructor = re.compile(r"\b(?:ServiceTeam|ServiceTeamMember)\(")
     offenders = [
