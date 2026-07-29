@@ -20,6 +20,7 @@ lead permissions, matching the API port); quotes and sales orders use
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -235,11 +236,11 @@ def lead_create(
 
 
 @router.get(
-    "/leads/board",
+    "/pipeline-board",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:read"))],
 )
-def leads_board(
+def pipeline_board(
     request: Request,
     pipeline_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -249,6 +250,23 @@ def leads_board(
         web_sales_service.build_leads_board_context(db, pipeline_id=pipeline_id)
     )
     return templates.TemplateResponse("admin/sales/leads/board.html", context)
+
+
+@router.get(
+    "/leads/board",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:read"))],
+    include_in_schema=False,
+)
+def legacy_leads_board_redirect(
+    pipeline_id: str | None = Query(default=None),
+):
+    query = urlencode({"pipeline_id": pipeline_id}) if pipeline_id else ""
+    suffix = f"?{query}" if query else ""
+    return RedirectResponse(
+        url=f"/admin/sales/pipeline-board{suffix}",
+        status_code=308,
+    )
 
 
 @router.get(
@@ -472,7 +490,7 @@ def pipeline_create(
             create_default_stages=create_default_stages,
         )
         return RedirectResponse(
-            url=f"/admin/sales/leads/board?pipeline_id={pipeline_id}",
+            url=f"/admin/sales/pipeline-board?pipeline_id={pipeline_id}",
             status_code=303,
         )
     except (ValidationError, ValueError) as exc:

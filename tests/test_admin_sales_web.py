@@ -105,6 +105,9 @@ def _make_lead(db, subscriber, **overrides):
 def test_lead_routes_require_lead_permissions():
     router = admin_sales.router
     assert _route_has_permission(router, "/sales/leads", "GET", "crm:lead:read")
+    assert _route_has_permission(
+        router, "/sales/pipeline-board", "GET", "crm:lead:read"
+    )
     assert _route_has_permission(router, "/sales/leads/board", "GET", "crm:lead:read")
     assert _route_has_permission(
         router, "/sales/leads/{lead_id}", "GET", "crm:lead:read"
@@ -164,6 +167,7 @@ def test_sales_router_is_registered_under_admin():
 
     paths = {route.path for route in admin_router.routes if isinstance(route, APIRoute)}
     assert "/admin/sales/leads" in paths
+    assert "/admin/sales/pipeline-board" in paths
     assert "/admin/sales/leads/board" in paths
     assert "/admin/sales/leads/new" in paths
     assert "/admin/sales/leads/{lead_id}/edit" in paths
@@ -359,6 +363,16 @@ def test_leads_board_context_defaults_to_first_pipeline(db_session):
         db_session, pipeline_id=str(pipeline.id)
     )
     assert explicit["selected_pipeline_id"] == str(pipeline.id)
+
+
+def test_legacy_pipeline_board_url_redirects_and_preserves_pipeline():
+    pipeline_id = str(uuid.uuid4())
+    response = admin_sales.legacy_leads_board_redirect(pipeline_id=pipeline_id)
+    assert response.status_code == 308
+    assert (
+        response.headers["location"]
+        == f"/admin/sales/pipeline-board?pipeline_id={pipeline_id}"
+    )
 
 
 def test_kanban_cards_link_to_sub_admin_leads(db_session):
@@ -681,9 +695,23 @@ def test_sales_templates_compile(template_name):
 
 def test_board_template_wires_kanban_api_endpoints():
     source = Path("templates/admin/sales/leads/board.html").read_text()
+    assert 'action="/admin/sales/pipeline-board"' in source
     assert 'data-kanban-endpoint="/api/v1/leads/kanban?pipeline_id=' in source
     assert 'data-update-endpoint="/api/v1/leads/kanban/move"' in source
     assert "/static/js/kanban.js" in source
+
+
+def test_active_sales_ui_no_longer_links_to_legacy_board_url():
+    sources = "\n".join(
+        Path(path).read_text()
+        for path in (
+            "templates/admin/sales/leads/index.html",
+            "templates/admin/sales/leads/detail.html",
+            "templates/admin/sales/leads/board.html",
+            "app/web/admin/sales.py",
+        )
+    )
+    assert "/admin/sales/leads/board" not in sources
 
 
 def test_sidebar_has_sales_entry():
