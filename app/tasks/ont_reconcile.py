@@ -199,6 +199,36 @@ def _close_expired_remote_access() -> dict[str, int]:
     return stats
 
 
+def _reconcile_dialer_credentials() -> dict[str, Any]:
+    """Converge every assigned ONT's PPPoE dialer onto its access credential.
+
+    Runs inside the ONT sweep because the ONT reconciler is what delivers the
+    projection to the CPE: projecting first means the very next per-ONT
+    reconcile in this same sweep carries the corrected value. Gated on its own
+    control so it can be stopped without stopping the ONT sweep.
+
+    Never returns or logs credential values — the stats payload carries
+    fingerprint prefixes only.
+    """
+    from app.services import control_registry
+    from app.services.cpe_dialer_credential_reconcile import (
+        DialerFingerprintUnavailable,
+        reconcile_cpe_dialer_credentials,
+    )
+
+    with db_session_adapter.session() as db:
+        if not control_registry.is_enabled(db, "network.cpe_dialer_credential_sync"):
+            return {"skipped": "cpe_dialer_credential_sync_disabled"}
+        try:
+            # The owner manages its own transaction; this task is a thin
+            # scheduling adapter around it.
+            stats = reconcile_cpe_dialer_credentials(db)
+        except DialerFingerprintUnavailable as exc:
+            logger.error("cpe_dialer_credential_reconcile_unavailable: %s", exc)
+            return {"skipped": "credential_encryption_key_missing"}
+        return stats.as_payload()
+
+
 @celery_app.task(
     name="app.tasks.ont_reconcile.run_ont_reconcile_sweep",
     soft_time_limit=840,
@@ -223,6 +253,7 @@ def run_ont_reconcile_sweep(max_onts: int = 25) -> dict[str, Any]:
             max_duration_sec=720,
         )
         remote_access = _close_expired_remote_access()
+        dialer_credentials = _reconcile_dialer_credentials()
         return {
             "total_onts": stats.total_onts,
             "reconciled": stats.reconciled,
@@ -233,4 +264,5 @@ def run_ont_reconcile_sweep(max_onts: int = 25) -> dict[str, Any]:
             "errors": stats.errors,
             "duration_sec": stats.duration_sec,
             "remote_access": remote_access,
+            "dialer_credentials": dialer_credentials,
         }

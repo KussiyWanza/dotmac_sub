@@ -233,6 +233,10 @@ class EventType(enum.Enum):
 
     # ONT credential changes (audit events)
     ont_pppoe_credentials_set = "ont.pppoe_credentials_set"
+    # Emitted when the derived CPE dialer projection is converged back onto the
+    # authoritative access credential. Payload is fingerprint-only — it never
+    # carries a username or a secret.
+    ont_dialer_credential_reconciled = "ont.dialer_credential_reconciled"
     ont_wifi_password_set = "ont.wifi_password_set"
     ont_wifi_config_updated = "ont.wifi_config_updated"
 

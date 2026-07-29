@@ -17,6 +17,12 @@ Phases (each described in design doc; failure at any phase produces a
   7. Compute the plan from (target desired, observed, mode).
   8. Precondition: any surface the plan needs that was unreachable at read
      time → fast-fail. Errors: ``OLT_UNREACHABLE`` / ``ACS_UNREACHABLE``.
+     Separately, ``compute_plan`` may have refused to build the ACS half at
+     all because the device has no ACS document or no unambiguous GenieACS
+     ``_id``. The OLT half of such a plan still applies; the pass then reports
+     ``ONT_NOT_INFORMING`` / ``ACS_IDENTITY_UNRESOLVED`` instead of claiming
+     convergence, and the repeated-fault counter is advanced so a permanently
+     undeliverable ONT stops failing silently.
   9. Apply the plan via ``apply_plan``.
  10. Persist: upsert observation; write back desired-state mutations on
      success; set ``sync_status``/``last_error``/``last_reconciled_at``.
@@ -43,12 +49,19 @@ from sqlalchemy.orm import Session
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 
 from .adapters import (
+    ACS_DELIVERY_FAULT_REASONS,
     apply_proposed_change,
+    clear_acs_delivery_fault,
     desired_from_ont_unit,
     observed_from_ont_observation,
+    record_acs_delivery_fault,
     upsert_ont_observation,
 )
-from .alerts import resolve_sweep_unreachable
+from .alerts import (
+    escalate_acs_delivery_fault,
+    resolve_acs_delivery_fault,
+    resolve_sweep_unreachable,
+)
 from .applier import ApplyContext, SecretResolver, apply_plan
 from .locking import OntNotFound, acquire_reconcile_lock
 from .planner import compute_plan
@@ -239,7 +252,14 @@ def reconcile_ont(
                 unreachable.add("olt")
             if acs_result.unreachable:
                 unreachable.add("acs")
-            blocked = plan.required_surfaces & unreachable
+            blocked: set[WriteSurface] = set(plan.required_surfaces & unreachable)
+            if not blocked and acs_result.unreachable and plan.waiting_for_acs:
+                # The ACS half could not even be planned. When the ACS read
+                # itself failed, ``acs_present=False`` means "we could not ask",
+                # not "the device has no ACS document" — report the transport
+                # failure rather than a wait-for-Inform, and keep the existing
+                # fast-fail-before-any-write behaviour.
+                blocked.add("acs")
             if blocked:
                 # Pick the most-specific failure reason; OLT trumps ACS because
                 # OLT writes precede ACS writes in the action order.
@@ -303,7 +323,21 @@ def reconcile_ont(
             # can re-read and confirm the planner produces an empty plan
             # against the post-apply state. If actions_applied is empty
             # (drift was zero from the start), there is nothing to verify.
+            acs_wait = _acs_wait_failure(plan)
+
             if not apply_outcome.actions_applied:
+                if acs_wait is not None:
+                    return _finalise(
+                        db,
+                        ont,
+                        success=False,
+                        failure=acs_wait,
+                        started_monotonic=started_monotonic,
+                        observed_after=observed_before,
+                        actions_applied=(),
+                        drift_before=plan.drifts,
+                        drift_after=plan.drifts,
+                    )
                 if proposed_change:
                     apply_proposed_change(
                         ont,
@@ -433,6 +467,23 @@ def reconcile_ont(
                     drift_after=verify_plan.drifts,
                 )
 
+            if acs_wait is not None:
+                # The OLT half converged, but the ACS half was never planned:
+                # this device has no ACS document, or no unambiguous GenieACS
+                # ``_id``. Reporting success here would tell an operator the
+                # CPE was configured when nothing was delivered to it.
+                return _finalise(
+                    db,
+                    ont,
+                    success=False,
+                    failure=acs_wait,
+                    started_monotonic=started_monotonic,
+                    observed_after=observed_after,
+                    actions_applied=apply_outcome.actions_applied,
+                    drift_before=plan.drifts,
+                    drift_after=plan.drifts,
+                )
+
             if proposed_change:
                 apply_proposed_change(
                     ont,
@@ -484,6 +535,23 @@ def reconcile_ont(
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
+
+
+def _acs_wait_failure(plan) -> ReconcileFailure | None:
+    """Translate a plan's ACS identity/presence gate into a failure record.
+
+    ``Plan.acs_wait_reason`` is set when ``compute_plan`` refused to emit ACS
+    actions because the device has no ACS document, more than one matched, or
+    its recorded and reported GenieACS ids disagree. That is not convergence:
+    the OLT half may have been applied, but nothing reached the CPE.
+    """
+    if plan.acs_wait_reason is None:
+        return None
+    return ReconcileFailure(
+        reason=plan.acs_wait_reason,
+        message=plan.acs_wait_detail or "ACS configuration could not be delivered.",
+        evidence={"acs_wait_reason": plan.acs_wait_reason},
+    )
 
 
 def _resolve_olt_adapter(db: Session, ont: OntUnit) -> Any:
@@ -644,9 +712,17 @@ def _finalise(
     if success:
         ont.sync_status = OntSyncStatus.synced
         ont.last_error = None
+        cleared = clear_acs_delivery_fault(ont)
+        if cleared:
+            resolve_acs_delivery_fault(
+                ont_id=str(ont.id),
+                serial_number=str(ont.serial_number or ""),
+                before=cleared,
+            )
     else:
         ont.sync_status = OntSyncStatus.out_of_sync
         ont.last_error = failure.message if failure else "unknown failure"
+        _record_acs_delivery_fault(ont, failure)
     ont.last_reconciled_at = now
 
     if observed_after is not None:
@@ -662,6 +738,32 @@ def _finalise(
         failure=failure,
         duration_ms=duration_ms,
         reconciled_at=now,
+    )
+
+
+def _record_acs_delivery_fault(ont: OntUnit, failure: ReconcileFailure | None) -> None:
+    """Persist and escalate a repeated ACS-delivery fault on this ONT.
+
+    Without this, an ONT whose ACS half can never be written (unknown device
+    identity, a CPE that never informs, a permanently faulting NBI write) is
+    re-selected by every sweep — the sweep orders by least-recently-reconciled
+    — and fails silently forever. Nothing marked the ONT, so nothing surfaced
+    it to an operator.
+    """
+    reason = getattr(failure, "reason", None)
+    if reason not in ACS_DELIVERY_FAULT_REASONS:
+        return
+    streak = record_acs_delivery_fault(
+        ont,
+        reason,
+        getattr(failure, "message", "") or "",
+    )
+    escalate_acs_delivery_fault(
+        ont_id=str(ont.id),
+        serial_number=str(ont.serial_number or ""),
+        reason=reason,
+        message=getattr(failure, "message", "") or "",
+        streak=streak,
     )
 
 

@@ -4,6 +4,15 @@ Classifies each online ONT into a PPPoE health category based on
 credential state, ACS registration, and observed WAN IP. Used by
 the ONT Fleet page to surface connectivity issues for NOC operators.
 
+This module is a **detector only** — it classifies and never repairs.
+``CATEGORY_CREDENTIAL_MISMATCH`` (an ONT dialing something other than the
+subscriber's authoritative access credential) is repaired by
+``app.services.cpe_dialer_credential_reconcile``, which owns the derived CPE
+dialer projection and runs inside the scheduled ONT reconcile sweep. Note the
+comparison here is username-only, so it is deliberately weaker than the
+reconciler's keyed fingerprint over the full ``(username, secret)`` pair: a
+row reading OK here can still be repaired there.
+
 Credential lookup is injected via
 :class:`~app.services.network._credentials.PppoeCredentialProvider`
 so this module never imports from the subscription/catalog domain.

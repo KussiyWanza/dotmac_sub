@@ -351,6 +351,8 @@ do not hand-edit these rows.
 | `network.tr069_commands` | TR-069 command admission coordination | `application_coordinator` | authenticated TR-069 command evidence ← `auth.permission_gate`<br>canonical TR-069 device and ACS binding ← `network.identity`<br>TR-069 command admission capability ← `control.feature_registry`<br>canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
 | `network.tr069_commands` | TR-069 command execution coordination | `application_coordinator` | canonical TR-069 device and ACS binding ← `network.identity`<br>canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
 | `network.tr069_commands` | TR-069 command outcome coordination | `application_coordinator` | canonical network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch`<br>normalized GenieACS command observation ← `external:genieacs` | `coordinator_managed` | `complete` | network operations | `docs/designs/TR069_COMMAND_LIFECYCLE.md`<br>`docs/runbooks/TR069_COMMAND_CUTOVER.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_tr069_job_commands.py`<br>`tests/architecture/test_tr069_job_lifecycle_boundary.py` |
+| `network.cpe_dialer_credential` | derived CPE PPPoE dialer credential projection | `reconciler` | authoritative subscriber access credential ← `access.radius_projection`<br>active ONT-to-subscriber assignment ← `network.identity`<br>derived CPE dialer projection ← `network.cpe_dialer_credential`<br>credential fingerprint key ← `secrets.credential_crypto` | `participant` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_cpe_dialer_credential_reconcile.py` |
+| `network.cpe_dialer_credential` | CPE dialer credential fingerprint comparison and readback | `resolver` | authoritative subscriber access credential ← `access.radius_projection`<br>derived CPE dialer projection ← `network.cpe_dialer_credential`<br>ACS-reported PPPoE dialer username ← `external:genieacs`<br>credential fingerprint key ← `secrets.credential_crypto` | `participant` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_cpe_dialer_credential_reconcile.py` |
 | `network.ip_assignment_lifecycle` | exact service ownership of active IPv4 assignments | `reconciler` | canonical active IPv4 assignment ← `network.ip_assignment_lifecycle`<br>canonical active subscription identity ← `access.subscription_lifecycle`<br>served IPv4 compatibility projection ← `network.ip_assignment_lifecycle`<br>reviewed ownership repair command ← `network.ip_assignment_lifecycle` | `owner_managed` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`<br>`tests/test_ip_assignment_repair.py`<br>`tests/test_ip_assignment_lifecycle.py`<br>`tests/architecture/test_ip_assignment_service_ownership.py` |
 | `network.ip_assignment_lifecycle` | reviewed exact-service IPv4 assignment lifecycle repair | `command_writer` | canonical active IPv4 assignment ← `network.ip_assignment_lifecycle`<br>canonical active subscription identity ← `access.subscription_lifecycle`<br>serviceable IPv4 address inventory ← `network.ip_assignment_lifecycle`<br>reviewed lifecycle repair command ← `network.ip_assignment_lifecycle` | `owner_managed` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`<br>`tests/test_ip_assignment_repair.py`<br>`tests/test_ip_assignment_lifecycle.py`<br>`tests/architecture/test_ip_assignment_service_ownership.py` |
 | `network.ip_assignment_lifecycle` | reviewed exact-service IPv4 served projection repair | `command_writer` | canonical active IPv4 assignment ← `network.ip_assignment_lifecycle`<br>canonical active subscription identity ← `access.subscription_lifecycle`<br>served IPv4 compatibility projection ← `network.ip_assignment_lifecycle`<br>observed RADIUS IPv4 projection ← `access.radius_projection`<br>active RADIUS session observation ← `sessions.radius_reconciliation`<br>reviewed served projection repair command ← `network.ip_assignment_lifecycle` | `owner_managed` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`<br>`tests/test_ip_assignment_repair.py`<br>`tests/test_ip_assignment_lifecycle.py`<br>`tests/architecture/test_ip_assignment_service_ownership.py` |
@@ -3249,6 +3251,33 @@ writers are retired; historical rows remain readable evidence.
    with the old address. Normal provisioning and admin assignment writers
    remain explicit migration debt until the runtime cutover described in
    `docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`.
+48a. `network.cpe_dialer_credential`
+   (`app/services/cpe_dialer_credential_reconcile.py`): owns the derived CPE
+   PPPoE dialer credential projection and its fingerprint comparison and
+   readback. `AccessCredential`/`RadiusUser` remains the authoritative
+   subscriber access credential, and `access.radius_projection` remains the
+   only writer of the RADIUS auth tables — this owner never writes RADIUS.
+   What the CPE dials with
+   (`OntUnit.desired_config` `wan.pppoe_username` / `wan.pppoe_password`)
+   is a DERIVED projection of that credential, and this reconciler is its
+   single canonical writer. Operator-typed dialer values are converged back
+   onto the authoritative credential; they never flow the other way, and the
+   ONT configuration UI must not claim that editing them repairs
+   authentication. Delivery to the physical CPE stays with the ONT reconciler
+   (`app/services/network/reconcile`), which diffs desired against the
+   ACS-observed username and pushes over TR-069. Comparison is by keyed
+   HMAC-SHA256 fingerprint over the `(username, secret)` pair; credential
+   values are never logged, returned, or stored in a drift record. Only the
+   username is readable back from a CPE, so convergence is proven as
+   projection readback (recorded fingerprint) plus device readback (last
+   ACS-observed username). `pppoe_health.CATEGORY_CREDENTIAL_MISMATCH` remains
+   the read-side detector; this owner is its repair path.
+   Boundary change: this promotes the CPE dialer value from an
+   independently operator-written field to a derived projection with one
+   writer. The previous de facto writer —
+   `web_network_ont_actions.config_setters.set_pppoe_credentials` — remains
+   available as a manual CPE repair action and is documented as
+   non-authoritative; its values are re-converged by this reconciler.
 49. `network.ip_pool_utilization` (`app/services/ip_pool_utilization_snapshot.py`):
    owns IP-pool utilization reads — the daily utilization snapshots and the
    live per-pool used/total counts consumed by the network report. The live
@@ -3267,6 +3296,19 @@ only re-submit its intent to `network.ont_provisioning_commands`; it cannot ente
 device code. Remove this compatibility adapter after one maximum broker-retention
 window has elapsed after production cutover. The old direct-publish and
 worker-owned-operation paths have no fallback authority and must not return.
+
+ACS device identity: the GenieACS `_id` (`OUI-ProductClass-Serial`) of a CPE is
+owned by the TR-069 Inform handler and persisted on
+`Tr069CpeDevice.genieacs_device_id`. No planner, applier, task, or adapter may
+construct one from a default OUI or ProductClass — the fleet spans several ONT
+models and a fabricated identifier is a permanent NBI 404 that retries forever.
+The ONT reconciler resolves the identifier from that record, or from the `_id`
+the ACS itself reported for the serial on the same pass, and fails closed
+otherwise: a device absent from the ACS, an ambiguous multi-document match, or a
+recorded-versus-reported disagreement produces an OLT-only plan plus an explicit
+`ont_not_informing` / `acs_identity_unresolved` wait, never a speculative push.
+Repeated undeliverable passes are counted on the ONT and escalated so a
+permanently broken ONT cannot fail silently in the sweep.
 
 Rule: pollers and map collectors write observations; `network.fiber_topology`
 validates passive asset identity and connectivity;

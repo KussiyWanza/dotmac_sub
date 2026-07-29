@@ -93,6 +93,10 @@ def _desired(**overrides) -> OntDesiredState:
         subscriber_external_id=None,
         wan_uprate_kbps=None,
         wan_downrate_kbps=None,
+        # The persisted Tr069CpeDevice.genieacs_device_id for this ONT. The
+        # planner never fabricates one; without it (or an ACS-reported id) no
+        # ACS action may be emitted at all.
+        acs_device_id="00259E-HG8546M-HWTC8535819A",
     )
     defaults.update(overrides)
     return OntDesiredState(**defaults)
@@ -169,6 +173,22 @@ def _acs_observed(**overrides) -> AcsObservedFields:
     return AcsObservedFields(**defaults)
 
 
+def _informed_acs_observed(**overrides) -> AcsObservedFields:
+    """A device the ACS knows about but that has reported no configuration yet.
+
+    This is the state a brand-new ONT reaches after its first Inform: the ACS
+    holds a document (so writes can be delivered) with an ``_id`` we can target,
+    but none of the managed parameters are populated.
+    """
+    defaults = dict(
+        acs_present=True,
+        acs_observed_device_id="00259E-HG8546M-HWTC8535819A",
+        acs_observed_device_match_count=1,
+    )
+    defaults.update(overrides)
+    return _acs_observed(**defaults)
+
+
 def _observed(
     *, olt: OltObservedFields | None = None, acs: AcsObservedFields | None = None
 ) -> OntObservedState:
@@ -211,6 +231,8 @@ def _synced_observed(desired: OntDesiredState) -> OntObservedState:
         ),
         acs=_acs_observed(
             acs_present=True,
+            acs_observed_device_id=desired.acs_device_id,
+            acs_observed_device_match_count=1,
             acs_observed_pppoe_username=desired.wan_pppoe_username,
             acs_observed_pppoe_enable=True,
             acs_observed_wan_vlan=desired.wan_vlan,
@@ -412,7 +434,7 @@ def test_tr181_static_missing_projected_dns_remains_drift():
 
 def test_fresh_authorize_emits_authorize_servicep_ipconfig_tr069_acs():
     desired = _desired()
-    plan = compute_plan(desired, _observed(), "sync")
+    plan = compute_plan(desired, _observed(acs=_informed_acs_observed()), "sync")
 
     action_types = _types(plan)
     # OLT side: authorize, then service ports, then iphost (clear x2 + write),
@@ -434,11 +456,29 @@ def test_fresh_authorize_emits_authorize_servicep_ipconfig_tr069_acs():
     assert wifi.password_ref == desired.wifi_password_ref
     assert AcsSetDhcpServer in action_types
     assert AcsSetManagementServer in action_types
+    assert plan.acs_wait_reason is None
 
     # NAT defensive is emitted when nat_enabled observed != desired. Fresh
     # device has nat=None observed; the diff helper treats None as "no signal"
     # so NAT push is skipped until the device informs.
     assert AcsSetNatEnabled not in action_types
+
+
+def test_fresh_authorize_absent_from_acs_plans_olt_only_and_waits_for_inform():
+    """A brand-new ONT is not in the ACS yet.
+
+    Every NBI write against a device the ACS has no document for is a 404, so
+    the plan carries the OLT half only and records an explicit wait. The old
+    behaviour pushed the whole ACS sequence at a fabricated device id.
+    """
+    plan = compute_plan(_desired(), _observed(), "sync")
+
+    action_types = _types(plan)
+    assert OltAuthorize in action_types
+    assert not any(action.surface == "acs" for action in plan.actions)
+    assert plan.required_surfaces == frozenset({"olt"})
+    assert plan.waiting_for_acs is True
+    assert plan.acs_wait_reason == "ont_not_informing"
 
 
 def test_sweep_repairs_observed_tr069_profile_drift():
@@ -460,12 +500,12 @@ def test_sweep_repairs_observed_tr069_profile_drift():
 
 
 def test_fresh_authorize_requires_both_surfaces():
-    plan = compute_plan(_desired(), _observed(), "sync")
+    plan = compute_plan(_desired(), _observed(acs=_informed_acs_observed()), "sync")
     assert plan.required_surfaces == frozenset({"olt", "acs"})
 
 
 def test_fresh_authorize_orders_olt_before_acs():
-    plan = compute_plan(_desired(), _observed(), "sync")
+    plan = compute_plan(_desired(), _observed(acs=_informed_acs_observed()), "sync")
     olt_action_indices = [i for i, a in enumerate(plan.actions) if a.surface == "olt"]
     acs_action_indices = [i for i, a in enumerate(plan.actions) if a.surface == "acs"]
     assert olt_action_indices  # we have OLT actions
@@ -526,7 +566,7 @@ def test_bridge_mode_skips_pppoe_and_nat_actions():
 
 
 def test_wifi_password_pushed_on_sync_for_fresh_ont():
-    plan = compute_plan(_desired(), _observed(), "sync")
+    plan = compute_plan(_desired(), _observed(acs=_informed_acs_observed()), "sync")
     assert AcsSetWifiConfig in _types(plan)
     assert (
         next(
@@ -688,7 +728,7 @@ def test_omci_wan_skipped_when_profile_id_is_zero_or_none():
         wan_config_profile_id=None,
         wan_internet_config_ip_index=1,
     )
-    plan = compute_plan(desired, _observed(), "sync")
+    plan = compute_plan(desired, _observed(acs=_informed_acs_observed()), "sync")
     types = _types(plan)
     assert OltOmciPppoe not in types
     assert AcsSetPppoe in types  # TR-069 path
@@ -700,7 +740,7 @@ def test_omci_wan_skipped_when_method_is_tr069():
         wan_config_profile_id=2,  # would be a valid OMCI value, but method says tr069
         wan_internet_config_ip_index=1,
     )
-    plan = compute_plan(desired, _observed(), "sync")
+    plan = compute_plan(desired, _observed(acs=_informed_acs_observed()), "sync")
     assert OltOmciPppoe not in _types(plan)
     assert AcsSetPppoe in _types(plan)
 
@@ -946,7 +986,7 @@ def test_plan_is_deterministic():
 
 def test_drift_records_match_action_count_for_fresh_authorize():
     desired = _desired()
-    plan = compute_plan(desired, _observed(), "sync")
+    plan = compute_plan(desired, _observed(acs=_informed_acs_observed()), "sync")
     # Drift entries are emitted alongside repair actions. We expect at least
     # one drift per major repair (authorize, iphost, ssid, pppoe, dhcp).
     drift_fields = {d.field for d in plan.drifts}

@@ -68,7 +68,7 @@ from .applier import (
 )
 from .core import reconcile_ont
 from .locking import LockConflict, LockError, OntNotFound, acquire_reconcile_lock
-from .planner import Plan, compute_plan
+from .planner import AcsIdentity, Plan, compute_plan, resolve_acs_device_id
 from .readers import ReadResult, read_acs_state, read_olt_state
 from .state import (
     AcsObservedFields,
@@ -95,6 +95,7 @@ from .validator import Validation, validate_desired
 __all__ = (
     "AcsAddObject",
     "AcsDeleteObject",
+    "AcsIdentity",
     "AcsObservedFields",
     "AcsSetDhcpServer",
     "AcsSetIpv6",
@@ -157,6 +158,7 @@ __all__ = (
     "read_acs_state",
     "read_olt_state",
     "reconcile_ont",
+    "resolve_acs_device_id",
     "upsert_ont_observation",
     "validate_desired",
 )

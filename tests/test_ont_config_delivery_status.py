@@ -67,8 +67,11 @@ def test_update_ont_config_reports_pending_when_acs_delivery_is_unavailable(
 
     assert result.success is True
     assert result.waiting is True
-    assert "Configuration saved." in result.message
-    assert "waiting for device inform to apply" in result.message
+    # "saved" and "delivered" are reported as two separate facts: the operator
+    # must not read a deferred push as a completed change.
+    assert "Saved to database." in result.message
+    assert "Not yet delivered to the device" in result.message
+    assert "waiting for its next inform" in result.message
     assert "Use Advanced Actions" not in result.message
     db_session.refresh(ont)
     assert ont.desired_config["delivery"]["pending_apply"] is True

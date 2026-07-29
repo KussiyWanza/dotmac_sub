@@ -191,7 +191,42 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         ),
         wan_remote_access_ssh_port=22,
         remote_access_paths=remote_access_paths,
+        acs_device_id=_resolve_acs_device_id(db, ont),
     )
+
+
+def _resolve_acs_device_id(db: Session, ont: OntUnit) -> str | None:
+    """Read this ONT's recorded GenieACS ``_id`` from its CPE record.
+
+    ``Tr069CpeDevice`` is written by the TR-069 Inform handler
+    (``app.services.tr069``) and is the authoritative record of a CPE's ACS
+    identity; ``genieacs_device_id`` is uniquely indexed per active row.
+
+    The composed fallback uses only values the Inform handler persisted
+    (``oui``/``product_class``/``serial_number``) and requires all three. It is
+    NOT a guess: there is no default OUI and no default ProductClass here. When
+    the record is missing or incomplete this returns ``None`` and the planner
+    fails closed rather than inventing an identifier.
+    """
+    from app.models.tr069 import Tr069CpeDevice
+
+    row = db.scalars(
+        select(Tr069CpeDevice)
+        .where(Tr069CpeDevice.ont_unit_id == ont.id)
+        .where(Tr069CpeDevice.is_active.is_(True))
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    recorded = (row.genieacs_device_id or "").strip()
+    if recorded:
+        return recorded
+    oui = (row.oui or "").strip()
+    product_class = (row.product_class or "").strip()
+    serial = (row.serial_number or "").strip()
+    if oui and product_class and serial:
+        return f"{oui}-{product_class}-{serial}"
+    return None
 
 
 def _resolve_nat_enabled(wan_mode: str, values: dict[str, Any]) -> bool:
@@ -454,6 +489,63 @@ def apply_proposed_change(
 
     _set_desired_value(ont, "management", "subnet", target.mgmt_subnet_mask)
     _set_desired_value(ont, "management", "gateway", target.mgmt_gateway)
+
+
+# ── ACS delivery-fault bookkeeping ──────────────────────────────────────────
+
+# Reasons that mean "this ONT's ACS half did not get written". They are stored
+# under ``desired_config['delivery']`` beside the existing ``pending_apply``
+# flag so the fleet UI and the alert path read one place.
+ACS_DELIVERY_FAULT_REASONS = frozenset(
+    {
+        "acs_write_faulted",
+        "acs_cr_failed",
+        "acs_identity_unresolved",
+        "ont_not_informing",
+        "acs_unreachable",
+    }
+)
+
+
+def record_acs_delivery_fault(ont: OntUnit, reason: str, message: str) -> int:
+    """Increment and return this ONT's consecutive ACS-delivery fault streak.
+
+    The reconcile sweep re-picks the least-recently-reconciled ONT forever, so
+    a permanent fault (an unresolvable device identity, a CPE that never
+    informs) otherwise retries silently and indefinitely. Persisting the streak
+    turns that into something an operator and an alert can see.
+
+    ``message`` is truncated and stored for the UI; it is produced by the
+    reconciler and never contains credential values.
+    """
+    delivery = dict((ont.desired_config or {}).get("delivery") or {})
+    previous_reason = str(delivery.get("acs_fault_reason") or "")
+    streak = int(delivery.get("acs_fault_streak") or 0)
+    streak = streak + 1 if previous_reason == reason else 1
+    now = datetime.now(UTC).isoformat()
+    _set_desired_value(ont, "delivery", "acs_fault_streak", streak)
+    _set_desired_value(ont, "delivery", "acs_fault_reason", reason)
+    _set_desired_value(ont, "delivery", "acs_fault_last_at", now)
+    _set_desired_value(ont, "delivery", "acs_fault_detail", (message or "")[:400])
+    if streak == 1:
+        _set_desired_value(ont, "delivery", "acs_fault_since", now)
+    return streak
+
+
+def clear_acs_delivery_fault(ont: OntUnit) -> int:
+    """Clear the streak after a converged reconcile; return the prior value."""
+    delivery = dict((ont.desired_config or {}).get("delivery") or {})
+    previous = int(delivery.get("acs_fault_streak") or 0)
+    if previous:
+        for key in (
+            "acs_fault_streak",
+            "acs_fault_reason",
+            "acs_fault_last_at",
+            "acs_fault_detail",
+            "acs_fault_since",
+        ):
+            _set_desired_value(ont, "delivery", key, None)
+    return previous
 
 
 # ── Observed state ──────────────────────────────────────────────────────────

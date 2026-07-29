@@ -13103,6 +13103,231 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.cpe_dialer_credential",
+                module="app.services.cpe_dialer_credential_reconcile",
+                owns=(
+                    "derived CPE PPPoE dialer credential projection",
+                    "CPE dialer credential fingerprint comparison and readback",
+                ),
+                depends_on=(
+                    "network.identity",
+                    "access.radius_projection",
+                    "secrets.credential_crypto",
+                    "events.dispatcher",
+                    "runtime.db_sessions",
+                ),
+                notes=(
+                    "AccessCredential/RadiusUser stays the authoritative access "
+                    "credential and access.radius_projection stays the only "
+                    "writer of the RADIUS auth tables. What the CPE dials with "
+                    "is a DERIVED projection of that credential onto "
+                    "OntUnit.desired_config wan.pppoe_username/pppoe_password, "
+                    "and this reconciler is its single canonical writer. "
+                    "Operator-typed dialer values are repaired back to the "
+                    "authoritative credential; they never flow the other way "
+                    "and never reach RADIUS. Delivery to the physical CPE "
+                    "remains with the ONT reconciler. Comparison is by keyed "
+                    "fingerprint only — credential values are never logged, "
+                    "returned, or stored in drift records."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="derived CPE PPPoE dialer credential projection",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "active ONT-to-subscriber assignment",
+                                "derived CPE dialer projection",
+                                "credential fingerprint key",
+                            ),
+                            canonical_writer="network.cpe_dialer_credential",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "CPE dialer credential fingerprint comparison "
+                                "and readback"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "derived CPE dialer projection",
+                                "ACS-reported PPPoE dialer username",
+                                "credential fingerprint key",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authoritative subscriber access credential",
+                            owner="access.radius_projection",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active AccessCredential username and encrypted "
+                                "secret for the ONT's assigned subscriber; the "
+                                "same record that decides RADIUS authentication"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active ONT-to-subscriber assignment",
+                            owner="network.identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active OntAssignment subscriber binding for an "
+                                "active OntUnit"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="ACS-reported PPPoE dialer username",
+                            owner="external:genieacs",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "last GenieACS-reported WANPPPConnection Username, "
+                                "cached on OntObservation by the ONT reconciler; "
+                                "the dialer password is never readable from a CPE"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="derived CPE dialer projection",
+                            owner="network.cpe_dialer_credential",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "OntUnit.desired_config wan.pppoe_username and "
+                                "wan.pppoe_password plus the recorded dialer "
+                                "fingerprint under delivery"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="credential fingerprint key",
+                            owner="secrets.credential_crypto",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "configured credential-encryption key, used to key "
+                                "the HMAC-SHA256 dialer fingerprint so comparison "
+                                "never handles or exposes the credential value"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "One pass flushes each ONT's projection into the "
+                            "caller's session; the scheduling adapter's session "
+                            "context owns the commit."
+                        ),
+                        locking=(
+                            "No cross-row lock is taken. Each ONT is repaired "
+                            "independently from its own authoritative credential, "
+                            "so a concurrent pass converges on the same value."
+                        ),
+                        idempotency=(
+                            "The keyed fingerprint is the idempotency key: a pass "
+                            "whose desired and observed fingerprints already agree "
+                            "performs no write."
+                        ),
+                        retries=(
+                            "Safe to re-run at any time; a partially applied pass "
+                            "is completed by the next one."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.cpe_dialer_credential.fingerprint_key_unavailable",
+                            "network.cpe_dialer_credential.unreadable_stored_credential",
+                        ),
+                        mapping_owner=(
+                            "ONT reconcile sweep task and administrative adapters"
+                        ),
+                        retryable_codes=(
+                            "network.cpe_dialer_credential.fingerprint_key_unavailable",
+                        ),
+                        fail_closed_on=(
+                            "missing credential-encryption key",
+                            "credential with no usable secret",
+                            "ONT with no active access credential",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("ont.dialer_credential_reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries ONT identity, repair reason, and "
+                            "truncated credential fingerprints only. It never "
+                            "carries a dialer username or secret."
+                        ),
+                        replay=(
+                            "Re-running the reconciler reproduces the outcome from "
+                            "the authoritative credential; the recorded fingerprint "
+                            "on the ONT reconstructs which projection was applied."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="CPE PPPoE dialer credential projection",
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "active ONT-to-subscriber assignment",
+                                "derived CPE dialer projection",
+                                "ACS-reported PPPoE dialer username",
+                                "credential fingerprint key",
+                            ),
+                            writer="network.cpe_dialer_credential",
+                            freshness=(
+                                "Current while the recorded dialer fingerprint "
+                                "equals the authoritative credential's fingerprint "
+                                "and the last ACS-reported username matches it."
+                            ),
+                            stale_behavior=(
+                                "A stale projection is rewritten from the "
+                                "authoritative credential; a correct projection the "
+                                "CPE has not taken is re-flagged for delivery, not "
+                                "rewritten. Operator-typed values never win."
+                            ),
+                            drift_signal=(
+                                "Keyed HMAC-SHA256 fingerprint over the "
+                                "(username, secret) pair, plus username-only device "
+                                "readback. pppoe_health CATEGORY_CREDENTIAL_MISMATCH "
+                                "is the weaker read-side detector."
+                            ),
+                            rebuild_operation=(
+                                "Re-run reconcile_cpe_dialer_credentials; it is "
+                                "fully derivable from the authoritative credential."
+                            ),
+                            repair_owner="network.cpe_dialer_credential",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.cpe_dialer_credential",
+                        old_owner=(
+                            "operator-typed ONT dialer values written directly by "
+                            "web_network_ont_actions.config_setters."
+                            "set_pppoe_credentials and update_ont_config"
+                        ),
+                        verification=(
+                            "Each sweep audits every assigned ONT by fingerprint "
+                            "and reports drift before repairing; the audit mode "
+                            "reports exactly what a repair pass would change."
+                        ),
+                        cutover_gate=(
+                            "Fleet-wide dialer drift stays at zero across "
+                            "consecutive sweeps, and the ONT configuration UI no "
+                            "longer presents the dialer fields as an "
+                            "authentication fix."
+                        ),
+                        fallback_retirement=(
+                            "The manual dialer action is retained only as a CPE "
+                            "repair tool and is documented as non-authoritative; "
+                            "its values are re-converged by this owner."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_cpe_dialer_credential_reconcile.py",),
+                ),
+            ),
+            SOTService(
                 name="network.control_plane_intent",
                 module="app.services.control_plane_intent",
                 owns=(

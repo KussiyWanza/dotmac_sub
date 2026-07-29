@@ -274,6 +274,17 @@ _FEATURE_CONTROLS: tuple[Control, ...] = (
         description="Scheduled Huawei ONT desired/observed reconciliation.",
     ),
     Control(
+        key="network.cpe_dialer_credential_sync",
+        layer=Layer.feature,
+        owner_module="network",
+        default=True,
+        on_missing=True,
+        description=(
+            "Project the authoritative access credential onto each assigned "
+            "ONT's PPPoE dialer (fingerprint comparison; never writes RADIUS)."
+        ),
+    ),
+    Control(
         key="network.forwarding_observation_collection",
         layer=Layer.feature,
         owner_module="network",

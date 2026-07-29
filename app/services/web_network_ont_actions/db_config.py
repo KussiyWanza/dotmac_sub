@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -31,13 +32,47 @@ from app.services.web_network_ont_actions.config_setters import (
 logger = logging.getLogger(__name__)
 
 
+# Reconcile failure reasons that mean "the change is saved but was not
+# delivered yet, and will be delivered when the device next reachable/informs".
+# Everything else — a rejected write, a post-apply verification mismatch, an
+# invalid change — is a real failure and must never be reported as a saved,
+# waiting, or applied change.
+_DEFERRABLE_FAILURE_REASONS = frozenset(
+    {
+        "acs_cr_failed",
+        "acs_unreachable",
+        "acs_identity_unresolved",
+        "olt_unreachable",
+        "ont_not_informing",
+        "ont_offline",
+    }
+)
+
+
 def _delivery_pending_result(result: ActionResult) -> ActionResult:
-    """Treat saved desired config as pending when only ACS delivery failed."""
+    """Reclassify a *deferral* as saved-and-waiting; leave failures failing.
+
+    Three outcomes are distinct and must stay distinct:
+
+    * delivered   — the device accepted and verified the change;
+    * deferred    — the change is persisted, nothing was delivered, and the
+                    reconciler will deliver it once the CPE informs;
+    * failed      — the write was attempted and rejected, or the readback
+                    disagreed. The device is NOT in the requested state.
+
+    Only the middle case may be lifted to ``success=True, waiting=True``. This
+    used to lift any non-input-error, which turned rejected WAN/WiFi writes into
+    "Configuration saved" for the field engineer reading the banner.
+    """
     if result.success or _is_input_error(result.message):
         return result
 
     data = dict(result.data or {})
     if data.get("delivery_pending") is False:
+        return result
+
+    reason = data.get("failure_reason")
+    if reason is not None and reason not in _DEFERRABLE_FAILURE_REASONS:
         return result
 
     text = (result.message or "").lower()
@@ -46,10 +81,10 @@ def _delivery_pending_result(result: ActionResult) -> ActionResult:
 
     data["delivery_pending"] = True
     data.setdefault("waiting_reason", "next_inform")
-    reason = (result.message or "Device is not reachable through ACS.").strip()
+    detail = (result.message or "Device is not reachable through ACS.").strip()
     return ActionResult(
         success=True,
-        message=f"saved, waiting for device inform to apply ({reason})",
+        message=f"saved, not yet delivered — waiting for device inform ({detail})",
         data=data,
         waiting=True,
     )
@@ -283,9 +318,13 @@ def update_ont_config(
                         reconciled.failure.reason if reconciled.failure else None
                     ),
                     "failure_evidence": getattr(reconciled.failure, "evidence", None),
+                    # The WAN leg used to admit only ``acs_cr_failed`` as a
+                    # deferral, so every other undelivered outcome reported as
+                    # a hard failure while the LAN/WiFi legs lifted *anything*
+                    # to success. Both legs now use one classification.
                     "delivery_pending": bool(
                         reconciled.failure
-                        and reconciled.failure.reason == "acs_cr_failed"
+                        and reconciled.failure.reason in _DEFERRABLE_FAILURE_REASONS
                     ),
                 },
             )
@@ -449,21 +488,68 @@ def update_ont_config(
     )
 
     if push_to_device:
+        # "Saved" and "delivered" are two different facts. The local desired
+        # state was committed at the top of the push block; whether any of it
+        # reached the CPE is decided here, and the ONT is flagged so a failed
+        # or deferred delivery is visible after the request ends.
         if push_waiting:
-            set_desired_config_values(ont, {"delivery.pending_apply": True})
+            set_desired_config_values(
+                ont,
+                {
+                    "delivery.pending_apply": True,
+                    "delivery.last_push_failure": None,
+                    "delivery.last_push_failure_at": None,
+                },
+            )
             db.add(ont)
             db.flush()
         elif push_success:
-            set_desired_config_values(ont, {"delivery.pending_apply": None})
+            set_desired_config_values(
+                ont,
+                {
+                    "delivery.pending_apply": None,
+                    "delivery.last_push_failure": None,
+                    "delivery.last_push_failure_at": None,
+                },
+            )
             db.add(ont)
             db.flush()
-        if push_messages:
-            message = "Configuration saved. " + "; ".join(push_messages)
         else:
-            message = "Configuration saved. No device-delivered fields changed."
+            # Hard failure: previously neither branch ran, so nothing recorded
+            # that this ONT's config never reached the device.
+            set_desired_config_values(
+                ont,
+                {
+                    "delivery.pending_apply": None,
+                    "delivery.last_push_failure": "; ".join(push_messages)[:400]
+                    or "device delivery failed",
+                    "delivery.last_push_failure_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            db.add(ont)
+            db.flush()
+
+        detail = "; ".join(push_messages)
+        if not push_messages:
+            message = "Saved to database. No device-delivered fields changed."
+        elif not push_success:
+            message = (
+                "Saved to database, but delivery to the device FAILED — the "
+                f"device is unchanged for the failed step(s). {detail}"
+            )
+        elif push_waiting:
+            message = (
+                "Saved to database. Not yet delivered to the device; waiting "
+                f"for its next inform. {detail}"
+            )
+        else:
+            message = f"Saved to database and delivered to the device. {detail}"
         return ActionResult(success=push_success, message=message, waiting=push_waiting)
 
-    return ActionResult(success=True, message="Configuration saved.")
+    return ActionResult(
+        success=True,
+        message="Saved to database. Not sent to the device.",
+    )
 
 
 def set_voip_enabled(

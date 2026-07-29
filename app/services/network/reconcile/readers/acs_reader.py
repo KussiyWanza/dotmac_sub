@@ -5,10 +5,16 @@ trusts the GenieACS CWMP cache — staleness is bounded by the device's
 PeriodicInformInterval, and post-write ``VERIFICATION_MISMATCH`` catches the
 rare stale-cache case. No ``refreshObject`` round-trip on every read.
 
-The device-id format is ``{OUI}-{ProductClass}-{SerialNumber}``. Since we
-don't always know OUI/ProductClass from ``OntUnit``, the query uses a
-trailing-serial regex match — this is the same pattern ``GenieACSClient.get_device``
-falls back to.
+The device-id format is ``{OUI}-{ProductClass}-{SerialNumber}``. ``OntUnit``
+does not carry OUI/ProductClass, so the *query* uses a trailing-serial regex
+match — the same pattern ``GenieACSClient.get_device`` falls back to.
+
+The matched document's ``_id`` is then **observed** into
+``AcsObservedFields.acs_observed_device_id`` verbatim, together with the number
+of documents that matched. Those two fields are the only ACS-sourced identity
+the reconciler is allowed to use; nothing in this package may compose a device
+id from a guessed OUI or ProductClass. The fleet is not one model (HG8546M and
+EG8145V5 both ship today) and a fabricated ``_id`` is a permanent NBI 404.
 """
 
 from __future__ import annotations
@@ -101,8 +107,10 @@ def read_acs_state(
     Returns:
         ``ReadResult[AcsObservedFields]``. When the device hasn't yet
         bootstrapped to ACS, returns ``success=True`` with an
-        ``acs_present=False`` observation — the planner will plan to wait
-        for the next Inform after pushing OLT-side mgmt config.
+        ``acs_present=False`` observation. That is a clean read, not a
+        transport failure: ``compute_plan`` emits no ACS actions for it and
+        marks the plan ``acs_wait_reason=ont_not_informing`` so the OLT-side
+        mgmt config is still pushed and the ACS half waits for the next Inform.
     """
     query = _query_for_serial(desired.serial_number)
     projection_paths = list(_PROJECTION_PATHS)
@@ -157,7 +165,18 @@ def read_acs_state(
         )
 
     device = devices[0]
-    observed = _parse_device(device, desired)
+    observed = _parse_device(device, desired, match_count=len(devices))
+    if len(devices) > 1:
+        # Ambiguous identity. The planner fails closed on this; log once with
+        # the ids so an operator can retire the stale ACS document.
+        logger.warning(
+            "acs_reader_ambiguous_device_match",
+            extra={
+                "serial": desired.serial_number,
+                "match_count": len(devices),
+                "device_ids": [str(item.get("_id") or "") for item in devices],
+            },
+        )
 
     # Ghost-instance recovery. ACS may have cached ``setParameterValues``
     # writes against a ``WANPPPConnection.<n>`` path that never existed on
@@ -227,7 +246,7 @@ def _refresh_and_reparse(
         return observed
     if not refreshed:
         return observed
-    return _parse_device(refreshed[0], desired)
+    return _parse_device(refreshed[0], desired, match_count=len(refreshed))
 
 
 # ── Query / parse helpers ───────────────────────────────────────────────────
@@ -242,7 +261,10 @@ def _query_for_serial(serial_number: str) -> dict[str, Any]:
 
 
 def _parse_device(
-    device: dict[str, Any], desired: OntDesiredState | None = None
+    device: dict[str, Any],
+    desired: OntDesiredState | None = None,
+    *,
+    match_count: int = 1,
 ) -> AcsObservedFields:
     """Map a GenieACS device document to ``AcsObservedFields``.
 
@@ -302,6 +324,8 @@ def _parse_device(
 
     return AcsObservedFields(
         acs_present=True,
+        acs_observed_device_id=(str(device.get("_id") or "").strip() or None),
+        acs_observed_device_match_count=match_count,
         acs_last_inform_at=_parse_timestamp(device.get("_lastInform")),
         acs_last_boot_at=_parse_timestamp(device.get("_lastBoot")),
         acs_last_bootstrap_at=_parse_timestamp(device.get("_lastBootstrap")),
@@ -516,6 +540,8 @@ def _absent_fields() -> AcsObservedFields:
         acs_observed_url=None,
         acs_observed_username=None,
         acs_observed_password_set=None,
+        acs_observed_device_id=None,
+        acs_observed_device_match_count=0,
     )
 
 
