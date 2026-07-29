@@ -14,9 +14,11 @@
 {% set usage_chart_records = usage_portal.chart_records %}
 {% set has_subscription = usage_portal.has_subscription %}
 {% set usage_navigation_base_url = '/admin/customers/person/' ~ customer_id %}
+{% set usage_partial_navigation_url = '/admin/customers/person/' ~ customer_id ~ '/stats' %}
 {% set usage_period_query_key = 'usage_period' %}
 {% set usage_page_query_key = 'usage_page' %}
 {% set usage_per_page_query_key = 'usage_per_page' %}
+{% set usage_view_query_key = 'usage_view' %}
 {% set usage_anchor = '#stats' %}
 {% set bandwidth_chart_api_base = '/api/v1/bandwidth' %}
 {% set bandwidth_chart_use_my_endpoints = false %}
@@ -25,5 +27,9 @@
 {% set usage_theme = 'admin' %}
 {% set usage_enable_records_chart = true %}
 {% set usage_records_default_view = 'chart' %}
+{% if usage_view is defined and usage_view == 'table' %}
+{% set usage_records_default_view = 'table' %}
+{% endif %}
 {% set usage_records_chart_id = 'customer-stats-records-chart-' ~ customer_id %}
+{% set usage_records_panel_id = 'customer-stats-records-panel-' ~ customer_id %}
 {% include "admin/customers/_stats_usage_content.html" %}
