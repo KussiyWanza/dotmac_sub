@@ -526,7 +526,10 @@ def _history_entries(db: Session) -> list[dict[str, Any]]:
     except Exception:
         return []
     if isinstance(setting.value_json, list):
-        return [item for item in setting.value_json if isinstance(item, dict)]
+        # Return detached entries so callers can build the next JSON value
+        # without mutating the ORM's current value in place. SQLAlchemy cannot
+        # reliably detect an in-place mutation of a plain JSON list.
+        return [dict(item) for item in setting.value_json if isinstance(item, dict)]
     if isinstance(setting.value_text, str) and setting.value_text.strip():
         try:
             parsed = json.loads(setting.value_text)
