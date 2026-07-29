@@ -180,3 +180,44 @@ def test_customer_withholding_tax_policy_can_be_enabled_and_disabled(
     )
     assert persisted.withholding_tax_enabled is False
     assert persisted.version == 2
+
+
+def test_customer_vat_exemption_defaults_disabled(db_session, subscriber):
+    policy = customer_tax_policies.get_customer_vat_exemption_policy(
+        db_session,
+        account_id=subscriber.id,
+    )
+
+    assert policy.account_id == subscriber.id
+    assert policy.vat_exempt is False
+    assert policy.version == 0
+
+
+def test_customer_vat_exemption_can_be_enabled_without_enabling_wht(
+    db_session,
+    subscriber,
+):
+    account_id = subscriber.id
+    db_session_adapter.release_read_transaction(db_session)
+    enabled = customer_tax_policies.set_customer_vat_exemption_policy(
+        db_session,
+        customer_tax_policies.SetCustomerVatExemptionPolicyCommand(
+            account_id=account_id,
+            vat_exempt=True,
+            updated_by="admin-1",
+        ),
+        context=CommandContext.system(
+            actor="admin-1",
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Enable customer VAT exemption",
+            idempotency_key=f"enable-customer-vat-exemption:{account_id}",
+        ),
+    )
+
+    assert enabled.vat_exempt is True
+    assert enabled.version == 1
+    wht_policy = customer_tax_policies.get_customer_withholding_tax_policy(
+        db_session,
+        account_id=account_id,
+    )
+    assert wht_policy.withholding_tax_enabled is False

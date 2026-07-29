@@ -246,8 +246,30 @@ def get_cpe_ports(db: Session, cpe_id: object) -> list[Port]:
     return list(db.scalars(select(Port).where(Port.device_id == cpe_id)).all())
 
 
+LIFECYCLE_ACTIVE = "active"
+LIFECYCLE_INACTIVE = "inactive"
+
+
+def _lifecycle_state(device: object) -> str:
+    """Admission state of a source device, as projected onto its device row.
+
+    The explicit marker that lets an inactive device stay visible in the staff
+    ledger instead of disappearing from it. Devices with no admission flag at
+    all (types listed active-only upstream) read ``active``.
+    """
+    return (
+        LIFECYCLE_ACTIVE
+        if getattr(device, "is_active", True) is not False
+        else LIFECYCLE_INACTIVE
+    )
+
+
 def collect_devices(db: Session) -> list[dict]:
-    """Collect all device types into a unified list of dicts."""
+    """Collect all device types into a unified list of dicts.
+
+    Every dict carries ``lifecycle_state`` (``active``/``inactive``). Inactive
+    devices are included on purpose — see the core-device branch below.
+    """
     devices: list[dict] = []
     seen_keys: set[tuple[str, str]] = set()
 
@@ -316,6 +338,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status": operational.status,
                 "operational_reason": operational.reason,
                 "status_presentation": operational.presentation,
+                "lifecycle_state": _lifecycle_state(olt),
                 "last_seen": getattr(olt, "last_seen", None),
                 "subscriber": None,
                 "class_facts": {
@@ -353,6 +376,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status": operational.status,
                 "operational_reason": operational.reason,
                 "status_presentation": operational.presentation,
+                "lifecycle_state": _lifecycle_state(nas),
                 "last_seen": getattr(nas, "last_seen_at", None),
                 "subscriber": None,
                 "class_facts": {
@@ -390,6 +414,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status": operational.status,
                 "operational_reason": operational.reason,
                 "status_presentation": operational.presentation,
+                "lifecycle_state": _lifecycle_state(router),
                 "last_seen": getattr(router, "last_seen_at", None),
                 "subscriber": None,
                 "class_facts": {
@@ -405,7 +430,13 @@ def collect_devices(db: Session) -> list[dict]:
         router_link_id = getattr(router, "network_device_id", None)
         _dedup_linked(by_device_id.get(str(router_link_id)) if router_link_id else None)
 
-    core_devices = [device for device in monitoring_devices if device.is_active]
+    # Inactive core devices STAY in the ledger. Filtering them out here made
+    # deactivation erase the device: the projection reconciler deletes any row
+    # this function stops returning, so a soft-deleted device silently vanished
+    # from the staff device list (the "one device missing from every base
+    # station" symptom). They are returned with an explicit inactive marker
+    # instead, and network.device_state forces them to not_working.
+    core_devices = list(monitoring_devices)
     annotate_operational_status(core_devices)
     for device in core_devices:
         if _network_device_is_olt_candidate(device):
@@ -429,6 +460,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status": operational.status,
                 "operational_reason": operational.reason,
                 "status_presentation": operational.presentation,
+                "lifecycle_state": _lifecycle_state(device),
                 "last_seen": device.last_ping_at or device.last_snmp_at,
                 "subscriber": None,
                 "class_facts": {
@@ -436,6 +468,7 @@ def collect_devices(db: Session) -> list[dict]:
                     "site_name": site_name_by_id.get(
                         str(getattr(device, "pop_site_id", None))
                     ),
+                    "lifecycle_state": _lifecycle_state(device),
                 },
             }
         )
@@ -467,6 +500,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status": operational.status,
                 "operational_reason": operational.reason,
                 "status_presentation": operational.presentation,
+                "lifecycle_state": _lifecycle_state(ont),
                 "last_seen": getattr(ont, "last_seen", None),
                 "subscriber": None,
                 "class_facts": {
@@ -511,6 +545,7 @@ def collect_devices(db: Session) -> list[dict]:
                 "status_presentation": device_operational_status_presentation(
                     NOT_WORKING
                 ),
+                "lifecycle_state": _lifecycle_state(cpe),
                 "last_seen": getattr(cpe, "last_seen", None),
                 "subscriber": None,
                 "class_facts": {

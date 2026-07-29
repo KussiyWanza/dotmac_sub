@@ -62,6 +62,17 @@ CONNECTIVITY_SHADOW_DIFF = Counter(
     ["dimension"],
 )
 
+# A payment-side trigger settled and cleared its financial lock, but access was
+# still not restored. Reason scoping makes this legitimate (a payment must not
+# lift a fraud block); leaving the operator uninformed is not. Non-zero with
+# ``required_action=retry_with_authorized_trigger`` means a routing defect: a
+# blocker a payment trigger IS authorized to clear survived the attempt.
+SETTLED_ACCESS_BLOCKED = Counter(
+    "settled_access_blocked_total",
+    "Settled payments whose subscription access stayed blocked, by blocker",
+    ["blocker", "trigger", "required_action"],
+)
+
 
 class _SuspensionAuditCollector(Collector):
     """Exports the latest suspension-audit result at scrape time.

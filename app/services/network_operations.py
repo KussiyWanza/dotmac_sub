@@ -429,6 +429,28 @@ class NetworkOperations(ListResponseMixin):
         return op
 
     @staticmethod
+    def merge_output_payload(
+        db: Session,
+        operation_id: str,
+        fragment: dict[str, Any],
+    ) -> NetworkOperation:
+        """Merge durable evidence into an operation's output payload.
+
+        The ledger owns its own rows. Executors use this to record a fact that
+        must survive later failures (for example "the OLT accepted the write")
+        without waiting for, or being overwritten by, the terminal payload.
+        """
+        op = _get_operation(db, operation_id)
+        existing = op.output_payload if isinstance(op.output_payload, dict) else {}
+        op.output_payload = {**existing, **fragment}
+        db.flush()
+        logger.info(
+            "Operation output payload merged",
+            extra={**_operation_extra(op), "output_payload_keys": sorted(fragment)},
+        )
+        return op
+
+    @staticmethod
     def mark_succeeded(
         db: Session,
         operation_id: str,

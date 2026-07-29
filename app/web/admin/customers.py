@@ -5,6 +5,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
+from urllib.parse import quote_plus
 
 import anyio
 from fastapi import (
@@ -54,6 +55,10 @@ from app.services.auth_dependencies import (
 from app.services.bandwidth import bandwidth_samples
 from app.services.customer_portal_context import resolve_customer_subscription
 from app.services.queue_adapter import enqueue_task
+from app.services.subscription_change_execution import (
+    SubscriptionChangeExecutionError,
+    provision_and_verify_remote_change,
+)
 from app.web.customer.branding import register_customer_portal_filters
 from app.web.request_parsing import parse_json_body
 
@@ -157,6 +162,8 @@ def _subscription_action_permission_context(
         or (bool(auth) and has_permission(auth, db, "subscription:activate")),
         "can_suspend_subscriptions": can_write_catalog
         or (bool(auth) and has_permission(auth, db, "subscription:suspend")),
+        "can_reconcile_service_changes": bool(auth)
+        and has_permission(auth, db, "provisioning:service_change_reconcile"),
     }
 
 
@@ -191,6 +198,11 @@ def _billing_form_defaults(db: Session, customer_type: str, customer) -> dict[st
         values["withholding_tax_enabled"] = (
             "true" if wht_policy.withholding_tax_enabled else "false"
         )
+        vat_policy = customer_tax_policies.get_customer_vat_exemption_policy(
+            db,
+            account_id=customer.id,
+        )
+        values["vat_exempt"] = "true" if vat_policy.vat_exempt else "false"
     return values
 
 
@@ -777,6 +789,108 @@ def person_detail(
             "location_capture_enabled": location_capture_enabled,
             "sidebar_stats": sidebar_stats,
         },
+    )
+
+
+@router.post(
+    "/person/{customer_id}/services/{subscription_id}/remote-plan-change/{request_id}/provision",
+    dependencies=[Depends(require_permission("provisioning:service_change_reconcile"))],
+)
+def provision_remote_plan_change(
+    request: Request,
+    customer_id: uuid.UUID,
+    subscription_id: uuid.UUID,
+    request_id: uuid.UUID,
+    idempotency_key: str = Form(..., min_length=16, max_length=160),
+    reason: str = Form(..., min_length=8, max_length=500),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    actor_id = str(_get_actor_id(request) or "admin")
+    try:
+        outcome = provision_and_verify_remote_change(
+            db,
+            request_id=request_id,
+            subscription_id=subscription_id,
+            account_id=customer_id,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+        log_audit_event(
+            db,
+            request,
+            action="provision_remote_plan_change",
+            entity_type="subscription_change_request",
+            entity_id=str(request_id),
+            actor_id=actor_id,
+            metadata={
+                "subscription_id": str(subscription_id),
+                "target_offer_name": outcome.target_offer_name,
+                "target_profile_name": outcome.target_profile_name,
+                "operation_reference": outcome.operation_reference,
+                "result": outcome.status.value,
+            },
+        )
+        feedback_status = "success"
+        feedback_message = outcome.message
+        feedback_reference = outcome.operation_reference
+    except SubscriptionChangeExecutionError as exc:
+        log_audit_event(
+            db,
+            request,
+            action="provision_remote_plan_change",
+            entity_type="subscription_change_request",
+            entity_id=str(request_id),
+            actor_id=actor_id,
+            metadata={
+                "subscription_id": str(subscription_id),
+                "error_code": exc.code,
+            },
+            status_code=409,
+            is_success=False,
+        )
+        feedback_status = (
+            "pending"
+            if exc.code == "remote_reprovision_verification_missing"
+            else "error"
+        )
+        feedback_message = str(exc)
+        feedback_reference = f"remote-plan-change:{request_id}"
+    except Exception as exc:
+        logger.exception(
+            "Remote plan provisioning failed",
+            extra={
+                "subscription_change_request_id": str(request_id),
+                "subscription_id": str(subscription_id),
+            },
+        )
+        log_audit_event(
+            db,
+            request,
+            action="provision_remote_plan_change",
+            entity_type="subscription_change_request",
+            entity_id=str(request_id),
+            actor_id=actor_id,
+            metadata={
+                "subscription_id": str(subscription_id),
+                "error_type": type(exc).__name__,
+            },
+            status_code=500,
+            is_success=False,
+        )
+        feedback_status = "error"
+        feedback_message = (
+            "Provisioning failed unexpectedly. Retry or contact network operations."
+        )
+        feedback_reference = f"remote-plan-change:{request_id}"
+    return RedirectResponse(
+        url=(
+            f"/admin/customers/person/{customer_id}"
+            f"?service_change_status={quote_plus(feedback_status)}"
+            f"&service_change_message={quote_plus(feedback_message)}"
+            f"&service_change_reference={quote_plus(feedback_reference)}"
+        ),
+        status_code=303,
     )
 
 
@@ -1392,6 +1506,7 @@ def person_update(
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     withholding_tax_enabled: str | None = Form(None),
+    vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     metadata: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -1431,6 +1546,7 @@ def person_update(
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
             withholding_tax_enabled=withholding_tax_enabled,
+            vat_exempt=vat_exempt,
             payment_method=payment_method,
             metadata_json=web_customer_actions_service.parse_json_object(
                 metadata, "metadata"
@@ -1512,6 +1628,7 @@ def business_update(
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     withholding_tax_enabled: str | None = Form(None),
+    vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -1535,6 +1652,7 @@ def business_update(
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
             withholding_tax_enabled=withholding_tax_enabled,
+            vat_exempt=vat_exempt,
             payment_method=payment_method,
             actor_id=_get_actor_id(request),
         )

@@ -44,6 +44,7 @@ from app.models.network_monitoring import (
 from app.services.customer_notification_policy import (
     is_notification_enabled_for_subscriber,
 )
+from app.services.device_operational_status import warmer_is_stale
 from app.services.notification_adapter import NotificationCategory, NotificationChannel
 from app.services.topology import connection_status
 from app.services.topology.affected import affected_customers
@@ -228,7 +229,11 @@ def _area_boundary_qualifies(
     if node is None:
         return False
     impact = affected_customers(session, node=node)
-    loc = localize_outage(session, impact["node_ids"], now=now)
+    # Same dead-man reading as every other customer-facing consumer: a frozen
+    # live_status must not decide whether an outage notification goes out.
+    loc = localize_outage(
+        session, impact["node_ids"], now=now, warm_stale=warmer_is_stale(now)
+    )
     if loc is None or loc["class"] != NODE_OUTAGE:
         return False
     if loc["confidence"] != "high":

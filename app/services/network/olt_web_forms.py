@@ -29,6 +29,7 @@ from app.services.network.olt_web_audit import (
     actor_id_from_request,
     log_olt_audit_event,
 )
+from app.services.network_monitoring import set_network_device_active
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +452,11 @@ def sync_monitoring_device(
     snmp_priv_secret_encrypted = _encrypt_if_set(values, "snmp_priv_secret")
     if snmp_priv_secret_encrypted is not None:
         linked.snmp_priv_secret = snmp_priv_secret_encrypted
-    linked.is_active = bool(values.get("is_active"))
+    # Admission of the linked monitoring device is a lifecycle transition owned
+    # by network.monitoring_inventory, not a form field copy.
+    set_network_device_active(
+        db, linked, bool(values.get("is_active")), reason="olt_form_linked_device"
+    )
     db.commit()
 
 

@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.models.network import OntUnit
 from app.models.network_monitoring import DeviceRole, DeviceType, NetworkDevice
+from app.services.device_operational_status import warmer_is_stale
 from app.services.topology.affected import affected_customers
 from app.services.topology.health_classifier import (
     HEALTHY,
@@ -186,17 +187,24 @@ def network_health_summary(session: Session, *, now: datetime | None = None) -> 
     }
     not_healthy: list[dict] = []
 
+    warm_stale = warmer_is_stale(now)
     for node in nodes:
         impact = affected_customers(session, node=node)
         cls = classify_node(
-            node, impact["online_count"], had_prior_life=impact["count"] > 0
+            node,
+            impact["online_count"],
+            had_prior_life=impact["count"] > 0,
+            now=now,
+            warm_stale=warm_stale,
         )
         counts[cls] = counts.get(cls, 0) + 1
         if cls == HEALTHY:
             continue
         brief = _node_brief(node, impact, cls)
         if cls in _FAULT_CLASSES:
-            brief["boundary"] = localize_outage(session, impact["node_ids"], now=now)
+            brief["boundary"] = localize_outage(
+                session, impact["node_ids"], now=now, warm_stale=warm_stale
+            )
         not_healthy.append(brief)
 
     # Surface the worst first: outages, then service faults, then the rest.
@@ -321,8 +329,13 @@ def outage_detail(
         return None
 
     impact = affected_customers(session, node=node)
+    warm_stale = warmer_is_stale(now)
     cls = classify_node(
-        node, impact["online_count"], had_prior_life=impact["count"] > 0
+        node,
+        impact["online_count"],
+        had_prior_life=impact["count"] > 0,
+        now=now,
+        warm_stale=warm_stale,
     )
 
     subs = impact["subscriptions"]
@@ -375,7 +388,9 @@ def outage_detail(
         "class": cls,
         "count": impact["count"],
         "online_count": impact["online_count"],
-        "boundary": localize_outage(session, impact["node_ids"], now=now),
+        "boundary": localize_outage(
+            session, impact["node_ids"], now=now, warm_stale=warm_stale
+        ),
         "customers": customers,
         "capped": capped,
         "predictive": _predictive_branches(session, node, now=now),

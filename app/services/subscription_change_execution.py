@@ -13,13 +13,20 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentAllocation
-from app.models.catalog import AccessCredential, OfferRadiusProfile, Subscription
+from app.models.catalog import (
+    AccessCredential,
+    CatalogOffer,
+    OfferRadiusProfile,
+    RadiusProfile,
+    Subscription,
+)
 from app.models.provisioning import (
     ProvisioningReadinessDecision,
     ProvisioningReadinessDecisionStatus,
@@ -94,6 +101,22 @@ class ExecutionReconciliationOutcome:
     execution_state: str
     replayed: bool
     reviewed_head: str
+
+
+class RemoteProvisionActionStatus(StrEnum):
+    completed = "completed"
+    replayed = "replayed"
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteProvisionActionOutcome:
+    request_id: UUID
+    subscription_id: UUID
+    status: RemoteProvisionActionStatus
+    target_offer_name: str
+    target_profile_name: str
+    operation_reference: str
+    message: str
 
 
 def _lock_request(db: Session, request_id: UUID) -> SubscriptionChangeRequest:
@@ -178,10 +201,15 @@ def stage_remote_reprovision(
             )
         ).all()
     )
-    if len(profiles) != 1:
+    if not profiles:
         raise SubscriptionChangeExecutionError(
             "remote_radius_profile_ambiguous",
-            "The requested offer must have exactly one RADIUS profile",
+            "The requested plan has no RADIUS profile configured",
+        )
+    if len(profiles) > 1:
+        raise SubscriptionChangeExecutionError(
+            "remote_radius_profile_ambiguous",
+            "The requested plan has multiple RADIUS profiles; exactly one is required",
         )
     credentials = list(
         db.scalars(
@@ -217,6 +245,125 @@ def stage_remote_reprovision(
         profiles[0].profile_id,
         radius_user.id if radius_user is not None else None,
         False,
+    )
+
+
+def provision_and_verify_remote_change(
+    db: Session,
+    *,
+    request_id: UUID,
+    subscription_id: UUID,
+    account_id: UUID,
+    actor_id: str,
+    idempotency_key: str,
+    reason: str,
+) -> RemoteProvisionActionOutcome:
+    """Project and verify one already-confirmed remote service change.
+
+    This operator fallback does not approve intent. It replays the staged
+    desired profile through the canonical scoped RADIUS projection and applies
+    the commercial plan only after the exact fresh local observation exists.
+    """
+
+    key = idempotency_key.strip()
+    if len(key) < 16:
+        raise SubscriptionChangeExecutionError(
+            "reconciliation_key_invalid", "Idempotency key is too short"
+        )
+    reason_value = reason.strip()
+    if len(reason_value) < 8:
+        raise SubscriptionChangeExecutionError(
+            "reconciliation_reason_invalid", "Provisioning reason is too short"
+        )
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    operation_reference = f"remote-plan-change:{request_id}:{key_hash[:12]}"
+    request = _lock_request(db, request_id)
+    subscription = db.get(Subscription, request.subscription_id)
+    if (
+        request.subscription_id != subscription_id
+        or subscription is None
+        or subscription.subscriber_id != account_id
+    ):
+        raise SubscriptionChangeExecutionError(
+            "service_change_not_found",
+            "Remote service-change request does not belong to this customer service",
+        )
+    target_offer = db.get(CatalogOffer, request.requested_offer_id)
+    target_offer_name = (
+        target_offer.name if target_offer is not None else "Requested plan"
+    )
+    target_profile = (
+        db.get(RadiusProfile, request.remote_radius_profile_id)
+        if request.remote_radius_profile_id is not None
+        else None
+    )
+    if request.execution_state == SubscriptionChangeExecutionState.completed:
+        return RemoteProvisionActionOutcome(
+            request.id,
+            request.subscription_id,
+            RemoteProvisionActionStatus.replayed,
+            target_offer_name,
+            target_profile.name if target_profile is not None else "Target profile",
+            operation_reference,
+            f"{target_offer_name} was already provisioned and verified.",
+        )
+    if (
+        request.status
+        not in {
+            SubscriptionChangeStatus.pending,
+            SubscriptionChangeStatus.approved,
+        }
+        or request.execution_state != SubscriptionChangeExecutionState.provisioning
+        or _delivery_mode(request) != "remote_reprovision"
+    ):
+        raise SubscriptionChangeExecutionError(
+            "remote_reprovision_not_staged",
+            "This service change is not awaiting remote RADIUS provisioning",
+        )
+    if (
+        request.reconciliation_idempotency_key_hash is not None
+        and request.reconciliation_idempotency_key_hash != key_hash
+    ):
+        raise SubscriptionChangeExecutionError(
+            "reconciliation_key_conflict",
+            "A different operator provisioning attempt is already recorded",
+        )
+
+    staged = stage_remote_reprovision(db, request)
+    target_profile = db.get(RadiusProfile, staged.radius_profile_id)
+    from app.services.radius import reconcile_subscription_connectivity
+
+    projection = reconcile_subscription_connectivity(db, str(subscription.id))
+    if not projection.ok:
+        reason_by_disposition = {
+            "ineligible_subscription": "The subscription is not eligible for RADIUS provisioning",
+            "missing_login": "The subscription has no RADIUS login configured",
+            "target_unavailable": "No active RADIUS projection target is available",
+            "unbuildable_login": "The RADIUS projection could not build this login",
+        }
+        raise SubscriptionChangeExecutionError(
+            "remote_reprovision_verification_missing",
+            reason_by_disposition.get(
+                projection.disposition.value,
+                "RADIUS provisioning did not converge",
+            ),
+        )
+
+    request.reconciliation_idempotency_key_hash = key_hash
+    request.reconciliation_actor_id = actor_id[:120]
+    request.reconciliation_reason = reason_value
+    request.reconciled_at = datetime.now(UTC)
+    finalized = finalize_verified_remote_reprovision(
+        db, request_id=request.id, actor_id=actor_id
+    )
+    return RemoteProvisionActionOutcome(
+        finalized.id,
+        finalized.subscription_id,
+        RemoteProvisionActionStatus.completed,
+        target_offer_name,
+        target_profile.name if target_profile is not None else "Target profile",
+        operation_reference,
+        f"{target_offer_name} profile verified. Plan change completed.",
     )
 
 

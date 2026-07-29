@@ -5,6 +5,9 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  # A required check that never reports deadlocks the merge queue: GitHub waits
+  # forever for a context that no run will ever produce. Every required context
+  # in this file must therefore be reachable from `merge_group`.
   merge_group:
   workflow_dispatch:
 

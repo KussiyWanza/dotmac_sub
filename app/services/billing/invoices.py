@@ -44,7 +44,7 @@ from app.schemas.billing import (
     LedgerEntryCreate,
     SystemInvoiceLineCreate,
 )
-from app.services import numbering, settings_spec
+from app.services import customer_tax_policies, numbering, settings_spec
 from app.services.audit import AuditEvents
 from app.services.billing._common import (
     _recalculate_invoice_totals,
@@ -1934,6 +1934,12 @@ class Invoices(ListResponseMixin):
 
         # Resolve tax
         tax_rate_id = getattr(subscriber, "tax_rate_id", None)
+        vat_policy = customer_tax_policies.get_customer_vat_exemption_policy(
+            db,
+            account_id=subscriber.id,
+        )
+        if vat_policy.vat_exempt:
+            tax_rate_id = None
         tax_total = Decimal("0")
         if tax_rate_id:
             from app.models.billing import TaxRate

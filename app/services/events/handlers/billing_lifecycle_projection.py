@@ -9,7 +9,7 @@ All records remain shadow while ADR 0007's cutover gates are open.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -24,7 +24,13 @@ from app.services.events.owner_outputs import (
 )
 from app.services.events.types import Event, EventType
 
-HANDLED_EVENT_TYPES = frozenset({EventType.custom})
+HANDLED_EVENT_TYPES = frozenset(
+    {
+        EventType.custom,
+        EventType.account_credit_deposited,
+        EventType.payment_received,
+    }
+)
 
 _FULFILLMENT_OUTPUT = "sales.fulfillment.funding_applied"
 _ADDON_BACKFILL_OUTPUT = "billing.addon_contract_backfill.captured"
@@ -32,12 +38,25 @@ _LIVE_ADDON_PURCHASE_OUTPUT = "billing.contract_terms.recurring_addon_added"
 _PENDING_TERMS_EFFECTIVE_TRIGGER = "billing.contracts.pending_terms_effective_due"
 _CONTRACT_OUTPUT = "billing.contracts.shadow_recorded"
 _OBLIGATION_OUTPUT = "billing.obligations.shadow_scheduled"
+_WALLED_HEALING_TRIGGER = "financial.walled_account_healing_due"
 
 
 class BillingLifecycleProjectionHandler:
     """Route shadow billing outputs to their exact receipted owners."""
 
     def handle(self, db: Session, event: Event) -> None:
+        if event.event_type in {
+            EventType.account_credit_deposited,
+            EventType.payment_received,
+        }:
+            self._schedule_walled_account_healing(db, event)
+            return
+        if (
+            event.event_type is EventType.custom
+            and event.payload.get("trigger") == _WALLED_HEALING_TRIGGER
+        ):
+            self._consume_walled_account_healing(db, event)
+            return
         output = event.payload.get("output")
         trigger = event.payload.get("trigger")
         if output == _FULFILLMENT_OUTPUT:
@@ -55,14 +74,15 @@ class BillingLifecycleProjectionHandler:
         # Every other custom payload belongs to another adapter.
 
     @staticmethod
-    def _context(event: Event, scope: str):
+    def _context(event: Event, scope: str, *, reason: str | None = None):
         from app.services.owner_commands import CommandContext
 
         return CommandContext.system(
             actor=str(event.actor or "billing.lifecycle_projection"),
             scope=scope,
             reason=str(
-                event.payload.get("output")
+                reason
+                or event.payload.get("output")
                 or event.payload.get("trigger")
                 or event.event_type.value
             ),
@@ -71,6 +91,87 @@ class BillingLifecycleProjectionHandler:
             causation_id=event.event_id,
             idempotency_key=f"event:{event.event_id}",
         )
+
+    def _schedule_walled_account_healing(self, db: Session, event: Event) -> None:
+        if event.account_id is None:
+            raise invalid_output_payload(
+                consumer="financial.walled_account_healing",
+                event_id=event.event_id,
+                event_type=event.event_type.value,
+                field="account_id",
+                reason="required_uuid",
+            )
+        from app.services.billing.unwall_paid_accounts import (
+            schedule_walled_account_healing,
+        )
+
+        with _owner_session(db) as owner_db:
+            schedule_walled_account_healing(
+                owner_db,
+                account_id=event.account_id,
+                due_at=datetime.now(UTC) + timedelta(minutes=2),
+                context=self._context(
+                    event,
+                    str(event.account_id),
+                    reason="recheck exact access state after settled funding",
+                ),
+            )
+
+    def _consume_walled_account_healing(self, db: Session, event: Event) -> None:
+        consumer = "financial.walled_account_healing"
+        account_text = require_output_text(
+            event.payload,
+            "entity_id",
+            consumer=consumer,
+            event_id=event.event_id,
+            event_type=_WALLED_HEALING_TRIGGER,
+        )
+        timer_text = require_output_text(
+            event.payload,
+            "timer_id",
+            consumer=consumer,
+            event_id=event.event_id,
+            event_type=_WALLED_HEALING_TRIGGER,
+        )
+        generation_raw = event.payload.get("generation")
+        try:
+            account_id = UUID(account_text)
+            timer_id = UUID(timer_text)
+        except ValueError as exc:
+            raise invalid_output_payload(
+                consumer=consumer,
+                event_id=event.event_id,
+                event_type=_WALLED_HEALING_TRIGGER,
+                field="timer_identity",
+                reason="invalid_uuid_or_generation",
+            ) from exc
+        if not isinstance(generation_raw, int) or isinstance(generation_raw, bool):
+            raise invalid_output_payload(
+                consumer=consumer,
+                event_id=event.event_id,
+                event_type=_WALLED_HEALING_TRIGGER,
+                field="generation",
+                reason="expected_integer",
+            )
+        generation = generation_raw
+
+        from app.services.billing.unwall_paid_accounts import (
+            consume_walled_account_healing_due,
+        )
+
+        with _owner_session(db) as owner_db:
+            consume_walled_account_healing_due(
+                owner_db,
+                account_id=account_id,
+                timer_id=timer_id,
+                generation=generation,
+                event_id=event.event_id,
+                context=self._context(
+                    event,
+                    account_text,
+                    reason=_WALLED_HEALING_TRIGGER,
+                ),
+            )
 
     @staticmethod
     def _uuid(

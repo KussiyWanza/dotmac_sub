@@ -1,0 +1,44 @@
+{% extends "layouts/admin.html" %}
+{% block title %}Reconcile Payment Evidence - Admin{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-4xl space-y-6">
+    <div>
+        <a href="/admin/billing/payments/{{ payment_id }}" class="text-sm font-medium text-primary-600">← Back to payment</a>
+        <h1 class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">Reconcile settlement evidence</h1>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Select existing ledger evidence for this payment. This does not create or infer money.</p>
+    </div>
+    {% if evidence.already_reconciled %}
+    <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800">This payment is already reconciled.</div>
+    {% else %}
+    <form method="post" action="/admin/billing/payments/{{ payment_id }}/settlement/evidence/reconcile" class="space-y-6">
+        {% include "components/forms/csrf_input.html" %}
+        {% for allocation_id in evidence.active_allocation_ids %}
+        <label class="block rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <span class="font-semibold">Allocation {{ allocation_id }}</span>
+            <select name="allocation_{{ allocation_id }}" required class="mt-3 w-full rounded-lg border px-3 py-2">
+                <option value="">Select exact ledger entry…</option>
+                {% for candidate in evidence.candidate_entries if candidate.invoice_id %}
+                <option value="{{ candidate.ledger_entry_id }}">{{ candidate.ledger_entry_id }} — {{ candidate.currency }} {{ '{:,.2f}'.format(candidate.amount) }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        {% endfor %}
+        <label class="block rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <span class="font-semibold">Unallocated payment evidence</span>
+            <select name="unallocated_ledger_entry_id" required class="mt-3 w-full rounded-lg border px-3 py-2">
+                <option value="">Select exact unallocated credit…</option>
+                {% for candidate in evidence.candidate_entries if not candidate.invoice_id and candidate.entry_type.value == 'credit' %}
+                <option value="{{ candidate.ledger_entry_id }}">{{ candidate.ledger_entry_id }} — {{ candidate.currency }} {{ '{:,.2f}'.format(candidate.amount) }}</option>
+                {% endfor %}
+            </select>
+            <p class="mt-2 text-xs text-slate-500">The selected entry must exactly equal the payment remainder.</p>
+        </label>
+        <label class="block rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <span class="font-semibold">Review reason</span>
+            <textarea name="reason" required minlength="8" maxlength="500" class="mt-3 w-full rounded-lg border px-3 py-2" placeholder="Explain how the selected ledger entry proves this payment"></textarea>
+        </label>
+        <button type="submit" class="rounded-lg bg-emerald-600 px-4 py-2 font-medium text-white">Reconcile evidence</button>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

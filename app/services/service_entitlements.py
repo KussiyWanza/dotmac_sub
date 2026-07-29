@@ -67,40 +67,14 @@ def ensure_prepaid_entitlements_for_paid_invoice(
     return created
 
 
-def project_paid_invoice_billing_anchors(
-    db: Session,
-    invoice: Invoice,
-) -> tuple[Subscription, ...]:
-    """Project next billing strictly from this paid invoice's entitlements."""
-
-    entitlements = list(
-        db.scalars(
-            select(ServiceEntitlement)
-            .where(
-                ServiceEntitlement.source_invoice_id == invoice.id,
-                ServiceEntitlement.status == ServiceEntitlementStatus.active,
-            )
-            .order_by(
-                ServiceEntitlement.subscription_id,
-                ServiceEntitlement.ends_at.desc(),
-            )
-        ).all()
-    )
-    ends_by_subscription: dict[object, datetime] = {}
-    for entitlement in entitlements:
-        current = ends_by_subscription.get(entitlement.subscription_id)
-        if current is None or entitlement.ends_at > current:
-            ends_by_subscription[entitlement.subscription_id] = entitlement.ends_at
-    projected: list[Subscription] = []
-    for subscription_id, entitlement_end in ends_by_subscription.items():
-        subscription = db.get(Subscription, subscription_id)
-        if subscription is None or subscription.subscriber_id != invoice.account_id:
-            continue
-        subscription.next_billing_at = entitlement_end
-        projected.append(subscription)
-    if projected:
-        db.flush()
-    return tuple(projected)
+# `project_paid_invoice_billing_anchors` used to live here and was called
+# inline by `financial.payments`. It is retired: advancing
+# `Subscription.next_billing_at` is owned solely by
+# `financial.prepaid_service_renewals.project_prepaid_billing_anchor_for_invoice`,
+# which recomputes the anchor from surviving entitlement evidence and can
+# therefore retract it again after a refund or reversal. This module writes
+# entitlement evidence only. See docs/SOT_RELATIONSHIP_MAP.md,
+# "Prepaid renewal boundary".
 
 
 def ensure_prepaid_entitlement_for_paid_invoice_line(

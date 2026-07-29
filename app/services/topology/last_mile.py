@@ -44,6 +44,7 @@ from app.models.catalog import Subscription
 from app.models.network import OnuOfflineReason
 from app.models.network_monitoring import NetworkDevice
 from app.models.radius_error import RadiusAuthError
+from app.services.device_operational_status import warmer_is_stale
 from app.services.topology.affected import affected_customers
 from app.services.topology.customer_path import CustomerPath, resolve_customer_path
 from app.services.topology.health_classifier import (
@@ -172,7 +173,12 @@ def _has_recent_auth_reject(session, subscription: Subscription, now: datetime) 
 
 
 def _plant_is_up(
-    session, node: NetworkDevice | None, cache: dict | None
+    session,
+    node: NetworkDevice | None,
+    cache: dict | None,
+    *,
+    now: datetime | None = None,
+    warm_stale: bool | None = None,
 ) -> bool | None:
     """Is the customer's parent access node UP? (design §7.3 gate.)
 
@@ -182,6 +188,11 @@ def _plant_is_up(
 
     ``cache`` (node_id -> bool|None) lets ``diagnose_many`` avoid re-resolving
     the same node's affected set per customer.
+
+    The freshness signal reaches this customer-facing path through
+    ``classify_node``: a node whose ``live_status`` nothing refreshes any more
+    cannot classify ``service_fault``, so a dead warmer can no longer certify
+    the plant "up" and push the blame onto the customer's router.
     """
     if node is None:
         return None
@@ -190,7 +201,9 @@ def _plant_is_up(
     impact = affected_customers(session, node=node)
     online_count = impact["online_count"]
     had_prior_life = impact["count"] > 0
-    state = classify_node(node, online_count, had_prior_life)
+    state = classify_node(
+        node, online_count, had_prior_life, now=now, warm_stale=warm_stale
+    )
     # healthy or service_fault ⟹ the node itself is reachable/serving (plant up);
     # node_outage / monitoring_fault ⟹ don't attribute to the last mile.
     up = state in (NODE_HEALTHY, NODE_SERVICE_FAULT)
@@ -205,6 +218,7 @@ def _diagnose_fiber(
     path: CustomerPath,
     now: datetime,
     plant_cache: dict | None,
+    warm_stale: bool | None = None,
 ) -> dict:
     ont = path.ont
     from app.services.network.ont_status import resolve_effective_ont_status
@@ -233,7 +247,9 @@ def _diagnose_fiber(
     if ont is None or effective is None or not effective.is_online:
         if effective is not None and effective.retry_pending:
             return _result(UNKNOWN, MEDIUM_FIBER, rx, ev)
-        plant_up = _plant_is_up(session, path.node, plant_cache)
+        plant_up = _plant_is_up(
+            session, path.node, plant_cache, now=now, warm_stale=warm_stale
+        )
         ev["plant_up"] = plant_up
         if plant_up is False:
             # The OLT/plant itself is dark — this is a node outage P1 owns, not
@@ -277,6 +293,7 @@ def _diagnose_wireless(
     path: CustomerPath,
     now: datetime,
     plant_cache: dict | None,
+    warm_stale: bool | None = None,
 ) -> dict:
     radio = path.radio
     status = (radio.last_uisp_status or "").strip().lower() or None if radio else None
@@ -288,7 +305,9 @@ def _diagnose_wireless(
     }
 
     if radio is None or status in _WIRELESS_ABSENT:
-        plant_up = _plant_is_up(session, path.node, plant_cache)
+        plant_up = _plant_is_up(
+            session, path.node, plant_cache, now=now, warm_stale=warm_stale
+        )
         ev["plant_up"] = plant_up
         if plant_up is False:
             return _result(UNKNOWN, MEDIUM_WIRELESS, None, ev)
@@ -318,15 +337,19 @@ def diagnose_last_mile(
     *,
     now: datetime | None = None,
     plant_cache: dict | None = None,
+    warm_stale: bool | None = None,
 ) -> dict:
     """Diagnose WHY one subscription is offline (design §5).
 
     Returns ``{verdict, medium, signal_dbm, evidence, customer_message,
     agent_action}``. Safe to call even when the customer is online — returns
     ``healthy`` in that case. ``plant_cache`` is an optional node_id->bool map
-    for batch callers (see ``diagnose_many``).
+    for batch callers (see ``diagnose_many``), and ``warm_stale`` is the
+    warmer's dead-man signal, resolved once per batch by those callers.
     """
     now = _now(now)
+    if warm_stale is None:
+        warm_stale = warmer_is_stale(now)
 
     # Session actually up? Then nothing is wrong — proof-of-life beats every
     # lower rung (design §0). Uses the same freshness window as P1.
@@ -341,9 +364,13 @@ def diagnose_last_mile(
     # Fiber if there's an ONT; wireless if there's a radio; else we have no CPE
     # telemetry below the session (NAS-only) and can't diagnose the last mile.
     if path.ont is not None:
-        return _diagnose_fiber(session, subscription, path, now, plant_cache)
+        return _diagnose_fiber(
+            session, subscription, path, now, plant_cache, warm_stale
+        )
     if path.radio is not None:
-        return _diagnose_wireless(session, subscription, path, now, plant_cache)
+        return _diagnose_wireless(
+            session, subscription, path, now, plant_cache, warm_stale
+        )
 
     return _result(
         UNKNOWN,
@@ -378,7 +405,15 @@ def diagnose_many(
     subs = session.query(Subscription).filter(Subscription.id.in_(ids)).all()
     plant_cache: dict = {}
     now = _now(now)
+    # One dead-man read for the whole batch, not one per customer.
+    warm_stale = warmer_is_stale(now)
     return {
-        sub.id: diagnose_last_mile(session, sub, now=now, plant_cache=plant_cache)
+        sub.id: diagnose_last_mile(
+            session,
+            sub,
+            now=now,
+            plant_cache=plant_cache,
+            warm_stale=warm_stale,
+        )
         for sub in subs
     }

@@ -16,7 +16,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.network import (
@@ -24,6 +24,11 @@ from app.models.network import (
     OntProvisioningStatus,
     OntUnit,
     OnuOnlineStatus,
+)
+from app.models.network_operation import (
+    NetworkOperation,
+    NetworkOperationStatus,
+    NetworkOperationType,
 )
 from app.services.network._common import normalize_mac_address
 from app.services.network.equipment_identity import normalize_ont_equipment_id
@@ -48,6 +53,19 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
+
+# One canonical operator-facing headline for "the OLT accepted the command but
+# the local projection did not land". Storage, audit, and rendering all reuse
+# this string so a genuine device rejection can never be reported the same way.
+LOCAL_INVENTORY_FAILED_HEADLINE = "OLT authorization succeeded; local inventory failed"
+
+# Terminal operation states that can still carry a landed device authorization.
+_TERMINAL_OPERATION_STATUSES = (
+    NetworkOperationStatus.succeeded,
+    NetworkOperationStatus.warning,
+    NetworkOperationStatus.failed,
+    NetworkOperationStatus.canceled,
+)
 
 
 @dataclass
@@ -74,6 +92,16 @@ class AuthorizationWorkflowResult:
     status: str = "error"
     completed_authorization: bool = False
     partial_success: bool = False
+    #: The OLT accepted the command but the local inventory/assignment
+    #: projection failed. Distinct from a device rejection and from a failed
+    #: post-authorization OLT service baseline.
+    local_inventory_failed: bool = False
+    #: Verbatim adapter/CLI evidence for the device leg, preserved so a genuine
+    #: OLT rejection is never flattened into a generic local-failure string.
+    device_message: str | None = None
+    #: Set when this run reused a previously landed device authorization and
+    #: repaired only the local projection instead of re-issuing the command.
+    device_authorization_reused_from: str | None = None
     baseline_applied: bool | None = None
     duration_ms: int = 0
     phase_timings: list[dict[str, object]] = field(default_factory=list)
@@ -92,6 +120,9 @@ class AuthorizationWorkflowResult:
             "status": self.status,
             "completed_authorization": self.completed_authorization,
             "partial_success": self.partial_success,
+            "local_inventory_failed": self.local_inventory_failed,
+            "device_message": self.device_message,
+            "device_authorization_reused_from": self.device_authorization_reused_from,
             "baseline_applied": self.baseline_applied,
             "duration_ms": self.duration_ms,
             "phase_timings": self.phase_timings,
@@ -157,6 +188,16 @@ def _serial_predicates(serial_number: str) -> list[str]:
     ]
 
 
+def _constraint_detail(exc: IntegrityError) -> str:
+    """Return the driver's constraint text so unique violations stay readable."""
+    detail = str(getattr(exc, "orig", None) or exc).strip().replace("\n", " ")
+    return detail[:200] if detail else "database constraint violation"
+
+
+def _local_inventory_failure_message(detail: str) -> str:
+    return f"{LOCAL_INVENTORY_FAILED_HEADLINE}: {detail}"
+
+
 def _commit_without_expiring(db: Session) -> None:
     """Commit before slow device I/O without forcing ORM reloads afterwards."""
     previous = db.expire_on_commit
@@ -165,6 +206,147 @@ def _commit_without_expiring(db: Session) -> None:
         db.commit()
     finally:
         db.expire_on_commit = previous
+
+
+# ---------------------------------------------------------------------------
+# Durable device-authorization fact
+#
+# The OLT write is an observation: once the adapter confirms it, the fact must
+# survive every later local-projection failure, rollback, or worker crash. It is
+# therefore committed to the tracked operation *before* any local projection is
+# attempted, and merged (never replaced) so nothing downstream can erase it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PriorDeviceAuthorization:
+    """A previously landed OLT authorization recorded on a tracked operation."""
+
+    operation_id: str
+    ont_id_on_olt: int | None
+    device_message: str | None
+
+
+def record_device_authorization_landed(
+    db: Session,
+    operation_id: str | None,
+    *,
+    olt_id: str,
+    fsp: str,
+    serial_number: str,
+    ont_id_on_olt: int | None,
+    device_message: str | None,
+) -> None:
+    """Commit ``completed_authorization`` as soon as the OLT accepts the write."""
+    if not operation_id:
+        return
+    from app.services.network_operations import network_operations
+
+    try:
+        network_operations.merge_output_payload(
+            db,
+            operation_id,
+            {
+                "completed_authorization": True,
+                "device_authorization": {
+                    "olt_id": str(olt_id),
+                    "fsp": fsp,
+                    "serial_number": serial_number,
+                    "ont_id_on_olt": ont_id_on_olt,
+                    "message": device_message,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                },
+            },
+        )
+        _commit_without_expiring(db)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.error(
+            "Failed to persist landed ONT authorization for operation %s "
+            "(olt=%s fsp=%s serial=%s)",
+            operation_id,
+            olt_id,
+            fsp,
+            serial_number,
+            exc_info=True,
+        )
+
+
+def find_completed_device_authorization(
+    db: Session,
+    *,
+    olt_id: str,
+    fsp: str,
+    serial_number: str,
+) -> PriorDeviceAuthorization | None:
+    """Return the landed-but-unprojected device authorization, if any.
+
+    Retry must never re-issue a device write that already succeeded. This
+    inspects the most recent terminal authorization operation for the exact
+    OLT/port/serial and reports a reusable device authorization only when that
+    attempt recorded ``completed_authorization`` and then failed locally.
+    """
+    from app.services.network.ont_provisioning_commands import (
+        ont_authorization_correlation_key,
+    )
+
+    correlation_key = ont_authorization_correlation_key(
+        olt_id=olt_id,
+        fsp=fsp,
+        serial_number=serial_number,
+    )
+    operation = db.scalars(
+        select(NetworkOperation)
+        .where(
+            NetworkOperation.operation_type == NetworkOperationType.ont_authorize,
+            NetworkOperation.correlation_key == correlation_key,
+            NetworkOperation.status.in_(_TERMINAL_OPERATION_STATUSES),
+        )
+        .order_by(NetworkOperation.created_at.desc(), NetworkOperation.id.desc())
+        .limit(1)
+    ).first()
+    if operation is None:
+        return None
+    payload = operation.output_payload or {}
+    if not isinstance(payload, dict):
+        return None
+    if not payload.get("completed_authorization"):
+        return None
+    if payload.get("success"):
+        # The attempt completed end to end; nothing is left to repair locally.
+        return None
+    if _local_authorization_was_revoked(db, olt_id=olt_id, serial_number=serial_number):
+        return None
+    device_leg = payload.get("device_authorization")
+    ont_id_on_olt = payload.get("ont_id_on_olt")
+    if ont_id_on_olt is None and isinstance(device_leg, dict):
+        ont_id_on_olt = device_leg.get("ont_id_on_olt")
+    device_message = payload.get("device_message")
+    if device_message is None and isinstance(device_leg, dict):
+        device_message = device_leg.get("message")
+    try:
+        parsed_ont_id = int(ont_id_on_olt) if ont_id_on_olt is not None else None
+    except (TypeError, ValueError):
+        parsed_ont_id = None
+    return PriorDeviceAuthorization(
+        operation_id=str(operation.id),
+        ont_id_on_olt=parsed_ont_id,
+        device_message=str(device_message) if device_message else None,
+    )
+
+
+def _local_authorization_was_revoked(
+    db: Session,
+    *,
+    olt_id: str,
+    serial_number: str,
+) -> bool:
+    """True when an operator explicitly removed the local authorization."""
+    existing = _find_ont_for_olt_serial(db, olt_id=olt_id, serial_number=serial_number)
+    return existing is not None and existing.authorization_status in {
+        OntAuthorizationStatus.deauthorized,
+        OntAuthorizationStatus.failed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +462,48 @@ def _resolve_authorized_autofind_candidate(
 # ---------------------------------------------------------------------------
 
 
+def _as_uuid(value: object) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_ont_for_olt_serial(
+    db: Session,
+    *,
+    olt_id: str,
+    serial_number: str,
+) -> OntUnit | None:
+    """Return the row this OLT owns for a serial, or an unclaimed legacy row.
+
+    ``uq_ont_units_olt_serial_number`` scopes serial uniqueness to
+    ``olt_device_id``, so the same serial on a *different* OLT is a different
+    ONT and must never be reused: doing so flips that OLT's ONT to
+    active/authorized and overwrites its ``external_id``. Rows that predate the
+    scoped constraint can still carry a NULL ``olt_device_id``; those are
+    unclaimed and are adopted by the authorizing OLT rather than duplicated.
+    """
+    clean_serials = _serial_predicates(serial_number)
+    if not clean_serials:
+        return None
+    target_olt = _as_uuid(olt_id)
+    rows = db.scalars(
+        select(OntUnit)
+        .where(normalized_serial_sql(OntUnit.serial_number).in_(clean_serials))
+        .order_by(OntUnit.created_at.asc(), OntUnit.id)
+    ).all()
+    scoped = next(
+        (row for row in rows if _as_uuid(row.olt_device_id) == target_olt),
+        None,
+    )
+    if scoped is not None:
+        return scoped
+    return next((row for row in rows if row.olt_device_id is None), None)
+
+
 def create_or_find_ont_for_authorized_serial(
     db: Session,
     *,
@@ -298,6 +522,10 @@ def create_or_find_ont_for_authorized_serial(
 
     clean_serials = _serial_predicates(serial_number)
     olt = get_olt_or_none(db, olt_id)
+    if olt is None:
+        # Without the owning OLT the scoped unique constraint cannot be
+        # honoured, so a new row would be an unscoped duplicate.
+        return None, f"OLT {olt_id} not found for local ONT inventory."
     observed_olt_status = (
         OnuOnlineStatus.online
         if str(olt_run_state or "").strip().lower() == "online"
@@ -305,17 +533,35 @@ def create_or_find_ont_for_authorized_serial(
     )
     scoped_external_id = build_huawei_external_id(fsp, ont_id_on_olt)
 
-    existing = db.scalars(
-        select(OntUnit).where(
-            normalized_serial_sql(OntUnit.serial_number).in_(clean_serials),
-        )
-    ).first()
+    existing = _find_ont_for_olt_serial(
+        db,
+        olt_id=str(olt.id),
+        serial_number=serial_number,
+    )
     if existing:
         try:
             existing.is_active = True
-            set_authorization_status(
-                existing, OntAuthorizationStatus.authorized, strict=False
-            )
+            # ``strict=True``: an illegal authorization transition is a real
+            # local-inventory failure, not something to force through with a
+            # log line the operator never sees.
+            set_authorization_status(existing, OntAuthorizationStatus.authorized)
+            if existing.olt_device_id is None:
+                from app.services.network.ont_assignment_alignment import (
+                    project_ont_topology_from_fsp_observation,
+                )
+
+                topology = project_ont_topology_from_fsp_observation(
+                    db,
+                    ont=existing,
+                    olt_id=olt.id,
+                    fsp=fsp,
+                )
+                if topology is None or existing.olt_device_id is None:
+                    db.rollback()
+                    return None, (
+                        "The canonical topology owner could not adopt the legacy "
+                        f"ONT record for OLT observation {fsp}."
+                    )
             if ont_id_on_olt is not None:
                 existing.external_id = scoped_external_id or str(ont_id_on_olt)
             if observed_olt_status is not None:
@@ -329,6 +575,15 @@ def create_or_find_ont_for_authorized_serial(
             return (
                 str(existing.id),
                 f"Using existing ONT record {existing.serial_number}.",
+            )
+        except ValueError as exc:
+            db.rollback()
+            return None, f"Existing ONT record rejected the status change: {exc}"
+        except IntegrityError as exc:
+            db.rollback()
+            return None, (
+                "Existing ONT record violates a database constraint: "
+                f"{_constraint_detail(exc)}"
             )
         except SQLAlchemyError as exc:
             db.rollback()
@@ -361,6 +616,10 @@ def create_or_find_ont_for_authorized_serial(
     new_ont = OntUnit(
         id=uuid.uuid4(),
         serial_number=display_serial,
+        # Populate the constraint-scoping column at creation time. Postgres
+        # treats NULL != NULL, so a row created without it is invisible to
+        # ``uq_ont_units_olt_serial_number`` and dedupes nothing.
+        olt_device_id=olt.id,
         external_id=scoped_external_id if ont_id_on_olt is not None else None,
         vendor=vendor,
         model=getattr(matched_candidate, "model", None),
@@ -383,6 +642,11 @@ def create_or_find_ont_for_authorized_serial(
 
         apply_resolved_status_for_model(new_ont)
         db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        return None, (
+            f"ONT record violates a database constraint: {_constraint_detail(exc)}"
+        )
     except SQLAlchemyError as exc:
         db.rollback()
         return None, f"Failed to create ONT record: {exc}"
@@ -433,6 +697,22 @@ def record_topology_observation_for_authorized_ont(
             f"Recorded ONT PON port {result.pon_port.name}; customer assignment "
             "requires explicit provisioning."
         )
+    except IntegrityError as exc:
+        # IntegrityError subclasses SQLAlchemyError; unique/foreign-key
+        # violations carry the actionable detail and must not be flattened into
+        # the generic "check server logs" string.
+        db.rollback()
+        logger.warning(
+            "Database constraint blocked PON link for ONT %s on OLT %s %s",
+            ont_unit_id,
+            olt_id,
+            fsp,
+            exc_info=True,
+        )
+        return False, (
+            "Linking the ONT to its PON port violates a database constraint: "
+            f"{_constraint_detail(exc)}"
+        )
     except SQLAlchemyError as exc:
         db.rollback()
         logger.warning(
@@ -456,6 +736,136 @@ def record_topology_observation_for_authorized_ont(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class LocalProjectionResult:
+    """Outcome of projecting a landed device authorization onto local state."""
+
+    ont_unit_id: str | None
+    create_message: str
+    topology_message: str
+    #: ``inventory`` and ``topology`` name the failed stage; ``complete`` means
+    #: the whole local projection landed.
+    stage: str
+
+    @property
+    def success(self) -> bool:
+        return self.stage == "complete"
+
+    @property
+    def failure_detail(self) -> str:
+        if self.stage == "topology":
+            return self.topology_message
+        return self.create_message
+
+
+def project_local_authorization_state(
+    db: Session,
+    *,
+    olt_id: str,
+    fsp: str,
+    serial_number: str,
+    ont_id_on_olt: int | None,
+) -> LocalProjectionResult:
+    """Project one landed device authorization onto local inventory.
+
+    This never touches the OLT: it is the only local-inventory/assignment
+    projection path for an authorized serial, shared by first-attempt
+    authorization and by projection repair.
+    """
+    ont_unit_id, create_msg = create_or_find_ont_for_authorized_serial(
+        db,
+        olt_id=olt_id,
+        fsp=fsp,
+        serial_number=serial_number,
+        ont_id_on_olt=ont_id_on_olt,
+    )
+    if ont_unit_id is None:
+        return LocalProjectionResult(None, create_msg, "", "inventory")
+
+    topology_ok, topology_msg = record_topology_observation_for_authorized_ont(
+        db,
+        ont_unit_id=ont_unit_id,
+        olt_id=olt_id,
+        fsp=fsp,
+    )
+    if not topology_ok:
+        return LocalProjectionResult(ont_unit_id, create_msg, topology_msg, "topology")
+
+    _resolve_authorized_autofind_candidate(
+        db, olt_id=olt_id, fsp=fsp, serial_number=serial_number
+    )
+    return LocalProjectionResult(ont_unit_id, create_msg, topology_msg, "complete")
+
+
+def repair_local_authorization_projection(
+    db: Session,
+    *,
+    olt_id: str,
+    fsp: str,
+    serial_number: str,
+    prior: PriorDeviceAuthorization,
+) -> AuthorizationWorkflowResult:
+    """Repair local inventory for an ONT the OLT already authorized.
+
+    No device write is issued: the authorization command landed on a previous
+    attempt and re-issuing it is exactly the blind retry this path exists to
+    prevent.
+    """
+    started_at = monotonic()
+    normalized_serial = normalize_serial(serial_number)
+    projection = project_local_authorization_state(
+        db,
+        olt_id=olt_id,
+        fsp=fsp,
+        serial_number=normalized_serial,
+        ont_id_on_olt=prior.ont_id_on_olt,
+    )
+    detail = (
+        projection.failure_detail
+        if not projection.success
+        else (projection.topology_message or projection.create_message)
+    )
+    step = AuthorizationStepResult(
+        step=1,
+        name="Repair Local ONT Inventory",
+        success=projection.success,
+        message=(
+            f"Reused the OLT authorization from operation {prior.operation_id}; "
+            f"{detail}"
+        ),
+        duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+    )
+    if not projection.success:
+        return AuthorizationWorkflowResult(
+            success=False,
+            message=_local_inventory_failure_message(detail),
+            steps=[step],
+            ont_unit_id=projection.ont_unit_id,
+            ont_id_on_olt=prior.ont_id_on_olt,
+            status="error",
+            completed_authorization=True,
+            partial_success=True,
+            local_inventory_failed=True,
+            device_message=prior.device_message,
+            device_authorization_reused_from=prior.operation_id,
+            duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+        )
+    return AuthorizationWorkflowResult(
+        success=True,
+        message=(
+            "Local ONT inventory repaired for an ONT already authorized on the OLT."
+        ),
+        steps=[step],
+        ont_unit_id=projection.ont_unit_id,
+        ont_id_on_olt=prior.ont_id_on_olt,
+        status="success",
+        completed_authorization=True,
+        device_message=prior.device_message,
+        device_authorization_reused_from=prior.operation_id,
+        duration_ms=max(0, int((monotonic() - started_at) * 1000)),
+    )
+
+
 def authorize_autofind_ont(
     db: Session,
     olt_id: str,
@@ -464,6 +874,7 @@ def authorize_autofind_ont(
     *,
     force_reauthorize: bool = False,
     preset_id: str | None = None,
+    operation_id: str | None = None,
 ) -> AuthorizationWorkflowResult:
     """Authorize an ONT on an OLT and persist ONT inventory state."""
     from app.services.network.olt_profile_resolution import (
@@ -505,6 +916,8 @@ def authorize_autofind_ont(
         ont_id_on_olt: int | None = None,
         completed_authorization: bool = False,
         partial_success: bool = False,
+        local_inventory_failed: bool = False,
+        device_message: str | None = None,
     ) -> AuthorizationWorkflowResult:
         return AuthorizationWorkflowResult(
             success=success,
@@ -515,6 +928,8 @@ def authorize_autofind_ont(
             status=status,
             completed_authorization=completed_authorization,
             partial_success=partial_success,
+            local_inventory_failed=local_inventory_failed,
+            device_message=device_message,
             duration_ms=max(0, int((monotonic() - started_at) * 1000)),
         )
 
@@ -523,6 +938,46 @@ def authorize_autofind_ont(
         return finish(success=False, message="OLT not found", status="error")
 
     normalized_serial = normalize_serial(serial_number)
+
+    # Never blind-retry a device write that already landed. A forced
+    # reauthorization is an explicit operator decision to re-issue and is the
+    # only way past this gate.
+    if not force_reauthorize:
+        # The correlation key is built from the identifiers the command owner
+        # received, so look it up with the same raw ``olt_id`` argument.
+        prior = find_completed_device_authorization(
+            db,
+            olt_id=olt_id,
+            fsp=fsp,
+            serial_number=serial_number,
+        )
+        if prior is not None:
+            logger.info(
+                "Repairing local ONT inventory instead of re-issuing authorization "
+                "(olt=%s fsp=%s serial=%s prior_operation=%s)",
+                olt_id,
+                fsp,
+                normalized_serial,
+                prior.operation_id,
+            )
+            # Carry the landed device fact onto this attempt first, so this
+            # operation is self-describing even if the repair fails again.
+            record_device_authorization_landed(
+                db,
+                operation_id,
+                olt_id=str(olt.id),
+                fsp=fsp,
+                serial_number=normalized_serial,
+                ont_id_on_olt=prior.ont_id_on_olt,
+                device_message=prior.device_message,
+            )
+            return repair_local_authorization_projection(
+                db,
+                olt_id=str(olt.id),
+                fsp=fsp,
+                serial_number=normalized_serial,
+                prior=prior,
+            )
 
     dependency_error = _validate_authorization_dependencies(db, olt_id=str(olt.id))
     if dependency_error is not None:
@@ -682,6 +1137,9 @@ def authorize_autofind_ont(
                     f"authorized on {fsp}."
                 )
         else:
+            # A genuine device rejection. ``olt_ssh_ont.lifecycle`` preserves the
+            # last 200 characters of real CLI output here; keep it verbatim and
+            # never mark the authorization as completed.
             message = auth_result.message or "Authorization failed"
             add_step(
                 "Activate ONT",
@@ -690,59 +1148,63 @@ def authorize_autofind_ont(
                 activation_started,
                 adapter_result=auth_result,
             )
-            return finish(success=False, message=message, status="error")
+            return finish(
+                success=False,
+                message=message,
+                status="error",
+                device_message=message,
+            )
 
-    # Create/find ONT record
-    ont_unit_id, create_msg = create_or_find_ont_for_authorized_serial(
+    device_message = auth_result.message
+
+    # The OLT accepted the write. Commit that fact before any local projection
+    # is attempted so a later rollback, constraint violation, or worker crash
+    # cannot leave the ledger claiming the device was never touched.
+    record_device_authorization_landed(
+        db,
+        operation_id,
+        olt_id=str(olt.id),
+        fsp=fsp,
+        serial_number=normalized_serial,
+        ont_id_on_olt=ont_id,
+        device_message=device_message,
+    )
+
+    projection = project_local_authorization_state(
         db,
         olt_id=olt_id,
         fsp=fsp,
         serial_number=normalized_serial,
         ont_id_on_olt=ont_id,
     )
-    if ont_unit_id is None:
-        add_step("Activate ONT", False, create_msg, activation_started)
+    if not projection.success:
+        detail = projection.failure_detail
+        add_step(
+            (
+                "Link ONT Assignment"
+                if projection.stage == "topology"
+                else "Create Local ONT Record"
+            ),
+            False,
+            detail,
+            activation_started,
+        )
         return finish(
             success=False,
-            message=(
-                "ONT authorized on OLT, but local inventory record setup failed: "
-                f"{create_msg}"
-            ),
+            message=_local_inventory_failure_message(detail),
             status="error",
+            ont_unit_id=projection.ont_unit_id,
             ont_id_on_olt=ont_id,
             completed_authorization=True,
             partial_success=True,
+            local_inventory_failed=True,
+            device_message=device_message,
         )
-
-    assignment_ok, assignment_msg = record_topology_observation_for_authorized_ont(
-        db,
-        ont_unit_id=ont_unit_id,
-        olt_id=olt_id,
-        fsp=fsp,
-    )
-    if not assignment_ok:
-        add_step("Link ONT Assignment", False, assignment_msg, activation_started)
-        return finish(
-            success=False,
-            message=(
-                "ONT authorized on OLT, but local PON assignment setup failed: "
-                f"{assignment_msg}"
-            ),
-            status="error",
-            ont_unit_id=ont_unit_id,
-            ont_id_on_olt=ont_id,
-            completed_authorization=True,
-            partial_success=True,
-        )
-
-    # Resolve autofind candidate
-    _resolve_authorized_autofind_candidate(
-        db, olt_id=olt_id, fsp=fsp, serial_number=normalized_serial
-    )
 
     activation_message = (
         f"{getattr(authorization_profiles, 'message', '')} "
-        f"{auth_result.message} {create_msg} {assignment_msg}".strip()
+        f"{auth_result.message} {projection.create_message} "
+        f"{projection.topology_message}".strip()
     )
     add_step(
         "Activate ONT",
@@ -756,9 +1218,10 @@ def authorize_autofind_ont(
         success=True,
         message="ONT authorization completed.",
         status="success",
-        ont_unit_id=ont_unit_id,
+        ont_unit_id=projection.ont_unit_id,
         ont_id_on_olt=ont_id,
         completed_authorization=True,
+        device_message=device_message,
     )
 
 
@@ -772,6 +1235,7 @@ def authorize_ont(
     preset_id: str | None = None,
     request: Request | None = None,
     provision: bool = True,
+    operation_id: str | None = None,
 ) -> AuthorizationWorkflowResult:
     """Authorize ONT on the OLT, apply the OLT baseline, and audit log.
 
@@ -792,6 +1256,9 @@ def authorize_ont(
         preset_id: Optional preset ID (unused, kept for compatibility).
         request: Optional request for audit logging.
         provision: If True, apply OLT baseline after authorization (default True).
+        operation_id: Tracked operation to record the landed device
+            authorization against, so a later reader can tell "OLT authorized,
+            local projection failed" from "OLT rejected the command".
     """
     from app.services.network.ont_provision_steps import apply_authorization_baseline
 
@@ -816,6 +1283,7 @@ def authorize_ont(
         serial_number,
         force_reauthorize=force_reauthorize,
         preset_id=preset_id,
+        operation_id=operation_id,
     )
     record_phase("core_authorization", phase_started, success=result.success)
     result.phase_timings = phase_timings
@@ -922,6 +1390,11 @@ def _audit_authorization(
             "fsp": fsp,
             "serial_number": serial_number,
             "force_reauthorize": force_reauthorize,
+            "completed_authorization": result.completed_authorization,
+            "local_inventory_failed": result.local_inventory_failed,
+            "device_authorization_reused_from": (
+                result.device_authorization_reused_from
+            ),
         },
         status_code=200 if result.success or result.partial_success else 500,
         is_success=result.success,

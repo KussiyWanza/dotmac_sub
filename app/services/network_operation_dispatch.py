@@ -535,11 +535,16 @@ def _terminalize_operation(
         return
     from app.services.network_operations import network_operations
 
+    # Merge, never replace: the operation may already carry committed device
+    # evidence (for example a landed ONT authorization) that must survive a
+    # worker crash, otherwise the ledger claims the device was never touched.
+    existing_payload = operation.output_payload or {}
     network_operations.mark_failed(
         db,
         str(operation.id),
         message,
         output_payload={
+            **(existing_payload if isinstance(existing_payload, dict) else {}),
             "dispatch_id": str(dispatch.id),
             "dispatch_status": dispatch.status.value,
             "message": message,

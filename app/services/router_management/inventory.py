@@ -187,10 +187,18 @@ class RouterInventory(ListResponseMixin):
         router.is_active = False
         if router.network_device_id:
             from app.models.network_monitoring import NetworkDevice
+            from app.services.network_monitoring import set_network_device_active
 
             device = db.get(NetworkDevice, router.network_device_id)
             if device:
-                device.is_active = False
+                # Cross-domain: router inventory is an authoritative input to
+                # the linked monitoring device's admission, but it does not get
+                # to write the flag. It requests the transition from the owner
+                # (network.monitoring_inventory) so the reachability-cache decay
+                # happens here exactly as it does for a manual soft-delete.
+                set_network_device_active(
+                    db, device, False, reason="router_delete_cascade"
+                )
         db.commit()
         logger.info("Router soft-deleted: %s (%s)", router.name, router.id)
 

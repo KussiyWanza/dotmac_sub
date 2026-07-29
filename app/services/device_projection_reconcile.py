@@ -15,6 +15,13 @@ The pass is idempotent and self-healing:
 * rows whose source device no longer exists are pruned, so the table cannot
   drift into holding phantom devices.
 
+Pruning follows *existence*, not admission. A deactivated device still exists,
+so it is still derived and still projected — marked ``lifecycle_state =
+'inactive'`` and forced to ``not_working`` by :func:`_gated_status`. Filtering
+inactive devices out of the derivation instead made deactivation delete the
+device from the staff ledger, because this reconciler removes whatever the
+derivation stops returning.
+
 The table is a rebuildable cache — the authoritative device tables remain the
 source of truth. Callers that need a live device list read the projection; they
 never write it, and they request a reconcile rather than maintaining a parallel
@@ -66,6 +73,27 @@ _RECONCILE_COMMAND = OwnerCommandDefinition(
 # Stable PostgreSQL transaction-level advisory lock. It prevents two beat or
 # operator-triggered rebuilds from racing the natural-key upsert.
 _RECONCILE_LOCK_KEY = 328_160_319
+
+_LIFECYCLE_STATES = ("active", "inactive")
+
+
+def _gated_status(lifecycle_state: str, status: str) -> str:
+    """Release gate: an inactive device can never project ``working``.
+
+    An inactive device has left the poll sweep, so nothing refreshes its
+    reachability — anything it still claims is frozen, and a frozen ``working``
+    is what let a decommissioned device keep vetoing outage detection. The
+    matching CHECK constraint makes the violation unrepresentable in the
+    database; this normalisation is what keeps the reconciler *converging*
+    instead of crashing the beat job on a bad upstream derivation.
+    """
+    if lifecycle_state != "active" and status != "not_working":
+        logger.warning(
+            "device_projection: forcing inactive device status %r -> not_working",
+            status,
+        )
+        return "not_working"
+    return status
 
 
 class DeviceProjectionCommandError(DomainError):
@@ -154,7 +182,12 @@ def _reconcile(
         key = (device_type, source_id)
         seen.add(key)
 
-        status = str(device.get("status") or "not_working")
+        lifecycle_state = str(device.get("lifecycle_state") or "active")
+        if lifecycle_state not in _LIFECYCLE_STATES:
+            lifecycle_state = "active"
+        status = _gated_status(
+            lifecycle_state, str(device.get("status") or "not_working")
+        )
         subscriber_id = _subscriber_id(device.get("subscriber"))
 
         row = existing.get(key)
@@ -163,6 +196,7 @@ def _reconcile(
                 device_type=device_type,
                 source_id=source_id,
                 operational_status=status,
+                lifecycle_state=lifecycle_state,
                 subscriber_id=subscriber_id,
                 refreshed_at=stamp,
             )
@@ -172,6 +206,7 @@ def _reconcile(
             inserted += 1
         else:
             row.operational_status = status
+            row.lifecycle_state = lifecycle_state
             row.subscriber_id = subscriber_id
             row.refreshed_at = stamp
             for field in _PROJECTED_FIELDS:

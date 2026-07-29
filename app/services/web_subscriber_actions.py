@@ -182,6 +182,7 @@ def update_subscriber_from_full_form(
             captive_redirect_enabled=form_data.get("captive_redirect_enabled"),
             tax_rate_id=form_data.get("tax_rate_id"),
             withholding_tax_enabled=form_data.get("withholding_tax_enabled"),
+            vat_exempt=form_data.get("vat_exempt"),
             payment_method=form_data.get("payment_method"),
             metadata_json=form_data.get("metadata_json"),
         )
@@ -204,6 +205,7 @@ def update_subscriber_from_full_form(
             captive_redirect_enabled=form_data.get("captive_redirect_enabled"),
             tax_rate_id=form_data.get("tax_rate_id"),
             withholding_tax_enabled=form_data.get("withholding_tax_enabled"),
+            vat_exempt=form_data.get("vat_exempt"),
             payment_method=form_data.get("payment_method"),
         )
     else:

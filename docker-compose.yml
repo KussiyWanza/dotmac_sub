@@ -580,6 +580,12 @@ services:
     command:
     - -retentionPeriod=365d
     - -search.maxUniqueTimeseries=1000000
+    # Both vmagent remote-write and app import tasks (metrics_store,
+    # bandwidth_metrics_adapter, monitoring_metrics, olt_polling_metrics)
+    # write here; without dedup, a re-imported sample at the same millisecond
+    # timestamp is stored twice and /federate exports both, which the central
+    # observe Prometheus then drops ("different value but same timestamp").
+    - -dedup.minScrapeInterval=1ms
   promtail:
     image: grafana/promtail:3.0.0
     container_name: dotmac_sub_promtail

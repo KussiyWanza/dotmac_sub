@@ -35,7 +35,9 @@ Usage::
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -424,7 +426,213 @@ def suspend_subscription(
     return lock
 
 
-def restore_subscription(
+class RestorationOutcome(StrEnum):
+    """Why a restoration attempt ended the way it did.
+
+    ``False`` used to carry five different meanings. An operator watching a
+    customer who has paid and is still offline could not tell "a payment cannot
+    lift a fraud block" from "nothing happened".
+    """
+
+    restored = "restored"
+    already_active = "already_active"
+    blocked_by_remaining_locks = "blocked_by_remaining_locks"
+    blocked_by_unauthorized_trigger = "blocked_by_unauthorized_trigger"
+    blocked_by_active_login = "blocked_by_active_login"
+    blocked_by_lifecycle_override = "blocked_by_lifecycle_override"
+
+
+# Triggers a settled payment or top-up is allowed to present. Kept as data so
+# ``remaining_blockers`` reports exactly what ALLOWED_RESTORERS permits: note
+# that ``top_up`` clears BOTH ``fup`` and ``prepaid``, so FUP must never be
+# reported as payment-unclearable when the caller is a top-up.
+PAYMENT_TRIGGERS: frozenset[str] = frozenset(
+    {"payment", "top_up", "collections_resolution"}
+)
+
+
+def payment_clearable_reasons(triggers: frozenset[str] = PAYMENT_TRIGGERS) -> set[str]:
+    """Return lock reasons some payment-side trigger is authorized to clear."""
+    return {
+        reason.value
+        for reason, allowed in ALLOWED_RESTORERS.items()
+        if allowed & triggers
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionRestorationResult:
+    """Typed, operator-readable outcome of one restoration attempt."""
+
+    subscription_id: str
+    account_id: str
+    trigger: str
+    outcome: RestorationOutcome
+    payment_settled: bool
+    financial_lock_cleared: bool
+    # Did THIS call write `status = active`? This is the legacy boolean the
+    # `restore_subscription` facade returns, so its truthiness is unchanged for
+    # the ~10 existing callers: "nothing needed doing" must never read as
+    # "I restored something", or a caller notifies a customer, clears an alert,
+    # or resolves a worklist entry for an account that was never suspended.
+    subscription_reactivated: bool
+    # Does the customer actually have service now? Narrower than the above: an
+    # account-level lifecycle override keeps them dark even when the
+    # subscription row says active.
+    access_restored: bool
+    resolved_lock_count: int
+    remaining_blockers: tuple[str, ...]
+    payment_clearable_blockers: tuple[str, ...]
+    lifecycle_override_status: str | None
+    lifecycle_override_reason: str | None
+    lifecycle_override_source: str | None
+    required_action: str | None
+
+    @property
+    def financially_settled_but_access_blocked(self) -> bool:
+        """Money landed and its lock cleared, yet the customer is still off."""
+        return (
+            self.payment_settled
+            and not self.access_restored
+            and self.outcome is not RestorationOutcome.already_active
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "subscription_id": self.subscription_id,
+            "account_id": self.account_id,
+            "trigger": self.trigger,
+            "outcome": self.outcome.value,
+            "payment_settled": self.payment_settled,
+            "financial_lock_cleared": self.financial_lock_cleared,
+            "subscription_reactivated": self.subscription_reactivated,
+            "access_restored": self.access_restored,
+            "resolved_lock_count": self.resolved_lock_count,
+            "remaining_blockers": list(self.remaining_blockers),
+            "payment_clearable_blockers": list(self.payment_clearable_blockers),
+            "lifecycle_override_status": self.lifecycle_override_status,
+            "lifecycle_override_reason": self.lifecycle_override_reason,
+            "lifecycle_override_source": self.lifecycle_override_source,
+            "required_action": self.required_action,
+            "financially_settled_but_access_blocked": (
+                self.financially_settled_but_access_blocked
+            ),
+        }
+
+
+_LIFECYCLE_OVERRIDE_BLOCKER = "lifecycle_override"
+
+
+def _active_blockers(db: Session, subscription: Subscription) -> tuple[str, ...]:
+    reasons = sorted(
+        {
+            lock.reason.value
+            for lock in db.scalars(
+                select(EnforcementLock).where(
+                    EnforcementLock.subscription_id == subscription.id,
+                    EnforcementLock.is_active.is_(True),
+                )
+            ).all()
+        }
+    )
+    return tuple(reasons)
+
+
+def _required_action(
+    outcome: RestorationOutcome,
+    blockers: tuple[str, ...],
+    payment_clearable: tuple[str, ...],
+) -> str | None:
+    if outcome is RestorationOutcome.restored:
+        return None
+    if outcome is RestorationOutcome.already_active:
+        return None
+    if outcome is RestorationOutcome.blocked_by_active_login:
+        return "resolve_duplicate_active_login"
+    if outcome is RestorationOutcome.blocked_by_lifecycle_override:
+        return "clear_lifecycle_override"
+    if _LIFECYCLE_OVERRIDE_BLOCKER in blockers:
+        return "clear_lifecycle_override"
+    if payment_clearable:
+        # A payment-clearable reason survived the attempt: the trigger used was
+        # not the one authorized for it (e.g. `payment` cannot clear `fup`;
+        # only `top_up` can).
+        return "retry_with_authorized_trigger"
+    if blockers:
+        return "admin_review"
+    return "admin_review"
+
+
+def _build_restoration_result(
+    db: Session,
+    subscription: Subscription,
+    *,
+    trigger: str,
+    outcome: RestorationOutcome,
+    resolved_count: int,
+    subscription_reactivated: bool,
+    access_restored: bool,
+) -> SubscriptionRestorationResult:
+    blockers = list(_active_blockers(db, subscription))
+    subscriber = db.get(Subscriber, subscription.subscriber_id)
+    override_status = getattr(subscriber, "lifecycle_override_status", None)
+    override_blocks = (
+        override_status is not None and override_status != SubscriberStatus.active
+    )
+    if override_blocks:
+        # Payment never clears an explicit lifecycle override. It must still be
+        # visible, or the operator sees a settled account that stays dark with
+        # no stated reason.
+        blockers.append(_LIFECYCLE_OVERRIDE_BLOCKER)
+        # The subscription row may say active while the account override keeps
+        # the customer off. Reporting that as restored is the same silence in
+        # a different costume.
+        if access_restored:
+            access_restored = False
+            outcome = RestorationOutcome.blocked_by_lifecycle_override
+    blocker_tuple = tuple(dict.fromkeys(blockers))
+    clearable = tuple(
+        item for item in blocker_tuple if item in payment_clearable_reasons()
+    )
+    payment_settled = trigger in PAYMENT_TRIGGERS
+    result = SubscriptionRestorationResult(
+        subscription_id=str(subscription.id),
+        account_id=str(subscription.subscriber_id),
+        trigger=trigger,
+        outcome=outcome,
+        payment_settled=payment_settled,
+        financial_lock_cleared=payment_settled and resolved_count > 0,
+        subscription_reactivated=subscription_reactivated,
+        access_restored=access_restored,
+        resolved_lock_count=resolved_count,
+        remaining_blockers=blocker_tuple,
+        payment_clearable_blockers=clearable,
+        lifecycle_override_status=(
+            override_status.value if override_status is not None else None
+        ),
+        lifecycle_override_reason=getattr(
+            subscriber, "lifecycle_override_reason", None
+        ),
+        lifecycle_override_source=getattr(
+            subscriber, "lifecycle_override_source", None
+        ),
+        required_action=_required_action(outcome, blocker_tuple, clearable),
+    )
+    if result.financially_settled_but_access_blocked:
+        # Staged here, at the single point where every outcome is built, rather
+        # than at the tail of `restore_subscription_detailed`. The early returns
+        # for an unauthorized trigger and a duplicate active login are exactly
+        # the "paid but still dark" cases the worklist exists for, and staging
+        # further down silently skipped both of them.
+        from app.services.settled_access_blocked import (
+            stage_financially_settled_but_access_blocked,
+        )
+
+        stage_financially_settled_but_access_blocked(db, result)
+    return result
+
+
+def restore_subscription_detailed(
     db: Session,
     subscription_id: str,
     trigger: str,
@@ -433,21 +641,14 @@ def restore_subscription(
     reason: EnforcementReason | None = None,
     notes: str | None = None,
     emit: bool = True,
-) -> bool:
-    """Resolve enforcement locks and restore if no active locks remain.
+) -> SubscriptionRestorationResult:
+    """Resolve enforcement locks, restore if clear, and say exactly what happened.
 
-    Args:
-        db: Database session.
-        subscription_id: Subscription UUID.
-        trigger: The type of restorer (e.g. ``"payment"``, ``"admin"``).
-        resolved_by: Who/what resolved this (e.g. ``"payment:{id}"``).
-        reason: If set, only resolve locks with this specific reason.
-            If None, resolves all locks that the trigger is allowed to clear.
-        notes: Optional resolution notes.
-        emit: Whether to emit events.
-
-    Returns:
-        True if the subscription was actually restored to active.
+    Reason scoping is intentional and unchanged: a payment does not lift a FUP,
+    admin, or fraud lock, and no payment path clears an explicit lifecycle
+    override. The defect this replaces was silence — the operator was told
+    nothing, so a customer who had genuinely paid stayed dark with no worklist
+    entry and no stated required action.
     """
     # Lock the subscription row to prevent concurrent restore races
     subscription = db.execute(
@@ -462,7 +663,15 @@ def restore_subscription(
             subscription_id,
             subscription.status.value,
         )
-        return False
+        return _build_restoration_result(
+            db,
+            subscription,
+            trigger=trigger,
+            outcome=RestorationOutcome.already_active,
+            resolved_count=0,
+            subscription_reactivated=False,
+            access_restored=subscription.status == SubscriptionStatus.active,
+        )
 
     _require_billing_approval(
         db,
@@ -489,7 +698,15 @@ def restore_subscription(
             trigger,
             len(get_active_locks(db, subscription_id=str(subscription.id))),
         )
-        return False
+        return _build_restoration_result(
+            db,
+            subscription,
+            trigger=trigger,
+            outcome=RestorationOutcome.blocked_by_unauthorized_trigger,
+            resolved_count=0,
+            subscription_reactivated=False,
+            access_restored=False,
+        )
 
     # resolved_count == 0 with NO remaining lock means the subscription is
     # suspended with nothing holding it down — a lock resolved out of band, or
@@ -500,6 +717,7 @@ def restore_subscription(
     # the UI said active while the customer stayed offline.
 
     restored = False
+    outcome = RestorationOutcome.blocked_by_remaining_locks
     if remaining is None:
         if reactivation_blocked_by_active_login(db, subscription):
             logger.warning(
@@ -510,12 +728,21 @@ def restore_subscription(
                 subscription.login,
             )
             compute_account_status(db, str(subscription.subscriber_id))
-            return False
+            return _build_restoration_result(
+                db,
+                subscription,
+                trigger=trigger,
+                outcome=RestorationOutcome.blocked_by_active_login,
+                resolved_count=resolved_count,
+                subscription_reactivated=False,
+                access_restored=False,
+            )
 
         prev_status = subscription.status
         subscription.status = SubscriptionStatus.active
         db.flush()
         restored = True
+        outcome = RestorationOutcome.restored
 
         if emit:
             emit_event(
@@ -550,7 +777,55 @@ def restore_subscription(
         )
 
     compute_account_status(db, str(subscription.subscriber_id))
-    return restored
+    # Worklist staging lives in `_build_restoration_result`, so every outcome —
+    # including the early-return branches above — reaches the operator queue.
+    return _build_restoration_result(
+        db,
+        subscription,
+        trigger=trigger,
+        outcome=outcome,
+        resolved_count=resolved_count,
+        subscription_reactivated=restored,
+        access_restored=restored,
+    )
+
+
+def restore_subscription(
+    db: Session,
+    subscription_id: str,
+    trigger: str,
+    resolved_by: str,
+    *,
+    reason: EnforcementReason | None = None,
+    notes: str | None = None,
+    emit: bool = True,
+) -> bool:
+    """Boolean facade over :func:`restore_subscription_detailed`.
+
+    Returns ``subscription_reactivated``, NOT ``access_restored``: the legacy
+    contract is "did this call transition the subscription to active", and the
+    existing callers were not reviewed against any other meaning. In
+    particular an already-active subscription must keep returning False —
+    "nothing needed doing" is not "I restored something", and a caller that
+    reads True as a restoration may notify a customer, clear an alert, or
+    resolve a worklist entry for an account that was never suspended.
+
+    Callers that need the richer picture — remaining blockers, a lifecycle
+    override still holding the customer off, the required operator action —
+    should call :func:`restore_subscription_detailed` directly.
+
+    Returns:
+        True if this call actually restored the subscription to active.
+    """
+    return restore_subscription_detailed(
+        db,
+        subscription_id,
+        trigger,
+        resolved_by,
+        reason=reason,
+        notes=notes,
+        emit=emit,
+    ).subscription_reactivated
 
 
 def resolve_stale_lock_without_restoration(

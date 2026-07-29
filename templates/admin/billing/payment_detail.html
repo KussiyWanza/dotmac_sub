@@ -35,6 +35,9 @@
             <button type="submit" class="inline-flex items-center rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800/60 dark:bg-slate-800 dark:text-emerald-300">Review settlement</button>
         </form>
         {% endif %}
+        {% if status_val in ['succeeded'] and not payment.settlement %}
+        <a href="/admin/billing/payments/{{ payment.id }}/settlement/evidence" class="inline-flex items-center rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm font-medium text-violet-700">Review settlement evidence</a>
+        {% endif %}
         {% if allocation_invoices %}
         <form method="post" action="/admin/billing/payments/{{ payment.id }}/allocation/preview" class="inline-flex items-center gap-2">
             {% include "components/forms/csrf_input.html" %}

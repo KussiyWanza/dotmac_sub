@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -19,9 +20,10 @@ from decimal import Decimal
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.audit import AuditActorType
 from app.models.billing import (
     AccountAdjustment,
     Invoice,
@@ -29,6 +31,7 @@ from app.models.billing import (
     LedgerCategory,
     LedgerEntry,
     Payment,
+    PaymentAllocation,
     PaymentSettlement,
     PaymentStatus,
     ServiceEntitlement,
@@ -48,8 +51,16 @@ from app.models.catalog import (
     SubscriptionAddOn,
     SubscriptionStatus,
 )
+from app.models.idempotency import IdempotencyKey
+from app.models.service_extension import (
+    ServiceExtension,
+    ServiceExtensionEntry,
+    ServiceExtensionStatus,
+)
 from app.models.subscriber import Address, Subscriber
+from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import AccountAdjustmentPreviewRequest
+from app.services.audit import AuditEvents
 from app.services.billing._common import lock_account
 from app.services.billing.adjustments import (
     ACCOUNT_ADJUSTMENT_SCOPE,
@@ -67,6 +78,8 @@ from app.services.service_entitlements import (
     ensure_prepaid_entitlement_for_wallet_debit,
     prepaid_entitlement_coverage_end,
 )
+
+logger = logging.getLogger(__name__)
 
 _ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES = frozenset(
@@ -568,6 +581,20 @@ def evaluate_prepaid_service_after_settlement(
             "Funding-change payment has no effective settlement time.",
             payment_id=str(payment.id),
         )
+    # Project the anchor from the entitlement evidence this payment already
+    # committed, before deciding whether any further period is due. Doing it
+    # here rather than inside the renewal branch keeps the anchor exact even
+    # when another payable invoice defers the invoice-less renewal path.
+    for funded_invoice_id in _invoice_ids_touched_by_payment(db, payment.id):
+        funded_invoice = db.get(Invoice, funded_invoice_id)
+        if funded_invoice is None or funded_invoice.account_id != account_id:
+            continue
+        project_prepaid_billing_anchor_for_invoice(
+            db,
+            funded_invoice,
+            evidence_ref=evidence_ref,
+        )
+
     renewal = apply_due_prepaid_service_after_funding_change(
         db,
         account_id=account_id,
@@ -966,6 +993,564 @@ def renewal_outcomes_for_payment(
             # Malformed historical events are not a basis for a customer claim.
             continue
     return tuple(outcomes)
+
+
+class BillingAnchorAuthority(enum.StrEnum):
+    """How much authority the caller has to move an anchor backwards.
+
+    Before this owner existed, `financial.payments` ran two different anchor
+    policies from two finalizers, and both are load-bearing:
+
+    * ``_finalize_invoice_payment_effects`` (payment creation, allocation,
+      refund, reversal) re-anchored a lapsed prepaid invoice and deliberately
+      carried its *inferred* extension delta forward, never writing the anchor
+      backwards.
+    * ``finalize_invoice_application_for_owner`` (reviewed prepaid-draft
+      reconciliation) additionally projected the anchor unconditionally from
+      the exact entitlements, overriding that inferred delta.
+
+    Collapsing them into one policy is what made this projection alternately
+    claw back granted service or strand a lapsed invoice at a stale anchor, so
+    authority is an explicit input rather than something guessed from state.
+    """
+
+    #: A payment settled, was allocated, or was reversed. The trigger observes
+    #: that funding changed; it says nothing about why the anchor is ahead.
+    #: That lead may be a `financial.service_extensions` grant or the payment
+    #: owner's own preserved delta, so it is never overwritten downwards.
+    funding_observation = "funding_observation"
+
+    #: A named owner is deliberately correcting the record from a reviewed,
+    #: fingerprint-bound, operator-confirmed preview, having just rewritten the
+    #: invoice's documentary period. It may set the anchor onto exact projected
+    #: coverage even when that is earlier than the current anchor.
+    reviewed_reconciliation = "reviewed_reconciliation"
+
+
+@dataclass(frozen=True, slots=True)
+class BillingAnchorProjection:
+    """One owner-computed anchor decision for a single subscription."""
+
+    subscription_id: UUID
+    previous_next_billing_at: datetime | None
+    next_billing_at: datetime | None
+    coverage_end: datetime | None
+    changed: bool
+    retracted: bool
+    authority: BillingAnchorAuthority = BillingAnchorAuthority.funding_observation
+
+
+def project_prepaid_billing_anchor_for_invoice(
+    db: Session,
+    invoice: Invoice,
+    *,
+    evidence_ref: str,
+    authority: BillingAnchorAuthority = BillingAnchorAuthority.funding_observation,
+) -> tuple[BillingAnchorProjection, ...]:
+    """Recompute affected billing anchors from canonical entitlement evidence.
+
+    ``financial.prepaid_service_renewals`` is the sole owner of billing-anchor
+    advancement. Payment allocation, invoice application, and draft
+    reconciliation are participants: they commit exact entitlement evidence and
+    then ask this owner to project it. They never write ``next_billing_at``
+    themselves, so there is exactly one writer for the projection.
+
+    The result is a pure function of current coverage state and the caller's
+    declared authority, which makes it idempotent under replay:
+
+    ``coverage`` is the union of active ``ServiceEntitlement`` intervals and
+    applied ``ServiceExtensionEntry`` grant intervals — exactly what
+    ``financial.prepaid_service_coverage`` treats as evidence. The anchor never
+    lands below that union, and never below the start of the period this
+    invoice funded.
+
+    On top of that floor, ``authority`` decides one question: may the anchor
+    move BACKWARDS past an unexplained lead?
+
+    * ``funding_observation`` — no. A payment settling is an observation that
+      funding changed; it carries no statement about why the anchor is ahead.
+      That lead may be a ``financial.service_extensions`` grant, a
+      ``financial.subscription_billing_grants`` grant, or the extension delta
+      the payment owner deliberately preserved in the same transaction while
+      re-anchoring a lapsed renewal. Overwriting it would silently claw back
+      service another owner granted, so advancement is monotonic while this
+      invoice's own entitlements survive.
+    * ``reviewed_reconciliation`` — yes. A named owner has just rewritten this
+      invoice's documentary period from an operator-confirmed, fingerprint-
+      bound preview and holds exact entitlement evidence for it. A stale anchor
+      left behind by a long-lapsed period carries no grant, and is precisely
+      what ``financial.prepaid_service_coverage`` classifies as an unresolved
+      projection: never restoration or suspension authority. A reviewed
+      correction may resolve it downwards. This stays sound because the floor
+      above still applies — reviewed authority can only pull the anchor down
+      ONTO existing coverage, never below it, so it can delete an evidence-free
+      lead but can never cancel granted service.
+
+    Retraction after a refund, chargeback, reversal, or reallocation needs no
+    special authority: once this invoice's entitlements are revoked they leave
+    the coverage union, and the anchor follows the evidence down on its own.
+    """
+
+    rows = db.execute(
+        select(
+            ServiceEntitlement.subscription_id,
+            ServiceEntitlement.starts_at,
+            ServiceEntitlement.status,
+        )
+        .where(ServiceEntitlement.source_invoice_id == invoice.id)
+        .order_by(ServiceEntitlement.subscription_id, ServiceEntitlement.starts_at)
+    ).all()
+    if not rows:
+        return ()
+
+    unfunded_start_by_subscription: dict[UUID, datetime] = {}
+    # Whether THIS invoice still funds the subscription. Losing its entitlement
+    # is what authorizes a retraction; an untouched invoice never may.
+    invoice_still_funds: dict[UUID, bool] = {}
+    for subscription_id, starts_at, status in rows:
+        current = unfunded_start_by_subscription.get(subscription_id)
+        candidate = _utc(starts_at)
+        if current is None or candidate < current:
+            unfunded_start_by_subscription[subscription_id] = candidate
+        if status == ServiceEntitlementStatus.active:
+            invoice_still_funds[subscription_id] = True
+        else:
+            invoice_still_funds.setdefault(subscription_id, False)
+
+    subscription_ids = list(unfunded_start_by_subscription)
+    coverage_rows = db.execute(
+        select(
+            ServiceEntitlement.subscription_id,
+            ServiceEntitlement.ends_at,
+        ).where(
+            ServiceEntitlement.subscription_id.in_(subscription_ids),
+            ServiceEntitlement.status == ServiceEntitlementStatus.active,
+        )
+    ).all()
+    coverage_end_by_subscription: dict[UUID, datetime] = {}
+    for subscription_id, ends_at in coverage_rows:
+        current = coverage_end_by_subscription.get(subscription_id)
+        candidate = _utc(ends_at)
+        if current is None or candidate > current:
+            coverage_end_by_subscription[subscription_id] = candidate
+
+    # `financial.service_extensions` owns its own billing-anchor projection and
+    # records one immutable grant interval per subscription. Those intervals are
+    # coverage evidence exactly as `financial.prepaid_service_coverage` reads
+    # them, so they must be visible here too — otherwise a retraction would
+    # silently undo another owner's anchor projection.
+    for subscription_id, grant_ends_at in db.execute(
+        select(
+            ServiceExtensionEntry.subscription_id,
+            ServiceExtensionEntry.grant_ends_at,
+        )
+        .join(
+            ServiceExtension,
+            ServiceExtension.id == ServiceExtensionEntry.extension_id,
+        )
+        .where(
+            ServiceExtensionEntry.subscription_id.in_(subscription_ids),
+            ServiceExtension.status == ServiceExtensionStatus.applied,
+            ServiceExtensionEntry.grant_ends_at.isnot(None),
+        )
+    ).all():
+        current = coverage_end_by_subscription.get(subscription_id)
+        candidate = _utc(grant_ends_at)
+        if current is None or candidate > current:
+            coverage_end_by_subscription[subscription_id] = candidate
+
+    projections: list[BillingAnchorProjection] = []
+    changed_any = False
+    for subscription_id, unfunded_start in unfunded_start_by_subscription.items():
+        subscription = db.get(Subscription, subscription_id)
+        if subscription is None or subscription.subscriber_id != invoice.account_id:
+            continue
+        previous = (
+            _utc(subscription.next_billing_at)
+            if subscription.next_billing_at is not None
+            else None
+        )
+        coverage_end = coverage_end_by_subscription.get(subscription_id)
+        # The floor every authority shares: surviving coverage, but never
+        # leaving the period this invoice funded looking covered when it is not
+        # (an extension that already expired cannot vouch for it).
+        floor = (
+            max(coverage_end, unfunded_start)
+            if coverage_end is not None
+            else unfunded_start
+        )
+        target: datetime
+        if coverage_end is None and previous is not None and previous < unfunded_start:
+            # Nothing survives and an earlier unpaid period is already due.
+            # Never push a due anchor later.
+            target = previous
+        elif (
+            authority is BillingAnchorAuthority.funding_observation
+            and invoice_still_funds.get(subscription_id)
+            and previous is not None
+        ):
+            # Observational trigger, nothing revoked: monotonic. An anchor
+            # ahead of coverage may be a grant this owner cannot see.
+            target = max(previous, floor)
+        else:
+            # Reviewed correction, or a retraction the evidence already forces.
+            target = floor
+        retracted = previous is not None and target < previous
+        changed = target != previous
+        if changed:
+            subscription.next_billing_at = target
+            changed_any = True
+        projections.append(
+            BillingAnchorProjection(
+                subscription_id=subscription_id,
+                previous_next_billing_at=previous,
+                next_billing_at=target,
+                coverage_end=coverage_end,
+                changed=changed,
+                retracted=retracted and changed,
+                authority=authority,
+            )
+        )
+    if changed_any:
+        db.flush()
+    if projections:
+        logger.info(
+            "prepaid_billing_anchor_projected",
+            extra={
+                "event": "prepaid_billing_anchor_projected",
+                "invoice_id": str(invoice.id),
+                "account_id": str(invoice.account_id),
+                "evidence_ref": evidence_ref,
+                "authority": authority.value,
+                "projections": [
+                    {
+                        "subscription_id": str(item.subscription_id),
+                        "previous_next_billing_at": (
+                            item.previous_next_billing_at.isoformat()
+                            if item.previous_next_billing_at
+                            else None
+                        ),
+                        "next_billing_at": (
+                            item.next_billing_at.isoformat()
+                            if item.next_billing_at
+                            else None
+                        ),
+                        "coverage_end": (
+                            item.coverage_end.isoformat() if item.coverage_end else None
+                        ),
+                        "changed": item.changed,
+                        "retracted": item.retracted,
+                    }
+                    for item in projections
+                ],
+            },
+        )
+    return tuple(projections)
+
+
+def _invoice_ids_touched_by_payment(db: Session, payment_id: UUID) -> tuple[UUID, ...]:
+    """Return every invoice this payment ever allocated to, retired included."""
+
+    return tuple(
+        dict.fromkeys(
+            db.scalars(
+                select(PaymentAllocation.invoice_id)
+                .where(PaymentAllocation.payment_id == payment_id)
+                .order_by(PaymentAllocation.invoice_id)
+            ).all()
+        )
+    )
+
+
+def retract_prepaid_billing_anchors_after_funding_reversal(
+    db: Session,
+    *,
+    account_id: UUID,
+    payment_id: UUID,
+    invoice_ids: Sequence[UUID] = (),
+    evidence_ref: str,
+) -> tuple[BillingAnchorProjection, ...]:
+    """Re-project anchors after a refund, chargeback, or reversal.
+
+    The payment owner revokes the entitlements its money had funded and then
+    emits the durable reversal event. This owner — the only writer of
+    ``next_billing_at`` — re-derives the anchor from what evidence survives, so
+    a reversed period can never keep a stale advanced anchor claiming service
+    the customer no longer paid for. Recomputation makes replay idempotent.
+    """
+
+    targets = tuple(invoice_ids) or _invoice_ids_touched_by_payment(db, payment_id)
+    projections: list[BillingAnchorProjection] = []
+    for invoice_id in targets:
+        invoice = db.get(Invoice, invoice_id)
+        if invoice is None or invoice.account_id != account_id:
+            continue
+        projections.extend(
+            project_prepaid_billing_anchor_for_invoice(
+                db,
+                invoice,
+                evidence_ref=evidence_ref,
+            )
+        )
+    return tuple(projections)
+
+
+STALE_BILLING_ANCHOR_REPAIR_SCOPE = "prepaid_billing_anchor_repair"
+_STALE_BILLING_ANCHOR_REPAIR_ACTION = "repair_stale_prepaid_billing_anchor"
+
+
+@dataclass(frozen=True, slots=True)
+class StaleBillingAnchorCandidate:
+    """One subscription whose anchor understates its exact funded coverage."""
+
+    subscription_id: UUID
+    account_id: UUID
+    current_next_billing_at: datetime
+    coverage_end: datetime
+
+    @property
+    def drift(self) -> timedelta:
+        return self.coverage_end - self.current_next_billing_at
+
+
+@dataclass(frozen=True, slots=True)
+class StaleBillingAnchorRepairPreview:
+    """Fingerprint-bound view of the outstanding anchor-drift cohort."""
+
+    as_of: datetime
+    candidates: tuple[StaleBillingAnchorCandidate, ...]
+    fingerprint: str
+    truncated: bool
+
+    @property
+    def cohort_size(self) -> int:
+        return len(self.candidates)
+
+
+@dataclass(frozen=True, slots=True)
+class StaleBillingAnchorRepairResult:
+    """Exact outcome of one repair pass."""
+
+    scanned: int
+    repaired: int
+    already_correct: int
+    skipped_changed: int
+    replayed: int
+    repaired_subscription_ids: tuple[UUID, ...]
+
+
+def _stale_billing_anchor_candidates(
+    db: Session,
+    *,
+    limit: int,
+    subscription_ids: Sequence[UUID] = (),
+) -> tuple[tuple[StaleBillingAnchorCandidate, ...], bool]:
+    coverage = (
+        select(
+            ServiceEntitlement.subscription_id.label("subscription_id"),
+            func.max(ServiceEntitlement.ends_at).label("coverage_end"),
+        )
+        .where(ServiceEntitlement.status == ServiceEntitlementStatus.active)
+        .group_by(ServiceEntitlement.subscription_id)
+        .subquery()
+    )
+    query = (
+        select(
+            Subscription.id,
+            Subscription.subscriber_id,
+            Subscription.next_billing_at,
+            coverage.c.coverage_end,
+        )
+        .join(coverage, coverage.c.subscription_id == Subscription.id)
+        .where(
+            Subscription.next_billing_at.isnot(None),
+            coverage.c.coverage_end > Subscription.next_billing_at,
+        )
+        .order_by(Subscription.next_billing_at, Subscription.id)
+    )
+    if subscription_ids:
+        query = query.where(Subscription.id.in_(list(subscription_ids)))
+    rows = db.execute(query.limit(limit + 1)).all()
+    truncated = len(rows) > limit
+    candidates = tuple(
+        StaleBillingAnchorCandidate(
+            subscription_id=row[0],
+            account_id=row[1],
+            current_next_billing_at=_utc(row[2]),
+            coverage_end=_utc(row[3]),
+        )
+        for row in rows[:limit]
+    )
+    return candidates, truncated
+
+
+def _stale_billing_anchor_fingerprint(
+    candidates: Sequence[StaleBillingAnchorCandidate],
+) -> str:
+    material = "|".join(
+        f"{item.subscription_id}:"
+        f"{item.current_next_billing_at.isoformat()}:"
+        f"{item.coverage_end.isoformat()}"
+        for item in candidates
+    )
+    return hashlib.sha256(
+        f"prepaid-billing-anchor-repair:{material}".encode()
+    ).hexdigest()
+
+
+def preview_stale_prepaid_billing_anchor_repair(
+    db: Session,
+    *,
+    limit: int = 500,
+    subscription_ids: Sequence[UUID] = (),
+) -> StaleBillingAnchorRepairPreview:
+    """Report subscriptions whose anchor lags their exact funded coverage.
+
+    This is the pre-existing drift cohort created while the payment-allocation
+    path committed entitlements without ever reaching this owner: an active
+    ``ServiceEntitlement`` ends after ``Subscription.next_billing_at``, so the
+    customer has paid for service the billing anchor says is already due. It is
+    a different cohort from ``scripts/one_off/backfill_next_billing_at.py``,
+    which repairs NULL or historically-past anchors with no coverage evidence.
+
+    Read-only. No money is posted, moved, or forgiven.
+    """
+
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    candidates, truncated = _stale_billing_anchor_candidates(
+        db, limit=limit, subscription_ids=subscription_ids
+    )
+    return StaleBillingAnchorRepairPreview(
+        as_of=datetime.now(UTC),
+        candidates=candidates,
+        fingerprint=_stale_billing_anchor_fingerprint(candidates),
+        truncated=truncated,
+    )
+
+
+def apply_stale_prepaid_billing_anchor_repair(
+    db: Session,
+    preview: StaleBillingAnchorRepairPreview,
+    *,
+    actor: str,
+    reason: str,
+    commit: bool = True,
+) -> StaleBillingAnchorRepairResult:
+    """Advance every previewed anchor to its exact funded coverage end.
+
+    Idempotent by construction and by reservation. The write is a pure
+    recomputation from surviving entitlement evidence, so a repaired row leaves
+    the cohort permanently and a replay of the same candidate is a no-op that
+    reuses its existing idempotency reservation and audit evidence. A candidate
+    whose coverage changed between preview and apply is skipped, never guessed
+    at, and shows up in the next preview.
+    """
+
+    if not actor.strip() or not reason.strip():
+        raise ValueError("actor and reason are required repair evidence")
+
+    scanned = 0
+    repaired = 0
+    already_correct = 0
+    skipped_changed = 0
+    replayed = 0
+    repaired_ids: list[UUID] = []
+    for candidate in preview.candidates:
+        scanned += 1
+        lock_account(db, str(candidate.account_id))
+        subscription = db.get(Subscription, candidate.subscription_id)
+        if subscription is None:
+            skipped_changed += 1
+            continue
+        current, truncated_scan = _stale_billing_anchor_candidates(
+            db, limit=1, subscription_ids=(candidate.subscription_id,)
+        )
+        del truncated_scan
+        if not current:
+            already_correct += 1
+            continue
+        fresh = current[0]
+        if (
+            fresh.current_next_billing_at != candidate.current_next_billing_at
+            or fresh.coverage_end != candidate.coverage_end
+        ):
+            skipped_changed += 1
+            continue
+
+        material = f"{candidate.subscription_id}:{candidate.coverage_end.isoformat()}"
+        key = (
+            "prepaid-billing-anchor-repair-"
+            + hashlib.sha256(material.encode("utf-8")).hexdigest()
+        )
+        reservation = db.scalar(
+            select(IdempotencyKey).where(
+                IdempotencyKey.scope == STALE_BILLING_ANCHOR_REPAIR_SCOPE,
+                IdempotencyKey.key == key,
+            )
+        )
+        if reservation is not None:
+            replayed += 1
+            continue
+        db.add(
+            IdempotencyKey(
+                scope=STALE_BILLING_ANCHOR_REPAIR_SCOPE,
+                key=key,
+                account_id=candidate.account_id,
+                ref_id=str(candidate.subscription_id),
+            )
+        )
+        subscription.next_billing_at = candidate.coverage_end
+        db.flush()
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                actor_type=AuditActorType.system,
+                action=_STALE_BILLING_ANCHOR_REPAIR_ACTION,
+                entity_type="subscription",
+                entity_id=str(candidate.subscription_id),
+                metadata_={
+                    "owner": "financial.prepaid_service_renewals",
+                    "account_id": str(candidate.account_id),
+                    "actor": actor,
+                    "reason": reason,
+                    "preview_fingerprint": preview.fingerprint,
+                    "previous_next_billing_at": (
+                        candidate.current_next_billing_at.isoformat()
+                    ),
+                    "repaired_next_billing_at": candidate.coverage_end.isoformat(),
+                    "drift_seconds": str(int(candidate.drift.total_seconds())),
+                },
+            ),
+        )
+        repaired += 1
+        repaired_ids.append(candidate.subscription_id)
+
+    db.flush()
+    if commit:
+        db.commit()
+    logger.info(
+        "prepaid_billing_anchor_repair_applied",
+        extra={
+            "event": "prepaid_billing_anchor_repair_applied",
+            "preview_fingerprint": preview.fingerprint,
+            "actor": actor,
+            "reason": reason,
+            "scanned": scanned,
+            "repaired": repaired,
+            "already_correct": already_correct,
+            "skipped_changed": skipped_changed,
+            "replayed": replayed,
+        },
+    )
+    return StaleBillingAnchorRepairResult(
+        scanned=scanned,
+        repaired=repaired,
+        already_correct=already_correct,
+        skipped_changed=skipped_changed,
+        replayed=replayed,
+        repaired_subscription_ids=tuple(repaired_ids),
+    )
 
 
 def _payable_invoice_exists(
@@ -1472,6 +2057,9 @@ def run_due_prepaid_service_renewals(
 
 
 __all__ = [
+    "STALE_BILLING_ANCHOR_REPAIR_SCOPE",
+    "BillingAnchorAuthority",
+    "BillingAnchorProjection",
     "FundingChangeEvaluation",
     "FundingChangeEvaluationDisposition",
     "FundingChangeRenewalDisposition",
@@ -1483,12 +2071,19 @@ __all__ = [
     "PrepaidServiceRenewalResult",
     "PrepaidServiceRenewalSource",
     "PrepaidServiceRenewedOutcome",
+    "StaleBillingAnchorCandidate",
+    "StaleBillingAnchorRepairPreview",
+    "StaleBillingAnchorRepairResult",
     "apply_due_prepaid_service_after_funding_change",
+    "apply_stale_prepaid_billing_anchor_repair",
     "confirm_prepaid_service_renewal",
     "evaluate_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
     "preview_prepaid_recurring_charge",
+    "preview_stale_prepaid_billing_anchor_repair",
+    "project_prepaid_billing_anchor_for_invoice",
     "renewal_outcomes_for_payment",
+    "retract_prepaid_billing_anchors_after_funding_reversal",
     "resolve_prepaid_monthly_charge",
     "resolve_prepaid_monthly_charges",
     "run_due_prepaid_service_renewals",

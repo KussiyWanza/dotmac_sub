@@ -107,7 +107,6 @@ from app.services.locking import lock_for_update
 from app.services.response import ListResponseMixin
 from app.services.service_entitlements import (
     ensure_prepaid_entitlements_for_paid_invoice,
-    project_paid_invoice_billing_anchors,
     revoke_prepaid_entitlements_for_unpaid_invoice,
 )
 from app.services.sync_feeds import apply_sync_page, sync_page_response
@@ -1168,7 +1167,11 @@ def finalize_invoice_application_for_owner(
             fallback_effective_at=effective_at,
         )
         ensure_prepaid_entitlements_for_paid_invoice(db, invoice)
-        project_paid_invoice_billing_anchors(db, invoice)
+        # The billing anchor is deliberately NOT written here. Advancing
+        # `Subscription.next_billing_at` is owned by
+        # `financial.prepaid_service_renewals`; this owner only commits exact
+        # entitlement evidence and asks that owner to project it. See
+        # docs/SOT_RELATIONSHIP_MAP.md, "Prepaid renewal boundary".
         from app.services import collections as collections_service
 
         if not collections_service.has_overdue_balance(db, str(invoice.account_id)):
@@ -4314,6 +4317,32 @@ class PaymentAllocations(ListResponseMixin):
                 ),
             )
             db.flush()
+            # `financial.payments` ends here: confirmed cash, invoice
+            # allocation and unallocated-credit evidence are committed. This
+            # durable funding-change event is the ONLY way the allocation path
+            # reaches `financial.prepaid_service_renewals`, which owns prepaid
+            # period funding, entitlements and billing-anchor advancement.
+            # Without it a standalone credit allocation created entitlements
+            # but left `next_billing_at` stale, and the account was suspended
+            # again for service it had already paid for.
+            emit_event(
+                db,
+                EventType.payment_received,
+                {
+                    "payment_id": str(payment.id),
+                    "settlement_id": str(preview.settlement_id),
+                    "allocation_id": str(allocation.id),
+                    "amount": str(preview.amount),
+                    "currency": preview.currency,
+                    "invoice_id": str(invoice.id),
+                    "status": payment.status.value if payment.status else None,
+                    "source": "payment_allocation",
+                    "prepaid_funding_before": str(preview.prepaid_funding_before),
+                    "prepaid_funding_after": str(preview.prepaid_funding_after),
+                },
+                account_id=payment.account_id,
+                invoice_id=invoice.id,
+            )
             if complete_transaction:
                 db.commit()
                 db.refresh(allocation)
@@ -5308,6 +5337,12 @@ class Refunds:
                     "reason": payload.reason,
                     "is_full_refund": (preview.status_after == PaymentStatus.refunded),
                     "ledger_entry_id": str(ledger_entry.id),
+                    # The prepaid-renewal owner needs the exact invoices whose
+                    # entitlements were just revoked so it can retract any
+                    # advanced billing anchor.
+                    "invoice_ids": sorted(
+                        str(invoice_id) for invoice_id in invoice_ids
+                    ),
                 },
                 account_id=payment.account_id,
             )
@@ -6180,6 +6215,12 @@ class PaymentReversals:
                     ),
                     "to_status": PaymentStatus.reversed.value,
                     "ledger_entry_id": str(ledger_entry.id),
+                    # The prepaid-renewal owner needs the exact invoices whose
+                    # entitlements were just revoked so it can retract any
+                    # advanced billing anchor.
+                    "invoice_ids": sorted(
+                        str(invoice_id) for invoice_id in invoice_ids
+                    ),
                 },
                 account_id=payment.account_id,
             )

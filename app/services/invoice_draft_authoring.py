@@ -34,6 +34,7 @@ from app.services.billing.invoices import (
     Invoices,
 )
 from app.services.common import round_money
+from app.services.customer_tax_policies import get_customer_vat_exemption_policy
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
@@ -268,6 +269,10 @@ def _stage_lines(
     lines: tuple[DraftLineCommand, ...],
 ) -> None:
     validated = _validated_lines(db, lines)
+    vat_policy = get_customer_vat_exemption_policy(
+        db,
+        account_id=invoice.account_id,
+    )
     replacements = tuple(
         DraftInvoiceLineReplacement(
             line_id=command.line_id,
@@ -277,7 +282,7 @@ def _stage_lines(
                 quantity=command.quantity,
                 unit_price=command.unit_price,
                 amount=amount,
-                tax_rate_id=command.tax_rate_id,
+                tax_rate_id=None if vat_policy.vat_exempt else command.tax_rate_id,
                 tax_application=tax_application,
                 is_active=True,
             ),

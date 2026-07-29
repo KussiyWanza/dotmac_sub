@@ -11,7 +11,7 @@
         </p>
     </div>
 
-    <div class="grid gap-4 sm:grid-cols-3">
+    <div class="grid gap-4 sm:grid-cols-4">
         <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Match rate</p>
             <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{{ '%.1f' | format(gaps.match_rate * 100) }}%</p>
@@ -27,6 +27,11 @@
             <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{{ gaps.subscription_gap_count }}</p>
             <p class="mt-1 text-xs text-slate-400">No complete network path</p>
         </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Projection drift</p>
+            <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{{ gaps.projection_drift_count }}</p>
+            <p class="mt-1 text-xs text-slate-400">Inventory and device projection disagree</p>
+        </div>
     </div>
 
     <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
@@ -38,14 +43,14 @@
         </div>
         <table class="mt-4 w-full text-sm">
             <thead><tr class="text-left text-xs uppercase text-slate-400">
-                <th class="py-2">Name</th><th>Mgmt IP</th><th>Legacy source ID</th>
+                <th class="py-2">Name</th><th>Mgmt IP</th><th>Hostname</th>
             </tr></thead>
             <tbody>
             {% for node in gaps.unmatched_nodes %}
                 <tr class="border-t border-slate-100 dark:border-slate-700">
                     <td class="py-2 text-slate-700 dark:text-slate-200">{{ node.name }}</td>
                     <td class="font-mono text-slate-500">{{ node.mgmt_ip or '—' }}</td>
-                    <td class="font-mono text-slate-500">{{ node.zabbix_hostid or '—' }}</td>
+                    <td class="font-mono text-slate-500">{{ node.hostname or '—' }}</td>
                 </tr>
             {% else %}
                 <tr><td colspan="3" class="py-4 text-slate-400">No unmatched nodes.</td></tr>
@@ -67,6 +72,30 @@
             </a>
         </div>
         {% endif %}
+    </div>
+
+    <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Inventory vs device projection</h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+                Showing {{ gaps.projection_drift | length }} of {{ gaps.projection_drift_count }}
+            </p>
+        </div>
+        <table class="mt-4 w-full text-sm">
+            <thead><tr class="text-left text-xs uppercase text-slate-400">
+                <th class="py-2">Device</th><th>Drift</th>
+            </tr></thead>
+            <tbody>
+            {% for row in gaps.projection_drift %}
+                <tr class="border-t border-slate-100 dark:border-slate-700">
+                    <td class="py-2 text-slate-700 dark:text-slate-200">{{ row.name or row.id }}</td>
+                    <td class="text-slate-500">{{ row.drift }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="2" class="py-4 text-slate-400">Inventory and projection agree.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
     </div>
 
     <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">

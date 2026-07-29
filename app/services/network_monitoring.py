@@ -68,6 +68,229 @@ def _commit(db: Session, action: Callable[[], T]) -> T:
         raise
 
 
+# ── Device admission lifecycle (owned by network.monitoring_inventory) ───────
+#
+# The single transition every ``NetworkDevice.is_active`` change goes through.
+# Before it existed, three callers each flipped the flag directly and each got
+# only half a deactivation: the row left the pollable set (so the topology
+# warmer stopped visiting it) but kept whatever ``live_status`` it last held,
+# forever. A device frozen at ``up`` then vetoed outage detection
+# (``health_classifier.classify_node``: mgmt up + nobody online = "service
+# fault, NOT an area outage"), so no incident opened and the customer surface
+# reported the cabinet healthy indefinitely.
+#
+# Deactivation is therefore one atomic slice, not a flag:
+#   1. leave polling eligibility (``is_active``);
+#   2. DECAY the derived reachability cache to ``unknown`` — withdraw the
+#      unsupported assertion rather than freeze it;
+#   3. stay visible in inventory, marked inactive (``collect_devices`` no longer
+#      filters the flag, so the row cannot vanish from the staff ledger and get
+#      pruned out of ``device_projections``).
+#
+# (2) is the owner writing a *derived cache* it is retiring, not an
+# observation: it asserts nothing about reachability, it withdraws an
+# assertion nothing is checking any more. Reachability observations still flow
+# only from the poller, and they never drive inventory lifecycle.
+
+_INACTIVE_LIVE_STATUS = "unknown"
+
+
+def set_network_device_active(
+    db: Session,
+    device: NetworkDevice,
+    active: bool,
+    *,
+    reason: str,
+    now: datetime | None = None,
+) -> NetworkDevice:
+    """Transition a monitoring device's admission state. The only writer.
+
+    ``reason`` is a short machine string naming the caller (``manual_delete``,
+    ``router_delete_cascade``, ``router_inventory_sync``) so the log line
+    identifies which upstream drove the transition.
+
+    Idempotent: re-applying the current state still normalises the derived
+    cache, so a row that was deactivated before this transition existed is
+    repaired the next time anything touches it.
+    """
+    stamp = now or datetime.now(UTC)
+    changed = bool(device.is_active) != bool(active)
+
+    # Blast radius is read BEFORE the flag flips: the authoritative forwarding
+    # graph excludes inactive devices, so once the write lands the node has no
+    # adjacency left and the downstream arm silently reads zero.
+    impact = _stranded_customer_impact(db, device) if changed and not active else None
+
+    device.is_active = bool(active)
+
+    # Both directions decay: deactivation removes the device from polling, and
+    # reactivation must not resurrect a pre-deactivation verdict. Either way the
+    # next warm/poll cycle is what re-establishes a real state.
+    if device.live_status not in (None, _INACTIVE_LIVE_STATUS):
+        device.live_status = _INACTIVE_LIVE_STATUS
+        device.live_status_at = stamp
+
+    db.flush()
+    if changed:
+        logger.info(
+            "network device %s admission -> %s (reason=%s)",
+            device.id,
+            "active" if active else "inactive",
+            reason,
+        )
+        _sync_stranded_customer_alert(
+            db, device, active=active, reason=reason, impact=impact
+        )
+    return device
+
+
+# ── Stranded-customer integrity alert (admin-facing; NOT an incident) ───────
+#
+# A device can be deactivated while customers are still attached to it. The
+# sweep that opens customer-facing incidents (``outage_reconcile``) only visits
+# pollable nodes, so once the row leaves that set nothing re-examines it and
+# the stranding is invisible until someone calls in.
+#
+# The rejected fix was to make inventory absence open an outage incident. An
+# unpolled device supports NO reachability verdict — that is precisely why this
+# slice makes deactivation classify as ``UNKNOWN`` rather than ``NODE_OUTAGE``
+# — so deriving "outage" from an administrative flag would reintroduce the same
+# boundary violation inverted. It would also fire on every routine decommission
+# until operators learned to ignore the whole class.
+#
+# What this is instead: an admin-facing DATA-INTEGRITY alert raised at the
+# deactivation transition. It is a statement about the inventory record ("this
+# device left the monitored set with customers still hanging off it"), not
+# about reachability. It fires once, at the transition, with a known blast
+# radius; it never touches ``OutageIncident`` and never reaches a customer
+# surface.
+#
+# It is raised on the deactivation edge only, and the reactivation edge
+# resolves it — deactivation is otherwise effectively one-way (the router
+# mirror in ``monitoring_metrics`` iterates only active routers), which is
+# exactly why an accidental deactivation has to announce itself at the moment
+# it happens rather than wait for a sweep that will never come.
+
+_ADMISSION_ALERT_PREFIX = "network:device-admission:"
+
+
+def _stranded_customer_fingerprint(device: NetworkDevice) -> str:
+    """Stable per-device fingerprint — the dedupe key.
+
+    ``admin_alerts`` upserts on fingerprint, so repeated deactivation
+    transitions on the same device update one row instead of stacking, and
+    ``sync_alert`` re-notifies only on open/escalation, never on an update.
+    """
+    return f"{_ADMISSION_ALERT_PREFIX}stranded-customers:{device.id}"
+
+
+def _stranded_customer_impact(
+    db: Session, device: NetworkDevice
+) -> dict[str, int] | None:
+    """Customers still attached to ``device`` as it leaves the pollable set.
+
+    Read through the existing reverse traversal (``topology.affected``) rather
+    than a second one, so the number in the alert is the same number the outage
+    console quotes for this node.
+
+    ``attached`` is the node's own attachment arm — the customers whose serving
+    node is the one being deactivated, i.e. exactly those who lose incident
+    coverage. ``affected`` is the wider failure domain (node plus downstream
+    access nodes) and is reported for context only: those downstream nodes stay
+    active, stay polled, and keep their own coverage.
+
+    Returns ``None`` when the read fails. An advisory integrity alert must
+    never be able to block the lifecycle transition it observes.
+    """
+    from app.services.topology.affected import affected_customers
+
+    try:
+        result = affected_customers(db, node=device)
+        by_node = result.get("subscriptions_by_node") or {}
+        attached = len(by_node.get(device.id) or ())
+        return {
+            "attached": attached,
+            "affected": max(int(result.get("count") or 0), attached),
+        }
+    except Exception:
+        logger.exception(
+            "stranded-customer impact read failed for network device %s", device.id
+        )
+        return None
+
+
+def _sync_stranded_customer_alert(
+    db: Session,
+    device: NetworkDevice,
+    *,
+    active: bool,
+    reason: str,
+    impact: dict[str, int] | None,
+) -> str | None:
+    """Raise (deactivation) or clear (reactivation) the integrity alert.
+
+    Inside the caller's transaction, like every other domain-owned alert — the
+    admission transition owns its commit boundary and this rides along with it.
+    """
+    fingerprint = _stranded_customer_fingerprint(device)
+    try:
+        from app.services import admin_alerts
+
+        if active:
+            # Re-admission repairs the condition: the device is polled again,
+            # so any outstanding alert for it stops being true.
+            cleared = admin_alerts.resolve_alert_by_fingerprint(
+                db, fingerprint, mark_notifications_read=True
+            )
+            return None if cleared is None else "resolved"
+
+        if impact is None:
+            return None
+        attached = impact["attached"]
+        if attached <= 0:
+            # Routine decommission of an unattached device. The silence is the
+            # feature: an alert that fires on every retirement is an alert
+            # operators are trained to skip past.
+            return None
+
+        affected = impact["affected"]
+        wider = f" ({affected} in its failure domain)" if affected > attached else ""
+        name = device.name or str(device.id)
+        summary = (
+            f"{name} left the monitored set (reason={reason}) with {attached} "
+            f"active subscription(s) still attached to it{wider}. Nothing polls "
+            "it now, so no outage incident can open for those customers. "
+            "Re-attach them or re-activate the device."
+        )
+        return admin_alerts.sync_alert(
+            db,
+            admin_alerts.AlertFinding(
+                fingerprint=fingerprint,
+                category="network",
+                source="device-admission",
+                severity=AlertSeverity.warning,
+                title=f"Device deactivated with customers attached: {name}"[:180],
+                summary=summary[:255],
+                details={
+                    "device_id": str(device.id),
+                    "device_name": name,
+                    "device_type": getattr(device, "device_type", None),
+                    "mgmt_ip": getattr(device, "mgmt_ip", None),
+                    "pop_site_id": getattr(device, "pop_site_id", None),
+                    "reason": reason,
+                    "attached_customer_count": attached,
+                    "affected_customer_count": affected,
+                },
+                target_url=f"/admin/network/core-devices/{device.id}",
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "stranded-customer alert sync failed for network device %s", device.id
+        )
+        return None
+
+
 def _round_percent(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -808,8 +1031,16 @@ class NetworkDevices(ListResponseMixin):
         device = db.get(NetworkDevice, device_id)
         if not device:
             raise HTTPException(status_code=404, detail="Network device not found")
-        for key, value in payload.model_dump(exclude_unset=True).items():
+        fields = payload.model_dump(exclude_unset=True)
+        # Admission is a lifecycle transition, not a field copy — it must carry
+        # the derived-cache decay with it, so it never lands via setattr.
+        admission = fields.pop("is_active", None)
+        for key, value in fields.items():
             setattr(device, key, value)
+        if admission is not None:
+            set_network_device_active(
+                db, device, bool(admission), reason="inventory_update"
+            )
         db.flush()
         db.refresh(device)
         return device
@@ -823,8 +1054,7 @@ class NetworkDevices(ListResponseMixin):
         device = db.get(NetworkDevice, device_id)
         if not device:
             raise HTTPException(status_code=404, detail="Network device not found")
-        device.is_active = False
-        db.flush()
+        set_network_device_active(db, device, False, reason="manual_delete")
 
     @staticmethod
     def delete_committed(db: Session, device_id: str):

@@ -94,6 +94,24 @@ def _duplicate_result(
     )
 
 
+def ont_authorization_correlation_key(
+    *,
+    olt_id: str,
+    fsp: str,
+    serial_number: str,
+) -> str:
+    """Return the canonical correlation key for one ONT authorization command.
+
+    The command owner owns this format; readers that need to find a prior
+    attempt for the same OLT/port/serial must use this helper rather than
+    rebuilding the string.
+    """
+    return (
+        f"ont_authorize:{olt_id}:{str(fsp or '').strip()}:"
+        f"{str(serial_number or '').strip()}"
+    )
+
+
 def request_ont_authorization(
     db: Session,
     *,
@@ -120,7 +138,11 @@ def request_ont_authorization(
     if normalized_ont_id and db.get(OntUnit, normalized_ont_id) is None:
         return ProvisioningCommandResult(False, False, "ONT not found.")
 
-    correlation_key = f"ont_authorize:{olt_id}:{normalized_fsp}:{normalized_serial}"
+    correlation_key = ont_authorization_correlation_key(
+        olt_id=olt_id,
+        fsp=normalized_fsp,
+        serial_number=normalized_serial,
+    )
     target_type = (
         NetworkOperationTargetType.ont
         if normalized_ont_id

@@ -210,6 +210,7 @@ def billing_form_defaults(subscriber: Subscriber | None) -> dict[str, str]:
         "min_balance": "",
         "tax_rate_id": "",
         "withholding_tax_enabled": "false",
+        "vat_exempt": "false",
         "payment_method": "",
     }
     if not subscriber:
@@ -2481,6 +2482,7 @@ def update_person_customer(
     withholding_tax_enabled: str | None,
     payment_method: str | None,
     metadata_json: dict | None,
+    vat_exempt: str | None = None,
     actor_id: str | None = None,
 ):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
@@ -2550,6 +2552,7 @@ def update_person_customer(
     wht_account_id = before.id
     wht_actor = str(actor_id or f"customer:{before.id}")
     wht_enabled = withholding_tax_enabled == "true"
+    vat_exempt_enabled = vat_exempt == "true"
     db_session_adapter.release_read_transaction(db)
     customer_tax_policies.set_customer_withholding_tax_policy(
         db,
@@ -2563,6 +2566,23 @@ def update_person_customer(
             scope=customer_tax_policies.WRITE_SCOPE,
             reason="Administrator updated customer withholding-tax eligibility",
             idempotency_key=f"customer-wht-policy:{wht_account_id}:{wht_enabled}",
+        ),
+    )
+    db_session_adapter.release_read_transaction(db)
+    customer_tax_policies.set_customer_vat_exemption_policy(
+        db,
+        customer_tax_policies.SetCustomerVatExemptionPolicyCommand(
+            account_id=wht_account_id,
+            vat_exempt=vat_exempt_enabled,
+            updated_by=wht_actor,
+        ),
+        context=CommandContext.system(
+            actor=wht_actor,
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Administrator updated customer VAT exemption",
+            idempotency_key=(
+                f"customer-vat-exemption:{wht_account_id}:{vat_exempt_enabled}"
+            ),
         ),
     )
     if requested_billing_approval is False:
@@ -2604,6 +2624,7 @@ def update_business_customer(
     tax_rate_id: str | None,
     withholding_tax_enabled: str | None,
     payment_method: str | None,
+    vat_exempt: str | None = None,
     actor_id: str | None = None,
 ):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
@@ -2654,6 +2675,7 @@ def update_business_customer(
     wht_account_id = before.id
     wht_actor = str(actor_id or f"customer:{before.id}")
     wht_enabled = withholding_tax_enabled == "true"
+    vat_exempt_enabled = vat_exempt == "true"
     db_session_adapter.release_read_transaction(db)
     customer_tax_policies.set_customer_withholding_tax_policy(
         db,
@@ -2667,6 +2689,23 @@ def update_business_customer(
             scope=customer_tax_policies.WRITE_SCOPE,
             reason="Administrator updated customer withholding-tax eligibility",
             idempotency_key=f"customer-wht-policy:{wht_account_id}:{wht_enabled}",
+        ),
+    )
+    db_session_adapter.release_read_transaction(db)
+    customer_tax_policies.set_customer_vat_exemption_policy(
+        db,
+        customer_tax_policies.SetCustomerVatExemptionPolicyCommand(
+            account_id=wht_account_id,
+            vat_exempt=vat_exempt_enabled,
+            updated_by=wht_actor,
+        ),
+        context=CommandContext.system(
+            actor=wht_actor,
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Administrator updated customer VAT exemption",
+            idempotency_key=(
+                f"customer-vat-exemption:{wht_account_id}:{vat_exempt_enabled}"
+            ),
         ),
     )
     if requested_billing_approval is False:
