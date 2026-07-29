@@ -1173,7 +1173,9 @@ def olt_detail_page_data(db: Session, olt_id: str) -> dict[str, object] | None:
                     fallback_index=port_idx,
                 ),
                 "type": port_type,
-                "admin_state": "Enabled" if port.is_active else "Disabled",
+                "admin_state": (
+                    "Enabled" if getattr(port, "admin_enabled", True) else "Disabled"
+                ),
                 "status": status_val,
                 "onus": resolved_total,
                 "avg_signal_dbm": avg_signal_dbm,

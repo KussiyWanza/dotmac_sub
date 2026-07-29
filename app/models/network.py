@@ -1705,6 +1705,9 @@ class PonPort(Base):
     max_ont_capacity: Mapped[int | None] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    admin_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

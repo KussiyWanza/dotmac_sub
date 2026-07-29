@@ -14,7 +14,8 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: billing shadow verification evidence (436) sits on
+    # Single linear head: PON port administrative state (437) sits on billing
+    # shadow verification evidence (436), which sits on
     # access invitations (435) and the ADR 0007 billing target chain (434..430),
     # which sits on inbox conversation participants (429), and chains through
     # vendor material release and advances (428), vendor principal user type (427),
@@ -23,7 +24,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["436_billing_shadow_verification_evidence"]
+    assert script.get_heads() == ["437_add_pon_port_admin_enabled"]
+    assert (
+        script.get_revision("437_add_pon_port_admin_enabled").down_revision
+        == "436_billing_shadow_verification_evidence"
+    )
     assert (
         script.get_revision("436_billing_shadow_verification_evidence").down_revision
         == "435_access_invitations"

@@ -153,6 +153,14 @@ class PonPorts(CRUDManager[PonPort]):
         return super().get(db, port_id)
 
     @staticmethod
+    def set_admin_enabled(db: Session, port: PonPort, *, enabled: bool) -> PonPort:
+        """Persist device-confirmed administrative state without changing lifecycle."""
+        port.admin_enabled = enabled
+        db.commit()
+        db.refresh(port)
+        return port
+
+    @staticmethod
     def list(
         db: Session,
         olt_id: str | None = None,

@@ -132,12 +132,12 @@
         {% for port in pon_ports %}
         {% set ps = port_stats.get(port.id | string, {}) %}
         {% set port_alias = pon_port_aliases_map.get(port.id | string, '') %}
-        <a href="/admin/network/onts?olt_id={{ olt.id }}&pon_port_id={{ port.id }}"
-           class="rounded-xl border p-3 text-left transition-all hover:shadow-sm hover:-translate-y-0.5 dark:hover:bg-slate-700/30 {% if ps.get('offline', 0) > 0 %}border-rose-200 bg-rose-50/40 dark:border-rose-800/50 dark:bg-rose-900/10{% elif ps.get('low_signal', 0) > 0 %}border-amber-200 bg-amber-50/40 dark:border-amber-800/50 dark:bg-amber-900/10{% elif port.is_active %}border-emerald-200 bg-emerald-50/40 dark:border-emerald-800/50 dark:bg-emerald-900/10{% else %}border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800{% endif %}">
+        <div class="rounded-xl border p-3 text-left transition-all hover:shadow-sm dark:hover:bg-slate-700/30 {% if ps.get('offline', 0) > 0 %}border-rose-200 bg-rose-50/40 dark:border-rose-800/50 dark:bg-rose-900/10{% elif ps.get('low_signal', 0) > 0 %}border-amber-200 bg-amber-50/40 dark:border-amber-800/50 dark:bg-amber-900/10{% elif port.is_active %}border-emerald-200 bg-emerald-50/40 dark:border-emerald-800/50 dark:bg-emerald-900/10{% else %}border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800{% endif %}">
+            <a href="/admin/network/onts?olt_id={{ olt.id }}&pon_port_id={{ port.id }}" class="block">
             <div class="flex items-center justify-between">
                 <p class="text-xs font-semibold text-slate-900 dark:text-white">{{ port.name }}</p>
-                <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium {% if ps.get('offline', 0) > 0 %}bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300{% elif ps.get('online', 0) > 0 %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300{% else %}bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300{% endif %}">
-                    {% if ps.get('offline', 0) > 0 %}Issue{% elif ps.get('online', 0) > 0 %}Online{% else %}Idle{% endif %}
+                <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium {% if port.admin_enabled %}bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300{% else %}bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300{% endif %}">
+                    {{ "Enabled" if port.admin_enabled else "Disabled" }}
                 </span>
             </div>
             <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
@@ -145,7 +145,19 @@
             </div>
             <p class="mt-2 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">{{ ps.get('online', 0) }}/{{ ps.get('total', 0) }} ONTs</p>
             <p class="mt-1 truncate text-[11px] text-slate-500 dark:text-slate-400" title="{{ port_alias or 'No identifier' }}">{{ port_alias or 'No identifier' }}</p>
-        </a>
+            </a>
+            <form method="POST"
+                  action="/admin/network/olts/{{ olt.id }}/pon-ports/{{ port.id }}/admin-state"
+                  {% if port.admin_enabled %}data-confirm="Disable this PON port? All ONTs on it will lose service." data-confirm-variant="warning" data-confirm-label="Disable port"{% endif %}
+                  class="mt-3 border-t border-slate-200/70 pt-2 dark:border-slate-700">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="enabled" value="{{ 'false' if port.admin_enabled else 'true' }}">
+                <button type="submit"
+                        class="w-full rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors {% if port.admin_enabled %}border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300{% else %}border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300{% endif %}">
+                    {{ "Disable port" if port.admin_enabled else "Enable port" }}
+                </button>
+            </form>
+        </div>
         {% endfor %}
     </div>
     <div class="mt-3 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
