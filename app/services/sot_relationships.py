@@ -1964,6 +1964,170 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="financial_access",
         services=(
             SOTService(
+                name="billing.addon_contract_backfill",
+                module="app.services.billing.addon_contract_backfill",
+                owns=("recurring add-on contract migration snapshot",),
+                depends_on=(
+                    "billing.contracts",
+                    "events.dispatcher",
+                    "events.owner_outputs",
+                    "financial.addon_purchases",
+                ),
+                notes=(
+                    "ADR 0007 shadow migration only. This temporary observation "
+                    "owner binds one future service-period boundary to the exact "
+                    "legacy SubscriptionAddOn identities, quantities, intervals, "
+                    "and unique active recurring price ids. It never decides a "
+                    "price, charges money, writes a contract line, or repairs "
+                    "another owner. The confirmed fingerprint stages a durable "
+                    "output that billing.contracts must receipt into the shared "
+                    "next-boundary draft and exact durable timer."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="recurring add-on contract migration snapshot",
+                            role=OwnerRole.OBSERVATION_COLLECTOR,
+                            input_names=(
+                                "legacy recurring add-on facts",
+                                "recorded billing contract boundary",
+                            ),
+                            canonical_writer="billing.addon_contract_backfill",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="legacy recurring add-on facts",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "SubscriptionAddOn identity, quantity, start/end "
+                                "interval, AddOn description, and the unique active "
+                                "recurring AddOnPrice id, amount, and currency"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded billing contract boundary",
+                            owner="billing.contracts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "current effective shadow contract version, cadence, "
+                                "currency, and structural SalesOrderLine anchor"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The capture command enters execute_owner_command once "
+                            "on a transaction-free session; source locks, fingerprint "
+                            "confirmation, idempotency evidence, and the staged "
+                            "owner output commit together."
+                        ),
+                        locking=(
+                            "The BillingContract and current effective version are "
+                            "locked before the confirmed source snapshot is rebuilt."
+                        ),
+                        idempotency=(
+                            "One durable idempotency row records the emitted event "
+                            "for each business key; exact replay emits no second output."
+                        ),
+                        retries=(
+                            "Retry the whole command with the same idempotency key. "
+                            "Changed contract or add-on facts require a new preview."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "billing.addon_contract_backfill"
+                            ),
+                            "billing.addon_contract_backfill.already_captured",
+                            "billing.addon_contract_backfill.ambiguous_recurring_price",
+                            "billing.addon_contract_backfill.contract_not_found",
+                            (
+                                "billing.addon_contract_backfill."
+                                "current_contract_version_not_found"
+                            ),
+                            "billing.addon_contract_backfill.invalid_addon_price",
+                            "billing.addon_contract_backfill.invalid_addon_quantity",
+                            ("billing.addon_contract_backfill.invalid_period_index"),
+                            (
+                                "billing.addon_contract_backfill."
+                                "invalid_preview_fingerprint"
+                            ),
+                            "billing.addon_contract_backfill.idempotency_conflict",
+                            (
+                                "billing.addon_contract_backfill."
+                                "incomplete_idempotency_evidence"
+                            ),
+                            ("billing.addon_contract_backfill.missing_idempotency_key"),
+                            (
+                                "billing.addon_contract_backfill."
+                                "missing_sales_order_anchor"
+                            ),
+                            "billing.addon_contract_backfill.mixed_currency_addon",
+                            "billing.addon_contract_backfill.partial_period_addon",
+                            "billing.addon_contract_backfill.stale_preview",
+                        ),
+                        mapping_owner="billing migration adapters",
+                        fail_closed_on=(
+                            "ambiguous or mixed-currency recurring price",
+                            "partial-period add-on terms",
+                            "stale preview or current contract version",
+                            "missing structural SalesOrderLine anchor",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("billing.addon_contract_backfill.captured",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact source ids, quantities, price "
+                            "ids, currency, intervals, target period, and the current "
+                            "contract version identity."
+                        ),
+                        replay=(
+                            "The idempotency row and staged output commit together; "
+                            "billing.contracts receipts each event exactly once."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "direct reads of mutable SubscriptionAddOn and AddOnPrice "
+                            "rows by legacy invoice and renewal paths"
+                        ),
+                        new_owner="billing.addon_contract_backfill",
+                        verification=(
+                            "Focused preview, fail-closed, replay, owner-output, "
+                            "contract-version, and obligation-chain tests."
+                        ),
+                        cutover_gate=(
+                            "Every active recurring SubscriptionAddOn has one exact "
+                            "BillingContractLine identity and shadow obligation; all "
+                            "live add-on writers emit owner-backed billing-term "
+                            "outputs and the temporary backfill owner is retired."
+                        ),
+                        fallback_retirement=(
+                            "Delete the temporary producer after all legacy rows are "
+                            "captured and cancellation, admin, route, sales, and "
+                            "remediation writers emit owner-backed contract changes "
+                            "atomically."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="billing.contracts",
                 module="app.services.billing.contracts",
                 owns=(
@@ -1975,7 +2139,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "access.subscription_lifecycle",
                     "events.dispatcher",
                     "events.owner_outputs",
+                    "financial.addon_purchases",
                     "financial.tax_configuration",
+                    "runtime.durable_timers",
                     "sales.orders",
                     "sales.fulfillment",
                 ),
@@ -1999,15 +2165,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "accepted commercial order line",
                                 "canonical subscription projection",
                                 "effective tax treatment inputs",
+                                "recurring add-on migration output",
+                                "live recurring add-on purchase output",
                                 "recorded billing contract terms",
                                 "receipted owner-output deliveries",
+                                "exact pending-terms time trigger",
                             ),
                             canonical_writer="billing.contracts",
                         ),
                         ConcernContract(
                             name="billing contract version supersession",
                             role=OwnerRole.COMMAND_WRITER,
-                            input_names=("recorded billing contract terms",),
+                            input_names=(
+                                "recorded billing contract terms",
+                                "exact pending-terms time trigger",
+                                "receipted owner-output deliveries",
+                            ),
                             canonical_writer="billing.contracts",
                         ),
                         ConcernContract(
@@ -2041,6 +2214,35 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="effective tax rate and treatment vocabulary",
                         ),
                         AuthorityInput(
+                            name="recurring add-on migration output",
+                            owner="billing.addon_contract_backfill",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "receipted exact recurring add-on source identities, "
+                                "terms, current contract version, and future period "
+                                "boundary from the confirmed migration snapshot"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live recurring add-on purchase output",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "receipted exact SubscriptionAddOn, AddOnPrice, "
+                                "quantity, price, currency, cadence, and purchase "
+                                "instant from the live owner transition"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="exact pending-terms time trigger",
+                            owner="runtime.durable_timers",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "fired billing-contract timer id, generation, due "
+                                "boundary, and expected draft version"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="receipted owner-output deliveries",
                             owner="events.owner_outputs",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -2062,20 +2264,25 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Adapters own the session; record_version and "
-                            "cancel_version, and consume_sales_funding each enter "
+                            "Adapters own the session; record_version, cancel_version, "
+                            "consume_sales_funding, and "
+                            "consume_recurring_addon_backfill, "
+                            "consume_recurring_addon_purchase, and "
+                            "consume_pending_terms_effective_due each enter "
                             "execute_owner_command once on a transaction-free "
                             "session."
                         ),
                         locking=(
                             "The BillingContract row and the current effective "
-                            "version are locked FOR UPDATE before a new version is "
-                            "inserted, so concurrent term changes serialise."
+                            "version are locked FOR UPDATE; live purchase outputs "
+                            "coalesce additively into one locked next-boundary draft "
+                            "and replace its exact durable timer generation."
                         ),
                         idempotency=(
                             "One version per (contract, business idempotency key). "
-                            "A replay returns the recorded version and reports "
-                            "replayed=True without writing a second version."
+                            "Owner-output receipts prevent duplicate draft changes "
+                            "and timer triggers; direct version replay returns the "
+                            "recorded version without writing a second."
                         ),
                         retries=(
                             "The complete command is retryable. A unique-constraint "
@@ -2087,34 +2294,56 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.contracts.active_caller_transaction",
                             "billing.contracts.command_contract_violation",
                             "billing.contracts.contract_account_mismatch",
+                            "billing.contracts.contract_not_found",
                             "billing.contracts.contract_version_not_found",
                             "billing.contracts.duplicate_contract_line",
                             "billing.contracts.duplicate_subscription_output",
                             "billing.contracts.invalid_command_context",
                             "billing.contracts.invalid_contract_terms",
+                            "billing.contracts.invalid_addon_period",
+                            "billing.contracts.invalid_addon_purchase_time",
+                            "billing.contracts.invalid_addon_terms",
+                            "billing.contracts.invalid_pending_contract_boundary",
+                            "billing.contracts.invalid_pending_terms_timer",
                             "billing.contracts.missing_idempotency_key",
                             "billing.contracts.mixed_currency_contract",
                             "billing.contracts.nested_owner_command",
                             "billing.contracts.nested_transaction_completion",
                             "billing.contracts.out_of_order_contract_version",
+                            "billing.contracts.sales_order_anchor_mismatch",
+                            "billing.contracts.stale_pending_contract_terms",
+                            "billing.contracts.stale_addon_snapshot",
+                            "billing.contracts.unsupported_addon_cadence",
+                            "billing.contracts.ambiguous_pending_contract_terms",
+                            "billing.contracts.duplicate_addon_term_conflict",
+                            "billing.contracts.pending_contract_version_not_found",
                         ),
                         mapping_owner="billing and sales adapters",
                         fail_closed_on=(
                             "mixed currency between contract and line",
+                            "an add-on cadence differing from the service cadence",
                             "a version starting before the current effective one",
+                            "a stale draft or timer generation",
                             "missing business idempotency key",
                         ),
                     ),
                     events=EventContract(
                         event_types=("billing.contracts.shadow_recorded",),
-                        schema_version=1,
+                        schema_version=2,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 is additive. Consumers validate identity and "
-                            "never re-decide the producer's contracted terms."
+                            "Version 2 carries only contract-version, line, and "
+                            "period identity; billing.obligations resolves money "
+                            "through billing.rating. The consumer accepts legacy "
+                            "Version 1 envelopes but never trusts their amount fields. "
+                            "Live add-on activation uses the subscription envelope "
+                            "while preserving the opening SalesOrder anchor as "
+                            "migration evidence."
                         ),
                         replay=(
-                            "The sales output receipt, contract rows, and staged "
+                            "The sales or add-on-backfill output receipt, contract "
+                            "rows, or live purchase receipt, draft timer and due "
+                            "receipt, and staged "
                             "billing.contracts.shadow_recorded output commit in "
                             "one owner transaction. Redelivery is an exact no-op."
                         ),
@@ -2149,6 +2378,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_contracts.py",
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/test_api_me_addons.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -2158,10 +2389,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.billing.obligations",
                 owns=(
                     "unique billing obligation identity",
+                    "immutable obligation rating provenance",
                     "billing obligation state transition",
                 ),
                 depends_on=(
                     "billing.contracts",
+                    "billing.rating",
                     "events.dispatcher",
                     "events.owner_outputs",
                 ),
@@ -2173,7 +2406,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "invoice, a payment, or an entitlement, and its state is "
                     "never inferred from an invoice label or payment origin."
                     " Phase 1 consumes the contract owner's output through a "
-                    "receipt and emits a terminal shadow result atomically."
+                    "receipt and emits a terminal shadow result atomically. "
+                    "Phase 2 resolves every amount through billing.rating; producer "
+                    "payloads carry identity, never a parallel money formula. New "
+                    "obligations snapshot complete versioned rating inputs and replay "
+                    "from that immutable snapshot without consulting current tax "
+                    "configuration. Pre-snapshot rows remain explicitly incomplete."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2183,7 +2421,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded billing contract terms",
                                 "recorded billing obligations",
+                                "deterministic target rating",
                                 "receipted owner-output deliveries",
+                            ),
+                            canonical_writer="billing.obligations",
+                        ),
+                        ConcernContract(
+                            name="immutable obligation rating provenance",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded billing contract terms",
+                                "deterministic target rating",
+                                "recorded billing obligations",
                             ),
                             canonical_writer="billing.obligations",
                         ),
@@ -2214,10 +2463,23 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="deterministic target rating",
+                            owner="billing.rating",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed net, tax, gross, currency, versioned policy, "
+                                "coverage, cadence, tax source/value, and input "
+                                "fingerprint for the exact line and period"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="recorded billing obligations",
                             owner="billing.obligations",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="billing_obligations rows and their natural identity",
+                            source=(
+                                "billing_obligations rows, natural identity, rated "
+                                "result, and immutable rating replay provenance"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -2236,8 +2498,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         idempotency=(
                             "The natural identity unique constraint is the "
                             "guarantee. A replay returns the existing obligation "
-                            "with replayed=True; a concurrent loser fails closed on "
-                            "billing.obligations.duplicate_obligation."
+                            "only after reproducing its recorded result from its "
+                            "fingerprinted provenance. New coverage for the same "
+                            "identity and incomplete legacy provenance fail closed."
                         ),
                         retries=(
                             "The complete command is retryable. Applications can "
@@ -2251,6 +2514,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.obligations.contract_line_not_found",
                             "billing.obligations.contract_version_not_found",
                             "billing.obligations.duplicate_obligation",
+                            "billing.obligations.incomplete_rating_provenance",
                             "billing.obligations.invalid_command_context",
                             "billing.obligations.invalid_obligation_amount",
                             "billing.obligations.invalid_obligation_transition",
@@ -2259,11 +2523,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.obligations.nested_transaction_completion",
                             "billing.obligations.obligation_not_found",
                             "billing.obligations.period_outside_contract_version",
+                            "billing.obligations.rating_provenance_conflict",
+                            "billing.obligations.recorded_rating_provenance_invalid",
+                            "billing.obligations.recorded_rating_result_mismatch",
                             "billing.obligations.resolution_exceeds_obligation",
                         ),
                         mapping_owner="billing, invoicing, and collections adapters",
                         fail_closed_on=(
                             "a duplicate natural identity under concurrency",
+                            "missing, corrupt, or conflicting rating provenance",
+                            "a stored result that cannot be reproduced from its "
+                            "recorded inputs",
                             "an application exceeding the obligation gross amount",
                             "a period outside the contract version interval",
                         ),
@@ -2273,8 +2543,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 is additive. Consumers validate the "
-                            "obligation identity and never re-decide its state."
+                            "Version 1 is additive. New outputs include the rating "
+                            "input fingerprint; consumers validate obligation "
+                            "identity and never re-decide state or money."
                         ),
                         replay=(
                             "The contract-output receipt, obligations, and staged "
@@ -2289,14 +2560,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="billing.obligations",
                         verification=(
-                            "Natural-identity uniqueness, replay, calendar period, "
-                            "and state-transition tests plus the ADR 0007 guards."
+                            "Natural-identity uniqueness, immutable-input replay "
+                            "after tax mutation, coverage conflict, fingerprint "
+                            "integrity, calendar period, and state-transition tests."
                         ),
                         cutover_gate=(
                             "ADR 0007 Phase 2 gate: exact period and amount parity "
                             "against current invoice generation and prepaid renewal "
-                            "for the active cohort, with zero duplicate, gapped, or "
-                            "overlapping obligations outside typed policy."
+                            "for the active cohort; complete reproducible provenance "
+                            "for every included obligation; and zero duplicate, "
+                            "gapped, or overlapping obligations outside typed policy."
                         ),
                         fallback_retirement=(
                             "Independent _period_end and monthly-only renewal "
@@ -2326,8 +2599,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "access.subscription_lifecycle",
                     "billing.contracts",
                     "billing.obligations",
+                    "billing.rating",
                     "events.dispatcher",
                     "events.owner_outputs",
+                    "financial.billing_automation",
+                    "financial.prepaid_service_renewals",
                 ),
                 notes=(
                     "ADR 0007 migration evidence only. The owner receipts the "
@@ -2335,9 +2611,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "content-addressed delivery evidence. Complete-cohort runs "
                     "store source/result fingerprints, exhaustive blocker "
                     "classifications, currency totals, delivery outcomes, and "
-                    "code/schema identity. It never repairs another owner or "
-                    "changes authority; operator and finance approvals are "
-                    "separate commands and are forbidden while blockers remain."
+                    "code/schema identity. Phase 2 adds current-owner preview and "
+                    "target rating totals plus explicit expected-difference, gap, "
+                    "and overlap categories. Postpaid comparison consumes the "
+                    "current owner's complete base-plus-recurring-add-on component "
+                    "result and exact SubscriptionAddOn component identities. "
+                    "Prepaid comparison preserves the current owner's explicit "
+                    "add-on exclusions as blockers. It never repairs another owner, "
+                    "asks a non-owner to repair, or changes authority; operator and "
+                    "finance approvals are separate commands and are forbidden while "
+                    "blockers remain."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2357,6 +2640,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "complete active subscription cohort",
                                 "recorded billing contract terms",
+                                "recorded billing obligations",
+                                "deterministic target rating",
+                                "current postpaid billing preview",
+                                "current prepaid renewal preview",
                                 "receipted owner-output deliveries",
                                 "recorded shadow verification evidence",
                             ),
@@ -2392,6 +2679,44 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="recorded billing obligations",
+                            owner="billing.obligations",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "shadow BillingObligation natural identities, "
+                                "periods, rating values, and topology"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="deterministic target rating",
+                            owner="billing.rating",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed net, tax, gross, currency, rate-unit, and "
+                                "proration result for the exact target period"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current postpaid billing preview",
+                            owner="financial.billing_automation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed current-owner period, base service, recurring "
+                                "add-on identities, net/tax/gross components, and "
+                                "unsafe exclusion issues for each postpaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current prepaid renewal preview",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed current-owner monthly period, taxed base "
+                                "renewal, and explicit recurring-add-on exclusions "
+                                "for each prepaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="receipted owner-output deliveries",
                             owner="events.owner_outputs",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -2419,16 +2744,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         locking=(
                             "Terminal delivery uniqueness is database-enforced; "
-                            "verification locks the complete selected Subscription "
-                            "and contract-version cohort; approvals lock one run."
+                            "verification locks the complete selected Subscription, "
+                            "contract-version, and obligation cohort; approvals lock "
+                            "one run."
                         ),
                         idempotency=(
                             "One terminal evidence row per event and one run per "
                             "business idempotency key. Replays return stored evidence."
                         ),
                         retries=(
-                            "Delivery and run commands are retryable. Approval "
-                            "fails closed until all stored blocker counts are zero."
+                            "Delivery and run commands are retryable. Expected new-"
+                            "cadence differences require explicit approval; approval "
+                            "fails closed until every blocker count is zero."
                         ),
                     ),
                     errors=ErrorContract(
@@ -2451,7 +2778,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="billing migration operator adapters",
                         fail_closed_on=(
                             "an incomplete or non-timezone-aware observation window",
-                            "any non-zero blocker category",
+                            "any unresolved, ambiguous, unlinked, duplicate, gap, "
+                            "overlap, or variance category",
                             "finance approval without operator approval",
                         ),
                     ),
@@ -2478,13 +2806,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         old_owner="WARNING logs and ad-hoc billing comparison output",
                         new_owner="billing.shadow_verification",
                         verification=(
-                            "Terminal receipt replay, complete-cohort classification, "
-                            "fingerprint, blocker, and approval-gate tests."
+                            "Terminal receipt replay, Phase 1/2 complete-cohort "
+                            "classification, fingerprints, current/target currency "
+                            "totals, topology blockers, and approval-gate tests."
                         ),
                         cutover_gate=(
-                            "A durable run meets ADR 0007's evidence standard, all "
-                            "blockers are zero, and operator and finance approvals "
-                            "are recorded. This evidence does not itself move authority."
+                            "A phase-specific durable run meets ADR 0007's evidence "
+                            "standard, all blockers are zero, expected differences "
+                            "are explicitly reviewed, and operator and finance "
+                            "approvals are recorded. Evidence does not move authority."
                         ),
                         fallback_retirement=(
                             "Log-only shadow completion and undocumented cutover "
@@ -2498,6 +2828,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_shadow_pipeline.py",
+                        "tests/test_billing_phase2_shadow.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -2513,9 +2844,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "ADR 0007 Phase 2. Read-only policy/resolver: the same "
                     "contract version, line, period, coverage, and tax inputs "
-                    "always produce the same typed rated result. A contracted "
-                    "tax treatment code with no active tax rate fails closed "
-                    "instead of rating tax-free."
+                    "always produce the same typed rated result and content-addressed "
+                    "provenance. Recorded provenance replays through its named policy "
+                    "without reading mutable current tax configuration. A contracted "
+                    "tax code with zero or multiple active rates fails closed."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2556,9 +2888,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "rows before recording a rated result."
                         ),
                         idempotency=(
-                            "Deterministic: identical version, line, period, "
-                            "coverage, and tax inputs produce an identical typed "
-                            "result."
+                            "Deterministic: identical versioned policy, line, period, "
+                            "coverage, cadence, price, and tax inputs produce an "
+                            "identical fingerprint and typed result. Recorded policy "
+                            "versions remain replayable when a new policy is added."
                         ),
                         retries=(
                             "Transient reads may be retried; a missing named tax "
@@ -2566,10 +2899,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     errors=ErrorContract(
-                        domain_codes=(),
+                        domain_codes=(
+                            "billing.rating.ambiguous_tax_treatment",
+                            "billing.rating.contract_line_not_found",
+                            "billing.rating.contract_version_not_found",
+                            "billing.rating.invalid_rating_provenance",
+                            "billing.rating.rating_provenance_fingerprint_mismatch",
+                            "billing.rating.unknown_tax_treatment",
+                            "billing.rating.unsupported_policy_version",
+                            "billing.rating.usage_rating_requires_observation",
+                        ),
                         mapping_owner="billing and invoicing adapters",
                         fail_closed_on=(
-                            "a contracted tax treatment code with no active rate",
+                            "a contracted tax treatment code with zero or multiple "
+                            "active rates",
+                            "corrupt or unsupported recorded rating provenance",
                             "usage-metered rating without an observed quantity",
                         ),
                     ),
@@ -2581,13 +2925,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="billing.rating",
                         verification=(
-                            "Deterministic rating, proration, tax-inclusive, and "
-                            "fail-closed tax tests plus the ADR 0007 guards."
+                            "Deterministic rating, content-addressed replay, tax "
+                            "mutation, proration, tax-inclusive, ambiguous-tax, and "
+                            "fail-closed tests plus the ADR 0007 guards."
                         ),
                         cutover_gate=(
                             "ADR 0007 Phase 2 gate: rated totals match current "
                             "postpaid invoice generation and prepaid renewal "
-                            "previews for the complete active cohort."
+                            "previews for the complete active cohort and every "
+                            "included obligation has complete replayable provenance."
                         ),
                         fallback_retirement=(
                             "Parallel money formulas in invoice generation and "
@@ -9310,14 +9656,220 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "add-on price and subscription-state confirmation",
                     "add-on purchase idempotency and audit evidence",
                     "exact add-on entitlement-to-adjustment link",
+                    "canonical recurring add-on billing-terms output",
                 ),
                 depends_on=(
+                    "access.subscription_lifecycle",
+                    "events.dispatcher",
+                    "events.owner_outputs",
                     "financial.account_adjustments",
                     "customer.financial_position",
+                    "observability.audit_log",
                 ),
                 notes=(
                     "Paid purchases request one exact debit from the adjustment "
-                    "owner. Free add-ons explicitly produce no ledger transaction."
+                    "owner. Free add-ons explicitly produce no ledger transaction. "
+                    "A recurring purchase stages its exact accepted term output in "
+                    "the same owner transaction. billing.contracts receipts that "
+                    "output into a next-boundary draft and durable timer; purchase "
+                    "never writes contract rows. Cancellation is a later migration "
+                    "slice and remains outside this command."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer add-on purchase eligibility and preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "current customer financial position",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="add-on price and subscription-state confirmation",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "current customer financial position",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="add-on purchase idempotency and audit evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded add-on purchase evidence",
+                                "canonical audit participant",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                        ConcernContract(
+                            name="exact add-on entitlement-to-adjustment link",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "confirmed account adjustment",
+                                "recorded add-on purchase evidence",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                        ConcernContract(
+                            name="canonical recurring add-on billing-terms output",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "recorded add-on purchase evidence",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical subscription state",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "owned Subscription account, offer identity, and "
+                                "lifecycle state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="offered add-on commercial terms",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "OfferAddOn authorization plus exact AddOn and active "
+                                "AddOnPrice identity, amount, currency, and cadence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current customer financial position",
+                            owner="customer.financial_position",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed prepaid funding, postpaid receivables, "
+                                "collection-blocking balance, and shortfall"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="confirmed account adjustment",
+                            owner="financial.account_adjustments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "flush-only confirmed add-on-purchase adjustment "
+                                "and exact ledger-entry identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical audit participant",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="flush-only customer confirmation audit protocol",
+                        ),
+                        AuthorityInput(
+                            name="recorded add-on purchase evidence",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "SubscriptionAddOn, purchase preview fingerprint, "
+                                "business idempotency key, and adjustment link"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The typed confirmation enters execute_owner_command "
+                            "once on a transaction-free session; entitlement, exact "
+                            "adjustment, usage grant, idempotency, audit, and recurring "
+                            "terms output commit or roll back together."
+                        ),
+                        locking=(
+                            "The account is locked before the owned Subscription and "
+                            "preview are re-read; all account debits follow the same "
+                            "account-first lock order."
+                        ),
+                        idempotency=(
+                            "The caller key is unique in addon_purchase scope and "
+                            "replays the exact SubscriptionAddOn without a second "
+                            "debit or owner output."
+                        ),
+                        retries=(
+                            "Retry the complete command with the same key. A changed "
+                            "price, subscription, or funding fingerprint requires a "
+                            "new preview."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.addon_purchases"
+                            ),
+                            "financial.addon_purchases.addon_not_available",
+                            "financial.addon_purchases.idempotency_conflict",
+                            (
+                                "financial.addon_purchases."
+                                "incomplete_idempotency_evidence"
+                            ),
+                            "financial.addon_purchases.invalid_preview_fingerprint",
+                            "financial.addon_purchases.missing_idempotency_key",
+                            "financial.addon_purchases.service_not_found",
+                            "financial.addon_purchases.stale_preview",
+                        ),
+                        mapping_owner="customer API and web adapters",
+                        fail_closed_on=(
+                            "stale price, service, or financial preview",
+                            "ambiguous active recurring price",
+                            "missing or conflicting business idempotency",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("billing.contract_terms.recurring_addon_added",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact account, subscription, "
+                            "SubscriptionAddOn, AddOn, AddOnPrice, quantity, price, "
+                            "currency, cadence, and purchase-time identities."
+                        ),
+                        replay=(
+                            "The purchase row and output commit atomically; "
+                            "billing.contracts receipts each event exactly once."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "customer portal helper-owned commit and rollback with "
+                            "no canonical billing-terms consequence"
+                        ),
+                        new_owner="financial.addon_purchases",
+                        verification=(
+                            "Typed command-boundary, stale preview, adjustment link, "
+                            "replay, owner-output, draft, timer, activation, "
+                            "obligation, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "The live customer purchase adapter uses only the typed "
+                            "owner command and recurring purchases complete the "
+                            "receipted shadow chain."
+                        ),
+                        fallback_retirement=(
+                            "The helper-level purchase commit path and unreceipted "
+                            "recurring purchase path are removed in this slice."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_api_me_addons.py",
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -9809,6 +10361,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="financial.billing_automation",
                 module="app.services.billing_automation",
                 owns=(
+                    "postpaid recurring charge preview",
                     "postpaid invoice batch execution",
                     "durable billing-run lifecycle and retry lineage",
                     "billing-run audit projection and repair",
@@ -9823,10 +10376,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Scheduled execution may compose the independently owned prepaid "
                     "renewal pass. Confirmed manual invoice batches disable it. "
                     "BillingRun is authoritative operational evidence for the "
-                    "resumable workflow; invoice period keys make retries convergent."
+                    "resumable workflow; invoice period keys make retries convergent. "
+                    "The typed per-subscription recurring-charge preview is read-only "
+                    "and reuses the exact current period, price, discount, proration, "
+                    "recurring add-on, route-cap, and tax helpers for Phase 2 "
+                    "migration evidence. Its component total is the complete current "
+                    "postpaid cycle; skipped, ambiguous, or route-capped add-ons are "
+                    "typed issues rather than silent parity."
                 ),
                 contract=ServiceContract(
                     concerns=(
+                        ConcernContract(
+                            name="postpaid recurring charge preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("canonical billable subscription facts",),
+                        ),
                         ConcernContract(
                             name="postpaid invoice batch execution",
                             role=OwnerRole.COMMAND_WRITER,
@@ -9856,8 +10420,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
                                 "native active or pending postpaid Subscription rows, "
-                                "billing anchors, offer prices, billing treatments, "
-                                "account state, and existing canonical invoice lines"
+                                "billing anchors, offer and recurring add-on prices, "
+                                "SubscriptionAddOn intervals and quantities, route-cap "
+                                "inputs, billing treatments, account state, and "
+                                "existing canonical invoice lines"
                             ),
                         ),
                         AuthorityInput(
@@ -9883,10 +10449,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Billing automation persists a running launch before work, "
-                            "commits canonical invoice-owner results, and records the "
-                            "terminal run state. This is a durable resumable workflow, "
-                            "not one database transaction."
+                            "The recurring-charge preview is read-only in the caller's "
+                            "session. Batch execution persists a running launch before "
+                            "work, commits canonical invoice-owner results, and records "
+                            "the terminal run state. This is a durable resumable "
+                            "workflow, not one database transaction."
                         ),
                         locking=(
                             "Invoice and subscription period idempotency keys prevent "
@@ -9913,8 +10480,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.billing_automation.invalid_cycle",
                             "financial.billing_automation.invalid_date",
                             "financial.billing_automation.execution_failed",
+                            "financial.billing_automation.account_not_billable",
                             "financial.billing_automation.retry_ineligible",
                             "financial.billing_automation.audit_projection_failed",
+                            "financial.billing_automation.missing_price",
+                            "financial.billing_automation.mode_not_postpaid",
+                            "financial.billing_automation.service_ended",
+                            "financial.billing_automation.subscription_not_billable",
+                            "financial.billing_automation.subscription_not_found",
+                            "financial.billing_automation.zero_amount",
                         ),
                         mapping_owner=(
                             "scheduled billing and administrative batch adapters"

@@ -83,7 +83,9 @@ class BillingCutoverVerificationRun(Base):
             "cohort_count >= 0 AND covered_count >= 0 "
             "AND unresolved_count >= 0 AND ambiguous_count >= 0 "
             "AND unexpected_unlinked_count >= 0 AND duplicate_count >= 0 "
-            "AND shadow_variance_count >= 0",
+            "AND shadow_variance_count >= 0 "
+            "AND expected_difference_count >= 0 AND gap_count >= 0 "
+            "AND overlap_count >= 0",
             name="ck_billing_cutover_verification_nonnegative_counts",
         ),
         CheckConstraint(
@@ -136,6 +138,11 @@ class BillingCutoverVerificationRun(Base):
     unexpected_unlinked_count: Mapped[int] = mapped_column(Integer, nullable=False)
     duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False)
     shadow_variance_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_difference_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    gap_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    overlap_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     result_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     currency_totals: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
@@ -176,6 +183,8 @@ class BillingCutoverVerificationRun(Base):
                 self.unexpected_unlinked_count,
                 self.duplicate_count,
                 self.shadow_variance_count,
+                self.gap_count,
+                self.overlap_count,
             )
         )
 

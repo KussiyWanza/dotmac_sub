@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import enum
 import logging
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -49,6 +51,7 @@ from app.services.billing_settings import (
 )
 from app.services.billing_statuses import BILLABLE_SUBSCRIBER_STATUSES
 from app.services.common import coerce_uuid, round_money
+from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.invoice_classification import (
@@ -61,6 +64,110 @@ from app.services.service_entitlements import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PostpaidChargePreviewError(DomainError):
+    """Fail-closed current-owner preview used by migration verification."""
+
+
+class PostpaidChargePreviewDisposition(enum.StrEnum):
+    """Why the current postpaid owner produced one candidate charge."""
+
+    comparable = "comparable"
+
+
+class RecurringChargeComponentKind(enum.StrEnum):
+    """Component identity exposed by the current postpaid invoice owner."""
+
+    base_service = "base_service"
+    recurring_addon = "recurring_addon"
+
+
+class PostpaidChargePreviewIssueKind(enum.StrEnum):
+    """Current add-on behavior that cannot support a cutover parity claim."""
+
+    multiple_active_prices = "multiple_active_prices"
+    currency_mismatch = "currency_mismatch"
+    route_unavailable = "route_unavailable"
+    route_quantity_capped = "route_quantity_capped"
+
+
+@dataclass(frozen=True, slots=True)
+class PostpaidChargeComponentPreview:
+    """One exact component included by the current postpaid invoice formula."""
+
+    kind: RecurringChargeComponentKind
+    component_key: str
+    quantity: Decimal
+    unit_price: Decimal
+    net_amount: Decimal
+    tax_amount: Decimal
+    gross_amount: Decimal
+    subscription_add_on_id: UUID | None = None
+    add_on_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PostpaidChargePreviewIssue:
+    """Typed evidence for an add-on the current owner skips or resolves unsafely."""
+
+    kind: PostpaidChargePreviewIssueKind
+    subscription_add_on_id: UUID
+    add_on_id: UUID
+    expected_currency: str | None = None
+    observed_currency: str | None = None
+    configured_quantity: Decimal | None = None
+    billable_quantity: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PostpaidChargePreview:
+    """Typed current-owner result for one complete recurring invoice cycle."""
+
+    subscription_id: UUID
+    account_id: UUID
+    period_start: datetime
+    period_end: datetime
+    currency: str
+    net_amount: Decimal
+    tax_amount: Decimal
+    gross_amount: Decimal
+    billing_cycle: BillingCycle
+    tax_application: TaxApplication
+    tax_rate_percent: Decimal
+    disposition: PostpaidChargePreviewDisposition
+    components: tuple[PostpaidChargeComponentPreview, ...]
+    issues: tuple[PostpaidChargePreviewIssue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _RecurringAddonPrice:
+    amount: Decimal
+    currency: str
+    multiple_active_prices: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RecurringAddonCharge:
+    subscription_add_on_id: UUID
+    add_on_id: UUID
+    name: str
+    quantity: Decimal
+    unit_price: Decimal
+    amount: Decimal
+
+
+def _postpaid_preview_error(
+    suffix: str,
+    message: str,
+    *,
+    subscription_id: UUID,
+) -> PostpaidChargePreviewError:
+    return PostpaidChargePreviewError(
+        code=f"financial.billing_automation.{suffix}",
+        message=message,
+        details={"subscription_id": str(subscription_id)},
+    )
 
 
 def _billing_run_extra(
@@ -411,19 +518,221 @@ def _prorated_amount(
     return round_money(full_amount * ratio)
 
 
-def _addon_recurring_price(db: Session, add_on_id) -> tuple[Decimal, str] | None:
+def _line_amounts(
+    amount: Decimal,
+    *,
+    tax_rate_percent: Decimal,
+    tax_application: TaxApplication,
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Return net, tax, and gross exactly as invoice total recalculation does."""
+
+    tax_amount = _calculate_tax_amount(
+        amount,
+        tax_rate_percent,
+        tax_application,
+    )
+    if tax_application is TaxApplication.inclusive:
+        gross_amount = round_money(amount)
+        net_amount = gross_amount - tax_amount
+    else:
+        net_amount = round_money(amount)
+        gross_amount = net_amount + tax_amount
+    return net_amount, tax_amount, gross_amount
+
+
+def preview_postpaid_recurring_charge(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    as_of: datetime,
+) -> PostpaidChargePreview:
+    """Resolve the current postpaid owner's next complete recurring charge.
+
+    This is the typed, read-only comparison surface for ADR 0007 Phase 2. It
+    deliberately reuses the exact period, negotiated-price, discount,
+    proration, recurring add-on, route-cap, and tax helpers used by
+    ``run_invoice_cycle``. It neither checks whether an invoice line already
+    exists nor writes a BillingRun: the shadow verifier needs one candidate
+    period for every active cohort member, not only the subset due in a
+    particular batch.
+    """
+
+    if as_of.tzinfo is None:
+        raise PostpaidChargePreviewError(
+            code="financial.billing_automation.invalid_date",
+            message="Postpaid charge preview requires a timezone-aware instant.",
+            details={"field": "as_of"},
+        )
+    effective_at = _as_utc(as_of)
+    assert effective_at is not None
+    subscription = db.get(Subscription, subscription_id)
+    if subscription is None:
+        raise _postpaid_preview_error(
+            "subscription_not_found",
+            "Postpaid charge preview requires an existing subscription.",
+            subscription_id=subscription_id,
+        )
+    if subscription.billing_mode is BillingMode.prepaid:
+        raise _postpaid_preview_error(
+            "mode_not_postpaid",
+            "The current postpaid owner cannot preview a prepaid subscription.",
+            subscription_id=subscription_id,
+        )
+    if subscription.status is not SubscriptionStatus.active:
+        raise _postpaid_preview_error(
+            "subscription_not_billable",
+            "The current postpaid preview requires an active subscription.",
+            subscription_id=subscription_id,
+        )
+    account = db.get(Subscriber, subscription.subscriber_id)
+    if account is None or account.status not in BILLABLE_SUBSCRIBER_STATUSES:
+        raise _postpaid_preview_error(
+            "account_not_billable",
+            "The current postpaid owner excludes this account state.",
+            subscription_id=subscription_id,
+        )
+
+    catalog_amount, currency, cycle = _resolve_price(db, subscription)
+    if catalog_amount is None:
+        raise _postpaid_preview_error(
+            "missing_price",
+            "The current postpaid owner cannot resolve a recurring price.",
+            subscription_id=subscription_id,
+        )
+    amount = _effective_unit_price(subscription, catalog_amount, effective_at)
+    effective_cycle = cycle or BillingCycle.monthly
+    period_start = _as_utc(
+        subscription.next_billing_at or subscription.start_at or effective_at
+    )
+    assert period_start is not None
+    period_end = _period_end(period_start, effective_cycle)
+    while period_end <= effective_at:
+        period_start = period_end
+        period_end = _period_end(period_start, effective_cycle)
+
+    service_start = _as_utc(subscription.start_at) or period_start
+    service_end = _as_utc(subscription.end_at)
+    if service_end is not None and service_end <= period_start:
+        raise _postpaid_preview_error(
+            "service_ended",
+            "The current postpaid owner has no charge after service end.",
+            subscription_id=subscription_id,
+        )
+    covered_start = max(period_start, service_start)
+    covered_end = min(period_end, service_end) if service_end else period_end
+    net_or_gross = _prorated_amount(
+        amount,
+        period_start,
+        period_end,
+        covered_start,
+        covered_end,
+    )
+    if net_or_gross <= Decimal("0.00"):
+        raise _postpaid_preview_error(
+            "zero_amount",
+            "The current postpaid owner advances this period without a charge.",
+            subscription_id=subscription_id,
+        )
+
+    tax_rate_id = _resolve_tax_rate_id(db, subscription)
+    tax_rate = db.get(TaxRate, tax_rate_id) if tax_rate_id is not None else None
+    tax_application = (
+        _default_tax_application(db) if tax_rate is not None else TaxApplication.exempt
+    )
+    tax_rate_percent = (
+        Decimal(str(tax_rate.rate)) if tax_rate is not None else Decimal("0")
+    )
+    base_net, base_tax, base_gross = _line_amounts(
+        net_or_gross,
+        tax_rate_percent=tax_rate_percent,
+        tax_application=tax_application,
+    )
+    components: list[PostpaidChargeComponentPreview] = [
+        PostpaidChargeComponentPreview(
+            kind=RecurringChargeComponentKind.base_service,
+            component_key="base_service",
+            quantity=Decimal("1"),
+            unit_price=round_money(net_or_gross),
+            net_amount=base_net,
+            tax_amount=base_tax,
+            gross_amount=base_gross,
+        )
+    ]
+    addon_charges, issues = _resolve_recurring_addon_charges(
+        db,
+        subscription=subscription,
+        period_start=period_start,
+        period_end=period_end,
+        usage_start=covered_start,
+        usage_end=covered_end,
+        invoice_currency=str(currency or "NGN"),
+    )
+    for charge in addon_charges:
+        net_amount, tax_amount, gross_amount = _line_amounts(
+            charge.amount,
+            tax_rate_percent=tax_rate_percent,
+            tax_application=tax_application,
+        )
+        components.append(
+            PostpaidChargeComponentPreview(
+                kind=RecurringChargeComponentKind.recurring_addon,
+                component_key=str(charge.subscription_add_on_id),
+                quantity=charge.quantity,
+                unit_price=charge.unit_price,
+                net_amount=net_amount,
+                tax_amount=tax_amount,
+                gross_amount=gross_amount,
+                subscription_add_on_id=charge.subscription_add_on_id,
+                add_on_id=charge.add_on_id,
+            )
+        )
+
+    return PostpaidChargePreview(
+        subscription_id=subscription.id,
+        account_id=subscription.subscriber_id,
+        period_start=period_start,
+        period_end=period_end,
+        currency=str(currency or "NGN").upper(),
+        net_amount=sum(
+            (component.net_amount for component in components),
+            start=Decimal("0.00"),
+        ),
+        tax_amount=sum(
+            (component.tax_amount for component in components),
+            start=Decimal("0.00"),
+        ),
+        gross_amount=sum(
+            (component.gross_amount for component in components),
+            start=Decimal("0.00"),
+        ),
+        billing_cycle=effective_cycle,
+        tax_application=tax_application,
+        tax_rate_percent=tax_rate_percent,
+        disposition=PostpaidChargePreviewDisposition.comparable,
+        components=tuple(components),
+        issues=issues,
+    )
+
+
+def _addon_recurring_price(db: Session, add_on_id: UUID) -> _RecurringAddonPrice | None:
     """Active recurring price for an add-on -> (amount, currency), or None when
     it has no recurring price (one-time/usage add-ons don't bill on the cycle)."""
-    price = (
+    prices = (
         db.query(AddOnPrice)
         .filter(AddOnPrice.add_on_id == add_on_id)
         .filter(AddOnPrice.is_active.is_(True))
         .filter(AddOnPrice.price_type == PriceType.recurring)
-        .first()
+        .limit(2)
+        .all()
     )
-    if price is None:
+    if not prices:
         return None
-    return round_money(price.amount or 0), str(price.currency or "NGN")
+    price = prices[0]
+    return _RecurringAddonPrice(
+        amount=round_money(price.amount or 0),
+        currency=str(price.currency or "NGN"),
+        multiple_active_prices=len(prices) > 1,
+    )
 
 
 def _active_ip_route_count(db: Session, subscriber_id, prefix_length: int) -> int:
@@ -444,20 +753,17 @@ def _active_ip_route_count(db: Session, subscriber_id, prefix_length: int) -> in
     )
 
 
-def _bill_recurring_addons(
+def _resolve_recurring_addon_charges(
     db: Session,
-    invoice: Invoice,
+    *,
     subscription: Subscription,
     period_start: datetime,
     period_end: datetime,
     usage_start: datetime,
     usage_end: datetime,
-    tax_rate_id,
-) -> int:
-    """Add an invoice line per recurring add-on active during the billing period,
-    so the monthly bill is base plan + recurring add-ons (e.g. extra IP blocks).
-    Returns the number of lines added. One-time add-ons are skipped (no recurring
-    price); add-ons in a different currency than the invoice are skipped.
+    invoice_currency: str,
+) -> tuple[tuple[_RecurringAddonCharge, ...], tuple[PostpaidChargePreviewIssue, ...]]:
+    """Resolve the exact recurring add-on inputs used by invoice execution.
 
     Each line is prorated to the add-on's own active overlap with the billing
     period (intersected with the subscription's service window): an add-on that
@@ -490,10 +796,8 @@ def _bill_recurring_addons(
         )
         .all()
     )
-    added = 0
-    tax_application = (
-        _default_tax_application(db) if tax_rate_id else TaxApplication.exempt
-    )
+    charges: list[_RecurringAddonCharge] = []
+    issues: list[PostpaidChargePreviewIssue] = []
     require_active_route = _setting_truthy(
         db, "bill_ip_addon_requires_active_route", default=False
     )
@@ -501,10 +805,30 @@ def _bill_recurring_addons(
         priced = _addon_recurring_price(db, add_on.id)
         if priced is None:
             continue
-        unit, currency = priced
-        if currency != (invoice.currency or "NGN"):
-            continue
+        unit, currency = priced.amount, priced.currency
         qty = Decimal(str(sub_addon.quantity or 1))
+        if priced.multiple_active_prices:
+            issues.append(
+                PostpaidChargePreviewIssue(
+                    kind=PostpaidChargePreviewIssueKind.multiple_active_prices,
+                    subscription_add_on_id=sub_addon.id,
+                    add_on_id=add_on.id,
+                    observed_currency=currency,
+                    configured_quantity=qty,
+                )
+            )
+        if currency != invoice_currency:
+            issues.append(
+                PostpaidChargePreviewIssue(
+                    kind=PostpaidChargePreviewIssueKind.currency_mismatch,
+                    subscription_add_on_id=sub_addon.id,
+                    add_on_id=add_on.id,
+                    expected_currency=invoice_currency,
+                    observed_currency=currency,
+                    configured_quantity=qty,
+                )
+            )
+            continue
 
         # Keep public-IP add-on billing coupled to live routing: bill at most the
         # number of active matching routes, skipping entirely when none remain.
@@ -519,30 +843,25 @@ def _bill_recurring_addons(
             )
             billable_qty = min(int(qty), active_routes)
             if billable_qty <= 0:
-                logger.warning(
-                    "ip_addon_no_active_route_skip",
-                    extra={
-                        "event": "ip_addon_no_active_route_skip",
-                        "subscription_id": str(subscription.id),
-                        "subscriber_id": str(subscription.subscriber_id),
-                        "add_on_id": str(add_on.id),
-                        "prefix_length": add_on.ip_prefix_length,
-                        "addon_quantity": int(qty),
-                    },
+                issues.append(
+                    PostpaidChargePreviewIssue(
+                        kind=PostpaidChargePreviewIssueKind.route_unavailable,
+                        subscription_add_on_id=sub_addon.id,
+                        add_on_id=add_on.id,
+                        configured_quantity=qty,
+                        billable_quantity=Decimal("0"),
+                    )
                 )
                 continue
             if billable_qty != int(qty):
-                logger.warning(
-                    "ip_addon_quantity_capped_to_routes",
-                    extra={
-                        "event": "ip_addon_quantity_capped_to_routes",
-                        "subscription_id": str(subscription.id),
-                        "subscriber_id": str(subscription.subscriber_id),
-                        "add_on_id": str(add_on.id),
-                        "prefix_length": add_on.ip_prefix_length,
-                        "addon_quantity": int(qty),
-                        "active_routes": active_routes,
-                    },
+                issues.append(
+                    PostpaidChargePreviewIssue(
+                        kind=PostpaidChargePreviewIssueKind.route_quantity_capped,
+                        subscription_add_on_id=sub_addon.id,
+                        add_on_id=add_on.id,
+                        configured_quantity=qty,
+                        billable_quantity=Decimal(str(billable_qty)),
+                    )
                 )
                 qty = Decimal(str(billable_qty))
 
@@ -556,19 +875,6 @@ def _bill_recurring_addons(
         addon_usage_end = min(usage_end, addon_end)
         if addon_usage_start >= addon_usage_end:
             continue
-        billing_line_key = _billing_line_key(
-            subscription.id, period_start, period_end, f"addon:{sub_addon.id}"
-        )
-        if _billing_line_key_exists(
-            db, billing_line_key
-        ) or _recurring_addon_line_exists(
-            db,
-            subscription.id,
-            sub_addon.id,
-            period_start,
-            period_end,
-        ):
-            continue
         amount = _prorated_amount(
             round_money(unit * qty),
             period_start,
@@ -578,23 +884,90 @@ def _bill_recurring_addons(
         )
         if amount <= Decimal("0.00"):
             continue
+        charges.append(
+            _RecurringAddonCharge(
+                subscription_add_on_id=sub_addon.id,
+                add_on_id=add_on.id,
+                name=add_on.name,
+                quantity=qty,
+                unit_price=unit,
+                amount=amount,
+            )
+        )
+    return tuple(charges), tuple(issues)
+
+
+def _bill_recurring_addons(
+    db: Session,
+    invoice: Invoice,
+    subscription: Subscription,
+    period_start: datetime,
+    period_end: datetime,
+    usage_start: datetime,
+    usage_end: datetime,
+    tax_rate_id,
+) -> int:
+    """Stage the recurring add-on lines resolved by the current owner formula."""
+
+    charges, issues = _resolve_recurring_addon_charges(
+        db,
+        subscription=subscription,
+        period_start=period_start,
+        period_end=period_end,
+        usage_start=usage_start,
+        usage_end=usage_end,
+        invoice_currency=invoice.currency or "NGN",
+    )
+    for issue in issues:
+        logger.warning(
+            "recurring_addon_billing_issue",
+            extra={
+                "event": "recurring_addon_billing_issue",
+                "subscription_id": str(subscription.id),
+                "subscriber_id": str(subscription.subscriber_id),
+                "subscription_add_on_id": str(issue.subscription_add_on_id),
+                "add_on_id": str(issue.add_on_id),
+                "issue": issue.kind.value,
+            },
+        )
+    added = 0
+    tax_application = (
+        _default_tax_application(db) if tax_rate_id else TaxApplication.exempt
+    )
+    for charge in charges:
+        billing_line_key = _billing_line_key(
+            subscription.id,
+            period_start,
+            period_end,
+            f"addon:{charge.subscription_add_on_id}",
+        )
+        if _billing_line_key_exists(
+            db, billing_line_key
+        ) or _recurring_addon_line_exists(
+            db,
+            subscription.id,
+            charge.subscription_add_on_id,
+            period_start,
+            period_end,
+        ):
+            continue
         InvoiceLines.stage_system_line(
             db,
             SystemInvoiceLineCreate(
                 invoice_id=invoice.id,
                 subscription_id=subscription.id,
                 description=(
-                    f"{add_on.name} ({period_start.date()} - {period_end.date()})"
+                    f"{charge.name} ({period_start.date()} - {period_end.date()})"
                 ),
-                quantity=qty,
-                unit_price=unit,
-                amount=amount,
+                quantity=charge.quantity,
+                unit_price=charge.unit_price,
+                amount=charge.amount,
                 tax_rate_id=tax_rate_id,
                 tax_application=tax_application,
                 metadata_={
                     "kind": "recurring_addon",
-                    "subscription_add_on_id": str(sub_addon.id),
-                    "add_on_id": str(add_on.id),
+                    "subscription_add_on_id": str(charge.subscription_add_on_id),
+                    "add_on_id": str(charge.add_on_id),
                     "billing_period_start": period_start.isoformat(),
                     "billing_period_end": period_end.isoformat(),
                 },

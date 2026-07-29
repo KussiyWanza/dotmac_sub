@@ -45,7 +45,6 @@ customer.work_order_selfcare
 events.dispatcher
 events.store
 financial.account_credit_applications
-financial.addon_purchases
 financial.billing_accounts
 financial.billing_health
 financial.billing_reporting

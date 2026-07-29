@@ -577,8 +577,12 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "customer.financial_position",
     )
     assert sot_relationships.dependencies_for("financial.addon_purchases") == (
+        "access.subscription_lifecycle",
+        "events.dispatcher",
+        "events.owner_outputs",
         "financial.account_adjustments",
         "customer.financial_position",
+        "observability.audit_log",
     )
     assert sot_relationships.dependencies_for("ui.customer_list_projection") == (
         "ui.list_contracts",

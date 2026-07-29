@@ -20,7 +20,10 @@ Rules straight from ADR 0007:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
@@ -31,6 +34,8 @@ from app.models.billing import TaxRate
 from app.models.billing_contract import (
     BillingContractLine,
     BillingContractVersion,
+    IntervalUnit,
+    ProrationPolicy,
     RateBasis,
 )
 from app.services.billing.cadence import (
@@ -43,6 +48,8 @@ from app.services.billing.contracts import BillingContracts
 from app.services.domain_errors import DomainError
 
 OWNER = "billing.rating"
+RATING_POLICY_VERSION = "billing-rating-v1"
+_SUPPORTED_POLICY_VERSIONS = frozenset({"billing-rating-v1"})
 
 _CENT = Decimal("0.01")
 
@@ -62,8 +69,34 @@ def _money(value: Decimal) -> Decimal:
 
 
 @dataclass(frozen=True)
+class RatingProvenance:
+    """Immutable inputs that reproduce one obligation's rated result."""
+
+    contract_version_id: UUID
+    contract_line_key: UUID
+    policy_version: str
+    period: Interval
+    currency: str
+    covered: Interval
+    unit_price: Decimal
+    quantity: Decimal
+    rate_basis: RateBasis
+    rate_unit: IntervalUnit
+    rate_quantity: Decimal
+    timezone_name: str
+    proration_policy: ProrationPolicy
+    rate_units: Decimal
+    proration: Decimal
+    tax_treatment_code: str | None
+    tax_rate_id: UUID | None
+    tax_rate_percent: Decimal
+    tax_inclusive: bool
+    input_fingerprint: str
+
+
+@dataclass(frozen=True)
 class RatedObligation:
-    """Typed, deterministic rating result for one line and period."""
+    """Typed, deterministic result plus its complete replay provenance."""
 
     contract_version_id: UUID
     contract_line_key: UUID
@@ -72,13 +105,91 @@ class RatedObligation:
     net_amount: Decimal
     tax_amount: Decimal
     gross_amount: Decimal
-    # Evidence: what produced the numbers.
-    rate_basis: RateBasis
-    rate_units: Decimal
-    proration: Decimal
-    tax_treatment_code: str | None
-    tax_rate: Decimal
-    tax_inclusive: bool
+    provenance: RatingProvenance
+
+    @property
+    def rate_basis(self) -> RateBasis:
+        return self.provenance.rate_basis
+
+    @property
+    def rate_units(self) -> Decimal:
+        return self.provenance.rate_units
+
+    @property
+    def proration(self) -> Decimal:
+        return self.provenance.proration
+
+    @property
+    def tax_treatment_code(self) -> str | None:
+        return self.provenance.tax_treatment_code
+
+    @property
+    def tax_rate(self) -> Decimal:
+        return self.provenance.tax_rate_percent / Decimal("100")
+
+    @property
+    def tax_inclusive(self) -> bool:
+        return self.provenance.tax_inclusive
+
+
+def _decimal_text(value: Decimal) -> str:
+    normalized = value.normalize()
+    return "0" if normalized == 0 else format(normalized, "f")
+
+
+def _instant_text(value: datetime) -> str:
+    if value.tzinfo is None:
+        raise _error(
+            "invalid_rating_provenance",
+            "Rating provenance instants must be timezone-aware.",
+        )
+    return value.astimezone(UTC).isoformat()
+
+
+def _fingerprint_payload(provenance: RatingProvenance) -> dict[str, object]:
+    return {
+        "contract_version_id": str(provenance.contract_version_id),
+        "contract_line_key": str(provenance.contract_line_key),
+        "policy_version": provenance.policy_version,
+        "period_start": _instant_text(provenance.period.starts_at),
+        "period_end": _instant_text(provenance.period.ends_at),
+        "currency": provenance.currency,
+        "coverage_start": _instant_text(provenance.covered.starts_at),
+        "coverage_end": _instant_text(provenance.covered.ends_at),
+        "unit_price": _decimal_text(provenance.unit_price),
+        "quantity": _decimal_text(provenance.quantity),
+        "rate_basis": provenance.rate_basis.value,
+        "rate_unit": provenance.rate_unit.value,
+        "rate_quantity": _decimal_text(provenance.rate_quantity),
+        "timezone_name": provenance.timezone_name,
+        "proration_policy": provenance.proration_policy.value,
+        "rate_units": _decimal_text(provenance.rate_units),
+        "proration": _decimal_text(provenance.proration),
+        "tax_treatment_code": provenance.tax_treatment_code,
+        "tax_rate_id": (
+            str(provenance.tax_rate_id) if provenance.tax_rate_id is not None else None
+        ),
+        "tax_rate_percent": _decimal_text(provenance.tax_rate_percent),
+        "tax_inclusive": provenance.tax_inclusive,
+    }
+
+
+def rating_input_fingerprint(provenance: RatingProvenance) -> str:
+    """Content-address one exact set of rating replay inputs."""
+
+    payload = json.dumps(
+        _fingerprint_payload(provenance),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _with_fingerprint(provenance: RatingProvenance) -> RatingProvenance:
+    return replace(
+        provenance,
+        input_fingerprint=rating_input_fingerprint(provenance),
+    )
 
 
 def _effective_tax_rate(
@@ -86,7 +197,7 @@ def _effective_tax_rate(
     *,
     version: BillingContractVersion,
     line: BillingContractLine,
-) -> tuple[str | None, Decimal]:
+) -> tuple[str | None, UUID | None, Decimal]:
     """Resolve the tax rate named by the line or version treatment code.
 
     The line's code wins over the version's. No code means no tax — an
@@ -97,21 +208,36 @@ def _effective_tax_rate(
 
     code = line.tax_treatment_code or version.tax_treatment_code
     if code is None:
-        return None, Decimal("0")
+        return None, None, Decimal("0")
 
-    rate = db.execute(
-        select(TaxRate).where(
-            TaxRate.code == code,
-            TaxRate.is_active.is_(True),
-        )
-    ).scalar_one_or_none()
-    if rate is None:
+    rates = list(
+        db.execute(
+            select(TaxRate)
+            .where(
+                TaxRate.code == code,
+                TaxRate.is_active.is_(True),
+            )
+            .order_by(TaxRate.id)
+            .limit(2)
+        ).scalars()
+    )
+    if not rates:
         raise _error(
             "unknown_tax_treatment",
             "Contracted tax treatment code has no active tax rate.",
             tax_treatment_code=code,
         )
-    return code, Decimal(rate.rate)
+    if len(rates) > 1:
+        raise _error(
+            "ambiguous_tax_treatment",
+            "Contracted tax treatment code resolves to multiple active tax rates.",
+            tax_treatment_code=code,
+        )
+    rate = rates[0]
+    # Preserve the financial tax owner's source convention in provenance:
+    # 7.5 means 7.5%. Arithmetic normalizes it only inside the versioned
+    # rating policy.
+    return code, rate.id, Decimal(rate.rate)
 
 
 def _net_for_period(
@@ -184,14 +310,110 @@ def rate_line_period(
         )
 
     cadence = BillingContracts.cadence_of(version)
-    raw_net, units, factor = _net_for_period(
+    _, units, factor = _net_for_period(
         cadence=cadence, line=line, period=period, covered=covered
     )
-    code, tax_rate = _effective_tax_rate(db, version=version, line=line)
+    code, tax_rate_id, tax_rate_percent = _effective_tax_rate(
+        db,
+        version=version,
+        line=line,
+    )
+    provenance = _with_fingerprint(
+        RatingProvenance(
+            contract_version_id=version.id,
+            contract_line_key=contract_line_key,
+            policy_version=RATING_POLICY_VERSION,
+            period=period,
+            currency=line.currency,
+            covered=covered or period,
+            unit_price=Decimal(line.unit_price),
+            quantity=Decimal(line.quantity),
+            rate_basis=cadence.rate_basis,
+            rate_unit=cadence.rate_unit,
+            rate_quantity=Decimal(cadence.rate_quantity),
+            timezone_name=cadence.timezone_name,
+            proration_policy=cadence.proration_policy,
+            rate_units=units,
+            proration=factor,
+            tax_treatment_code=code,
+            tax_rate_id=tax_rate_id,
+            tax_rate_percent=tax_rate_percent,
+            tax_inclusive=version.tax_inclusive,
+            input_fingerprint="",
+        )
+    )
+    return rate_from_provenance(provenance)
 
-    if version.tax_inclusive and tax_rate > 0:
-        # The contracted price already contains tax: back the net out of it
-        # rather than adding tax on top.
+
+def rate_from_provenance(provenance: RatingProvenance) -> RatedObligation:
+    """Reproduce a rated result without reading mutable current configuration."""
+
+    if provenance.policy_version not in _SUPPORTED_POLICY_VERSIONS:
+        raise _error(
+            "unsupported_policy_version",
+            "Rating provenance names an unsupported policy version.",
+            policy_version=provenance.policy_version,
+        )
+    if rating_input_fingerprint(provenance) != provenance.input_fingerprint:
+        raise _error(
+            "rating_provenance_fingerprint_mismatch",
+            "Stored rating provenance does not match its immutable fingerprint.",
+        )
+    if (
+        provenance.covered.starts_at < provenance.period.starts_at
+        or provenance.covered.ends_at > provenance.period.ends_at
+    ):
+        raise _error(
+            "invalid_rating_provenance",
+            "Rating coverage must fall inside the obligation period.",
+        )
+    if (
+        provenance.unit_price < 0
+        or provenance.quantity <= 0
+        or provenance.rate_quantity <= 0
+        or provenance.rate_units < 0
+        or not Decimal("0") <= provenance.proration <= Decimal("1")
+        or provenance.tax_rate_percent < 0
+    ):
+        raise _error(
+            "invalid_rating_provenance",
+            "Rating provenance contains an invalid numeric input.",
+        )
+    if provenance.tax_treatment_code is None:
+        if provenance.tax_rate_id is not None or provenance.tax_rate_percent != Decimal(
+            "0"
+        ):
+            raise _error(
+                "invalid_rating_provenance",
+                "Tax-free provenance cannot carry a tax source or rate.",
+            )
+    elif provenance.tax_rate_id is None:
+        raise _error(
+            "invalid_rating_provenance",
+            "A named tax treatment must retain its exact tax-rate identity.",
+        )
+    if provenance.policy_version == "billing-rating-v1":
+        return _rate_v1(provenance)
+    # The supported-version guard keeps this branch unreachable today. It
+    # remains explicit so a future policy adds a branch without editing v1.
+    raise _error(
+        "unsupported_policy_version",
+        "Rating provenance names an unsupported policy version.",
+        policy_version=provenance.policy_version,
+    )
+
+
+def _rate_v1(provenance: RatingProvenance) -> RatedObligation:
+    """Frozen arithmetic for persisted ``billing-rating-v1`` snapshots."""
+
+    raw_net = (
+        provenance.unit_price
+        * provenance.quantity
+        * provenance.rate_units
+        * provenance.proration
+    )
+    tax_rate = provenance.tax_rate_percent / Decimal("100")
+    if provenance.tax_inclusive and tax_rate > 0:
         gross = _money(raw_net)
         net = _money(gross / (Decimal("1") + tax_rate))
         tax = gross - net
@@ -201,20 +423,23 @@ def rate_line_period(
         gross = net + tax
 
     return RatedObligation(
-        contract_version_id=version.id,
-        contract_line_key=contract_line_key,
-        period=period,
-        currency=line.currency,
+        contract_version_id=provenance.contract_version_id,
+        contract_line_key=provenance.contract_line_key,
+        period=provenance.period,
+        currency=provenance.currency,
         net_amount=net,
         tax_amount=tax,
         gross_amount=gross,
-        rate_basis=cadence.rate_basis,
-        rate_units=units,
-        proration=factor,
-        tax_treatment_code=code,
-        tax_rate=tax_rate,
-        tax_inclusive=version.tax_inclusive,
+        provenance=provenance,
     )
 
 
-__all__ = ["BillingRatingError", "RatedObligation", "rate_line_period"]
+__all__ = [
+    "RATING_POLICY_VERSION",
+    "BillingRatingError",
+    "RatedObligation",
+    "RatingProvenance",
+    "rate_from_provenance",
+    "rate_line_period",
+    "rating_input_fingerprint",
+]

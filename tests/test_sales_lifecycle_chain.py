@@ -10,6 +10,7 @@ consequence stays a visible failed delivery instead of a warning log.
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -50,6 +51,9 @@ from app.schemas.sales_order import (
 from app.services import crm_api, customer_experience_handoffs
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_order_service
+from app.services.events.handlers.billing_lifecycle_projection import (
+    BillingLifecycleProjectionHandler,
+)
 from app.services.events.handlers.sales_lifecycle_projection import (
     SalesLifecycleProjectionHandler,
 )
@@ -225,6 +229,38 @@ def test_full_funding_chains_subscription_and_service_order(
             .count()
             == 1
         )
+
+    # Contract output v2 carries identity only. During the shadow rollout the
+    # consumer still accepts a v1 envelope, but ignores its legacy money fields
+    # and asks billing.rating for the amount again.
+    contract_output = next(
+        item
+        for item in output_events
+        if item.payload.get("output") == "billing.contracts.shadow_recorded"
+    )
+    assert contract_output.payload["envelope"]["schema_version"] == 2
+    identity_record = contract_output.payload["obligations"][0]
+    assert "net_amount" not in identity_record
+    assert "tax_amount" not in identity_record
+
+    legacy_payload = deepcopy(contract_output.payload)
+    legacy_payload["envelope"]["schema_version"] = 1
+    legacy_payload["obligations"][0]["net_amount"] = "999999.00"
+    legacy_payload["obligations"][0]["tax_amount"] = "999999.00"
+    db_session.commit()
+    BillingLifecycleProjectionHandler().handle(
+        db_session,
+        Event(
+            EventType.custom,
+            legacy_payload,
+            event_id=uuid.uuid4(),
+            actor="pytest",
+        ),
+    )
+    db_session.expire_all()
+    obligation = db_session.query(BillingObligation).one()
+    assert obligation.net_amount == Decimal("25000.00")
+    assert obligation.tax_amount == Decimal("0.00")
 
     # Redelivering the same owner output is an exact no-op because the
     # consumer effect and its receipt committed atomically.

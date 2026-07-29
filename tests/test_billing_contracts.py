@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.models.billing_contract import (
     AccountingTreatment,
     BillingContract,
+    BillingContractLine,
     BillingContractSourceKind,
     BillingContractVersion,
     BillingContractVersionStatus,
@@ -23,12 +24,16 @@ from app.models.billing_contract import (
     ProrationPolicy,
     RateBasis,
 )
+from app.models.catalog import BillingCycle
+from app.models.durable_timer import DurableTimer, TimerStatus
+from app.models.owner_output import OwnerOutputReceipt
 from app.services.billing.cadence import BillingCadence
 from app.services.billing.contracts import (
     BillingContractError,
     BillingContracts,
     ContractLineInput,
     RecordContractVersionCommand,
+    RecurringAddonPurchaseTermSnapshot,
 )
 from app.services.owner_commands import CommandContext
 
@@ -389,3 +394,196 @@ def test_owner_command_rejects_a_caller_owned_transaction(db_session, ids):
     assert getattr(excinfo.value, "code", "") == (
         "billing.contracts.active_caller_transaction"
     )
+
+
+def _addon_term(
+    *,
+    account_id,
+    subscription_id,
+    purchased_at: datetime,
+    billing_cycle: BillingCycle = BillingCycle.monthly,
+) -> RecurringAddonPurchaseTermSnapshot:
+    return RecurringAddonPurchaseTermSnapshot(
+        account_id=account_id,
+        subscription_id=subscription_id,
+        subscription_add_on_id=uuid4(),
+        add_on_id=uuid4(),
+        add_on_price_id=uuid4(),
+        description="Static public IP",
+        quantity=Decimal("1"),
+        unit_price=Decimal("2000.00"),
+        currency="NGN",
+        purchased_at=purchased_at,
+        billing_cycle=billing_cycle,
+    )
+
+
+def test_live_addon_purchases_coalesce_without_resetting_contract_cadence(
+    db_session, ids
+):
+    account_id, subscription_id = ids
+    base = BillingContracts.record_version(
+        db_session,
+        _command(account_id, subscription_id),
+        context=_context("pytest:addon-coalesce:base"),
+    )
+    first_term = _addon_term(
+        account_id=account_id,
+        subscription_id=subscription_id,
+        purchased_at=datetime(2026, 7, 15, tzinfo=UTC),
+    )
+    first = BillingContracts.consume_recurring_addon_purchase(
+        db_session,
+        term=first_term,
+        event_id=uuid4(),
+        context=_context("pytest:addon-coalesce:first"),
+    )
+    second_term = _addon_term(
+        account_id=account_id,
+        subscription_id=subscription_id,
+        purchased_at=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+    second = BillingContracts.consume_recurring_addon_purchase(
+        db_session,
+        term=second_term,
+        event_id=uuid4(),
+        context=_context("pytest:addon-coalesce:second"),
+    )
+
+    assert first is not None
+    assert second is not None
+    assert second.draft_version_id == first.draft_version_id
+    assert second.effective_at == first.effective_at
+    assert second.timer_generation == first.timer_generation + 1
+
+    versions = list(
+        db_session.execute(
+            select(BillingContractVersion)
+            .where(BillingContractVersion.contract_id == base.contract_id)
+            .order_by(BillingContractVersion.version)
+        ).scalars()
+    )
+    assert [item.status for item in versions] == [
+        BillingContractVersionStatus.effective,
+        BillingContractVersionStatus.draft,
+    ]
+    assert _utc(versions[0].starts_at) == datetime(2026, 3, 1, tzinfo=UTC)
+    assert _utc(versions[1].starts_at) == datetime(2026, 8, 1, tzinfo=UTC)
+    assert versions[0].ends_at is None
+
+    draft_lines = list(
+        db_session.execute(
+            select(BillingContractLine).where(
+                BillingContractLine.contract_version_id == versions[1].id
+            )
+        ).scalars()
+    )
+    assert {line.component_key for line in draft_lines} == {
+        "",
+        str(first_term.subscription_add_on_id),
+        str(second_term.subscription_add_on_id),
+    }
+    timers = list(
+        db_session.execute(
+            select(DurableTimer)
+            .where(
+                DurableTimer.owner == "billing.contracts",
+                DurableTimer.entity_id == base.contract_id,
+            )
+            .order_by(DurableTimer.generation)
+        ).scalars()
+    )
+    assert [timer.status for timer in timers] == [
+        TimerStatus.superseded,
+        TimerStatus.scheduled,
+    ]
+
+
+def test_live_addon_purchase_rejects_a_different_service_cadence(db_session, ids):
+    account_id, subscription_id = ids
+    base = BillingContracts.record_version(
+        db_session,
+        _command(account_id, subscription_id),
+        context=_context("pytest:addon-cadence:base"),
+    )
+
+    with pytest.raises(BillingContractError) as excinfo:
+        BillingContracts.consume_recurring_addon_purchase(
+            db_session,
+            term=_addon_term(
+                account_id=account_id,
+                subscription_id=subscription_id,
+                purchased_at=datetime(2026, 7, 15, tzinfo=UTC),
+                billing_cycle=BillingCycle.quarterly,
+            ),
+            event_id=uuid4(),
+            context=_context("pytest:addon-cadence:mismatch"),
+        )
+
+    assert excinfo.value.code == "billing.contracts.unsupported_addon_cadence"
+    assert (
+        db_session.query(BillingContractVersion)
+        .filter(
+            BillingContractVersion.contract_id == base.contract_id,
+            BillingContractVersion.status == BillingContractVersionStatus.draft,
+        )
+        .count()
+        == 0
+    )
+    assert db_session.query(DurableTimer).count() == 0
+
+
+def test_delayed_live_addon_output_receipts_an_exact_effective_backfill(
+    db_session, ids
+):
+    account_id, subscription_id = ids
+    term = _addon_term(
+        account_id=account_id,
+        subscription_id=subscription_id,
+        purchased_at=datetime(2026, 7, 15, tzinfo=UTC),
+    )
+    base_line = _command(account_id, subscription_id).lines[0]
+    BillingContracts.record_version(
+        db_session,
+        _command(
+            account_id,
+            subscription_id,
+            lines=(
+                base_line,
+                ContractLineInput(
+                    charge_component=ChargeComponent.addon,
+                    component_key=str(term.subscription_add_on_id),
+                    description=term.description,
+                    quantity=term.quantity,
+                    unit_price=term.unit_price,
+                    currency=term.currency,
+                    accounting_treatment=AccountingTreatment.prepaid_consumption,
+                ),
+            ),
+        ),
+        context=_context("pytest:addon-delayed:base"),
+    )
+    event_id = uuid4()
+
+    result = BillingContracts.consume_recurring_addon_purchase(
+        db_session,
+        term=term,
+        event_id=event_id,
+        context=_context("pytest:addon-delayed:consume"),
+    )
+
+    assert result is None
+    assert db_session.query(DurableTimer).count() == 0
+    assert (
+        db_session.query(BillingContractVersion)
+        .filter(BillingContractVersion.status == BillingContractVersionStatus.draft)
+        .count()
+        == 0
+    )
+    receipt = db_session.execute(
+        select(OwnerOutputReceipt).where(
+            OwnerOutputReceipt.consumer == "billing.contracts",
+            OwnerOutputReceipt.event_id == event_id,
+        )
+    ).scalar_one()
+    assert receipt.producer_owner == "financial.addon_purchases"

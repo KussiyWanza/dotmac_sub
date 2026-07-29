@@ -1,4 +1,4 @@
-"""Exercise the PostgreSQL migration boundary that introduces revisions 430-436."""
+"""Exercise the PostgreSQL migration boundary that introduces revisions 430-439."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from app import config as app_config
 ROOT = Path(__file__).resolve().parents[2]
 REVISION_423 = "423_prepaid_opening_funding_reconciliation"
 
-TABLES_430_TO_436 = (
+TABLES_430_TO_439 = (
     "billing_contracts",
     "billing_contract_versions",
     "billing_contract_lines",
@@ -164,7 +164,7 @@ def _restore_pre_430_shape(database_url: URL) -> None:
     """
 
     with psycopg.connect(_psycopg_url(database_url), autocommit=True) as connection:
-        for table_name in reversed(TABLES_430_TO_436):
+        for table_name in reversed(TABLES_430_TO_439):
             connection.execute(
                 sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(
                     sql.Identifier(table_name)
@@ -203,7 +203,44 @@ def test_postgres_upgrades_revision_423_through_current_head(
     try:
         inspector = inspect(engine)
         table_names = set(inspector.get_table_names())
-        assert set(TABLES_430_TO_436) <= table_names
+        assert set(TABLES_430_TO_439) <= table_names
+        verification_columns = {
+            column["name"]
+            for column in inspector.get_columns("billing_cutover_verification_runs")
+        }
+        assert {
+            "expected_difference_count",
+            "gap_count",
+            "overlap_count",
+        } <= verification_columns
+        obligation_columns = {
+            column["name"] for column in inspector.get_columns("billing_obligations")
+        }
+        assert {
+            "rating_provenance_complete",
+            "rating_policy_version",
+            "rating_coverage_start",
+            "rating_coverage_end",
+            "rating_unit_price",
+            "rating_quantity",
+            "rating_rate_basis",
+            "rating_rate_unit",
+            "rating_rate_quantity",
+            "rating_timezone_name",
+            "rating_proration_policy",
+            "rating_rate_units",
+            "rating_proration_factor",
+            "rating_tax_treatment_code",
+            "rating_tax_rate_id",
+            "rating_tax_rate_percent",
+            "rating_tax_inclusive",
+            "rating_input_fingerprint",
+        } <= obligation_columns
+        obligation_foreign_keys = {
+            foreign_key["name"]
+            for foreign_key in inspector.get_foreign_keys("billing_obligations")
+        }
+        assert "fk_billing_obligation_rating_tax_rate" in obligation_foreign_keys
 
         with engine.connect() as connection:
             enum_names = list(

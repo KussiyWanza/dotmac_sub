@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -29,7 +30,9 @@ from app.services.billing.contracts import (
 )
 from app.services.billing.rating import (
     BillingRatingError,
+    rate_from_provenance,
     rate_line_period,
+    rating_input_fingerprint,
 )
 from app.services.owner_commands import CommandContext
 
@@ -172,6 +175,35 @@ def test_rating_is_deterministic(db_session, ids):
     assert first == second
 
 
+def test_recorded_policy_version_must_have_an_explicit_replay_implementation(
+    db_session,
+    ids,
+):
+    account_id, subscription_id = ids
+    version_id, line_key = _record(db_session, account_id, subscription_id)
+    period = _period(version_id, db_session)
+    rated = rate_line_period(
+        db_session,
+        contract_version_id=version_id,
+        contract_line_key=line_key,
+        period=period,
+    )
+    unsupported = replace(
+        rated.provenance,
+        policy_version="billing-rating-v2",
+        input_fingerprint="",
+    )
+    unsupported = replace(
+        unsupported,
+        input_fingerprint=rating_input_fingerprint(unsupported),
+    )
+
+    with pytest.raises(BillingRatingError) as excinfo:
+        rate_from_provenance(unsupported)
+
+    assert excinfo.value.code == "billing.rating.unsupported_policy_version"
+
+
 def test_per_day_rate_aggregates_into_a_monthly_period(db_session, ids):
     """Rate unit independent of the invoice interval (ADR 0007 section 4)."""
 
@@ -201,7 +233,7 @@ def test_per_day_rate_aggregates_into_a_monthly_period(db_session, ids):
 def test_tax_is_added_from_the_named_active_rate(db_session, ids):
     account_id, subscription_id = ids
     db_session.add(
-        TaxRate(name="VAT", code="VAT-NG", rate=Decimal("0.0750"), is_active=True)
+        TaxRate(name="VAT", code="VAT-NG", rate=Decimal("7.5000"), is_active=True)
     )
     db_session.commit()
     version_id, line_key = _record(
@@ -225,7 +257,7 @@ def test_tax_is_added_from_the_named_active_rate(db_session, ids):
 def test_tax_inclusive_price_backs_the_net_out(db_session, ids):
     account_id, subscription_id = ids
     db_session.add(
-        TaxRate(name="VAT", code="VAT-NG", rate=Decimal("0.0750"), is_active=True)
+        TaxRate(name="VAT", code="VAT-NG", rate=Decimal("7.5000"), is_active=True)
     )
     db_session.commit()
     version_id, line_key = _record(
@@ -266,6 +298,47 @@ def test_a_named_tax_code_with_no_active_rate_fails_closed(db_session, ids):
         )
 
     assert excinfo.value.code == "billing.rating.unknown_tax_treatment"
+
+
+def test_a_named_tax_code_with_multiple_active_rates_fails_closed(
+    db_session,
+    ids,
+):
+    account_id, subscription_id = ids
+    db_session.add_all(
+        (
+            TaxRate(
+                name="VAT first",
+                code="VAT-DUPLICATE",
+                rate=Decimal("7.5000"),
+                is_active=True,
+            ),
+            TaxRate(
+                name="VAT second",
+                code="VAT-DUPLICATE",
+                rate=Decimal("10.0000"),
+                is_active=True,
+            ),
+        )
+    )
+    db_session.commit()
+    version_id, line_key = _record(
+        db_session,
+        account_id,
+        subscription_id,
+        tax_treatment_code="VAT-DUPLICATE",
+    )
+    period = _period(version_id, db_session)
+
+    with pytest.raises(BillingRatingError) as excinfo:
+        rate_line_period(
+            db_session,
+            contract_version_id=version_id,
+            contract_line_key=line_key,
+            period=period,
+        )
+
+    assert excinfo.value.code == "billing.rating.ambiguous_tax_treatment"
 
 
 def test_declared_calendar_day_proration_narrows_the_charge(db_session, ids):

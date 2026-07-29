@@ -41,7 +41,14 @@ from app.models.billing_contract import (
     RateBasis,
 )
 from app.models.catalog import BillingCycle, BillingMode
-from app.services.billing.cadence import BillingCadence
+from app.models.durable_timer import DurableTimer, TimerStatus
+from app.models.sales import SalesOrderLine
+from app.services.billing.cadence import (
+    BillingCadence,
+    Interval,
+    period_containing,
+    service_period,
+)
 from app.services.domain_errors import DomainError
 from app.services.events.owner_outputs import (
     OwnerOutputEnvelope,
@@ -74,6 +81,23 @@ _CONSUME_SALES_FUNDING_COMMAND = OwnerCommandDefinition(
     concern="versioned billing contract terms",
     name="consume_sales_funding_contracts",
 )
+_CONSUME_ADDON_BACKFILL_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="versioned billing contract terms",
+    name="consume_recurring_addon_contract_backfill",
+)
+_CONSUME_ADDON_PURCHASE_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="versioned billing contract terms",
+    name="consume_recurring_addon_purchase",
+)
+_ACTIVATE_PENDING_TERMS_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="billing contract version supersession",
+    name="consume_pending_terms_effective_due",
+)
+
+PENDING_TERMS_EFFECTIVE_TRIGGER = "billing.contracts.pending_terms_effective_due"
 
 
 class BillingContractError(DomainError):
@@ -185,6 +209,50 @@ class SalesFundingContractSnapshot:
     currency: str
     billing_cycle: BillingCycle
     billing_mode: BillingMode
+
+
+@dataclass(frozen=True)
+class RecurringAddonContractTermSnapshot:
+    """Exact recurring add-on terms delivered by the migration producer."""
+
+    subscription_add_on_id: UUID
+    add_on_id: UUID
+    add_on_price_id: UUID
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    currency: str
+    source_started_at: datetime | None
+    source_ends_at: datetime | None
+
+
+@dataclass(frozen=True)
+class RecurringAddonPurchaseTermSnapshot:
+    """Exact recurring term accepted by the live add-on purchase owner."""
+
+    account_id: UUID
+    subscription_id: UUID
+    subscription_add_on_id: UUID
+    add_on_id: UUID
+    add_on_price_id: UUID
+    description: str
+    quantity: Decimal
+    unit_price: Decimal
+    currency: str
+    purchased_at: datetime
+    billing_cycle: BillingCycle | None
+
+
+@dataclass(frozen=True)
+class PendingContractTermsResult:
+    """The next-boundary draft and exact timer generation it requires."""
+
+    contract_id: UUID
+    draft_version_id: UUID
+    draft_version: int
+    effective_at: datetime
+    timer_id: UUID
+    timer_generation: int
 
 
 _CYCLE_INTERVAL: dict[BillingCycle, tuple[IntervalUnit, int]] = {
@@ -341,45 +409,12 @@ class BillingContracts:
                 )
                 for snapshot in snapshots
             )
-            obligation_inputs: list[dict[str, object]] = []
-            for result in results:
-                lines = db.execute(
-                    select(BillingContractLine).where(
-                        BillingContractLine.id.in_(result.line_ids)
-                    )
-                ).scalars()
-                for line in lines:
-                    obligation_inputs.append(
-                        {
-                            "contract_version_id": str(result.version_id),
-                            "contract_line_key": str(line.contract_line_key),
-                            "period_index": 0,
-                            "net_amount": str(line.quantity * line.unit_price),
-                            "tax_amount": "0",
-                        }
-                    )
-            stage_owner_output(
+            BillingContracts._stage_shadow_recorded_output(
                 db,
-                OwnerOutputEnvelope(
-                    event_type=EventType.custom,
-                    producer_owner=OWNER,
-                    source_kind="sales_order",
-                    source_id=sales_order_id,
-                ),
-                {
-                    "output": "billing.contracts.shadow_recorded",
-                    "sales_order_id": str(sales_order_id),
-                    "contracts": [
-                        {
-                            "contract_id": str(result.contract_id),
-                            "contract_version_id": str(result.version_id),
-                            "authority": result.authority.value,
-                        }
-                        for result in results
-                    ],
-                    "obligations": obligation_inputs,
-                },
+                sales_order_id=sales_order_id,
+                results=results,
                 context=context,
+                change_kind="sales_funding",
             )
             return results
 
@@ -397,6 +432,779 @@ class BillingContracts:
                 operation=_effect,
             )[0],
         )
+
+    @staticmethod
+    def consume_recurring_addon_backfill(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        account_id: UUID,
+        subscription_id: UUID,
+        contract_id: UUID,
+        current_contract_version_id: UUID,
+        target_period: Interval,
+        terms: tuple[RecurringAddonContractTermSnapshot, ...],
+        event_id: UUID,
+        context: CommandContext,
+    ) -> PendingContractTermsResult | None:
+        """Receipt one exact snapshot into the shared boundary draft and timer."""
+
+        def _effect() -> PendingContractTermsResult:
+            contract = db.execute(
+                select(BillingContract)
+                .where(
+                    BillingContract.id == contract_id,
+                    BillingContract.subscription_id == subscription_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if contract is None:
+                raise _error(
+                    "contract_not_found",
+                    "The add-on snapshot references no billing contract.",
+                    contract_id=str(contract_id),
+                )
+            if contract.account_id != account_id:
+                raise _error(
+                    "contract_account_mismatch",
+                    "The add-on snapshot account differs from the contract account.",
+                    contract_account_id=str(contract.account_id),
+                    snapshot_account_id=str(account_id),
+                )
+            current = BillingContracts._current_effective(db, contract_id=contract.id)
+            if current is None or current.id != current_contract_version_id:
+                raise _error(
+                    "stale_addon_snapshot",
+                    "The current contract version changed after add-on capture.",
+                    expected_contract_version_id=str(current_contract_version_id),
+                    actual_contract_version_id=(
+                        str(current.id) if current is not None else None
+                    ),
+                )
+            cadence = BillingContracts.cadence_of(current)
+            expected_period = service_period(
+                cadence=cadence,
+                contract_start=target_period.starts_at,
+                index=0,
+            )
+            if expected_period != target_period:
+                raise _error(
+                    "invalid_addon_period",
+                    "The add-on snapshot is not one complete contract service period.",
+                    target_period_start=target_period.starts_at.isoformat(),
+                    target_period_end=target_period.ends_at.isoformat(),
+                )
+
+            source_anchor_exists = db.execute(
+                select(BillingContractVersion.id)
+                .join(
+                    SalesOrderLine,
+                    BillingContractVersion.source_id == SalesOrderLine.id,
+                )
+                .where(
+                    BillingContractVersion.contract_id == contract.id,
+                    BillingContractVersion.source_kind
+                    == BillingContractSourceKind.sales_order_line,
+                    SalesOrderLine.sales_order_id == sales_order_id,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if source_anchor_exists is None:
+                raise _error(
+                    "sales_order_anchor_mismatch",
+                    "The add-on snapshot is not anchored to this contract's sale.",
+                    sales_order_id=str(sales_order_id),
+                    contract_id=str(contract.id),
+                )
+
+            drafts = list(
+                db.execute(
+                    select(BillingContractVersion)
+                    .where(
+                        BillingContractVersion.contract_id == contract.id,
+                        BillingContractVersion.status
+                        == BillingContractVersionStatus.draft,
+                    )
+                    .with_for_update()
+                ).scalars()
+            )
+            if len(drafts) > 1:
+                raise _error(
+                    "ambiguous_pending_contract_terms",
+                    "The contract has multiple pending term versions.",
+                    contract_id=str(contract.id),
+                )
+            if drafts:
+                draft = drafts[0]
+                if (
+                    _aware_utc(draft.starts_at) != target_period.starts_at
+                    or draft.supersedes_id != current.id
+                ):
+                    raise _error(
+                        "stale_pending_contract_terms",
+                        "Pending terms no longer match the backfill boundary.",
+                        draft_version_id=str(draft.id),
+                    )
+            else:
+                draft = BillingContracts._create_pending_version(
+                    db,
+                    contract=contract,
+                    current=current,
+                    effective_at=target_period.starts_at,
+                    context=context,
+                    source_kind=BillingContractSourceKind.migration_backfill,
+                    reason="Pending recurring add-on migration snapshot",
+                )
+
+            for line in list(
+                db.execute(
+                    select(BillingContractLine).where(
+                        BillingContractLine.contract_version_id == draft.id,
+                        BillingContractLine.charge_component == ChargeComponent.addon,
+                        BillingContractLine.is_finite.is_(False),
+                    )
+                ).scalars()
+            ):
+                db.delete(line)
+            db.flush()
+            treatment = (
+                AccountingTreatment.prepaid_consumption
+                if current.collection_timing is CollectionTiming.advance
+                else AccountingTreatment.receivable
+            )
+            for term in terms:
+                db.add(
+                    BillingContractLine(
+                        contract_version_id=draft.id,
+                        contract_line_key=BillingContracts._inherited_line_key(
+                            db,
+                            contract_id=contract.id,
+                            charge_component=ChargeComponent.addon,
+                            component_key=str(term.subscription_add_on_id),
+                        ),
+                        charge_component=ChargeComponent.addon,
+                        component_key=str(term.subscription_add_on_id),
+                        description=term.description,
+                        quantity=term.quantity,
+                        unit_price=term.unit_price,
+                        currency=term.currency,
+                        accounting_treatment=treatment,
+                        is_finite=False,
+                        tax_treatment_code=current.tax_treatment_code,
+                    )
+                )
+            db.flush()
+
+            from app.services.runtime_durable_timers import (
+                ScheduleTimerCommand,
+                schedule_timer,
+            )
+
+            timer = schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner=OWNER,
+                    entity_kind="billing_contract",
+                    entity_id=contract.id,
+                    purpose="pending_terms_effective",
+                    due_at=target_period.starts_at,
+                    expected_source_version=draft.version,
+                    output_event_type=PENDING_TERMS_EFFECTIVE_TRIGGER,
+                ),
+                context=context,
+            )
+            return PendingContractTermsResult(
+                contract_id=contract.id,
+                draft_version_id=draft.id,
+                draft_version=draft.version,
+                effective_at=target_period.starts_at,
+                timer_id=timer.id,
+                timer_generation=timer.generation,
+            )
+
+        return execute_owner_command(
+            db,
+            definition=_CONSUME_ADDON_BACKFILL_COMMAND,
+            context=context,
+            operation=lambda: consume_owner_output(
+                db,
+                consumer=OWNER,
+                event_id=event_id,
+                event_type="billing.addon_contract_backfill.captured",
+                producer_owner="billing.addon_contract_backfill",
+                context=context,
+                operation=_effect,
+            )[0],
+        )
+
+    @staticmethod
+    def consume_recurring_addon_purchase(
+        db: Session,
+        *,
+        term: RecurringAddonPurchaseTermSnapshot,
+        event_id: UUID,
+        context: CommandContext,
+    ) -> PendingContractTermsResult | None:
+        """Receipt one live purchase into a next-boundary draft and timer."""
+
+        def _effect() -> PendingContractTermsResult | None:
+            if term.purchased_at.tzinfo is None:
+                raise _error(
+                    "invalid_addon_purchase_time",
+                    "Recurring add-on purchase time must be timezone-aware.",
+                )
+            if term.quantity <= 0 or term.unit_price < 0:
+                raise _error(
+                    "invalid_addon_terms",
+                    "Recurring add-on quantity and price must be valid.",
+                    subscription_add_on_id=str(term.subscription_add_on_id),
+                )
+
+            contract = db.execute(
+                select(BillingContract)
+                .where(
+                    BillingContract.subscription_id == term.subscription_id,
+                    BillingContract.account_id == term.account_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if contract is None:
+                raise _error(
+                    "contract_not_found",
+                    "The recurring add-on purchase has no billing contract.",
+                    subscription_id=str(term.subscription_id),
+                )
+            current = BillingContracts._current_effective(db, contract_id=contract.id)
+            if current is None:
+                raise _error(
+                    "contract_version_not_found",
+                    "The recurring add-on purchase has no effective contract version.",
+                    contract_id=str(contract.id),
+                )
+
+            cadence = BillingContracts.cadence_of(current)
+            if term.billing_cycle is not None:
+                addon_interval = _CYCLE_INTERVAL[term.billing_cycle]
+                contract_interval = (
+                    cadence.service_interval_unit,
+                    cadence.service_interval_count,
+                )
+                if addon_interval != contract_interval:
+                    raise _error(
+                        "unsupported_addon_cadence",
+                        "The add-on cadence differs from the contract service cadence.",
+                        addon_billing_cycle=term.billing_cycle.value,
+                        contract_interval_unit=cadence.service_interval_unit.value,
+                        contract_interval_count=cadence.service_interval_count,
+                    )
+            currency = term.currency.strip().upper()
+            if currency != current.currency:
+                raise _error(
+                    "mixed_currency_contract",
+                    "The recurring add-on currency differs from the contract.",
+                    addon_currency=currency,
+                    contract_currency=current.currency,
+                )
+            treatment = (
+                AccountingTreatment.prepaid_consumption
+                if current.collection_timing is CollectionTiming.advance
+                else AccountingTreatment.receivable
+            )
+            already_effective = db.execute(
+                select(BillingContractLine).where(
+                    BillingContractLine.contract_version_id == current.id,
+                    BillingContractLine.charge_component == ChargeComponent.addon,
+                    BillingContractLine.component_key
+                    == str(term.subscription_add_on_id),
+                )
+            ).scalar_one_or_none()
+            if already_effective is not None:
+                matches = (
+                    already_effective.description == term.description
+                    and already_effective.quantity == term.quantity
+                    and already_effective.unit_price == term.unit_price
+                    and already_effective.currency == currency
+                    and already_effective.accounting_treatment is treatment
+                    and not already_effective.is_finite
+                )
+                if not matches:
+                    raise _error(
+                        "duplicate_addon_term_conflict",
+                        "The effective version has different terms for this add-on.",
+                        subscription_add_on_id=str(term.subscription_add_on_id),
+                    )
+                # A delayed delivery after a backfill boundary is already
+                # satisfied by the exact immutable term. The receipt is still
+                # committed, but no later draft or timer is invented.
+                return None
+
+            current_start = _aware_utc(current.starts_at)
+            assert current_start is not None
+            try:
+                _period_index, current_period = period_containing(
+                    cadence=cadence,
+                    contract_start=current_start,
+                    moment=term.purchased_at,
+                )
+            except DomainError as exc:
+                raise _error(
+                    "invalid_addon_purchase_time",
+                    "The add-on purchase is outside the effective contract.",
+                    purchased_at=term.purchased_at.isoformat(),
+                ) from exc
+            effective_at = current_period.ends_at
+
+            drafts = list(
+                db.execute(
+                    select(BillingContractVersion)
+                    .where(
+                        BillingContractVersion.contract_id == contract.id,
+                        BillingContractVersion.status
+                        == BillingContractVersionStatus.draft,
+                    )
+                    .with_for_update()
+                ).scalars()
+            )
+            if len(drafts) > 1:
+                raise _error(
+                    "ambiguous_pending_contract_terms",
+                    "The contract has multiple pending term versions.",
+                    contract_id=str(contract.id),
+                )
+            if drafts:
+                draft = drafts[0]
+                draft_start = _aware_utc(draft.starts_at)
+                if draft_start != effective_at or draft.supersedes_id != current.id:
+                    raise _error(
+                        "stale_pending_contract_terms",
+                        "Pending terms no longer match the current contract boundary.",
+                        draft_version_id=str(draft.id),
+                    )
+            else:
+                draft = BillingContracts._create_pending_version(
+                    db,
+                    contract=contract,
+                    current=current,
+                    effective_at=effective_at,
+                    context=context,
+                )
+            # A live owner transition is stronger provenance than a temporary
+            # migration snapshot. Draft terms are intentionally mutable until
+            # their boundary; effective/historical versions remain immutable.
+            draft.source_kind = BillingContractSourceKind.plan_change
+            draft.source_id = contract.subscription_id
+            draft.reason = "Pending live recurring add-on terms"
+
+            existing_line = db.execute(
+                select(BillingContractLine).where(
+                    BillingContractLine.contract_version_id == draft.id,
+                    BillingContractLine.charge_component == ChargeComponent.addon,
+                    BillingContractLine.component_key
+                    == str(term.subscription_add_on_id),
+                )
+            ).scalar_one_or_none()
+            if existing_line is not None:
+                matches = (
+                    existing_line.description == term.description
+                    and existing_line.quantity == term.quantity
+                    and existing_line.unit_price == term.unit_price
+                    and existing_line.currency == currency
+                    and existing_line.accounting_treatment is treatment
+                )
+                if not matches:
+                    raise _error(
+                        "duplicate_addon_term_conflict",
+                        "The pending version already has different terms for this add-on.",
+                        subscription_add_on_id=str(term.subscription_add_on_id),
+                    )
+            else:
+                db.add(
+                    BillingContractLine(
+                        contract_version_id=draft.id,
+                        contract_line_key=BillingContracts._inherited_line_key(
+                            db,
+                            contract_id=contract.id,
+                            charge_component=ChargeComponent.addon,
+                            component_key=str(term.subscription_add_on_id),
+                        ),
+                        charge_component=ChargeComponent.addon,
+                        component_key=str(term.subscription_add_on_id),
+                        description=term.description,
+                        quantity=term.quantity,
+                        unit_price=term.unit_price,
+                        currency=currency,
+                        accounting_treatment=treatment,
+                        is_finite=False,
+                        tax_treatment_code=current.tax_treatment_code,
+                    )
+                )
+                db.flush()
+
+            from app.services.runtime_durable_timers import (
+                ScheduleTimerCommand,
+                schedule_timer,
+            )
+
+            timer = schedule_timer(
+                db,
+                ScheduleTimerCommand(
+                    owner=OWNER,
+                    entity_kind="billing_contract",
+                    entity_id=contract.id,
+                    purpose="pending_terms_effective",
+                    due_at=effective_at,
+                    expected_source_version=draft.version,
+                    output_event_type=PENDING_TERMS_EFFECTIVE_TRIGGER,
+                ),
+                context=context,
+            )
+            return PendingContractTermsResult(
+                contract_id=contract.id,
+                draft_version_id=draft.id,
+                draft_version=draft.version,
+                effective_at=effective_at,
+                timer_id=timer.id,
+                timer_generation=timer.generation,
+            )
+
+        return execute_owner_command(
+            db,
+            definition=_CONSUME_ADDON_PURCHASE_COMMAND,
+            context=context,
+            operation=lambda: consume_owner_output(
+                db,
+                consumer=OWNER,
+                event_id=event_id,
+                event_type="billing.contract_terms.recurring_addon_added",
+                producer_owner="financial.addon_purchases",
+                context=context,
+                operation=_effect,
+            )[0],
+        )
+
+    @staticmethod
+    def consume_pending_terms_effective_due(
+        db: Session,
+        *,
+        contract_id: UUID,
+        timer_id: UUID,
+        expected_source_version: int,
+        timer_generation: int,
+        event_id: UUID,
+        context: CommandContext,
+    ) -> ContractVersionResult | None:
+        """Receipt one exact due timer and activate its shadow draft."""
+
+        def _effect() -> ContractVersionResult:
+            timer = db.execute(
+                select(DurableTimer)
+                .where(DurableTimer.id == timer_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if (
+                timer is None
+                or timer.owner != OWNER
+                or timer.entity_kind != "billing_contract"
+                or timer.entity_id != contract_id
+                or timer.purpose != "pending_terms_effective"
+                or timer.generation != timer_generation
+                or timer.expected_source_version != expected_source_version
+                or timer.output_event_type != PENDING_TERMS_EFFECTIVE_TRIGGER
+                or timer.status is not TimerStatus.fired
+            ):
+                raise _error(
+                    "invalid_pending_terms_timer",
+                    "The fired timer does not identify the pending contract terms.",
+                    timer_id=str(timer_id),
+                )
+
+            contract = db.execute(
+                select(BillingContract)
+                .where(BillingContract.id == contract_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if contract is None:
+                raise _error(
+                    "contract_not_found",
+                    "The pending-terms timer references no contract.",
+                    contract_id=str(contract_id),
+                )
+            draft = db.execute(
+                select(BillingContractVersion)
+                .where(
+                    BillingContractVersion.contract_id == contract.id,
+                    BillingContractVersion.version == expected_source_version,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if draft is None or draft.status is not BillingContractVersionStatus.draft:
+                raise _error(
+                    "pending_contract_version_not_found",
+                    "The timer's pending contract version is absent or no longer draft.",
+                    contract_id=str(contract.id),
+                    expected_source_version=expected_source_version,
+                )
+            current = BillingContracts._current_effective(db, contract_id=contract.id)
+            if current is None or draft.supersedes_id != current.id:
+                raise _error(
+                    "stale_pending_contract_terms",
+                    "The pending version no longer supersedes the current contract.",
+                    draft_version_id=str(draft.id),
+                )
+            draft_start = _aware_utc(draft.starts_at)
+            timer_due = _aware_utc(timer.due_at)
+            if draft_start is None or timer_due != draft_start:
+                raise _error(
+                    "invalid_pending_terms_timer",
+                    "The timer due time differs from the draft boundary.",
+                    timer_id=str(timer.id),
+                )
+
+            current.ends_at = draft.starts_at
+            current.status = BillingContractVersionStatus.superseded
+            current.superseded_at = draft.starts_at
+            db.flush()
+            draft.status = BillingContractVersionStatus.effective
+            db.flush()
+
+            line_ids = tuple(
+                db.execute(
+                    select(BillingContractLine.id).where(
+                        BillingContractLine.contract_version_id == draft.id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            result = ContractVersionResult(
+                contract_id=contract.id,
+                version_id=draft.id,
+                version=draft.version,
+                authority=draft.authority,
+                line_ids=line_ids,
+                replayed=False,
+            )
+            is_live_change = draft.source_kind is BillingContractSourceKind.plan_change
+            BillingContracts._stage_shadow_recorded_output(
+                db,
+                sales_order_id=BillingContracts._sales_order_anchor(
+                    db, contract_id=contract.id
+                ),
+                results=(result,),
+                context=context,
+                change_kind=(
+                    "recurring_addon_purchase"
+                    if is_live_change
+                    else "recurring_addon_backfill"
+                ),
+                envelope_source_kind=(
+                    "subscription" if is_live_change else "sales_order"
+                ),
+                envelope_source_id=(
+                    contract.subscription_id if is_live_change else None
+                ),
+                subscription_id=(contract.subscription_id if is_live_change else None),
+            )
+            return result
+
+        return execute_owner_command(
+            db,
+            definition=_ACTIVATE_PENDING_TERMS_COMMAND,
+            context=context,
+            operation=lambda: consume_owner_output(
+                db,
+                consumer=OWNER,
+                event_id=event_id,
+                event_type=PENDING_TERMS_EFFECTIVE_TRIGGER,
+                producer_owner="runtime.durable_timers",
+                context=context,
+                operation=_effect,
+            )[0],
+        )
+
+    @staticmethod
+    def _stage_shadow_recorded_output(
+        db: Session,
+        *,
+        sales_order_id: UUID,
+        results: tuple[ContractVersionResult, ...],
+        context: CommandContext,
+        change_kind: str,
+        envelope_source_kind: str = "sales_order",
+        envelope_source_id: UUID | None = None,
+        subscription_id: UUID | None = None,
+    ) -> UUID:
+        obligation_inputs: list[dict[str, object]] = []
+        for result in results:
+            lines = db.execute(
+                select(BillingContractLine).where(
+                    BillingContractLine.id.in_(result.line_ids),
+                    BillingContractLine.is_finite.is_(False),
+                )
+            ).scalars()
+            for line in lines:
+                obligation_inputs.append(
+                    {
+                        "contract_version_id": str(result.version_id),
+                        "contract_line_key": str(line.contract_line_key),
+                        "period_index": 0,
+                    }
+                )
+        return stage_owner_output(
+            db,
+            OwnerOutputEnvelope(
+                event_type=EventType.custom,
+                producer_owner=OWNER,
+                source_kind=envelope_source_kind,
+                source_id=envelope_source_id or sales_order_id,
+                schema_version=2,
+            ),
+            {
+                "output": "billing.contracts.shadow_recorded",
+                "sales_order_id": str(sales_order_id),
+                "contract_change_kind": change_kind,
+                **(
+                    {"subscription_id": str(subscription_id)}
+                    if subscription_id is not None
+                    else {}
+                ),
+                "contracts": [
+                    {
+                        "contract_id": str(result.contract_id),
+                        "contract_version_id": str(result.version_id),
+                        "authority": result.authority.value,
+                    }
+                    for result in results
+                ],
+                "obligations": obligation_inputs,
+            },
+            context=context,
+        )
+
+    @staticmethod
+    def _create_pending_version(
+        db: Session,
+        *,
+        contract: BillingContract,
+        current: BillingContractVersion,
+        effective_at: datetime,
+        context: CommandContext,
+        source_kind: BillingContractSourceKind = BillingContractSourceKind.plan_change,
+        reason: str = "Pending recurring add-on terms",
+    ) -> BillingContractVersion:
+        """Clone current terms into one mutable, non-effective boundary draft."""
+
+        current_start = _aware_utc(current.starts_at)
+        if current_start is None or effective_at <= current_start:
+            raise _error(
+                "invalid_pending_contract_boundary",
+                "Pending terms must begin after the current version.",
+                current_version_id=str(current.id),
+                effective_at=effective_at.isoformat(),
+            )
+        next_version = (
+            db.execute(
+                select(BillingContractVersion.version)
+                .where(BillingContractVersion.contract_id == contract.id)
+                .order_by(BillingContractVersion.version.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            or 0
+        ) + 1
+        draft = BillingContractVersion(
+            contract_id=contract.id,
+            version=next_version,
+            status=BillingContractVersionStatus.draft,
+            authority=current.authority,
+            account_id=current.account_id,
+            subscription_id=current.subscription_id,
+            source_kind=source_kind,
+            source_id=current.subscription_id,
+            source_version=current.source_version + 1,
+            starts_at=effective_at,
+            ends_at=None,
+            contracted_price=current.contracted_price,
+            currency=current.currency,
+            rate_basis=current.rate_basis,
+            rate_unit=current.rate_unit,
+            rate_quantity=current.rate_quantity,
+            service_interval_unit=current.service_interval_unit,
+            service_interval_count=current.service_interval_count,
+            invoice_interval_unit=current.invoice_interval_unit,
+            invoice_interval_count=current.invoice_interval_count,
+            collection_timing=current.collection_timing,
+            alignment=current.alignment,
+            anchor_day=current.anchor_day,
+            end_of_month_rule=current.end_of_month_rule,
+            timezone_name=current.timezone_name,
+            proration_policy=current.proration_policy,
+            payment_terms_days=current.payment_terms_days,
+            tax_treatment_code=current.tax_treatment_code,
+            tax_inclusive=current.tax_inclusive,
+            discount_code=current.discount_code,
+            discount_amount=current.discount_amount,
+            supersedes_id=current.id,
+            actor=context.actor,
+            reason=reason,
+            command_id=context.command_id,
+            correlation_id=context.correlation_id,
+            idempotency_key=(f"pending:{contract.id}:{effective_at.isoformat()}"),
+        )
+        db.add(draft)
+        db.flush()
+        current_lines = tuple(
+            db.execute(
+                select(BillingContractLine).where(
+                    BillingContractLine.contract_version_id == current.id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for line in current_lines:
+            db.add(
+                BillingContractLine(
+                    contract_version_id=draft.id,
+                    contract_line_key=line.contract_line_key,
+                    charge_component=line.charge_component,
+                    component_key=line.component_key,
+                    description=line.description,
+                    quantity=line.quantity,
+                    unit_price=line.unit_price,
+                    currency=line.currency,
+                    accounting_treatment=line.accounting_treatment,
+                    is_finite=line.is_finite,
+                    tax_treatment_code=line.tax_treatment_code,
+                )
+            )
+        db.flush()
+        return draft
+
+    @staticmethod
+    def _sales_order_anchor(db: Session, *, contract_id: UUID) -> UUID:
+        """Resolve the immutable sale that opened this structural contract."""
+
+        sales_order_id = db.execute(
+            select(SalesOrderLine.sales_order_id)
+            .join(
+                BillingContractVersion,
+                BillingContractVersion.source_id == SalesOrderLine.id,
+            )
+            .where(
+                BillingContractVersion.contract_id == contract_id,
+                BillingContractVersion.source_kind
+                == BillingContractSourceKind.sales_order_line,
+            )
+            .order_by(BillingContractVersion.version.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if sales_order_id is None:
+            raise _error(
+                "sales_order_anchor_mismatch",
+                "The billing contract has no structural sales-order anchor.",
+                contract_id=str(contract_id),
+            )
+        return sales_order_id
 
     @staticmethod
     def _record_version(
