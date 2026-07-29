@@ -173,6 +173,11 @@ def receive_and_claim_verified(
 def claim_for_processing(receipt: IntegrationInbox) -> bool:
     if receipt.state == "processed":
         return False
+    if (
+        receipt.state == "retryable"
+        and receipt.error_code == "crm_customer_name_rejected"
+    ):
+        return False
     if receipt.state == "dead_letter":
         raise InboxError("dead-letter receipt requires authorized replay")
     receipt.state = "processing"
@@ -228,6 +233,7 @@ def fail_consequence(
     receipt: IntegrationInbox,
     error_code: str,
     error_detail: str | None = None,
+    consequence: dict[str, Any] | None = None,
     max_attempts: int = 10,
 ) -> None:
     """Discard partial consequence writes, then record retry evidence."""
@@ -243,6 +249,8 @@ def fail_consequence(
             error_detail=error_detail,
             max_attempts=max_attempts,
         )
+        if consequence is not None:
+            current.consequence_json = consequence
 
     execute_command(db, operation)
 

@@ -86,7 +86,7 @@
                 </td>
                 <td class="whitespace-nowrap px-6 py-4">
                     <p class="text-sm font-medium text-slate-900 dark:text-white">{{ row.service_team_name }}</p>
-                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.service_team_type | replace('_', ' ') | title }}</p>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ row.service_team_capabilities | replace('_', ' ') | title or 'No capability' }}</p>
                 </td>
                 <td class="px-6 py-4">
                     <div class="flex min-w-[12rem] flex-wrap gap-1.5">

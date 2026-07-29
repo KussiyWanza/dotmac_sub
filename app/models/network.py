@@ -1705,6 +1705,9 @@ class PonPort(Base):
     max_ont_capacity: Mapped[int | None] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    admin_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -2523,6 +2526,17 @@ class NetworkZone(Base):
     description: Mapped[str | None] = mapped_column(Text)
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("network_zones.id")
+    )
+    # Typed geographic binding: a zone may declare the GeoArea it belongs to.
+    # Child zones without a binding inherit through the parent chain.
+    geo_area_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "geo_areas.id",
+            name="fk_network_zones_geo_area_id_geo_areas",
+            ondelete="RESTRICT",
+        ),
+        index=True,
     )
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)

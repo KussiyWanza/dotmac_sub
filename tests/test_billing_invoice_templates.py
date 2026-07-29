@@ -8,7 +8,7 @@ def test_invoice_detail_consumes_server_owned_status_presentation():
     assert "status_variant_map" not in template
 
 
-def test_customer_invoice_pay_button_uses_compiled_brand_colors():
+def test_customer_invoice_pay_button_has_light_and_dark_mode_contrast():
     template = Path("templates/customer/billing/invoice.html").read_text()
     pay_button = template.split(
         'href="/portal/billing/pay?invoice={{ invoice.id }}"',
@@ -18,6 +18,9 @@ def test_customer_invoice_pay_button_uses_compiled_brand_colors():
     assert "from-[var(--color-brand-500)]" in pay_button
     assert "to-[var(--color-brand-600)]" in pay_button
     assert "text-white" in pay_button
+    assert "border border-[var(--color-brand-700)]" in pay_button
+    assert "dark:border-[var(--color-brand-400)]" in pay_button
+    assert "dark:text-white" in pay_button
     assert "from-brand-500" not in pay_button
     assert "to-brand-600" not in pay_button
 

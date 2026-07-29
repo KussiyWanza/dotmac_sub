@@ -33,9 +33,16 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.dispatch import TechnicianProfile
+from app.models.dispatch import (
+    DispatchQueueStatus,
+    DispatchRule,
+    TechnicianProfile,
+    WorkOrderAssignmentQueue,
+)
+from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -87,20 +94,55 @@ def is_open(conversation: InboxConversation) -> bool:
     return conversation.status != InboxConversationStatus.resolved.value
 
 
-def _service_team_id(db: Session, system_user_id: uuid.UUID) -> uuid.UUID | None:
-    """The technician's team, which the assignment row requires (NOT NULL).
+def _service_team_id(
+    db: Session,
+    *,
+    work_order_id: uuid.UUID,
+    profile: TechnicianProfile,
+) -> uuid.UUID | None:
+    """Resolve the exact team holding this visit.
 
-    Technician profiles carry a staff-principal identifier while canonical
-    memberships are Party-backed. The lifecycle owner resolves that boundary
-    and fails closed on missing or ambiguous membership.
+    Multi-team membership is valid and cannot answer which team owns a
+    particular visit. The dispatch assignment and its explicit rule are the
+    authoritative decision evidence, and conflicting assignments fail closed
+    instead of guessing from membership age or team identity. A manager-made
+    assignment carries no dispatch rule at all; for that no-evidence case the
+    technician's single active membership is still an unambiguous answer, and
+    only a genuinely ambiguous multi-team technician yields no chat.
     """
-    resolution = service_team_lifecycle.resolve_staff_service_team(
-        db,
-        system_user_id,
+
+    team_ids = tuple(
+        db.scalars(
+            select(DispatchRule.service_team_id)
+            .join(
+                WorkOrderAssignmentQueue,
+                WorkOrderAssignmentQueue.dispatch_rule_id == DispatchRule.id,
+            )
+            .join(ServiceTeam, ServiceTeam.id == DispatchRule.service_team_id)
+            .where(
+                WorkOrderAssignmentQueue.work_order_mirror_id == work_order_id,
+                WorkOrderAssignmentQueue.assigned_technician_id == profile.id,
+                WorkOrderAssignmentQueue.status == DispatchQueueStatus.assigned,
+                DispatchRule.service_team_id.is_not(None),
+                DispatchRule.is_active.is_(True),
+                ServiceTeam.is_active.is_(True),
+            )
+            .distinct()
+            .order_by(DispatchRule.service_team_id.asc())
+        ).all()
+    )
+    if len(team_ids) == 1:
+        return team_ids[0]
+    if team_ids:
+        return None
+    if profile.system_user_id is None:
+        return None
+    resolution = service_team_lifecycle.resolve_staff_service_teams(
+        db, profile.system_user_id
     )
     if resolution.kind is not service_team_lifecycle.ServiceTeamResolutionKind.resolved:
         return None
-    return resolution.team_id
+    return resolution.team_ids[0] if len(resolution.team_ids) == 1 else None
 
 
 def _open_conversations_for_technician(
@@ -133,7 +175,11 @@ def open_for_departure(
     if work_order.subscriber_id is None:
         return None, NO_SUBSCRIBER
 
-    team_id = _service_team_id(db, profile.person_id)
+    team_id = _service_team_id(
+        db,
+        work_order_id=work_order.id,
+        profile=profile,
+    )
     if team_id is None:
         # No team means no assignment row is possible, and an unassigned job
         # chat is one nobody holds — better to have none at all.

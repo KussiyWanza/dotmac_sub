@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
+import uuid
 
+import pytest
+from fastapi import HTTPException
+
+from app.models.gis import GeoArea
 from app.schemas.network_catalog import (
     NetworkZoneCreate,
     NetworkZoneUpdate,
@@ -98,6 +102,146 @@ class TestNetworkZoneSchemas:
     def test_update_clear_parent(self):
         req = NetworkZoneUpdate(clear_parent=True)
         assert req.clear_parent is True
+
+
+class TestNetworkZoneGeoAreaBinding:
+    """NetworkZones owns the zone -> GeoArea binding and its resolution."""
+
+    @staticmethod
+    def _area(db_session, *, name: str, is_active: bool = True) -> GeoArea:
+        area = GeoArea(name=name, is_active=is_active)
+        db_session.add(area)
+        db_session.flush()
+        return area
+
+    def test_create_persists_active_geo_area_binding(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        area = self._area(db_session, name="Abuja Coverage")
+        zone = NetworkZones.create(
+            db_session, name="Garki Zone", geo_area_id=str(area.id)
+        )
+
+        assert zone.geo_area_id == area.id
+
+    def test_update_persists_and_clear_geo_area_clears(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        area = self._area(db_session, name="Lagos Coverage")
+        zone = NetworkZones.create(db_session, name="Lekki Zone")
+
+        updated = NetworkZones.update(
+            db_session, str(zone.id), geo_area_id=str(area.id)
+        )
+        assert updated.geo_area_id == area.id
+
+        cleared = NetworkZones.update(db_session, str(zone.id), clear_geo_area=True)
+        assert cleared.geo_area_id is None
+
+    def test_create_rejects_missing_geo_area(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        with pytest.raises(HTTPException) as excinfo:
+            NetworkZones.create(
+                db_session, name="Orphan Zone", geo_area_id=str(uuid.uuid4())
+            )
+
+        assert excinfo.value.status_code == 400
+
+    def test_create_rejects_inactive_geo_area(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        retired = self._area(db_session, name="Retired Coverage", is_active=False)
+        with pytest.raises(HTTPException) as excinfo:
+            NetworkZones.create(
+                db_session, name="Stale Zone", geo_area_id=str(retired.id)
+            )
+
+        assert excinfo.value.status_code == 400
+
+    def test_update_rejects_inactive_geo_area(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        retired = self._area(db_session, name="Retired Update Area", is_active=False)
+        zone = NetworkZones.create(db_session, name="Update Guard Zone")
+        with pytest.raises(HTTPException) as excinfo:
+            NetworkZones.update(db_session, str(zone.id), geo_area_id=str(retired.id))
+
+        assert excinfo.value.status_code == 400
+        assert zone.geo_area_id is None
+
+    def test_resolve_geo_area_returns_own_binding(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        area = self._area(db_session, name="Own Binding Area")
+        zone = NetworkZones.create(
+            db_session, name="Bound Zone", geo_area_id=str(area.id)
+        )
+
+        assert NetworkZones.resolve_geo_area(db_session, zone.id) == area.id
+
+    def test_resolve_geo_area_inherits_through_parent_chain(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        area = self._area(db_session, name="Inherited Area")
+        grandparent = NetworkZones.create(
+            db_session, name="Region Zone", geo_area_id=str(area.id)
+        )
+        parent = NetworkZones.create(
+            db_session, name="District Zone", parent_id=str(grandparent.id)
+        )
+        child = NetworkZones.create(
+            db_session, name="Street Zone", parent_id=str(parent.id)
+        )
+
+        assert NetworkZones.resolve_geo_area(db_session, child.id) == area.id
+
+    def test_resolve_geo_area_returns_none_for_unbound_chain(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        parent = NetworkZones.create(db_session, name="Unbound Parent")
+        child = NetworkZones.create(
+            db_session, name="Unbound Child", parent_id=str(parent.id)
+        )
+
+        assert NetworkZones.resolve_geo_area(db_session, child.id) is None
+        assert NetworkZones.resolve_geo_area(db_session, None) is None
+
+    def test_resolve_geo_area_degrades_when_nearest_binding_is_inactive(
+        self, db_session
+    ):
+        """A retired GeoArea on the nearest bound zone must not rebind wider."""
+        from app.services.network.zones import NetworkZones
+
+        wide_area = self._area(db_session, name="Wide Active Area")
+        near_area = self._area(db_session, name="Near Area")
+        grandparent = NetworkZones.create(
+            db_session, name="Wide Zone", geo_area_id=str(wide_area.id)
+        )
+        parent = NetworkZones.create(
+            db_session,
+            name="Near Zone",
+            parent_id=str(grandparent.id),
+            geo_area_id=str(near_area.id),
+        )
+        child = NetworkZones.create(
+            db_session, name="Leaf Zone", parent_id=str(parent.id)
+        )
+        near_area.is_active = False
+        db_session.flush()
+
+        assert NetworkZones.resolve_geo_area(db_session, child.id) is None
+
+    def test_resolve_geo_area_tolerates_parent_cycle(self, db_session):
+        from app.services.network.zones import NetworkZones
+
+        first = NetworkZones.create(db_session, name="Cycle A")
+        second = NetworkZones.create(
+            db_session, name="Cycle B", parent_id=str(first.id)
+        )
+        NetworkZones.update(db_session, str(first.id), parent_id=str(second.id))
+
+        assert NetworkZones.resolve_geo_area(db_session, second.id) is None
 
 
 class TestVendorCapabilitySchemas:

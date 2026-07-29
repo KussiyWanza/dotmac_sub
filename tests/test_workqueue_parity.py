@@ -11,8 +11,8 @@ from app.models.dispatch import TechnicianProfile, WorkOrderAssignmentQueue
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
-    ServiceTeamMemberRole,
-    ServiceTeamType,
+    ServiceTeamMemberResponsibility,
+    ServiceTeamResponsibilityKey,
 )
 from app.models.support import Ticket, TicketPriority, TicketStatus
 from app.models.team_inbox import (
@@ -43,6 +43,7 @@ from app.services.workqueue import (
     list_workqueue,
     load_scoring_config,
 )
+from app.services.workqueue.permissions import AUDIENCE_TEAM_SCOPE
 from app.services.workqueue.providers import all_providers, register
 from app.services.workqueue.providers.conversations import conversation_provider
 from app.services.workqueue.providers.tickets import ticket_provider
@@ -74,7 +75,7 @@ def _principal(
 
 
 def _team(db, name: str = "Support") -> ServiceTeam:
-    team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
+    team = ServiceTeam(name=name)
     db.add(team)
     db.flush()
     return team
@@ -85,12 +86,21 @@ def _member(
     team: ServiceTeam,
     person_id: UUID,
     *,
-    role: str = ServiceTeamMemberRole.member.value,
+    responsibility: ServiceTeamResponsibilityKey | None = None,
 ) -> ServiceTeamMember:
     _user, person = add_bound_staff_user(db, system_user_id=person_id)
-    member = ServiceTeamMember(team_id=team.id, person_id=person.id, role=role)
+    member = ServiceTeamMember(team_id=team.id, person_id=person.id, role=None)
     db.add(member)
     db.flush()
+    if responsibility is not None:
+        db.add(
+            ServiceTeamMemberResponsibility(
+                membership_id=member.id,
+                responsibility_key=responsibility.value,
+                is_active=True,
+            )
+        )
+        db.flush()
     return member
 
 
@@ -578,14 +588,68 @@ def test_team_lead_sees_the_whole_team_queue(db_session):
     lead = uuid4()
     teammate = uuid4()
     team = _team(db_session)
-    _member(db_session, team, lead, role=ServiceTeamMemberRole.lead.value)
+    _member(
+        db_session,
+        team,
+        lead,
+        responsibility=ServiceTeamResponsibilityKey.queue_lead,
+    )
+    _member(db_session, team, teammate)
+    theirs = _ticket(db_session, title="Theirs", team=team, assigned_to=teammate)
+
+    scope = _scope(
+        db_session,
+        _principal(lead, scopes=(AUDIENCE_TEAM_SCOPE,)),
+    )
+    assert scope.audience is WorkqueueAudience.team
+    seen = {item.item_id for item in _fetch(ticket_provider, db_session, scope)}
+    assert theirs.id in seen
+
+
+def test_a_lead_responsibility_without_the_rbac_scope_stays_self(db_session):
+    """Operational responsibility alone never widens the audience."""
+    lead = uuid4()
+    teammate = uuid4()
+    team = _team(db_session)
+    _member(
+        db_session,
+        team,
+        lead,
+        responsibility=ServiceTeamResponsibilityKey.queue_lead,
+    )
     _member(db_session, team, teammate)
     theirs = _ticket(db_session, title="Theirs", team=team, assigned_to=teammate)
 
     scope = _scope(db_session, _principal(lead))
-    assert scope.audience is WorkqueueAudience.team
+    assert scope.audience is WorkqueueAudience.self_
     seen = {item.item_id for item in _fetch(ticket_provider, db_session, scope)}
-    assert theirs.id in seen
+    assert theirs.id not in seen
+
+    # Explicitly asking for `team` is clamped back to `self` too.
+    requested = _scope(db_session, _principal(lead), requested_audience="team")
+    assert requested.audience is WorkqueueAudience.self_
+
+
+def test_the_rbac_scope_without_a_responsibility_stays_self(db_session):
+    """RBAC alone cannot invent operational team ownership."""
+    person = uuid4()
+    teammate = uuid4()
+    team = _team(db_session)
+    _member(db_session, team, person)
+    _member(db_session, team, teammate)
+    theirs = _ticket(db_session, title="Theirs", team=team, assigned_to=teammate)
+
+    scope = _scope(db_session, _principal(person, scopes=(AUDIENCE_TEAM_SCOPE,)))
+    assert scope.audience is WorkqueueAudience.self_
+    seen = {item.item_id for item in _fetch(ticket_provider, db_session, scope)}
+    assert theirs.id not in seen
+
+    requested = _scope(
+        db_session,
+        _principal(person, scopes=(AUDIENCE_TEAM_SCOPE,)),
+        requested_audience="team",
+    )
+    assert requested.audience is WorkqueueAudience.self_
 
 
 def test_org_audience_is_clamped_to_what_the_principal_holds(db_session):
@@ -710,14 +774,23 @@ def test_a_team_lead_sees_attributable_team_work_orders(db_session, subscriber):
     lead = uuid4()
     teammate = uuid4()
     team = _team(db_session)
-    _member(db_session, team, lead, role=ServiceTeamMemberRole.lead.value)
+    _member(
+        db_session,
+        team,
+        lead,
+        responsibility=ServiceTeamResponsibilityKey.queue_lead,
+    )
     _member(db_session, team, teammate)
     db_session.add(TechnicianProfile(person_id=teammate, crm_person_id="crm-teammate"))
     work_order = _work_order(
         db_session, subscriber, assigned_to_crm_person_id="crm-teammate"
     )
 
-    scope = _scope(db_session, _principal(lead), service_team_id=team.id)
+    scope = _scope(
+        db_session,
+        _principal(lead, scopes=(AUDIENCE_TEAM_SCOPE,)),
+        service_team_id=team.id,
+    )
     assert [
         item.item_id for item in _fetch(work_order_provider, db_session, scope)
     ] == [work_order.id]

@@ -343,19 +343,37 @@ def test_render_template_admin_pages(db_session, base_context):
         ),
     )
 
-    _render(
+    read_only_list_html = _render(
         "admin/projects/project_templates.html",
         base_context,
-        web_projects.build_templates_list_context(db_session),
+        {
+            **web_projects.build_templates_list_context(db_session),
+            "can_manage_project_templates": False,
+        },
     )
-    detail_html = _render(
+    assert "New Template" not in read_only_list_html
+    assert "Edit Tasks" not in read_only_list_html
+
+    detail_context = web_projects.build_template_detail_context(
+        db_session, template_id=str(template.id)
+    )
+    read_only_detail_html = _render(
         "admin/projects/project_template_detail.html",
         base_context,
-        web_projects.build_template_detail_context(
-            db_session, template_id=str(template.id)
-        ),
+        {**detail_context, "can_manage_project_templates": False},
     )
-    assert "Alpha" in detail_html
+    assert "Alpha" in read_only_detail_html
+    assert "Add Task" not in read_only_detail_html
+    assert "Delete Template" not in read_only_detail_html
+
+    manager_detail_html = _render(
+        "admin/projects/project_template_detail.html",
+        base_context,
+        {**detail_context, "can_manage_project_templates": True},
+    )
+    assert "Edit Tasks" in manager_detail_html
+    assert "Add Task" in manager_detail_html
+    assert "Delete Template" in manager_detail_html
 
     form_ctx = web_projects.build_template_form_context(db_session)
     form_ctx.update({"page_title": "New Template", "form_mode": "create"})

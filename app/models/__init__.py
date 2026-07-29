@@ -810,8 +810,19 @@ from app.models.service_request import (  # noqa: F401
 )
 from app.models.service_team import (  # noqa: F401
     ServiceTeam,
+    ServiceTeamCapability,
+    ServiceTeamCapabilityDefinition,
+    ServiceTeamCapabilityKey,
+    ServiceTeamExternalReference,
     ServiceTeamMember,
+    ServiceTeamMemberResponsibility,
     ServiceTeamMemberRole,
+    ServiceTeamRelationship,
+    ServiceTeamRelationshipKind,
+    ServiceTeamResponsibilityKey,
+    ServiceTeamRoutingPolicy,
+    ServiceTeamScopeBinding,
+    ServiceTeamScopeType,
     ServiceTeamType,
 )
 from app.models.snmp import (  # noqa: F401

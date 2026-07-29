@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
-from fastapi import HTTPException
 
 from app.models.audit import AuditEvent
 from app.models.billing import (
@@ -40,6 +40,8 @@ from app.models.catalog import (
 )
 from app.services import customer_portal_flow_addons as addons
 from app.services.billing._common import get_account_credit_balance
+from app.services.events.handlers.owner_session import owner_session
+from app.services.owner_commands import CommandContext
 
 
 def _make_offer(db_session, *, amount: Decimal) -> CatalogOffer:
@@ -150,16 +152,47 @@ def _quote_and_purchase(
         quantity,
     )
     assert quote is not None
-    result = addons.purchase_addon(
+    result = _confirm_purchase(
         db_session,
-        customer,
-        str(subscription.id),
-        str(add_on.id),
-        quantity,
+        customer=customer,
+        subscription_id=subscription.id,
+        add_on_id=add_on.id,
+        quantity=quantity,
         preview_fingerprint=str(quote["preview_fingerprint"]),
         idempotency_key=idempotency_key,
     )
     return quote, result
+
+
+def _confirm_purchase(
+    db_session,
+    *,
+    customer,
+    subscription_id,
+    add_on_id,
+    quantity: int,
+    preview_fingerprint: str,
+    idempotency_key: str,
+):
+    account_id = UUID(str(customer["account_id"]))
+    with owner_session(db_session) as owner_db:
+        outcome = addons.confirm_addon_purchase(
+            owner_db,
+            addons.PurchaseAddonCommand(
+                account_id=account_id,
+                subscription_id=UUID(str(subscription_id)),
+                add_on_id=UUID(str(add_on_id)),
+                quantity=quantity,
+                preview_fingerprint=preview_fingerprint,
+            ),
+            context=CommandContext.system(
+                actor=f"user:{account_id}",
+                scope=f"subscription:{subscription_id}:add-on-purchase",
+                reason="pytest add-on purchase",
+                idempotency_key=idempotency_key,
+            ),
+        )
+    return outcome.as_dict()
 
 
 @pytest.fixture()
@@ -279,12 +312,12 @@ def test_purchase_is_idempotent_on_key(_setup, db_session, subscriber):
     )
 
     # Replay with the same key — no second charge, same add-on returned.
-    again = addons.purchase_addon(
+    again = _confirm_purchase(
         db_session,
-        customer,
-        str(sub.id),
-        str(add_on.id),
-        1,
+        customer=customer,
+        subscription_id=sub.id,
+        add_on_id=add_on.id,
+        quantity=1,
         preview_fingerprint=str(quote["preview_fingerprint"]),
         idempotency_key="addon-idempotent-test-0001",
     )
@@ -353,7 +386,7 @@ def test_idempotency_key_is_scoped_to_the_account(_setup, db_session, subscriber
     other_customer = {"account_id": str(other.id), "subscriber_id": str(other.id)}
 
     # Another account reusing the same key must NOT replay the first's purchase.
-    with pytest.raises(ValueError, match="already used"):
+    with pytest.raises(addons.AddonPurchaseError, match="already used"):
         _quote_and_purchase(
             db_session,
             other_customer,
@@ -387,13 +420,13 @@ def test_purchase_foreign_addon_rejected(_setup, db_session):
     _subscriber, sub, _add_on, customer = _setup
     import uuid
 
-    with pytest.raises(ValueError, match="not available"):
-        addons.purchase_addon(
+    with pytest.raises(addons.AddonPurchaseError, match="not available"):
+        _confirm_purchase(
             db_session,
-            customer,
-            str(sub.id),
-            str(uuid.uuid4()),
-            1,
+            customer=customer,
+            subscription_id=sub.id,
+            add_on_id=uuid.uuid4(),
+            quantity=1,
             preview_fingerprint="0" * 64,
             idempotency_key="addon-foreign-test-0001",
         )
@@ -435,17 +468,17 @@ def test_purchase_rejects_stale_funding_preview(_setup, db_session, subscriber):
     assert quote is not None
     _seed_prepaid_funding(db_session, subscriber, Decimal("500.00"))
 
-    with pytest.raises(HTTPException, match="preview again") as exc:
-        addons.purchase_addon(
+    with pytest.raises(addons.AddonPurchaseError, match="preview again") as exc:
+        _confirm_purchase(
             db_session,
-            customer,
-            str(sub.id),
-            str(add_on.id),
-            1,
+            customer=customer,
+            subscription_id=sub.id,
+            add_on_id=add_on.id,
+            quantity=1,
             preview_fingerprint=str(quote["preview_fingerprint"]),
             idempotency_key="addon-stale-test-0001",
         )
 
-    assert exc.value.status_code == 409
+    assert exc.value.code == "financial.addon_purchases.stale_preview"
     assert db_session.query(SubscriptionAddOn).count() == 0
     assert db_session.query(AccountAdjustment).count() == 0

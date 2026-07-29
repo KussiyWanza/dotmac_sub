@@ -595,7 +595,7 @@ def _inbox_team_rows(db: Session, response_sla_seconds: int, include_inactive: b
             {
                 "team_id": row.service_team_id,
                 "name": row.service_team_name,
-                "team_type": row.service_team_type,
+                "capabilities": ", ".join(row.service_team_capabilities),
                 "response_sla_seconds": row.response_sla_seconds,
                 "conversation_count": metrics.conversation_count,
                 "open_count": metrics.open_count,
@@ -627,7 +627,7 @@ def _inbox_agent_rows(db: Session):
             "person_id": row.person_id,
             "service_team_id": row.service_team_id,
             "service_team_name": row.service_team_name,
-            "service_team_type": row.service_team_type,
+            "service_team_capabilities": ", ".join(row.service_team_capabilities),
             "active_assignment_count": row.metrics.active_assignment_count,
             "handled_conversation_count": row.metrics.handled_conversation_count,
             "average_queue_wait": _seconds_label(
@@ -666,7 +666,7 @@ def _inbox_escalation_rows(
             "conversation_id": row.conversation_id,
             "service_team_id": row.service_team_id,
             "service_team_name": row.service_team_name,
-            "service_team_type": row.service_team_type,
+            "service_team_capabilities": ", ".join(row.service_team_capabilities),
             "subject": row.subject or "(No subject)",
             "contact_address": row.contact_address or "-",
             "status": row.status,
@@ -759,7 +759,7 @@ def reports_inbox_performance_export(
         output,
         fieldnames=[
             "name",
-            "team_type",
+            "capabilities",
             "response_sla_seconds",
             "conversation_count",
             "open_count",
@@ -1021,7 +1021,7 @@ def reports_inbox_escalations_export(
         fieldnames=[
             "conversation_id",
             "service_team_name",
-            "service_team_type",
+            "service_team_capabilities",
             "subject",
             "contact_address",
             "status",

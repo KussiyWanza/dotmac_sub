@@ -2,6 +2,16 @@
 
 All notable changes to DotMac Sub are tracked here.
 
+## 7.62.0 - 2026-07-29
+
+- Version bump.
+
+## 7.59.0 - 2026-07-29
+
+- Compose service-team capabilities, member responsibilities, typed geographic scopes, relationships, external references, and explicit routing policies; legacy scalar team type, region, manager, and member role remain shadow inputs until the verification gate passes.
+- Retire the CRM Party-adoption cutover in favor of the narrow five-pointer source-retirement gate, and change the production deploy gate accordingly.
+- Rename inbox/analytics read fields from service_team_type to service_team_capabilities (breaking for external API/CSV consumers).
+
 ## 7.58.1 - 2026-07-28
 
 - Version bump.

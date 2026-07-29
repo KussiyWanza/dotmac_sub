@@ -24,6 +24,7 @@ from app.services import (
 from app.services.auth_dependencies import require_permission
 from app.services.ipam_adapter import ipam_adapter
 from app.services.network import olt_operations as olt_operations_service
+from app.services.network import olt_pon_port_control as olt_pon_port_control_service
 from app.services.network import olt_tr069_admin as olt_tr069_admin_service
 from app.services.network import olt_web_forms as olt_web_forms_service
 from app.services.network import olt_web_topology as olt_web_topology_service
@@ -1027,6 +1028,39 @@ def olt_refresh_ont_telemetry_get_fallback(olt_id: str) -> RedirectResponse:
     )
     return RedirectResponse(
         f"/admin/network/olts/{olt_id}?sync_status=info&sync_message={message}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/olts/{olt_id}/pon-ports/{pon_port_id}/admin-state",
+    dependencies=[Depends(require_permission("network:olt:write"))],
+)
+def olt_set_pon_port_admin_state(
+    request: Request,
+    olt_id: str,
+    pon_port_id: str,
+    enabled: bool = Form(...),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Enable or disable one physical PON port on a supported OLT."""
+    ok, message = olt_pon_port_control_service.set_pon_port_admin_state(
+        db,
+        olt_id=olt_id,
+        pon_port_id=pon_port_id,
+        enabled=enabled,
+        request=request,
+    )
+    _log_olt_action_result(
+        request=request,
+        olt_id=olt_id,
+        action="Set PON Port Admin State",
+        ok=ok,
+        message=message,
+    )
+    status = "success" if ok else "error"
+    return RedirectResponse(
+        f"/admin/network/olts/{olt_id}?sync_status={status}&sync_message={quote_plus(message)}",
         status_code=303,
     )
 

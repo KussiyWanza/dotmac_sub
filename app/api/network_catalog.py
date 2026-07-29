@@ -321,6 +321,7 @@ def create_network_zone(
         name=payload.name,
         description=payload.description,
         parent_id=payload.parent_id,
+        geo_area_id=payload.geo_area_id,
         latitude=payload.latitude,
         longitude=payload.longitude,
         is_active=payload.is_active,

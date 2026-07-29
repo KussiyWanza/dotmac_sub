@@ -22,7 +22,12 @@ from fastapi.testclient import TestClient
 
 from app.api.field import router
 from app.db import get_db
-from app.models.dispatch import TechnicianProfile
+from app.models.dispatch import (
+    DispatchQueueStatus,
+    DispatchRule,
+    TechnicianProfile,
+    WorkOrderAssignmentQueue,
+)
 from app.models.party import (
     Party,
     PartyDataClassification,
@@ -32,8 +37,6 @@ from app.models.party import (
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
-    ServiceTeamMemberRole,
-    ServiceTeamType,
 )
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
@@ -88,7 +91,6 @@ def _auth(user: SystemUser) -> dict:
 def _team_member(db_session, person_id) -> ServiceTeam:
     team = ServiceTeam(
         name=f"Field Ops {uuid4().hex[:6]}",
-        team_type=ServiceTeamType.support.value,
     )
     db_session.add(team)
     db_session.flush()
@@ -96,7 +98,7 @@ def _team_member(db_session, person_id) -> ServiceTeam:
         ServiceTeamMember(
             team_id=team.id,
             person_id=person_id,
-            role=ServiceTeamMemberRole.member.value,
+            role=None,
             is_active=True,
         )
     )
@@ -119,9 +121,11 @@ def _profile(
     )
     db_session.add(profile)
     db_session.flush()
+    profile._test_service_team_id = None
     if with_team:
         assert user.person_party_id is not None
-        _team_member(db_session, user.person_party_id)
+        team = _team_member(db_session, user.person_party_id)
+        profile._test_service_team_id = team.id
     return profile
 
 
@@ -154,6 +158,24 @@ def _work_order(db_session, subscriber: Subscriber, **overrides) -> WorkOrder:
 
 
 def _depart(db_session, work_order, profile):
+    team_id = profile._test_service_team_id
+    if team_id is not None:
+        rule = DispatchRule(
+            name=f"Field chat assignment {uuid4().hex[:6]}",
+            service_team_id=team_id,
+            is_active=True,
+        )
+        db_session.add(rule)
+        db_session.flush()
+        db_session.add(
+            WorkOrderAssignmentQueue(
+                work_order_mirror_id=work_order.id,
+                status=DispatchQueueStatus.assigned,
+                dispatch_rule_id=rule.id,
+                assigned_technician_id=profile.id,
+            )
+        )
+        db_session.flush()
     conversation, outcome = team_inbox_field_job.open_for_departure(
         db_session, work_order=work_order, profile=profile
     )
@@ -194,8 +216,8 @@ def test_departure_opens_the_chat(db_session):
     assert conversation.subscriber_id == subscriber.id
 
 
-def test_departure_fails_closed_when_staff_has_multiple_active_teams(db_session):
-    user = _user(db_session, "Ambiguous")
+def test_departure_uses_explicit_assignment_when_staff_has_multiple_teams(db_session):
+    user = _user(db_session, "MultiTeam")
     profile = _profile(db_session, user)
     assert user.person_party_id is not None
     _team_member(db_session, user.person_party_id)
@@ -203,11 +225,109 @@ def test_departure_fails_closed_when_staff_has_multiple_active_teams(db_session)
     work_order = _work_order(
         db_session,
         subscriber,
-        crm_work_order_id="wo-ambiguous-team",
+        crm_work_order_id="wo-explicit-team",
     )
     db_session.commit()
 
     conversation, outcome = _depart(db_session, work_order, profile)
+
+    assert conversation is not None
+    assert outcome == team_inbox_field_job.OPENED
+
+
+def test_departure_fails_closed_on_conflicting_work_assignments(db_session):
+    user = _user(db_session, "Conflicting")
+    profile = _profile(db_session, user)
+    assert user.person_party_id is not None
+    second_team = _team_member(db_session, user.person_party_id)
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-conflicting-team",
+    )
+    second_rule = DispatchRule(
+        name="Conflicting field chat assignment",
+        service_team_id=second_team.id,
+        is_active=True,
+    )
+    db_session.add(second_rule)
+    db_session.flush()
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=work_order.id,
+            status=DispatchQueueStatus.assigned,
+            dispatch_rule_id=second_rule.id,
+            assigned_technician_id=profile.id,
+        )
+    )
+    db_session.commit()
+
+    conversation, outcome = _depart(db_session, work_order, profile)
+
+    assert conversation is None
+    assert outcome == team_inbox_field_job.NO_TEAM
+
+
+def test_departure_falls_back_to_single_membership_without_dispatch_rule(db_session):
+    """A manager-made assignment carries no dispatch rule; one membership still
+    answers unambiguously, so the customer keeps their chat."""
+    user = _user(db_session, "ManagerAssigned")
+    profile = _profile(db_session, user)
+    membership_team_id = profile._test_service_team_id
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-manager-assigned",
+    )
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=work_order.id,
+            status=DispatchQueueStatus.assigned,
+            dispatch_rule_id=None,
+            assigned_technician_id=profile.id,
+        )
+    )
+    db_session.commit()
+
+    conversation, outcome = team_inbox_field_job.open_for_departure(
+        db_session, work_order=work_order, profile=profile
+    )
+    db_session.commit()
+
+    assert outcome == team_inbox_field_job.OPENED
+    assert conversation is not None
+    assert conversation.primary_service_team_id == membership_team_id
+
+
+def test_departure_stays_closed_for_multi_team_technician_without_rule(db_session):
+    """Without assignment evidence, a multi-team technician is genuinely
+    ambiguous and the chat must not guess."""
+    user = _user(db_session, "MultiNoRule")
+    profile = _profile(db_session, user)
+    assert user.person_party_id is not None
+    _team_member(db_session, user.person_party_id)
+    subscriber = _subscriber(db_session)
+    work_order = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-multi-no-rule",
+    )
+    db_session.add(
+        WorkOrderAssignmentQueue(
+            work_order_mirror_id=work_order.id,
+            status=DispatchQueueStatus.assigned,
+            dispatch_rule_id=None,
+            assigned_technician_id=profile.id,
+        )
+    )
+    db_session.commit()
+
+    conversation, outcome = team_inbox_field_job.open_for_departure(
+        db_session, work_order=work_order, profile=profile
+    )
+    db_session.commit()
 
     assert conversation is None
     assert outcome == team_inbox_field_job.NO_TEAM

@@ -115,6 +115,8 @@ SmartOLT is a mature FTTH management platform with well-established UX patterns 
 #### DotMac Implementation (`/admin/network/olts/{id}/pon-ports`)
 - ✅ PON port listing
 - ✅ Status indicators
+- ✅ Per-port Enable/Disable actions for supported Huawei OLTs, with confirmation,
+  permissions, write-mode enforcement, audit logging, and device-result feedback
 - ❌ **Gap**: No bulk Enable/Disable actions
 - ❌ **Gap**: No AutoFind toggle
 - ❌ **Gap**: No ODB (splitter) assignment

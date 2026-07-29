@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.models.billing import TaxRate
 from app.models.billing_contract import (
     AccountingTreatment,
     BillingContractLine,
@@ -24,7 +25,7 @@ from app.models.billing_contract import (
     ProrationPolicy,
     RateBasis,
 )
-from app.services.billing.cadence import BillingCadence
+from app.services.billing.cadence import BillingCadence, Interval
 from app.services.billing.contracts import (
     BillingContracts,
     ContractLineInput,
@@ -121,9 +122,7 @@ def contract_version(db_session, subscriber, subscription):
     return result.version_id, line_key, account_id
 
 
-def _schedule(
-    db_session, contract_version, *, index=0, net=Decimal("25000.00"), key=None
-):
+def _schedule(db_session, contract_version, *, index=0, key=None, covered=None):
     version_id, line_key, _ = contract_version
     return BillingObligations.schedule(
         db_session,
@@ -131,7 +130,7 @@ def _schedule(
             contract_version_id=version_id,
             contract_line_key=line_key,
             period_index=index,
-            net_amount=net,
+            covered=covered,
         ),
         context=_context(key),
     )
@@ -152,6 +151,15 @@ def test_scheduling_creates_one_shadow_obligation_for_an_exact_period(
     assert _utc(obligation.period_end).astimezone(UTC).month == 4
     assert obligation.accounting_treatment is AccountingTreatment.receivable
     assert obligation.collection_timing is CollectionTiming.advance
+    assert obligation.rating_provenance_complete is True
+    assert obligation.rating_policy_version == "billing-rating-v1"
+    assert _utc(obligation.rating_coverage_start) == START
+    assert _utc(obligation.rating_coverage_end) == _utc(obligation.period_end)
+    assert obligation.rating_unit_price == Decimal("25000.0000")
+    assert obligation.rating_timezone_name == LAGOS
+    assert obligation.rating_input_fingerprint is not None
+    assert len(obligation.rating_input_fingerprint) == 64
+    assert result.rating_input_fingerprint == obligation.rating_input_fingerprint
 
 
 def test_replaying_the_same_natural_identity_returns_one_obligation(
@@ -166,6 +174,92 @@ def test_replaying_the_same_natural_identity_returns_one_obligation(
     assert second.obligation_id == first.obligation_id
     rows = db_session.execute(select(BillingObligation)).scalars().all()
     assert len(rows) == 1
+
+
+def test_replay_uses_recorded_tax_provenance_after_tax_configuration_changes(
+    db_session,
+    contract_version,
+):
+    version_id, line_key, _ = contract_version
+    tax_rate = TaxRate(
+        name="VAT replay",
+        code="VAT-REPLAY",
+        rate=Decimal("7.5000"),
+        is_active=True,
+    )
+    db_session.add(tax_rate)
+    line = db_session.execute(
+        select(BillingContractLine).where(
+            BillingContractLine.contract_version_id == version_id,
+            BillingContractLine.contract_line_key == line_key,
+        )
+    ).scalar_one()
+    line.tax_treatment_code = "VAT-REPLAY"
+    db_session.commit()
+
+    first = _schedule(db_session, contract_version)
+    assert first.gross_amount == Decimal("26875.00")
+    db_session.commit()
+
+    tax_rate.rate = Decimal("10.0000")
+    line.unit_price = Decimal("30000.00")
+    db_session.commit()
+    replay = _schedule(
+        db_session,
+        contract_version,
+        key="pytest:tax-policy-changed",
+    )
+
+    assert replay.replayed is True
+    assert replay.obligation_id == first.obligation_id
+    assert replay.gross_amount == Decimal("26875.00")
+    obligation = db_session.get(BillingObligation, first.obligation_id)
+    assert obligation.rating_tax_rate_id == tax_rate.id
+    assert obligation.rating_tax_rate_percent == Decimal("7.5000")
+
+
+def test_same_natural_identity_with_different_coverage_fails_closed(
+    db_session,
+    contract_version,
+):
+    partial = Interval(
+        starts_at=START,
+        ends_at=datetime(2026, 3, 16, tzinfo=UTC),
+    )
+    first = _schedule(db_session, contract_version, covered=partial)
+    db_session.commit()
+
+    with pytest.raises(BillingObligationError) as excinfo:
+        _schedule(
+            db_session,
+            contract_version,
+            key="pytest:different-coverage",
+        )
+
+    assert first.replayed is False
+    assert excinfo.value.code == "billing.obligations.rating_provenance_conflict"
+
+
+def test_corrupt_recorded_rating_fingerprint_fails_replay(
+    db_session,
+    contract_version,
+):
+    scheduled = _schedule(db_session, contract_version)
+    db_session.commit()
+    obligation = db_session.get(BillingObligation, scheduled.obligation_id)
+    obligation.rating_input_fingerprint = "0" * 64
+    db_session.commit()
+
+    with pytest.raises(BillingObligationError) as excinfo:
+        _schedule(
+            db_session,
+            contract_version,
+            key="pytest:corrupt-provenance",
+        )
+
+    assert (
+        excinfo.value.code == "billing.obligations.recorded_rating_provenance_invalid"
+    )
 
 
 def test_consecutive_periods_do_not_gap_or_overlap(db_session, contract_version):
@@ -320,7 +414,6 @@ def test_scheduling_requires_an_existing_contract_version(db_session, contract_v
                 contract_version_id=uuid4(),
                 contract_line_key=line_key,
                 period_index=0,
-                net_amount=Decimal("100.00"),
             ),
             context=_context(),
         )
@@ -329,7 +422,25 @@ def test_scheduling_requires_an_existing_contract_version(db_session, contract_v
 
 
 def test_tax_is_carried_separately_into_the_gross_amount(db_session, contract_version):
+    from app.models.billing import TaxRate
+
     version_id, line_key, _ = contract_version
+    db_session.add(
+        TaxRate(
+            name="VAT 7.5%",
+            code="VAT-NG",
+            rate=Decimal("7.5000"),
+            is_active=True,
+        )
+    )
+    line = db_session.execute(
+        select(BillingContractLine).where(
+            BillingContractLine.contract_version_id == version_id,
+            BillingContractLine.contract_line_key == line_key,
+        )
+    ).scalar_one()
+    line.tax_treatment_code = "VAT-NG"
+    db_session.commit()
 
     result = BillingObligations.schedule(
         db_session,
@@ -337,8 +448,6 @@ def test_tax_is_carried_separately_into_the_gross_amount(db_session, contract_ve
             contract_version_id=version_id,
             contract_line_key=line_key,
             period_index=0,
-            net_amount=Decimal("25000.00"),
-            tax_amount=Decimal("1875.00"),
         ),
         context=_context(),
     )

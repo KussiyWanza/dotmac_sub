@@ -150,6 +150,8 @@ class NetworkZoneBase(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
     parent_id: str | None = None
+    # Typed geographic binding; must reference an active GeoArea.
+    geo_area_id: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     is_active: bool = True
@@ -167,6 +169,8 @@ class NetworkZoneUpdate(BaseModel):
     longitude: float | None = None
     is_active: bool | None = None
     clear_parent: bool = False
+    geo_area_id: str | None = None
+    clear_geo_area: bool = False
 
 
 class NetworkZoneRead(NetworkZoneBase):

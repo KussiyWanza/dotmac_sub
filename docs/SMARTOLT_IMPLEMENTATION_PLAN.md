@@ -113,7 +113,10 @@ This plan details the work required to bring DotMac Sub's UI to feature parity w
 
 ### 5. PON Ports (`/admin/network/olts/{id}/pon-ports`)
 
-**Current State**: Basic listing
+**Current State**: Basic listing plus direct per-port Enable/Disable for supported
+Huawei OLTs. The control is permission-gated, respects OLT write mode, records an
+audit event, and updates local administrative state only after device acceptance.
+
 **SmartOLT Features Missing**: Enable/Disable all, AutoFind toggle, ODB assignment
 
 | Task | Priority | Files | Effort |

@@ -1640,7 +1640,13 @@ def ont_set_pppoe_credentials(
     ont_id: str,
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    """Push PPPoE credentials to ONT via TR-069."""
+    """Write the CPE's PPPoE dialer values via TR-069.
+
+    This does not modify RADIUS. The subscriber's authoritative access
+    credential is owned by ``access.radius_projection``; this endpoint only
+    changes what the ONT dials with, and the dialer reconciler converges it
+    back onto the authoritative credential.
+    """
     denied = _ensure_ont_write_scope(request, db, ont_id)
     if denied is not None:
         return denied  # type: ignore[return-value]

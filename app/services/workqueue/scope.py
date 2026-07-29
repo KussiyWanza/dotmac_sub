@@ -13,7 +13,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.services import service_team_lifecycle
+from app.models.service_team import ServiceTeamResponsibilityKey
+from app.services import service_team_composition, service_team_lifecycle
 from app.services.workqueue.permissions import (
     WorkqueuePermissionError,
     WorkqueuePrincipal,
@@ -96,23 +97,43 @@ def get_workqueue_scope(
     """
     require_workqueue_view(principal)
 
-    team_scope = service_team_lifecycle.resolve_staff_team_scope(
+    team_scope = service_team_composition.resolve_staff_capability_scope(
         db,
         principal.person_id,
+        responsibilities=(
+            ServiceTeamResponsibilityKey.queue_lead,
+            ServiceTeamResponsibilityKey.accountable_manager,
+        ),
     )
-    member_team_ids = frozenset(team_scope.member_team_ids)
-    managed_team_ids = frozenset(team_scope.managed_team_ids)
+    member_team_ids = frozenset(team_scope.team_ids)
+    lead_team_ids = frozenset(
+        team_scope.responsibility_team_ids.get(
+            ServiceTeamResponsibilityKey.queue_lead, ()
+        )
+    )
+    managed_team_ids = frozenset(
+        team_scope.responsibility_team_ids.get(
+            ServiceTeamResponsibilityKey.accountable_manager, ()
+        )
+    )
 
     audience = resolve_audience(
         principal,
         requested_audience,
-        leads_team=team_scope.leads_team,
+        leads_team=bool(lead_team_ids or managed_team_ids),
     )
     is_org_wide = audience is WorkqueueAudience.org
 
     # Even at `self` audience a principal sees unassigned work sitting in their
     # own teams — that is the queue they are expected to pull from.
-    accessible_team_ids = member_team_ids | frozenset(managed_team_ids)
+    # At team audience, operational responsibility narrows the RBAC-authorized
+    # view; plain membership never widens it.
+    responsibility_team_ids = frozenset({*lead_team_ids, *managed_team_ids})
+    accessible_team_ids = (
+        responsibility_team_ids
+        if audience is WorkqueueAudience.team
+        else member_team_ids | frozenset(managed_team_ids)
+    )
 
     query_team_ids = (
         frozenset({service_team_id})

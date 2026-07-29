@@ -41,6 +41,13 @@ from app.models.billing_contract import (
 )
 from app.services.billing.cadence import Interval, service_period
 from app.services.billing.contracts import BillingContracts
+from app.services.billing.rating import (
+    BillingRatingError,
+    RatedObligation,
+    RatingProvenance,
+    rate_from_provenance,
+    rate_line_period,
+)
 from app.services.domain_errors import DomainError
 from app.services.events.owner_outputs import (
     OwnerOutputEnvelope,
@@ -116,6 +123,124 @@ def _aware_utc(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=UTC)
 
 
+def _recorded_provenance(obligation: BillingObligation) -> RatingProvenance:
+    """Rebuild the typed snapshot without consulting current source rows."""
+
+    if not obligation.rating_provenance_complete:
+        raise _error(
+            "incomplete_rating_provenance",
+            "The existing shadow obligation predates complete rating provenance.",
+            obligation_id=str(obligation.id),
+        )
+    required = (
+        obligation.rating_policy_version,
+        obligation.rating_coverage_start,
+        obligation.rating_coverage_end,
+        obligation.rating_unit_price,
+        obligation.rating_quantity,
+        obligation.rating_rate_basis,
+        obligation.rating_rate_unit,
+        obligation.rating_rate_quantity,
+        obligation.rating_timezone_name,
+        obligation.rating_proration_policy,
+        obligation.rating_rate_units,
+        obligation.rating_proration_factor,
+        obligation.rating_tax_rate_percent,
+        obligation.rating_tax_inclusive,
+        obligation.rating_input_fingerprint,
+    )
+    if any(value is None for value in required):
+        raise _error(
+            "incomplete_rating_provenance",
+            "The obligation marks rating provenance complete but lacks inputs.",
+            obligation_id=str(obligation.id),
+        )
+    policy_version = obligation.rating_policy_version
+    coverage_start = obligation.rating_coverage_start
+    coverage_end = obligation.rating_coverage_end
+    unit_price = obligation.rating_unit_price
+    quantity = obligation.rating_quantity
+    rate_basis = obligation.rating_rate_basis
+    rate_unit = obligation.rating_rate_unit
+    rate_quantity = obligation.rating_rate_quantity
+    timezone_name = obligation.rating_timezone_name
+    proration_policy = obligation.rating_proration_policy
+    rate_units = obligation.rating_rate_units
+    proration_factor = obligation.rating_proration_factor
+    tax_rate_percent = obligation.rating_tax_rate_percent
+    tax_inclusive = obligation.rating_tax_inclusive
+    fingerprint = obligation.rating_input_fingerprint
+    assert policy_version is not None
+    assert coverage_start is not None
+    assert coverage_end is not None
+    assert unit_price is not None
+    assert quantity is not None
+    assert rate_basis is not None
+    assert rate_unit is not None
+    assert rate_quantity is not None
+    assert timezone_name is not None
+    assert proration_policy is not None
+    assert rate_units is not None
+    assert proration_factor is not None
+    assert tax_rate_percent is not None
+    assert tax_inclusive is not None
+    assert fingerprint is not None
+    return RatingProvenance(
+        contract_version_id=obligation.contract_version_id,
+        contract_line_key=obligation.contract_line_key,
+        policy_version=policy_version,
+        period=Interval(
+            starts_at=_aware_utc(obligation.period_start),
+            ends_at=_aware_utc(obligation.period_end),
+        ),
+        currency=obligation.currency,
+        covered=Interval(
+            starts_at=_aware_utc(coverage_start),
+            ends_at=_aware_utc(coverage_end),
+        ),
+        unit_price=Decimal(unit_price),
+        quantity=Decimal(quantity),
+        rate_basis=rate_basis,
+        rate_unit=rate_unit,
+        rate_quantity=Decimal(rate_quantity),
+        timezone_name=timezone_name,
+        proration_policy=proration_policy,
+        rate_units=Decimal(rate_units),
+        proration=Decimal(proration_factor),
+        tax_treatment_code=obligation.rating_tax_treatment_code,
+        tax_rate_id=obligation.rating_tax_rate_id,
+        tax_rate_percent=Decimal(tax_rate_percent),
+        tax_inclusive=tax_inclusive,
+        input_fingerprint=fingerprint,
+    )
+
+
+def _replay_recorded_rating(obligation: BillingObligation) -> RatedObligation:
+    try:
+        rated = rate_from_provenance(_recorded_provenance(obligation))
+    except BillingRatingError as exc:
+        raise _error(
+            "recorded_rating_provenance_invalid",
+            "The existing obligation's rating provenance cannot be replayed.",
+            obligation_id=str(obligation.id),
+            rating_code=exc.code,
+        ) from exc
+    if (
+        obligation.currency != rated.currency
+        or obligation.net_amount != rated.net_amount
+        or obligation.tax_amount != rated.tax_amount
+        or obligation.gross_amount != rated.gross_amount
+    ):
+        raise _error(
+            "recorded_rating_result_mismatch",
+            "The existing obligation does not match its recorded rating inputs.",
+            obligation_id=str(obligation.id),
+            recorded_gross=str(obligation.gross_amount),
+            replayed_gross=str(rated.gross_amount),
+        )
+    return rated
+
+
 def permitted_authority() -> BillingRecordAuthority:
     """Return the authority this owner may write, from the manifest state."""
 
@@ -142,10 +267,7 @@ class ScheduleObligationCommand:
     contract_version_id: UUID
     contract_line_key: UUID
     period_index: int
-    # Rated amounts. Phase 2's rating owner supplies these; Phase 1 backfill
-    # carries the contracted line amount directly.
-    net_amount: Decimal
-    tax_amount: Decimal = Decimal("0")
+    covered: Interval | None = None
     due_at: datetime | None = None
 
 
@@ -158,6 +280,7 @@ class ObligationResult:
     authority: BillingRecordAuthority
     period: Interval
     gross_amount: Decimal
+    rating_input_fingerprint: str
     replayed: bool
 
 
@@ -183,13 +306,26 @@ class BillingObligations:
         )
 
     @staticmethod
+    def replay_recorded_rating(
+        obligation: BillingObligation,
+    ) -> RatedObligation:
+        """Reproduce one stored result without reading mutable current policy."""
+
+        return _replay_recorded_rating(obligation)
+
+    @staticmethod
     def consume_contract_shadow(
         db: Session,
         *,
         sales_order_id: UUID,
         commands: tuple[ScheduleObligationCommand, ...],
         event_id: UUID,
+        output_schema_version: int,
         context: CommandContext,
+        contract_change_kind: str = "sales_funding",
+        envelope_source_kind: str = "sales_order",
+        envelope_source_id: UUID | None = None,
+        subscription_id: UUID | None = None,
     ) -> tuple[ObligationResult, ...] | None:
         """Receipt recorded contract versions and schedule shadow obligations."""
 
@@ -203,12 +339,18 @@ class BillingObligations:
                 OwnerOutputEnvelope(
                     event_type=EventType.custom,
                     producer_owner=OWNER,
-                    source_kind="sales_order",
-                    source_id=sales_order_id,
+                    source_kind=envelope_source_kind,
+                    source_id=envelope_source_id or sales_order_id,
                 ),
                 {
                     "output": "billing.obligations.shadow_scheduled",
                     "sales_order_id": str(sales_order_id),
+                    "contract_change_kind": contract_change_kind,
+                    **(
+                        {"subscription_id": str(subscription_id)}
+                        if subscription_id is not None
+                        else {}
+                    ),
                     "obligations": [
                         {
                             "obligation_id": str(result.obligation_id),
@@ -217,6 +359,9 @@ class BillingObligations:
                             "period_start": result.period.starts_at.isoformat(),
                             "period_end": result.period.ends_at.isoformat(),
                             "gross_amount": str(result.gross_amount),
+                            "rating_input_fingerprint": (
+                                result.rating_input_fingerprint
+                            ),
                         }
                         for result in results
                     ],
@@ -237,6 +382,7 @@ class BillingObligations:
                 producer_owner="billing.contracts",
                 context=context,
                 operation=_effect,
+                schema_version=output_schema_version,
             )[0],
         )
 
@@ -252,12 +398,6 @@ class BillingObligations:
                 "missing_idempotency_key",
                 "Scheduling an obligation requires a business idempotency key.",
             )
-        if command.net_amount < 0 or command.tax_amount < 0:
-            raise _error(
-                "invalid_obligation_amount",
-                "Obligation net and tax amounts cannot be negative.",
-            )
-
         version = lock_for_update(
             db, BillingContractVersion, command.contract_version_id
         )
@@ -296,32 +436,67 @@ class BillingObligations:
                 version_ends_at=version_ends_at.isoformat(),
             )
 
-        gross = command.net_amount + command.tax_amount
-        authority = permitted_authority()
-
-        existing = db.execute(
-            select(BillingObligation).where(
-                BillingObligation.contract_line_key == command.contract_line_key,
-                BillingObligation.contract_version_id == version.id,
-                BillingObligation.charge_component == line.charge_component,
-                BillingObligation.source_kind == version.source_kind,
-                BillingObligation.source_id == version.source_id,
-                BillingObligation.source_version == version.source_version,
-                BillingObligation.period_start == period.starts_at,
-                BillingObligation.period_end == period.ends_at,
-                BillingObligation.currency == line.currency,
+        existing_rows = list(
+            db.execute(
+                select(BillingObligation)
+                .where(
+                    BillingObligation.contract_line_key == command.contract_line_key,
+                    BillingObligation.contract_version_id == version.id,
+                    BillingObligation.period_start == period.starts_at,
+                    BillingObligation.period_end == period.ends_at,
+                )
+                .order_by(BillingObligation.id)
+                .limit(2)
+            ).scalars()
+        )
+        if len(existing_rows) > 1:
+            raise _error(
+                "duplicate_obligation",
+                "Multiple obligations exist for one stable line/version/period.",
+                contract_line_key=str(command.contract_line_key),
+                period_start=period.starts_at.isoformat(),
             )
-        ).scalar_one_or_none()
+        existing = existing_rows[0] if existing_rows else None
         if existing is not None:
+            replayed = _replay_recorded_rating(existing)
+            requested_coverage = command.covered or period
+            if (
+                replayed.provenance.covered.starts_at != requested_coverage.starts_at
+                or replayed.provenance.covered.ends_at != requested_coverage.ends_at
+            ):
+                raise _error(
+                    "rating_provenance_conflict",
+                    "The natural obligation identity was reused with new coverage.",
+                    obligation_id=str(existing.id),
+                    recorded_coverage_start=(
+                        replayed.provenance.covered.starts_at.isoformat()
+                    ),
+                    recorded_coverage_end=(
+                        replayed.provenance.covered.ends_at.isoformat()
+                    ),
+                    requested_coverage_start=requested_coverage.starts_at.isoformat(),
+                    requested_coverage_end=requested_coverage.ends_at.isoformat(),
+                )
             return ObligationResult(
                 obligation_id=existing.id,
                 state=existing.state,
                 authority=existing.authority,
                 period=period,
                 gross_amount=existing.gross_amount,
+                rating_input_fingerprint=(replayed.provenance.input_fingerprint),
                 replayed=True,
             )
 
+        rated = rate_line_period(
+            db,
+            contract_version_id=version.id,
+            contract_line_key=command.contract_line_key,
+            period=period,
+            covered=command.covered,
+        )
+        gross = rated.gross_amount
+        authority = permitted_authority()
+        provenance = rated.provenance
         obligation = BillingObligation(
             contract_id=version.contract_id,
             contract_version_id=version.id,
@@ -336,9 +511,27 @@ class BillingObligations:
             period_start=period.starts_at,
             period_end=period.ends_at,
             currency=line.currency,
-            net_amount=command.net_amount,
-            tax_amount=command.tax_amount,
+            net_amount=rated.net_amount,
+            tax_amount=rated.tax_amount,
             gross_amount=gross,
+            rating_provenance_complete=True,
+            rating_policy_version=provenance.policy_version,
+            rating_coverage_start=provenance.covered.starts_at,
+            rating_coverage_end=provenance.covered.ends_at,
+            rating_unit_price=provenance.unit_price,
+            rating_quantity=provenance.quantity,
+            rating_rate_basis=provenance.rate_basis,
+            rating_rate_unit=provenance.rate_unit,
+            rating_rate_quantity=provenance.rate_quantity,
+            rating_timezone_name=provenance.timezone_name,
+            rating_proration_policy=provenance.proration_policy,
+            rating_rate_units=provenance.rate_units,
+            rating_proration_factor=provenance.proration,
+            rating_tax_treatment_code=provenance.tax_treatment_code,
+            rating_tax_rate_id=provenance.tax_rate_id,
+            rating_tax_rate_percent=provenance.tax_rate_percent,
+            rating_tax_inclusive=provenance.tax_inclusive,
+            rating_input_fingerprint=provenance.input_fingerprint,
             accounting_treatment=line.accounting_treatment,
             collection_timing=version.collection_timing,
             is_finite=line.is_finite,
@@ -368,6 +561,7 @@ class BillingObligations:
             authority=authority,
             period=period,
             gross_amount=gross,
+            rating_input_fingerprint=provenance.input_fingerprint,
             replayed=False,
         )
 

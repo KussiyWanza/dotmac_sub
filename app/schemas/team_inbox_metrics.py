@@ -8,7 +8,7 @@ from pydantic import BaseModel
 class InboxTeamPerformanceRead(BaseModel):
     service_team_id: UUID
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     response_sla_seconds: int | None = None
     conversation_count: int
     open_count: int
@@ -28,7 +28,7 @@ class InboxAgentPerformanceRead(BaseModel):
     person_id: UUID
     service_team_id: UUID
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     active_assignment_count: int
     handled_conversation_count: int
     average_queue_wait_seconds: float | None = None
@@ -38,7 +38,7 @@ class InboxEscalationCandidateRead(BaseModel):
     conversation_id: UUID
     service_team_id: UUID
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     subject: str | None = None
     contact_address: str | None = None
     status: str

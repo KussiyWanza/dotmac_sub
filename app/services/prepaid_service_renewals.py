@@ -37,6 +37,7 @@ from app.models.billing import (
     TaxRate,
 )
 from app.models.catalog import (
+    AddOnPrice,
     BillingCycle,
     BillingMode,
     CatalogOffer,
@@ -44,6 +45,7 @@ from app.models.catalog import (
     OfferVersionPrice,
     PriceType,
     Subscription,
+    SubscriptionAddOn,
     SubscriptionStatus,
 )
 from app.models.subscriber import Address, Subscriber
@@ -311,6 +313,20 @@ class PrepaidServiceRenewalPreview:
     replayed: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidRecurringChargePreview:
+    """Typed current-owner result for one complete candidate prepaid period."""
+
+    subscription_id: UUID
+    account_id: UUID
+    period_start: datetime
+    period_end: datetime
+    gross_amount: Decimal
+    currency: str
+    billing_cycle: BillingCycle
+    excluded_recurring_addon_ids: tuple[UUID, ...]
+
+
 @dataclass(frozen=True)
 class PrepaidServiceRenewalResult:
     preview: PrepaidServiceRenewalPreview
@@ -390,6 +406,103 @@ class FundingChangeRenewalResult:
     draft_invoices_settled: int = 0
     draft_invoices_pending: int = 0
     draft_review_exceptions: int = 0
+
+
+def preview_prepaid_recurring_charge(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    as_of: datetime,
+) -> PrepaidRecurringChargePreview:
+    """Resolve the current prepaid owner's next base-service charge.
+
+    The result is read-only migration evidence. It deliberately preserves the
+    current monthly-only and stale-anchor constraints so ADR 0007 Phase 2 can
+    distinguish parity from newly supported cadence and unresolved legacy
+    policy instead of silently treating them as equal.
+    """
+
+    if as_of.tzinfo is None:
+        _error(
+            "invalid_effective_at",
+            "Prepaid charge preview requires a timezone-aware instant.",
+        )
+    effective_at = _utc(as_of)
+    subscription = _subscription_for_request(db, subscription_id)
+    if subscription.billing_mode is not BillingMode.prepaid:
+        _error(
+            "mode_not_prepaid",
+            "The current prepaid owner cannot preview a postpaid subscription.",
+        )
+    if subscription.status not in PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES:
+        _error(
+            "subscription_not_eligible",
+            "The current prepaid owner excludes this subscription state.",
+        )
+    period_start_value = subscription.next_billing_at or subscription.start_at
+    if period_start_value is None:
+        _error(
+            "missing_anchor",
+            "The current prepaid owner requires a billing-period anchor.",
+        )
+    period_start = _utc(period_start_value)
+    if (
+        period_start <= effective_at
+        and effective_at - period_start > _MAX_AUTOMATIC_LAG
+    ):
+        _error(
+            "stale_anchor",
+            "The current prepaid owner quarantines a stale billing anchor.",
+        )
+    resolved = resolve_prepaid_monthly_charge(db, subscription, effective_at)
+    if resolved is None:
+        effective_cycle = subscription.billing_cycle or subscription.offer.billing_cycle
+        if effective_cycle is not BillingCycle.monthly:
+            _error(
+                "unsupported_cadence",
+                "The current prepaid owner supports monthly renewal only.",
+            )
+        _error(
+            "missing_price",
+            "The current prepaid owner cannot resolve a recurring price.",
+        )
+    amount, currency, cycle = resolved
+    from app.services.billing_automation import _period_end
+
+    period_end = _period_end(period_start, cycle)
+    excluded_recurring_addon_ids = tuple(
+        sorted(
+            set(
+                db.execute(
+                    select(SubscriptionAddOn.id)
+                    .join(
+                        AddOnPrice,
+                        AddOnPrice.add_on_id == SubscriptionAddOn.add_on_id,
+                    )
+                    .where(
+                        SubscriptionAddOn.subscription_id == subscription.id,
+                        (SubscriptionAddOn.start_at.is_(None))
+                        | (SubscriptionAddOn.start_at < period_end),
+                        (SubscriptionAddOn.end_at.is_(None))
+                        | (SubscriptionAddOn.end_at > period_start),
+                        AddOnPrice.price_type == PriceType.recurring,
+                        AddOnPrice.is_active.is_(True),
+                    )
+                ).scalars()
+            ),
+            key=str,
+        )
+    )
+    return PrepaidRecurringChargePreview(
+        subscription_id=subscription.id,
+        account_id=subscription.subscriber_id,
+        period_start=period_start,
+        period_end=period_end,
+        gross_amount=round_money(amount),
+        currency=str(currency).upper(),
+        billing_cycle=cycle,
+        excluded_recurring_addon_ids=excluded_recurring_addon_ids,
+    )
 
 
 def evaluate_prepaid_service_after_settlement(
@@ -1364,6 +1477,7 @@ __all__ = [
     "FundingChangeRenewalDisposition",
     "FundingChangeRenewalResult",
     "PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES",
+    "PrepaidRecurringChargePreview",
     "PrepaidServiceRenewalPreview",
     "PrepaidServiceRenewalError",
     "PrepaidServiceRenewalResult",
@@ -1373,6 +1487,7 @@ __all__ = [
     "confirm_prepaid_service_renewal",
     "evaluate_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
+    "preview_prepaid_recurring_charge",
     "renewal_outcomes_for_payment",
     "resolve_prepaid_monthly_charge",
     "resolve_prepaid_monthly_charges",

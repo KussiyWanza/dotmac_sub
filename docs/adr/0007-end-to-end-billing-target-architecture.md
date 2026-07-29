@@ -714,9 +714,89 @@ coherent reviewable slice with its own forward-fix plan.
 - Shadow: compare obligations and rated totals against current postpaid
   invoice-generation and prepaid-renewal previews for the complete active
   cohort.
+- Current implementation state: shadow obligation creation consumes only
+  contract/version/line/period identity and resolves net, tax, gross, and
+  currency through `billing.rating`; producer-supplied money is not accepted.
+  Durable Phase 2 runs lock and classify the complete active cohort, record
+  current-owner and target totals per currency, and preserve expected new
+  cadence, unresolved, ambiguous, unlinked, duplicate, gap, overlap, and
+  variance evidence. The current postpaid owner now exposes the exact
+  base-plus-recurring-add-on components used by invoice execution, including
+  tax, proration, route quantity and structural `SubscriptionAddOn` identity.
+  Unsafe current behavior such as multiple active prices, mixed currency, or a
+  route-capped quantity remains a typed blocker instead of being treated as
+  parity. The current prepaid owner explicitly reports recurring add-ons that
+  its base-only renewal excludes. The verifier cannot repair any owner or move
+  authority.
+- Rating-provenance implementation: every newly scheduled shadow obligation
+  stores its versioned policy, exact coverage, contracted price/quantity,
+  rate unit/quantity, timezone, proration policy/factor, exact tax-rate
+  identity/value, and a content fingerprint atomically with the rated result.
+  Replay reproduces the result from that snapshot without reading mutable
+  current tax configuration; different coverage for the same natural identity
+  fails closed. Existing obligations remain explicitly provenance-incomplete
+  instead of receiving inferred historical inputs, and therefore block the
+  Phase 2 cohort until they are replaced or reviewed through an approved
+  owner-backed migration. Future rating policies must add a replay
+  implementation; they must not change the meaning of `billing-rating-v1`.
+- Structural recurring-add-on capture is now an owner-output chain, not a
+  cross-owner comparison or repair loop. The temporary
+  `billing.addon_contract_backfill` migration owner locks the current shadow
+  contract, rebuilds an exact future-period snapshot of
+  `SubscriptionAddOn.id`, `AddOnPrice.id`, quantity, price, currency and source
+  interval, confirms a fingerprint, and atomically stages
+  `billing.addon_contract_backfill.captured`. `billing.contracts` receipts that
+  output into the same non-effective boundary draft and exact durable timer
+  used by live changes, preserves the base-line lineage, and gives every
+  recurring add-on `component_key == str(SubscriptionAddOn.id)`. Only the fired
+  timer generation supersedes the current shadow version and emits the
+  identity-only obligation handoff; the normal obligation and terminal-evidence
+  owners then advance the chain. Ambiguous prices, mixed currency,
+  partial-period terms, stale versions, invalid quantities, and missing
+  structural sale anchors fail closed before a version is written.
+- The existing `billing_target_shadow` operator adapter exposes preview and
+  capture as separate commands. Capture requires the reviewed SHA-256
+  fingerprint and a stable idempotency key; the adapter cannot bypass either
+  owner or promote authority.
+- This capture remains migration-only. It does not charge, repair another
+  owner, cut over prepaid/postpaid reads, or prove a real cohort complete.
+  Cancellation, admin, route, sales, and remediation writers still need to
+  emit owner-backed billing-terms outputs atomically with their transitions;
+  only then can the temporary backfill producer be retired.
+- Live customer recurring add-on purchase now completes the owner-output
+  shadow chain without resetting the base subscription cadence. The typed
+  `financial.addon_purchases` command owns the entitlement, exact adjustment
+  link, idempotency, audit, and
+  `billing.contract_terms.recurring_addon_added` output in one transaction.
+  `billing.contracts` receipts the immutable accepted term, derives the next
+  service-period boundary from its current version, adds the term to one
+  non-effective draft, and atomically creates or replaces that contract's
+  `pending_terms_effective` durable timer. Further purchases before the same
+  boundary add lines to the same draft; they do not advance or reset the
+  cadence anchor. If a delayed live output arrives after an exact backfilled
+  term has already become effective, the owner receipts that satisfied
+  identity and creates neither another draft nor another timer.
+- When the exact timer generation fires, `billing.contracts` receipts it,
+  validates the expected draft version, closes the prior half-open interval,
+  promotes the draft to effective shadow terms, and emits the standard
+  identity-only obligation handoff. `billing.obligations` and
+  `billing.shadow_verification` receipt the remaining outputs. A cadence that
+  differs from the base contract, mixed currency, stale draft, stale timer,
+  missing structural sale anchor, or malformed term fails closed. No authority
+  or money reader moved.
+- Cancellation deliberately remains open. It must carry causal identity back
+  to the purchase output so an out-of-order cancellation cannot be receipted
+  before the term it removes; adding an unordered negative event would recreate
+  the very drift this architecture is intended to prevent.
 - Gate:
   - exact period and amount parity for existing supported contracts;
+  - exact one-to-one `SubscriptionAddOn.id` to add-on contract-line identity
+    and complete-cycle component parity for postpaid;
+  - zero prepaid recurring-add-on exclusions until the prepaid owner consumes
+    complete rated obligations under a separately approved money cutover;
   - approved expected differences for newly supported cadence;
+  - complete fingerprint-valid rating provenance for every included
+    obligation;
   - zero duplicate/gapped/overlapping obligations outside typed policy;
   - concurrency and replay uniqueness on PostgreSQL;
   - leap-year, end-of-month, timezone, late/lapsed, and proration matrix green.
@@ -934,6 +1014,31 @@ evidence are append-only and are not removed by rollback.
   totals, owner-output outcomes, and exact code/schema identity. Operator and
   finance approvals are separate and fail closed while any blocker is non-zero;
   recording approvals still does not move authority.
+- Phase 2 rating/obligation verification is also durable migration evidence.
+  The contract output schema now carries identity only; `billing.obligations`
+  invokes `billing.rating` for every shadow amount. Version 1 contract outputs
+  remain consumable during shadow rollout, but their amount fields are ignored.
+  New obligations persist fingerprinted `billing-rating-v1` replay inputs and
+  reproduce their stored result without resolving current tax state. Legacy
+  provenance-incomplete obligations are an explicit unresolved cohort, never
+  silently backfilled.
+  Complete-cohort runs use typed previews from the current postpaid and prepaid
+  owners. Postpaid evidence is componentized across base service and recurring
+  add-ons, and every included add-on must match the target contract through its
+  structural `SubscriptionAddOn.id`. Prepaid evidence exposes its current
+  base-only add-on exclusion and therefore stays blocked rather than claiming a
+  false complete-cycle match. Runs require exact parity for supported cadence,
+  keep newly supported cadence in an explicit expected-difference cohort, and
+  block approval on any unresolved, ambiguous, unlinked, duplicate, gap,
+  overlap, or variance count. No real cohort run or operator/finance approval
+  is implied by this code.
+- A temporary, fingerprint-confirmed recurring-add-on backfill producer now
+  drives `billing.contracts` through a receipted owner output. The resulting
+  contract version and complete base-plus-add-on obligation output commit
+  atomically inside their respective owners. This prevents the migration tool
+  from becoming a second contract-line writer and preserves Michael's rule
+  that one owner output triggers the next owner. No live add-on writer or money
+  authority moved in this slice.
 - Each subsequent phase is reviewed at its own cutover gate. A gate that
   requires cohort parity or finance approval cannot be satisfied by code review
   alone; it needs a durable run record meeting the cutover evidence standard

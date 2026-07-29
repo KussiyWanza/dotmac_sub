@@ -3,6 +3,8 @@
 style: exercise the builders against the native managers on db_session."""
 
 import uuid
+from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +26,46 @@ from app.services.projects import (
     projects,
 )
 from app.services.web_projects import ProjectProjectionError
+
+
+def test_project_comment_mentions_payload_accepts_tokens_and_objects():
+    assert web_projects.parse_mentions_payload(
+        '["person:one", {"id": "group:two"}, "person:one", {}]'
+    ) == ["person:one", "group:two"]
+    assert web_projects.parse_mentions_payload("not-json") == []
+
+
+def test_project_comment_attachment_staging_uses_private_storage(
+    db_session, monkeypatch
+):
+    captured = {}
+
+    def _stage_upload(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            original_filename="scope.pdf",
+            content_type="application/pdf",
+            file_size=4,
+            storage_key_or_relative_path="attachments/project/scope.pdf",
+        )
+
+    monkeypatch.setattr(web_projects.file_uploads, "stage_upload", _stage_upload)
+    upload = SimpleNamespace(
+        filename="scope.pdf",
+        content_type="application/pdf",
+        file=BytesIO(b"%PDF"),
+    )
+    result = web_projects.stage_comment_attachments(
+        db_session,
+        comment_scope_id="project-1",
+        entity_type="project_comment_attachment",
+        attachments=[upload],
+    )
+    assert result[0]["file_name"] == "scope.pdf"
+    assert result[0]["stored_file_id"]
+    assert captured["domain"] == "attachments"
+    assert captured["owner_subscriber_id"] is None
 
 
 def _create_project(db_session, subscriber, **overrides):
@@ -668,6 +710,23 @@ class TestTemplateEditor:
                 db_session,
                 template_id=str(template.id),
                 tasks_json="not-json",
+            )
+
+    def test_editor_rejects_dependency_on_later_task(self, db_session):
+        template = web_projects.create_template_from_form(
+            db_session, name="Ordered dependencies"
+        )
+
+        with pytest.raises(ValueError, match="only on an earlier task"):
+            web_projects.save_template_tasks_from_editor(
+                db_session,
+                template_id=str(template.id),
+                tasks_json=(
+                    '[{"client_id": "first", "title": "First",'
+                    ' "dependencies": ["second"]},'
+                    ' {"client_id": "second", "title": "Second",'
+                    ' "dependencies": []}]'
+                ),
             )
 
     def test_template_task_cross_template_guard(self, db_session):

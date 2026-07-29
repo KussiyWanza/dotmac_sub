@@ -27,6 +27,24 @@ Ordering rules
   sequence so a failure earlier doesn't leave the device in a state where
   the next NBI write can't be delivered.
 
+ACS device identity is a hard precondition
+==========================================
+
+Every ACS action carries a GenieACS ``_id`` (``OUI-ProductClass-Serial``).
+The planner **never constructs one**. It uses the persisted
+``Tr069CpeDevice.genieacs_device_id`` the Inform handler owns, or the ``_id``
+the ACS itself reported for this serial on this pass — and nothing else. When
+the device has no ACS document, when more than one document matches, or when
+the recorded and reported ids disagree, the plan fails closed: it carries the
+OLT actions only and sets ``Plan.acs_wait_reason``. ``reconcile_ont`` then
+reports ``ONT_NOT_INFORMING`` / ``ACS_IDENTITY_UNRESOLVED`` and the sweeper
+retries after the next Inform.
+
+This replaces an earlier placeholder that hardcoded ``00259E`` + ``HG8546M``
+into every device id. The fleet runs several ONT models, so that placeholder
+made every non-HG8546M ONT an unrecoverable NBI 404 — a push that could never
+succeed, retried forever.
+
 What the planner doesn't do
 ===========================
 
@@ -73,6 +91,7 @@ from .state import (
     Drift,
     OntDesiredState,
     OntObservedState,
+    ReconcileFailureReason,
     ReconcileMode,
     Tr069RemoteAccessParameterPaths,
     Tr069WifiParameterPaths,
@@ -97,10 +116,36 @@ class Plan:
     actions: tuple[Action, ...]
     drifts: tuple[Drift, ...]
     required_surfaces: frozenset[WriteSurface]
+    # Set when the ACS half of this plan could not be built because the device
+    # has no ACS document or no unambiguous GenieACS ``_id``. The plan then
+    # carries OLT actions ONLY. ``reconcile_ont`` still applies those, then
+    # reports this reason instead of claiming convergence — the ACS half waits
+    # for the CPE's next Inform. It never means "push anyway to a guessed id".
+    acs_wait_reason: str | None = None
+    acs_wait_detail: str = ""
 
     @property
     def is_empty(self) -> bool:
         return not self.actions
+
+    @property
+    def waiting_for_acs(self) -> bool:
+        return self.acs_wait_reason is not None
+
+
+@dataclass(frozen=True)
+class AcsIdentity:
+    """Outcome of resolving one ONT's GenieACS ``_id``.
+
+    ``device_id`` is populated only when a real, recorded-or-observed
+    identifier was found. Otherwise ``wait_reason`` carries a
+    ``ReconcileFailureReason`` constant and ``detail`` an operator-readable
+    explanation. There is deliberately no third "best effort" outcome.
+    """
+
+    device_id: str | None
+    wait_reason: str | None
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -208,8 +253,9 @@ def compute_plan(
         _plan_olt_side(desired, observed, mode, actions, drifts)
         omci_wan_planned = _plan_olt_omci_wan(desired, observed, mode, actions, drifts)
         _append_reset_if_needed(desired, actions)
+    acs_identity = AcsIdentity(device_id=None, wait_reason=None, detail="")
     if not tr069_profile_only_change:
-        _plan_acs_side(
+        acs_identity = _plan_acs_side(
             desired,
             observed,
             mode,
@@ -225,6 +271,8 @@ def compute_plan(
         actions=tuple(actions),
         drifts=tuple(drifts),
         required_surfaces=required_surfaces,
+        acs_wait_reason=acs_identity.wait_reason,
+        acs_wait_detail=acs_identity.detail,
     )
 
 
@@ -552,14 +600,21 @@ def _plan_acs_side(
     omci_wan_planned: bool,
     proposed_fields: frozenset[str],
     force_proposed_writes: bool,
-) -> None:
+) -> AcsIdentity:
     if not desired.acs_server_id:
         # Without an ACS server bound, no ACS actions to plan. Reconciler
         # callers would normally refuse this in routed mode, but the planner
-        # itself stays pure.
-        return
+        # itself stays pure. This is not a wait condition — there is nothing
+        # to wait for.
+        return AcsIdentity(device_id=None, wait_reason=None, detail="")
 
-    device_id = _acs_device_id(desired)
+    identity = resolve_acs_device_id(desired, observed)
+    if identity.device_id is None:
+        # Fail closed. Emitting actions here would target either a fabricated
+        # ``_id`` (guaranteed NBI 404, forever) or an ambiguous one. The OLT
+        # actions already in ``actions`` still apply; the ACS half waits.
+        return identity
+    device_id = identity.device_id
 
     wifi_only_change = _is_wifi_only_change(mode, proposed_fields)
     remote_only_change = _is_remote_access_only_change(mode, proposed_fields)
@@ -573,8 +628,12 @@ def _plan_acs_side(
     ):
         _plan_acs_wan_ppp(desired, observed, device_id, actions, drifts)
 
+    # Bring-up pushes below key off ``olt_present`` (the authorization), not
+    # ``acs_present``: this code only runs for devices the ACS can deliver to.
+    fresh_bring_up = not observed.olt.olt_present
+
     if not narrow_feature_change and desired.wan_mode in {"dhcp", "static"}:
-        if not observed.acs.acs_present or _wan_ip_differs(desired, observed):
+        if fresh_bring_up or _wan_ip_differs(desired, observed):
             actions.append(
                 AcsSetWanIp(
                     device_id=device_id,
@@ -667,7 +726,7 @@ def _plan_acs_side(
         )
 
     if narrow_feature_change:
-        return
+        return identity
 
     # Defensive NAT on routed mode (Fix #4 follow-up).
     if desired.wan_mode == "pppoe" and not omci_wan_planned:
@@ -709,9 +768,7 @@ def _plan_acs_side(
                 )
             )
 
-    if not wifi_only_change and (
-        not observed.acs.acs_present or _ipv6_differs(desired, observed)
-    ):
+    if not wifi_only_change and (fresh_bring_up or _ipv6_differs(desired, observed)):
         data_model_root = (
             observed.acs.acs_data_model_root or desired.tr069_data_model_root
         )
@@ -789,6 +846,8 @@ def _plan_acs_side(
             )
         )
 
+    return identity
+
 
 def _plan_acs_wan_ppp(
     desired: OntDesiredState,
@@ -797,9 +856,16 @@ def _plan_acs_wan_ppp(
     actions: list[Action],
     drifts: list[Drift],
 ) -> None:
-    """Plan WAN PPP via TR-069 — addObject if missing, then PPPoE params."""
+    """Plan WAN PPP via TR-069 — addObject if missing, then PPPoE params.
+
+    Only reached for a device the ACS actually holds a document for (see
+    ``resolve_acs_device_id``), so ``target_inst is None`` here means "this
+    live device has no WANPPPConnection under the desired WCD", not "we have
+    never heard from this device".
+    """
     target_inst = _desired_wan_ppp_instance(desired, observed)
     # If ACS doesn't have a WAN PPP instance, addObject first.
+    created = target_inst is None
     if target_inst is None:
         actions.append(
             AcsAddObject(
@@ -822,8 +888,15 @@ def _plan_acs_wan_ppp(
         )
         target_inst = desired.wan_pppoe_instance_index
 
-    # PPPoE params — diff or set.
-    if _wan_ppp_needs_heal(desired, observed) or _wan_ppp_differs(desired, observed):
+    # PPPoE params — diff or set. A just-created object has no observable
+    # values to diff against, so creation itself is the write trigger. This
+    # used to ride on ``_wan_ppp_differs``'s "ACS has nothing yet" shortcut,
+    # which only ever fired for devices the ACS could not deliver to at all.
+    if (
+        created
+        or _wan_ppp_needs_heal(desired, observed)
+        or _wan_ppp_differs(desired, observed)
+    ):
         actions.append(
             AcsSetPppoe(
                 device_id=device_id,
@@ -905,7 +978,12 @@ def _wifi_changes(
             continue
         forced = force_proposed_writes and field in proposed_fields
         differs = _observed_differs(observed_value, desired_value)
-        fresh = not acs.acs_present
+        # Bring-up push. The freshness signal is the OLT authorization, not
+        # "the ACS has never seen this device": the latter guaranteed a 404
+        # (nothing can be written to a device the ACS holds no document for)
+        # and never converged. ``olt_present`` flips to True once authorized,
+        # so this fires at most once per ONT.
+        fresh = not observed.olt.olt_present
         if not (forced or differs or fresh):
             continue
         values[action_key] = desired_value
@@ -1105,9 +1183,11 @@ def _wan_ppp_differs(desired: OntDesiredState, observed: OntObservedState) -> bo
         return True
     if acs.acs_observed_pppoe_enable is False:
         return True
-    # Fresh device: ACS has nothing yet; planner must establish the PPP.
-    if not acs.acs_present:
-        return True
+    # NOTE: there is deliberately no "ACS has nothing yet, push anyway" branch.
+    # A device with no ACS document cannot be written to at all — every NBI
+    # call against it is a 404 — so ``resolve_acs_device_id`` stops the plan
+    # before this helper is consulted. Establishing PPP on a live-but-unconfigured
+    # device is driven by the addObject/``created`` path in ``_plan_acs_wan_ppp``.
     return False
 
 
@@ -1260,11 +1340,11 @@ def _dhcp_differs(desired: OntDesiredState, observed: OntObservedState) -> bool:
     if _observed_differs(acs.acs_observed_dhcp_enabled, desired.dhcp_enabled):
         return True
     # DHCP pool min/max/mask are write-only on most HG8546M firmwares — once
-    # set we accept what's on the device. The defensive enable on every fresh
-    # bring-up covers the no-DHCP-by-default case from feedback_ont_setup_defaults.
-    if not acs.acs_present:
-        return True
-    return False
+    # set we accept what's on the device. The defensive enable on bring-up
+    # covers the no-DHCP-by-default case from feedback_ont_setup_defaults; it
+    # keys off the OLT authorization rather than ACS absence, because a device
+    # the ACS has no document for cannot be written to at all.
+    return not observed.olt.olt_present
 
 
 def _management_server_differs(
@@ -1317,13 +1397,76 @@ def _should_push_wifi_password(
     return False
 
 
-def _acs_device_id(desired: OntDesiredState) -> str:
-    """Construct the GenieACS device-id. OUI and ProductClass aren't on the
-    OntUnit today (see adapters.py — TODO).  Reconciler uses Huawei-default
-    OUI + HG8546M as the placeholder; the actual writer resolves the real
-    device-id via the serial-suffix query in the reader.
+def resolve_acs_device_id(
+    desired: OntDesiredState,
+    observed: OntObservedState,
+) -> AcsIdentity:
+    """Resolve the exact GenieACS ``_id`` this ONT's ACS writes must target.
+
+    A GenieACS ``_id`` is ``{OUI}-{ProductClass}-{SerialNumber}``. This function
+    NEVER composes one: both the OUI and the ProductClass are model-specific and
+    the fleet is not one model. The only two admissible sources are
+
+    1. ``desired.acs_device_id`` — the persisted ``Tr069CpeDevice`` record the
+       TR-069 Inform handler owns (``app/services/tr069.py``). This is the
+       authoritative identity.
+    2. ``observed.acs.acs_observed_device_id`` — the ``_id`` the ACS itself
+       returned for this serial on this pass. An observation of the external
+       system, never an invention.
+
+    Every other outcome fails closed with a wait reason and **no** ACS actions:
+
+    * device absent from the ACS (``acs_present=False``) → ``ont_not_informing``
+    * more than one ACS document matched the serial → ``acs_identity_unresolved``
+    * neither source knows the id → ``acs_identity_unresolved``
+    * the two sources disagree → ``acs_identity_unresolved`` (one of them names
+      a different physical CPE; writing to either is unsafe)
+
+    Release gate: no ACS plan synthesizes a device identifier.
     """
-    return f"00259E-HG8546M-{desired.serial_number}"
+    persisted = (desired.acs_device_id or "").strip() or None
+    acs = observed.acs
+    seen = (acs.acs_observed_device_id or "").strip() or None
+
+    if not acs.acs_present:
+        return AcsIdentity(
+            device_id=None,
+            wait_reason=ReconcileFailureReason.ONT_NOT_INFORMING,
+            detail=(
+                f"ONT {desired.serial_number} has no ACS device document; "
+                "ACS configuration waits for the next Inform."
+            ),
+        )
+    if acs.acs_observed_device_match_count > 1:
+        return AcsIdentity(
+            device_id=None,
+            wait_reason=ReconcileFailureReason.ACS_IDENTITY_UNRESOLVED,
+            detail=(
+                f"{acs.acs_observed_device_match_count} ACS devices match serial "
+                f"{desired.serial_number}; refusing to guess which one to write."
+            ),
+        )
+    if persisted and seen and persisted != seen:
+        return AcsIdentity(
+            device_id=None,
+            wait_reason=ReconcileFailureReason.ACS_IDENTITY_UNRESOLVED,
+            detail=(
+                "Recorded ACS device id disagrees with the id the ACS reports "
+                f"for serial {desired.serial_number}; refusing to write to "
+                "either until the CPE record is repaired."
+            ),
+        )
+    device_id = persisted or seen
+    if not device_id:
+        return AcsIdentity(
+            device_id=None,
+            wait_reason=ReconcileFailureReason.ACS_IDENTITY_UNRESOLVED,
+            detail=(
+                f"No recorded GenieACS device id for serial {desired.serial_number} "
+                "and the ACS read returned none."
+            ),
+        )
+    return AcsIdentity(device_id=device_id, wait_reason=None, detail="")
 
 
 __all__ = ("Plan", "compute_plan")

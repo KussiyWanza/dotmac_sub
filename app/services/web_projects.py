@@ -11,7 +11,6 @@ Not ported from CRM (documented deviations):
 * vendor ``installation_projects`` auto-create — the vendor wrapper is separate.
 * ERP expense totals / material requests cards — ERP reads are not in sub.
 * per-person saved filter preferences — sub keeps filter state in the URL.
-* file attachments on projects/tasks/comments — comments are text-only here.
 """
 
 from __future__ import annotations
@@ -60,6 +59,7 @@ from app.schemas.project import (
 from app.services import (
     customer_experience_lifecycle,
     project_filters,
+    project_mentions,
     project_vendor_delivery,
     work_order_views,
 )
@@ -70,10 +70,72 @@ from app.services.audit_helpers import build_audit_activities, log_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
 from app.services.dynamic_filters import FilterValidationError
+from app.services.file_storage import file_uploads
 from app.services.list_query import ListDefinition, ListFieldDefinition, ListQuery
 from app.services.ui_contracts import Action
 
 logger = logging.getLogger(__name__)
+
+
+def parse_mentions_payload(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    result: list[str] = []
+    for item in parsed:
+        token = (
+            item.strip()
+            if isinstance(item, str)
+            else str(item.get("id") or "").strip()
+            if isinstance(item, dict)
+            else ""
+        )
+        if token and token not in result:
+            result.append(token)
+    return result
+
+
+def stage_comment_attachments(
+    db: Session,
+    *,
+    comment_scope_id: str,
+    entity_type: str,
+    attachments: list,
+) -> list[dict]:
+    uploaded: list[dict] = []
+    for attachment in attachments or []:
+        filename = (getattr(attachment, "filename", "") or "").strip()
+        if not filename:
+            continue
+        payload = attachment.file.read()
+        if not payload:
+            continue
+        record = file_uploads.stage_upload(
+            db=db,
+            domain="attachments",
+            entity_type=entity_type,
+            entity_id=comment_scope_id,
+            original_filename=filename,
+            content_type=getattr(attachment, "content_type", None),
+            data=payload,
+            uploaded_by=None,
+            owner_subscriber_id=None,
+        )
+        uploaded.append(
+            {
+                "file_name": record.original_filename,
+                "content_type": record.content_type,
+                "file_size": int(record.file_size),
+                "storage_key": record.storage_key_or_relative_path,
+                "stored_file_id": str(record.id),
+            }
+        )
+    return uploaded
 
 
 class ProjectProjectionError(DomainError):
@@ -1122,6 +1184,7 @@ def build_project_detail_context(
         "breached_task_ids": _breached_task_ids(db, [task.id for task in tasks]),
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
+        "mention_agents": project_mentions.list_project_mention_users(db),
         "subscriber_label": _subscriber_label(project),
         "template": template,
         "all_statuses": [item.value for item in ProjectStatus],
@@ -1131,14 +1194,38 @@ def build_project_detail_context(
 
 
 def add_project_comment_from_form(
-    db: Session, *, request, project_id: str, actor_id: str | None, body: str
+    db: Session,
+    *,
+    request,
+    project_id: str,
+    actor_id: str | None,
+    body: str,
+    attachments: list | None = None,
+    mentions: str | None = None,
 ) -> ProjectComment:
+    project = projects_service.projects.get(db, project_id)
+    uploaded = stage_comment_attachments(
+        db,
+        comment_scope_id=project_id,
+        entity_type="project_comment_attachment",
+        attachments=attachments or [],
+    )
     payload = ProjectCommentCreate(
         project_id=coerce_uuid(project_id),
         author_person_id=parse_uuid_or_none(actor_id),
         body=body,
+        attachments=uploaded or None,
     )
     comment = projects_service.project_comments.create(db, payload)
+    project_mentions.notify_project_comment_mentions(
+        db,
+        target_kind="project",
+        target_ref=project.number or project_id,
+        target_title=project.name,
+        comment_preview=body[:140],
+        mentioned_agent_ids=parse_mentions_payload(mentions),
+        actor_person_id=actor_id,
+    )
     log_audit_event(
         db=db,
         request=request,
@@ -1515,20 +1602,45 @@ def build_task_detail_context(
         "sla_breached_at": metadata.get("sla_breached_at"),
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
+        "mention_agents": project_mentions.list_project_mention_users(db),
         "task_statuses": [item.value for item in ProjectTaskStatus],
         "task_priorities": [item.value for item in ProjectTaskPriority],
     }
 
 
 def add_task_comment_from_form(
-    db: Session, *, request, task_id: str, actor_id: str | None, body: str
+    db: Session,
+    *,
+    request,
+    task_id: str,
+    actor_id: str | None,
+    body: str,
+    attachments: list | None = None,
+    mentions: str | None = None,
 ):
+    task = projects_service.project_tasks.get(db, task_id)
+    uploaded = stage_comment_attachments(
+        db,
+        comment_scope_id=task_id,
+        entity_type="project_task_comment_attachment",
+        attachments=attachments or [],
+    )
     payload = ProjectTaskCommentCreate(
         task_id=coerce_uuid(task_id),
         author_person_id=parse_uuid_or_none(actor_id),
         body=body,
+        attachments=uploaded or None,
     )
     comment = projects_service.project_task_comments.create(db, payload)
+    project_mentions.notify_project_comment_mentions(
+        db,
+        target_kind="project_task",
+        target_ref=task.number or task_id,
+        target_title=task.title,
+        comment_preview=body[:140],
+        mentioned_agent_ids=parse_mentions_payload(mentions),
+        actor_person_id=actor_id,
+    )
     log_audit_event(
         db=db,
         request=request,
@@ -1755,6 +1867,20 @@ def save_template_tasks_from_editor(
             }
         )
 
+    task_order = {
+        str(task_data["client_id"]): index for index, task_data in enumerate(normalized)
+    }
+    for task_data in normalized:
+        task_index = task_order[str(task_data["client_id"])]
+        for dependency_client_id in task_data["dependencies"]:
+            dependency_index = task_order.get(str(dependency_client_id))
+            if dependency_index is None:
+                continue
+            if dependency_index >= task_index:
+                raise ValueError(
+                    f"Task '{task_data['title']}' may depend only on an earlier task."
+                )
+
     template_uuid = template.id
     existing_tasks = (
         db.query(ProjectTemplateTask)
@@ -1806,7 +1932,8 @@ def save_template_tasks_from_editor(
         if not task_id:
             continue
         for depends_on_client_id in task_data["dependencies"]:
-            depends_on_id = client_id_to_task_id.get(str(depends_on_client_id))
+            dependency_client_id = str(depends_on_client_id)
+            depends_on_id = client_id_to_task_id.get(dependency_client_id)
             if not depends_on_id or depends_on_id == task_id:
                 continue
             key = (task_id, depends_on_id)

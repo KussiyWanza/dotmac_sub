@@ -552,6 +552,9 @@ def sync_ticket_by_id(
     elif outcome == "skipped_unmapped_subscriber":
         result.skipped_unmapped_subscribers += 1
     result.comments_created += comments_created
+    from app.services import support as support_service
+
+    support_service.Tickets.reconcile_ticket_number_sequence(db)
     return result
 
 
@@ -720,6 +723,12 @@ def pull_tickets(
         result.comments_created += _sweep_open_ticket_comments(
             db, client, comments_synced
         )
+    # Imported CRM numbers bypass native allocation. Advance the local sequence
+    # in this same transaction so the next customer/admin ticket cannot start
+    # from a stale value and repeatedly collide with imported rows.
+    from app.services import support as support_service
+
+    support_service.Tickets.reconcile_ticket_number_sequence(db)
     return result
 
 

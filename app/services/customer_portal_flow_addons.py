@@ -15,18 +15,20 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.billing import LedgerCategory
 from app.models.catalog import (
     AddOn,
+    AddOnPrice,
     OfferAddOn,
     PriceType,
+    Subscription,
     SubscriptionAddOn,
     SubscriptionStatus,
 )
@@ -52,7 +54,35 @@ from app.services.billing.adjustments import (
 from app.services.common import coerce_uuid, round_money, to_decimal
 from app.services.customer_context import optional_customer_account_id
 from app.services.customer_financial_position import get_customer_financial_position
-from app.services.owner_commands import CommandContext
+from app.services.domain_errors import DomainError
+from app.services.events.owner_outputs import OwnerOutputEnvelope, stage_owner_output
+from app.services.events.types import EventType
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
+
+OWNER = "financial.addon_purchases"
+RECURRING_TERMS_ADDED_OUTPUT = "billing.contract_terms.recurring_addon_added"
+
+_PURCHASE_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="exact add-on entitlement-to-adjustment link",
+    name="confirm_customer_addon_purchase",
+)
+
+
+class AddonPurchaseError(DomainError):
+    """Fail-closed add-on purchase confirmation error."""
+
+
+def _error(suffix: str, message: str, **details: object) -> AddonPurchaseError:
+    return AddonPurchaseError(
+        code=f"{OWNER}.{suffix}",
+        message=message,
+        details=dict(details),
+    )
 
 
 def _adjustment_http_error(exc: AccountAdjustmentError) -> HTTPException:
@@ -68,13 +98,28 @@ def _adjustment_http_error(exc: AccountAdjustmentError) -> HTTPException:
     return HTTPException(status_code=status_code, detail=exc.message)
 
 
+def _addon_active_price_record(add_on: AddOn) -> AddOnPrice | None:
+    """Return the one active recurring price, otherwise one active price.
+
+    Multiple active recurring prices are ambiguous commercial terms and fail
+    closed before either money or an entitlement is written.
+    """
+
+    prices = [price for price in (add_on.prices or []) if price.is_active]
+    recurring = [price for price in prices if price.price_type == PriceType.recurring]
+    if len(recurring) > 1:
+        raise ValueError("Add-on has multiple active recurring prices")
+    if recurring:
+        return recurring[0]
+    return prices[0] if prices else None
+
+
 def _addon_active_price(add_on: AddOn) -> tuple[Decimal, str]:
     """Best price for an add-on: prefer a recurring active price, else any
     active price. Returns (amount, currency); (0, NGN) when unpriced."""
-    prices = [p for p in (add_on.prices or []) if p.is_active]
-    if not prices:
+    chosen = _addon_active_price_record(add_on)
+    if chosen is None:
         return Decimal("0.00"), "NGN"
-    chosen = next((p for p in prices if p.price_type == PriceType.recurring), prices[0])
     return round_money(to_decimal(chosen.amount or 0)), str(chosen.currency or "NGN")
 
 
@@ -126,6 +171,7 @@ def _serialize_option(link: OfferAddOn, add_on: AddOn) -> dict:
 class AddonPurchasePreview:
     subscription: object
     add_on: AddOn
+    add_on_price: AddOnPrice | None
     quantity: int
     unit_amount: Decimal
     charge: Decimal
@@ -192,7 +238,7 @@ def _build_purchase_preview(
     add_on_id: str,
     quantity: int,
 ) -> AddonPurchasePreview:
-    add_on, unit_amount, currency = _resolve_purchasable(
+    add_on, add_on_price, unit_amount, currency = _resolve_purchasable(
         db, subscription, add_on_id, quantity
     )
     charge = round_money(unit_amount * quantity)
@@ -201,25 +247,22 @@ def _build_purchase_preview(
     origin_ref = f"{subscription.id}:{add_on.id}:{quantity}"
     adjustment_preview = None
     if charge > Decimal("0.00"):
-        try:
-            adjustment_preview = preview_account_adjustment(
-                db,
-                PreviewAccountAdjustmentQuery(
-                    request=AccountAdjustmentPreviewRequest(
-                        account_id=subscription.subscriber_id,
-                        category=LedgerCategory.custom_service,
-                        amount=charge,
-                        currency=currency,
-                        memo=f"Add-on purchase: {add_on.name}"
-                        + (f" x{quantity}" if quantity > 1 else ""),
-                        reason="Customer-confirmed add-on purchase",
-                    ),
-                    origin=AccountAdjustmentOrigin.addon_purchase,
-                    origin_ref=origin_ref,
+        adjustment_preview = preview_account_adjustment(
+            db,
+            PreviewAccountAdjustmentQuery(
+                request=AccountAdjustmentPreviewRequest(
+                    account_id=subscription.subscriber_id,
+                    category=LedgerCategory.custom_service,
+                    amount=charge,
+                    currency=currency,
+                    memo=f"Add-on purchase: {add_on.name}"
+                    + (f" x{quantity}" if quantity > 1 else ""),
+                    reason="Customer-confirmed add-on purchase",
                 ),
-            )
-        except AccountAdjustmentError as exc:
-            raise _adjustment_http_error(exc) from exc
+                origin=AccountAdjustmentOrigin.addon_purchase,
+                origin_ref=origin_ref,
+            ),
+        )
         funding_before = adjustment_preview.prepaid_funding_before
         funding_after = adjustment_preview.prepaid_funding_after
         receivables = adjustment_preview.postpaid_receivables
@@ -249,6 +292,15 @@ def _build_purchase_preview(
         subscription_status=status_value,
         offer_id=subscription.offer_id,
         add_on_id=add_on.id,
+        add_on_price_id=add_on_price.id if add_on_price is not None else "unpriced",
+        add_on_price_type=(
+            add_on_price.price_type.value if add_on_price is not None else "unpriced"
+        ),
+        add_on_billing_cycle=(
+            add_on_price.billing_cycle.value
+            if add_on_price is not None and add_on_price.billing_cycle is not None
+            else "inherit"
+        ),
         quantity=quantity,
         unit_amount=unit_amount,
         charge=charge,
@@ -265,6 +317,7 @@ def _build_purchase_preview(
     return AddonPurchasePreview(
         subscription=subscription,
         add_on=add_on,
+        add_on_price=add_on_price,
         quantity=quantity,
         unit_amount=unit_amount,
         charge=charge,
@@ -341,7 +394,7 @@ def list_available_addons(
 
 def _resolve_purchasable(
     db: Session, subscription, add_on_id: str, quantity: int
-) -> tuple[AddOn, Decimal, str]:
+) -> tuple[AddOn, AddOnPrice | None, Decimal, str]:
     """Validate the add-on is offered for this subscription and the quantity is
     in range; return (add_on, unit_amount, currency). Raises ValueError."""
     links = _offer_links(db, subscription.offer_id)
@@ -356,8 +409,14 @@ def _resolve_purchasable(
         raise ValueError(f"Minimum quantity is {min_q}")
     if link.max_quantity is not None and quantity > int(link.max_quantity):
         raise ValueError(f"Maximum quantity is {link.max_quantity}")
-    amount, currency = _addon_active_price(add_on)
-    return add_on, amount, currency
+    price = _addon_active_price_record(add_on)
+    amount = (
+        round_money(to_decimal(price.amount or 0))
+        if price is not None
+        else Decimal("0.00")
+    )
+    currency = str(price.currency or "NGN") if price is not None else "NGN"
+    return add_on, price, amount, currency
 
 
 def get_addon_quote(
@@ -371,7 +430,10 @@ def get_addon_quote(
     subscription = _owned_subscription(db, customer, subscription_id)
     if subscription is None:
         return None
-    return _build_purchase_preview(db, subscription, add_on_id, quantity).as_dict()
+    try:
+        return _build_purchase_preview(db, subscription, add_on_id, quantity).as_dict()
+    except AccountAdjustmentError as exc:
+        raise _adjustment_http_error(exc) from exc
 
 
 _IDEMPOTENCY_SCOPE = "addon_purchase"
@@ -386,117 +448,220 @@ def _find_key(db: Session, key: str) -> IdempotencyKey | None:
     ).first()
 
 
+@dataclass(frozen=True)
+class PurchaseAddonCommand:
+    """Typed customer confirmation for one exact preview."""
+
+    account_id: UUID
+    subscription_id: UUID
+    add_on_id: UUID
+    quantity: int
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True)
+class AddonPurchaseOutcome:
+    """Stable purchase outcome returned by the add-on transition owner."""
+
+    success: bool
+    reason: str | None = None
+    subscription_status: str | None = None
+    replayed: bool = False
+    subscription_add_on_id: UUID | None = None
+    add_on_name: str | None = None
+    quantity: int | None = None
+    charge: Decimal | None = None
+    currency: str = "NGN"
+    prepaid_funding_before: Decimal | None = None
+    prepaid_funding_after: Decimal | None = None
+    postpaid_receivables: Decimal | None = None
+    collection_blocking_balance: Decimal | None = None
+    shortfall: Decimal | None = None
+    account_adjustment_id: UUID | None = None
+    ledger_entry_id: UUID | None = None
+    preview_fingerprint: str | None = None
+    access_consequence: str | None = None
+    recurring_terms_event_id: UUID | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Serialize only at the adapter boundary."""
+
+        return {
+            "success": self.success,
+            "reason": self.reason,
+            "subscription_status": self.subscription_status,
+            "replayed": self.replayed,
+            "subscription_add_on_id": (
+                str(self.subscription_add_on_id)
+                if self.subscription_add_on_id is not None
+                else None
+            ),
+            "add_on_name": self.add_on_name,
+            "quantity": self.quantity,
+            "charge": self.charge,
+            "currency": self.currency,
+            "prepaid_funding_before": self.prepaid_funding_before,
+            "prepaid_funding_after": self.prepaid_funding_after,
+            "postpaid_receivables": self.postpaid_receivables,
+            "collection_blocking_balance": self.collection_blocking_balance,
+            "shortfall": self.shortfall,
+            "account_adjustment_id": (
+                str(self.account_adjustment_id)
+                if self.account_adjustment_id is not None
+                else None
+            ),
+            "ledger_entry_id": (
+                str(self.ledger_entry_id) if self.ledger_entry_id is not None else None
+            ),
+            "preview_fingerprint": self.preview_fingerprint,
+            "access_consequence": self.access_consequence,
+        }
+
+
 def _replay_addon_result(
     db: Session,
     ref_id: str | None,
     *,
     preview_fingerprint: str,
-) -> dict:
+) -> AddonPurchaseOutcome:
     sub_add_on = db.get(SubscriptionAddOn, coerce_uuid(ref_id)) if ref_id else None
     if sub_add_on is None:
-        raise HTTPException(
-            status_code=409, detail="Add-on idempotency record has no purchase"
+        raise _error(
+            "incomplete_idempotency_evidence",
+            "Add-on idempotency record has no purchase.",
         )
     if sub_add_on.purchase_preview_fingerprint != preview_fingerprint:
-        raise HTTPException(
-            status_code=409,
-            detail="Idempotency key was used for another add-on preview",
+        raise _error(
+            "idempotency_conflict",
+            "Idempotency key was used for another add-on preview.",
         )
     adjustment = sub_add_on.account_adjustment
-    return {
-        "success": True,
-        "replayed": True,
-        "subscription_add_on_id": ref_id,
-        "quantity": int(getattr(sub_add_on, "quantity", 1) or 1),
-        "charge": round_money(adjustment.amount) if adjustment else Decimal("0.00"),
-        "currency": adjustment.currency if adjustment else "NGN",
-        "prepaid_funding_before": (
+    return AddonPurchaseOutcome(
+        success=True,
+        replayed=True,
+        subscription_add_on_id=sub_add_on.id,
+        quantity=int(getattr(sub_add_on, "quantity", 1) or 1),
+        charge=round_money(adjustment.amount) if adjustment else Decimal("0.00"),
+        currency=adjustment.currency if adjustment else "NGN",
+        prepaid_funding_before=(
             round_money(adjustment.prepaid_funding_before) if adjustment else None
         ),
-        "prepaid_funding_after": (
+        prepaid_funding_after=(
             round_money(adjustment.prepaid_funding_after) if adjustment else None
         ),
-        "postpaid_receivables": (
+        postpaid_receivables=(
             round_money(adjustment.postpaid_receivables) if adjustment else None
         ),
-        "collection_blocking_balance": (
+        collection_blocking_balance=(
             round_money(adjustment.collection_blocking_balance) if adjustment else None
         ),
-        "account_adjustment_id": str(adjustment.id) if adjustment else None,
-        "ledger_entry_id": str(adjustment.ledger_entry_id) if adjustment else None,
-        "preview_fingerprint": sub_add_on.purchase_preview_fingerprint,
-        "access_consequence": "none_addon_purchase_only",
-    }
+        account_adjustment_id=adjustment.id if adjustment else None,
+        ledger_entry_id=adjustment.ledger_entry_id if adjustment else None,
+        preview_fingerprint=sub_add_on.purchase_preview_fingerprint,
+        access_consequence="none_addon_purchase_only",
+    )
 
 
-def purchase_addon(
+def confirm_addon_purchase(
     db: Session,
-    customer: dict,
-    subscription_id: str,
-    add_on_id: str,
-    quantity: int = 1,
+    command: PurchaseAddonCommand,
     *,
-    preview_fingerprint: str,
-    idempotency_key: str,
-) -> dict:
-    """Confirm the exact previewed add-on and adjustment atomically."""
-    subscription = _owned_subscription(db, customer, subscription_id)
+    context: CommandContext,
+) -> AddonPurchaseOutcome:
+    """Confirm entitlement, debit, evidence, and owner output atomically."""
+
+    return execute_owner_command(
+        db,
+        definition=_PURCHASE_COMMAND,
+        context=context,
+        operation=lambda: _confirm_addon_purchase(
+            db,
+            command=command,
+            context=context,
+        ),
+    )
+
+
+def _confirm_addon_purchase(
+    db: Session,
+    *,
+    command: PurchaseAddonCommand,
+    context: CommandContext,
+) -> AddonPurchaseOutcome:
+    if not context.idempotency_key or len(context.idempotency_key.strip()) < 16:
+        raise _error(
+            "missing_idempotency_key",
+            "A stable idempotency key is required.",
+        )
+    if len(command.preview_fingerprint.strip()) != 64:
+        raise _error(
+            "invalid_preview_fingerprint",
+            "A valid add-on preview fingerprint is required.",
+        )
+
+    account_id = str(command.account_id)
+    lock_account(db, account_id)
+    subscription = db.execute(
+        select(Subscription)
+        .where(
+            Subscription.id == command.subscription_id,
+            Subscription.subscriber_id == command.account_id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
     if subscription is None:
-        raise ValueError("Service not found")
-    if len(idempotency_key.strip()) < 16:
-        raise ValueError("A stable idempotency key is required")
-    if len(preview_fingerprint.strip()) != 64:
-        raise ValueError("A valid add-on preview fingerprint is required")
+        raise _error("service_not_found", "Service not found.")
 
-    account_id = str(subscription.subscriber_id)
-    prior = _find_key(db, idempotency_key)
+    prior = _find_key(db, context.idempotency_key)
     if prior is not None:
         if str(prior.account_id) != account_id:
-            raise ValueError("Idempotency key already used")
+            raise _error(
+                "idempotency_conflict",
+                "Idempotency key is already used by another account.",
+            )
         return _replay_addon_result(
-            db, prior.ref_id, preview_fingerprint=preview_fingerprint
+            db,
+            prior.ref_id,
+            preview_fingerprint=command.preview_fingerprint,
         )
 
-    # Serialize the entitlement and funding decision with every other account
-    # debit, then recompute the exact preview under that lock.
-    lock_account(db, str(subscription.subscriber_id))
-    db.refresh(subscription)
-    prior = _find_key(db, idempotency_key)
-    if prior is not None:
-        if str(prior.account_id) != account_id:
-            raise ValueError("Idempotency key already used")
-        return _replay_addon_result(
-            db, prior.ref_id, preview_fingerprint=preview_fingerprint
+    try:
+        preview = _build_purchase_preview(
+            db,
+            subscription,
+            str(command.add_on_id),
+            command.quantity,
         )
-
-    preview = _build_purchase_preview(db, subscription, add_on_id, quantity)
-    if preview.fingerprint != preview_fingerprint:
-        raise HTTPException(
-            status_code=409,
-            detail="Add-on price, service, or funding changed; preview again",
+    except ValueError as exc:
+        raise _error("addon_not_available", str(exc)) from exc
+    if preview.fingerprint != command.preview_fingerprint:
+        raise _error(
+            "stale_preview",
+            "Add-on price, service, or funding changed; preview again.",
         )
     if not preview.allowed:
-        return {
-            "success": False,
-            "reason": preview.rejection_reason,
-            "subscription_status": preview.subscription_status,
-            "charge": preview.charge,
-            "prepaid_funding_before": preview.prepaid_funding_before,
-            "prepaid_funding_after": preview.prepaid_funding_after,
-            "postpaid_receivables": preview.postpaid_receivables,
-            "collection_blocking_balance": preview.collection_blocking_balance,
-            "shortfall": preview.shortfall,
-            "currency": preview.currency,
-            "preview_fingerprint": preview.fingerprint,
-        }
+        return AddonPurchaseOutcome(
+            success=False,
+            reason=preview.rejection_reason,
+            subscription_status=preview.subscription_status,
+            charge=preview.charge,
+            prepaid_funding_before=preview.prepaid_funding_before,
+            prepaid_funding_after=preview.prepaid_funding_after,
+            postpaid_receivables=preview.postpaid_receivables,
+            collection_blocking_balance=preview.collection_blocking_balance,
+            shortfall=preview.shortfall,
+            currency=preview.currency,
+            preview_fingerprint=preview.fingerprint,
+        )
 
+    purchased_at = datetime.now(UTC)
     sub_add_on = SubscriptionAddOn(
         subscription_id=subscription.id,
         add_on_id=coerce_uuid(str(preview.add_on.id)),
-        quantity=quantity,
-        start_at=datetime.now(UTC),
+        quantity=command.quantity,
+        start_at=purchased_at,
         purchase_preview_fingerprint=preview.fingerprint,
-        purchase_idempotency_key=idempotency_key,
+        purchase_idempotency_key=context.idempotency_key,
     )
     db.add(sub_add_on)
     db.flush()
@@ -512,7 +677,7 @@ def purchase_addon(
                         actor=f"user:{account_id}",
                         scope=ACCOUNT_ADJUSTMENT_SCOPE,
                         reason="Customer confirmed an add-on purchase debit",
-                        idempotency_key=idempotency_key,
+                        idempotency_key=context.idempotency_key,
                     ),
                     confirmation=AccountAdjustmentConfirm(
                         account_id=adjustment_preview.account_id,
@@ -522,14 +687,16 @@ def purchase_addon(
                         memo=adjustment_preview.memo,
                         reason=adjustment_preview.reason,
                         preview_fingerprint=adjustment_preview.fingerprint,
-                        idempotency_key=idempotency_key,
+                        idempotency_key=context.idempotency_key,
                     ),
                     origin=AccountAdjustmentOrigin.addon_purchase,
-                    origin_ref=f"{subscription.id}:{preview.add_on.id}:{quantity}",
+                    origin_ref=(
+                        f"{subscription.id}:{preview.add_on.id}:{command.quantity}"
+                    ),
                 ),
             )
-        except AccountAdjustmentError as exc:
-            raise _adjustment_http_error(exc) from exc
+        except AccountAdjustmentError:
+            raise
         sub_add_on.account_adjustment_id = adjustment_result.adjustment.id
 
     # Data top-up: stamp its validity window and credit the purchased GB to the
@@ -542,7 +709,7 @@ def purchase_addon(
     db.add(
         IdempotencyKey(
             scope=_IDEMPOTENCY_SCOPE,
-            key=idempotency_key,
+            key=context.idempotency_key,
             account_id=subscription.subscriber_id,
             ref_id=str(sub_add_on.id),
         )
@@ -558,7 +725,7 @@ def purchase_addon(
             metadata_={
                 "subscription_id": str(subscription.id),
                 "add_on_id": str(preview.add_on.id),
-                "quantity": quantity,
+                "quantity": command.quantity,
                 "charge": str(preview.charge),
                 "currency": preview.currency,
                 "prepaid_funding_before": str(preview.prepaid_funding_before),
@@ -580,45 +747,64 @@ def purchase_addon(
         ),
     )
 
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        # Only a same-key race is a replay: re-fetch the key and, if a
-        # concurrent request committed it, return that result. Any other
-        # integrity failure (FK, constraint) is a real error — re-raise it
-        # rather than reporting a phantom success.
-        prior = _find_key(db, idempotency_key)
-        if prior is not None and prior.ref_id:
-            return _replay_addon_result(
-                db, prior.ref_id, preview_fingerprint=preview_fingerprint
-            )
-        raise
-    db.refresh(sub_add_on)
-    return {
-        "success": True,
-        "subscription_add_on_id": str(sub_add_on.id),
-        "add_on_name": preview.add_on.name,
-        "quantity": quantity,
-        "charge": preview.charge,
-        "currency": preview.currency,
-        "prepaid_funding_before": preview.prepaid_funding_before,
-        "prepaid_funding_after": preview.prepaid_funding_after,
-        "postpaid_receivables": preview.postpaid_receivables,
-        "collection_blocking_balance": preview.collection_blocking_balance,
-        "account_adjustment_id": (
-            str(adjustment_result.adjustment.id)
-            if adjustment_result is not None
-            else None
+    recurring_terms_event_id = None
+    price = preview.add_on_price
+    if price is not None and price.price_type is PriceType.recurring:
+        recurring_terms_event_id = stage_owner_output(
+            db,
+            OwnerOutputEnvelope(
+                event_type=EventType.custom,
+                producer_owner=OWNER,
+                source_kind="subscription_add_on",
+                source_id=sub_add_on.id,
+                schema_version=1,
+                occurred_at=purchased_at,
+            ),
+            {
+                "output": RECURRING_TERMS_ADDED_OUTPUT,
+                "account_id": account_id,
+                "subscription_id": str(subscription.id),
+                "subscription_add_on_id": str(sub_add_on.id),
+                "add_on_id": str(preview.add_on.id),
+                "add_on_price_id": str(price.id),
+                "description": str(preview.add_on.name),
+                "quantity": str(command.quantity),
+                "unit_price": str(preview.unit_amount),
+                "currency": preview.currency.strip().upper(),
+                "billing_cycle": (
+                    price.billing_cycle.value
+                    if price.billing_cycle is not None
+                    else None
+                ),
+                "purchased_at": purchased_at.isoformat(),
+            },
+            context=context,
+            account_id=command.account_id,
+            subscription_id=command.subscription_id,
+        )
+
+    db.flush()
+    return AddonPurchaseOutcome(
+        success=True,
+        subscription_add_on_id=sub_add_on.id,
+        add_on_name=preview.add_on.name,
+        quantity=command.quantity,
+        charge=preview.charge,
+        currency=preview.currency,
+        prepaid_funding_before=preview.prepaid_funding_before,
+        prepaid_funding_after=preview.prepaid_funding_after,
+        postpaid_receivables=preview.postpaid_receivables,
+        collection_blocking_balance=preview.collection_blocking_balance,
+        account_adjustment_id=(
+            adjustment_result.adjustment.id if adjustment_result is not None else None
         ),
-        "ledger_entry_id": (
-            str(adjustment_result.ledger_entry.id)
-            if adjustment_result is not None
-            else None
+        ledger_entry_id=(
+            adjustment_result.ledger_entry.id if adjustment_result is not None else None
         ),
-        "preview_fingerprint": preview.fingerprint,
-        "access_consequence": "none_addon_purchase_only",
-    }
+        preview_fingerprint=preview.fingerprint,
+        access_consequence="none_addon_purchase_only",
+        recurring_terms_event_id=recurring_terms_event_id,
+    )
 
 
 def cancel_addon(

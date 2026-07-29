@@ -166,6 +166,7 @@ from app.services.bandwidth import (
 from app.services.customer_context import require_customer_account_id
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
+from app.services.events.handlers.owner_session import owner_session
 from app.services.owner_commands import CommandContext
 from app.services.sales import selfserve as selfserve_service
 
@@ -666,16 +667,45 @@ def my_addon_purchase(
     principal: dict = Depends(require_user_auth),
 ):
     """Confirm a previewed add-on and its exact account adjustment."""
+    customer = _customer(db, principal)
+    account_id = UUID(str(customer["account_id"]))
     try:
-        return customer_addons.purchase_addon(
-            db,
-            _customer(db, principal),
-            subscription_id,
-            str(payload.add_on_id),
-            payload.quantity,
-            preview_fingerprint=payload.preview_fingerprint,
-            idempotency_key=payload.idempotency_key,
+        with owner_session(db) as owner_db:
+            outcome = customer_addons.confirm_addon_purchase(
+                owner_db,
+                customer_addons.PurchaseAddonCommand(
+                    account_id=account_id,
+                    subscription_id=UUID(subscription_id),
+                    add_on_id=payload.add_on_id,
+                    quantity=payload.quantity,
+                    preview_fingerprint=payload.preview_fingerprint,
+                ),
+                context=CommandContext.system(
+                    actor=f"user:{account_id}",
+                    scope=f"subscription:{subscription_id}:add-on-purchase",
+                    reason="Customer confirmed an add-on purchase",
+                    idempotency_key=payload.idempotency_key,
+                ),
+            )
+        return outcome.as_dict()
+    except customer_addons.AddonPurchaseError as exc:
+        status_code = (
+            404
+            if exc.code == "financial.addon_purchases.service_not_found"
+            else (
+                409
+                if exc.code
+                in {
+                    "financial.addon_purchases.idempotency_conflict",
+                    "financial.addon_purchases.incomplete_idempotency_evidence",
+                    "financial.addon_purchases.stale_preview",
+                }
+                else 400
+            )
         )
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+    except customer_addons.AccountAdjustmentError as exc:
+        raise customer_addons._adjustment_http_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

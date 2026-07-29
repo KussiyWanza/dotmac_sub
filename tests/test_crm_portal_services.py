@@ -347,7 +347,7 @@ def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     sid = str(uuid4())
     captured: dict[str, str] = {}
 
-    def _create(db, payload, actor_id=None):
+    def _create(db, payload, actor_id=None, dispatch_event_after_commit=True):
         captured["priority"] = payload.priority
         return _ticket(id="ticket-1", subscriber_id=sid)
 

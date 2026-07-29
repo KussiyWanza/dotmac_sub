@@ -31,7 +31,27 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["436_billing_shadow_verification_evidence"]
+    assert script.get_heads() == ["441_network_zone_geo_area_binding"]
+    assert (
+        script.get_revision("441_network_zone_geo_area_binding").down_revision
+        == "440_composable_service_teams"
+    )
+    assert (
+        script.get_revision("440_composable_service_teams").down_revision
+        == "439_billing_obligation_rating_provenance"
+    )
+    assert (
+        script.get_revision("439_billing_obligation_rating_provenance").down_revision
+        == "438_billing_phase2_verification_counts"
+    )
+    assert (
+        script.get_revision("438_billing_phase2_verification_counts").down_revision
+        == "437_add_pon_port_admin_enabled"
+    )
+    assert (
+        script.get_revision("437_add_pon_port_admin_enabled").down_revision
+        == "436_billing_shadow_verification_evidence"
+    )
     assert (
         script.get_revision("436_billing_shadow_verification_evidence").down_revision
         == "435_access_invitations"

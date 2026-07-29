@@ -1,173 +1,131 @@
-# Service-team Party cutover
+# Service-team source retirement before migration 426
 
-Status: implementation ready; production execution and migration rehearsal
-require separate authorization.
+Status: implementation ready; production execution requires Michael to name
+the target host and authorize the exact operation.
 
-Owner: `operations.service_team_party_cutover`
+Owner: `operations.service_team_source_retirement`
 
 ## Purpose
 
-Migration `426_service_team_lifecycle` requires every service-team manager and
-active member to resolve to an active Person Party with an active SystemUser
-principal. The earlier CRM import copied team rows and CRM Person UUIDs but did
-not copy CRM membership rows or create Party identities. A production database
-can therefore be healthy at revision 424 while being unable to cross migration
-426.
+Migration 426 remains immutable. Production may contain CRM-era scalar manager
+identifiers or workflow membership settings that migration 426 would try to
+interpret as reviewed Party identity. Those values are not authoritative and
+must not force a CRM membership import or a staff-identity review.
 
-This runbook closes that prerequisite before Alembic runs. It does not seed
-sample data. It adopts reviewed production identity and membership facts.
+The replacement gate is deliberately narrow:
 
-CRM Person UUIDs are preserved as the new Person Party UUIDs. The CRM UUID is
-also stored as a non-authoritative `dotmac_crm/person` external reference.
-Preserving the identifier lets migration 426 validate existing manager
-references without an inferred rewrite. `party.registry` remains authoritative
-for the resulting Party and SystemUser binding.
+1. preserve and verify the support-ticket team pointer;
+2. preserve and verify the project team pointer;
+3. preserve and verify the dispatch-rule team pointer;
+4. preserve and verify the Inbox email-route team pointer;
+5. preserve and verify the set-valued Inbox conversation-team pointer; and
+6. retire the two workflow settings plus the scalar manager pointer.
 
-## Safety contract
+The owner removes only compatibility membership rows that migration 426 would
+reject: unresolved, inactive or ambiguous identity, missing active principal,
+or duplicate Party targets. When a native Party-backed membership and a
+compatibility SystemUser row resolve to the same team/Party, the native row is
+retained. Several compatibility principals resolving to one Party are all
+removed rather than inventing a winner. The owner never reads CRM, creates a
+Party, matches staff by email, creates or imports membership, changes
+credentials, or grants RBAC.
 
-- The audit and planner are read-only.
-- The planner verifies the CRM team copy against current Sub team state and
-  snapshots every CRM membership.
-- Every referenced CRM Person requires an explicit private decision:
-  `bind` to one reviewed SystemUser, or `identity_only` for an inactive
-  historical member with no Sub principal.
-- Every active member and every manager requires an active reviewed SystemUser.
-- The private plan is SHA-256 bound to the decision file and source snapshot.
-- Execution requires a separate approval bound to the exact plan and decision
-  files. Approval expires within 24 hours and caps identity/membership counts.
-- One serializable owner transaction writes the predetermined Parties,
-  external references, principal bindings, memberships, audit receipt, and
-  event. Any conflict or remaining migration blocker rolls the whole command
-  back.
-- Replay verifies the receipt and exact applied rows. It never repoints an
-  identity, changes a credential or RBAC grant, changes a team or manager, or
-  activates/deactivates an account.
-- Operator output and durable receipt evidence contain hashes and aggregate
-  counts only. Private artifacts contain internal identity data and must never
-  enter Git, logs, prompts, reports, or durable knowledge.
+## Read-only gate
 
-## Inputs
-
-Keep the CRM and Sub database URLs in their approved secret locations. Export
-them only into the operator process as `CRM_DATABASE_URL` and
-`SUB_DATABASE_URL`; do not place values in a tracked or synchronized file.
-
-Create a mode-0600 decision CSV outside the repository:
-
-```text
-crm_person_id,decision,system_user_id,decision_id,reason
-```
-
-- `decision=bind`: `system_user_id` is required.
-- `decision=identity_only`: `system_user_id` is blank and is allowed only for
-  an inactive historical member.
-- `decision_id` is a fresh UUID for the human decision.
-- `reason` records why this CRM Person and SystemUser are the same person. It is
-  hashed before entering the plan receipt.
-
-Email matching output from `build_crm_staff_map.py` is candidate evidence only.
-It cannot replace the reviewed decision CSV.
-
-## Read-only audit
-
-Run from the candidate image or checked-out candidate source:
+Run from the candidate image or checkout:
 
 ```bash
-python -m scripts.migration.audit_service_team_party_cutover
+python -m scripts.migration.retire_legacy_service_team_sources --check
 ```
 
-`--check` exits 2 when blockers remain. `scripts/deploy.sh` runs this check
-before Alembic, so an unprepared database fails before migrations begin.
+The command reports aggregate counts only. Readiness requires:
 
-The summary reports team, manager, membership, malformed-setting,
-setting-to-native conflict, and blocker counts only. Preserve the output as
-operator evidence.
+- exactly five declared pointer contracts;
+- zero dangling pointer rows;
+- zero duplicate case-insensitive native team names;
+- zero active legacy workflow sources;
+- zero scalar manager pointers; and
+- zero membership rows that would block migration 426.
 
-## Build the private plan
+`scripts/deploy.sh` runs this read-only check before Alembic. It does not make
+the retirement mutation automatically.
+
+## Reviewed retirement
+
+After reviewing the read-only counts and the current backup evidence, an
+authorized operator may run:
 
 ```bash
-python -m scripts.migration.plan_service_team_party_cutover \
-  --decisions /approved/local/path/service-team-decisions.csv \
-  --out /approved/local/path/service-team-cutover-plan.json
-```
-
-The output path must not already exist. The planner creates it mode 0600. Review
-the aggregate counts, source snapshot digest, and plan digest. Independently
-verify that the decision count and membership count match the reviewed source
-census.
-
-## Approval
-
-Create a separate mode-0600 JSON file outside the repository:
-
-```json
-{
-  "schema_version": 1,
-  "plan_digest": "<planner output>",
-  "plan_file_sha256": "<sha256 of the exact plan file>",
-  "decision_file_sha256": "<sha256 of the exact decision CSV>",
-  "approved_by": "<reviewer identity>",
-  "approved_at": "2026-01-01T10:00:00+00:00",
-  "expires_at": "2026-01-01T18:00:00+00:00",
-  "reason": "<reviewed production cutover reason>",
-  "maximum_identities": 200,
-  "maximum_memberships": 1000
-}
-```
-
-The reviewer must be distinct from the automatic matching process and must
-approve the actual hashes and count limits. The approval window cannot exceed
-24 hours.
-
-## Apply
-
-Execution is a separate, explicitly authorized operation:
-
-```bash
-python -m scripts.migration.execute_service_team_party_cutover \
-  --plan /approved/local/path/service-team-cutover-plan.json \
-  --approval /approved/local/path/service-team-cutover-approval.json \
+python -m scripts.migration.retire_legacy_service_team_sources \
+  --execute \
   --actor service:<operator-identity> \
-  --execute
+  --reason "<reviewed release reason>"
 ```
 
-Expected output is `status=applied` with counts. An exact retry returns
-`status=replayed` and zero new rows. A refusal is not permission to edit the
-database manually; refresh the read-only census and prepare a new reviewed
-plan.
+This enters the registered owner command once, locks native teams,
+memberships, and the two settings, rechecks all five pointers, retires the
+sources, clears `manager_person_id`, removes only unresolvable compatibility
+membership rows, inactive or ambiguous identity blockers, missing-principal
+rows, or conflicting duplicate targets, and stages aggregate audit/event
+evidence atomically. Exact replay makes no changes.
 
-After apply, rerun:
+Duplicate resolution details worth reviewing in the evidence counters:
+
+- When a native Party row and a compatibility row resolve to the same
+  (team, Party), the compatibility row is removed. If the native row was
+  inactive while the removed compatibility row was the person's only active
+  membership, the native row is reactivated so the person's effective
+  membership survives (`reactivated_native_membership_count`).
+- When several compatibility rows resolve to one Party with no native row,
+  none wins and all are removed.
+- Entries in the retired `support_service_team_members` setting are counted
+  (`abandoned_legacy_member_entry_count`) but never imported.
+
+The deploy gate is self-retiring: once the composable schema from migration
+440 exists, `--check` reports ready and skips the audit, so later ordinary
+identity drift can never block a deploy behind this one-time tool.
+
+Rerun `--check`, then rehearse `alembic upgrade heads` against a restored
+pre-cutover backup. Do not stamp past migration 426, edit migration 426, infer
+GeoArea from a region label, or create CRM membership/Party identity to make the
+gate pass.
+
+## Composable forward migration
+
+Migration 440 is the expand/backfill phase. It registers capability vocabulary,
+adds capability, responsibility, topology, typed scope, external-reference,
+and routing-policy tables, and copies existing scalar state into shadow
+bindings: legacy `team_type` becomes capabilities (legacy `operations` teams
+also receive `outage_response`), legacy member `role` becomes responsibilities
+for active members, a still-set `manager_person_id` is preserved as a
+membership row (never reactivating a deactivated one) with the
+`accountable_manager` responsibility, and `workforce_*` pairs become external
+references with a casefolded provider. It also seeds three `network.outage`
+continuity routes replicating the retired oldest-active-team-of-type
+selection, each only when a matching team exists and no policy for the route
+exists yet. It creates no new team, no new person identity, and no access
+grant, and it never overrides an operator-configured route.
+
+After cutover, verify shadow agreement with the read-only drift gate:
 
 ```bash
-python -m scripts.migration.audit_service_team_party_cutover --check
+python -m scripts.migration.inspect_service_team_shadow_drift
 ```
 
-The gate must report `ready=true` and `blocker_count=0`.
+It prints the five drift counters and exits nonzero while any legacy pointer
+lacks its composed equivalent.
 
-## Rehearsal and release gate
-
-Before production authorization:
-
-1. restore the pre-cutover production backup into staging;
-2. verify its Alembic revision and candidate image;
-3. run the read-only audit and compare counts with production evidence;
-4. apply the exact reviewed procedure to the restored data;
-5. run `alembic upgrade heads`;
-6. verify schema contracts, service-team projections, authentication, audit,
-   outbox state, application health, and one image/revision across containers;
-7. preserve aggregate results and the approved operator record; and
-8. authorize production separately by explicitly naming the production host.
-
-Do not stamp past migration 426, run manual SQL, deploy current code against a
-424 schema, or infer that an empty Sub membership table means CRM has no
-memberships.
+Legacy scalar columns remain nullable shadow inputs. They may be removed only
+after the five-field composition drift query is zero for a reviewed complete
+cohort, all region labels have been bound to reviewed `GeoArea` records where
+appropriate, all consumers use composition, and rollback requirements expire.
 
 ## Rollback
 
-Before Alembic, any failed adoption rolls back atomically. After a successful
-adoption but before migration 426, do not manually delete identity rows; use
-the reviewed pre-cutover backup if the release is abandoned.
+Before migration 426, a failed retirement command rolls back atomically. After
+successful source retirement, restore the reviewed pre-cutover backup if the
+release is abandoned; do not recreate settings or manager pointers manually.
 
-Migration 426 is an irreversible authority cutover. Its rollback is restore
-from the verified pre-cutover backup and restore the previous image pin. The
-deploy script's image rollback does not reverse migrations.
+Migration 426 remains an irreversible authority cutover. Migration 440 is
+forward-fix only because reconstructing scalar authority would violate the
+target contract.

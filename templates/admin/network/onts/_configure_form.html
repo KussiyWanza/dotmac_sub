@@ -226,7 +226,8 @@
                 <template x-if="wanMode === 'pppoe'">
                     <div class="flex items-end gap-2">
                         <div class="w-40">
-                            <label for="pppoe_username" class="mb-1 block text-xs text-slate-600 dark:text-slate-400">Username</label>
+                            <label for="pppoe_username" class="mb-1 block text-xs text-slate-600 dark:text-slate-400"
+                                   title="What the ONT dials with. Does not change RADIUS authentication.">Username</label>
                             <input type="text" id="pppoe_username" name="pppoe_username" value="{{ pppoe_username or '' }}"
                                    class="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                         </div>

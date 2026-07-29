@@ -24,6 +24,7 @@ from app.models.team_inbox import (
     InboxMessageDirection,
 )
 from app.services import (
+    service_team_composition,
     team_inbox_field_job,
     team_inbox_media,
     team_inbox_read_state,
@@ -34,7 +35,7 @@ from app.services import (
 class InboxTimelineTeam:
     service_team_id: str
     service_team_name: str | None
-    service_team_type: str | None
+    service_team_capabilities: tuple[str, ...]
     role: str
     source: str
     is_active: bool
@@ -111,7 +112,7 @@ class InboxConversationListRow:
     subscriber_id: str | None
     primary_service_team_id: str | None
     primary_service_team_name: str | None
-    primary_service_team_type: str | None
+    primary_service_team_capabilities: tuple[str, ...]
     channel_type: str
     status: str
     priority: int
@@ -821,6 +822,10 @@ def list_conversations(
         else {}
     )
 
+    capabilities_by_team = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team.id for _conversation, team in rows if team is not None),
+    )
     items: list[InboxConversationListRow] = []
     for conversation, team in rows:
         latest = latest_messages.get(conversation.id)
@@ -853,7 +858,13 @@ def list_conversations(
                 if conversation.primary_service_team_id is not None
                 else None,
                 primary_service_team_name=team.name if team is not None else None,
-                primary_service_team_type=team.team_type if team is not None else None,
+                primary_service_team_capabilities=(
+                    tuple(
+                        capability.value for capability in capabilities_by_team[team.id]
+                    )
+                    if team is not None
+                    else ()
+                ),
                 channel_type=conversation.channel_type,
                 status=conversation.status,
                 priority=conversation.priority,
@@ -911,6 +922,10 @@ def get_conversation_timeline(
             InboxConversationTeam.role.asc(), InboxConversationTeam.created_at.asc()
         )
         .all()
+    )
+    capabilities_by_team = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team.id for _link, team in team_rows if team is not None),
     )
     assignment_rows = (
         db.query(InboxConversationAssignment, ServiceTeam)
@@ -971,7 +986,13 @@ def get_conversation_timeline(
             InboxTimelineTeam(
                 service_team_id=str(link.service_team_id),
                 service_team_name=team.name if team is not None else None,
-                service_team_type=team.team_type if team is not None else None,
+                service_team_capabilities=(
+                    tuple(
+                        capability.value for capability in capabilities_by_team[team.id]
+                    )
+                    if team is not None
+                    else ()
+                ),
                 role=link.role,
                 source=link.source,
                 is_active=link.is_active,

@@ -104,6 +104,9 @@ class OntDesiredState:
     # Identity (immutable post-creation)
     ont_unit_id: str
     serial_number: str
+    # NOTE: ``acs_device_id`` is declared with the other defaulted fields at the
+    # bottom of this dataclass (dataclass ordering), but it is *identity*, not
+    # configuration. See the field comment there.
 
     # OLT binding
     olt_id: str
@@ -186,6 +189,18 @@ class OntDesiredState:
     wan_remote_access_ssh_port: int = 22
     remote_access_paths: Tr069RemoteAccessParameterPaths | None = None
 
+    # ── ACS device identity ────────────────────────────────────────────────
+    # The GenieACS ``_id`` (``{OUI}-{ProductClass}-{SerialNumber}``) of this
+    # ONT's CPE, copied from the persisted ``Tr069CpeDevice`` row that the
+    # TR-069 Inform handler owns. It is NEVER constructed from a guessed OUI or
+    # ProductClass: the fleet runs several Huawei models (HG8546M, EG8145V5,
+    # …) and a fabricated identifier is a permanent 404 against the NBI.
+    #
+    # ``None`` means "we do not know this device's ACS identity". The planner
+    # treats that as a fail-closed wait-for-Inform condition and emits no ACS
+    # actions at all — see ``planner.resolve_acs_device_id``.
+    acs_device_id: str | None = None
+
 
 # ── Observed state ──────────────────────────────────────────────────────────
 
@@ -227,6 +242,11 @@ class AcsObservedFields:
     ``acs_observed_periodic_inform_interval_sec`` are value-verified from the
     CWMP cache. ``acs_observed_cr_password_set`` remains presence-only because
     the password itself is not safely readable.
+
+    ``acs_present=False`` means the ACS has no document for this serial at all.
+    Nothing can be delivered to such a device — every NBI write against it is a
+    404 — so the planner emits no ACS actions and the reconcile reports
+    ``ONT_NOT_INFORMING`` until the device's next Inform creates the document.
     """
 
     acs_present: bool
@@ -271,6 +291,14 @@ class AcsObservedFields:
     acs_observed_remote_ssh_port: int | None = None
     acs_observed_remote_telnet_enabled: bool | None = None
     acs_observed_remote_telnet_port: int | None = None
+    # The ``_id`` GenieACS actually returned for this serial. This is an
+    # observation of the external system, not a value we may invent: the reader
+    # copies it verbatim from the matched device document.
+    acs_observed_device_id: str | None = None
+    # How many ACS devices matched the trailing-serial query. ``0`` means the
+    # device has not informed; ``>1`` means the identity is ambiguous and no
+    # write may be targeted at any of them.
+    acs_observed_device_match_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -345,6 +373,13 @@ class ReconcileFailureReason:
     Reachability failures (``*_UNREACHABLE``, ``ONT_OFFLINE``) are detected
     before any write is attempted — they imply the DB is unchanged.
 
+    ``ONT_NOT_INFORMING`` and ``ACS_IDENTITY_UNRESOLVED`` are ACS *delivery*
+    preconditions: the ONT's OLT-side plan may still have been applied, but no
+    ACS write was attempted because the device has no ACS document, or because
+    its GenieACS ``_id`` is unknown/ambiguous. Both are wait-for-Inform states,
+    not device faults — the sweeper retries and they clear on their own once the
+    CPE informs. Neither is ever "resolved" by inventing a device identifier.
+
     Apply-time failures (``OLT_WRITE_REJECTED``, ``ACS_WRITE_FAULTED``,
     ``ACS_CR_FAILED``, ``VERIFICATION_MISMATCH``) imply zero or more actions
     were applied before the failure; the ``ReconcileResult.actions_applied``
@@ -356,6 +391,7 @@ class ReconcileFailureReason:
     ACS_UNREACHABLE = "acs_unreachable"
     ONT_OFFLINE = "ont_offline"
     ONT_NOT_INFORMING = "ont_not_informing"
+    ACS_IDENTITY_UNRESOLVED = "acs_identity_unresolved"
     BLOCKED_OUT_OF_SYNC = "blocked_out_of_sync"
     INVALID_CHANGE = "invalid_change"
 

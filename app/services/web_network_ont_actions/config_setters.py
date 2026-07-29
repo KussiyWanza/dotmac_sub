@@ -884,7 +884,20 @@ def set_pppoe_credentials(
     wan_vlan: int | None = None,
     request: Request | None = None,
 ) -> ActionResult:
-    """Set PPPoE credentials by routing through ``reconcile_ont``.
+    """Write the CPE's PPPoE dialer values, via ``reconcile_ont``.
+
+    SCOPE — this changes what the customer's ONT *dials with*. It does not
+    touch RADIUS. The authoritative access credential is ``AccessCredential`` /
+    ``RadiusUser``, projected into the FreeRADIUS auth tables by
+    ``access.radius_projection`` (``app.services.radius_population``). Typing a
+    username/password here therefore cannot grant, restore, or repair
+    authentication: if the value does not match the authoritative credential
+    the session will still be rejected at the BNG, and
+    ``app.services.cpe_dialer_credential_reconcile`` will converge the dialer
+    back onto the authoritative credential.
+
+    Use this only to repair a CPE whose stored dialer values drifted. To change
+    what the subscriber authenticates with, change the access credential.
 
     Unlike WiFi password, PPPoE creds ARE observable (the device returns
     ``Username`` on TR-069 reads), so the planner pushes on every change
@@ -913,7 +926,12 @@ def set_pppoe_credentials(
     )
 
     action_result = _reconcile_to_action_result(
-        result_obj, success_message="PPPoE credentials updated."
+        result_obj,
+        success_message=(
+            "PPPoE dialer values written to the ONT. RADIUS authentication is "
+            "unchanged — the subscriber's access credential is managed "
+            "separately."
+        ),
     )
 
     if action_result.success:

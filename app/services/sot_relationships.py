@@ -796,12 +796,121 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "admin customer profile edits",
                     "person-to-business customer conversion",
+                    "approved legacy Subscriber name corrections",
                 ),
                 depends_on=("customer.identity_scope",),
                 notes=(
                     "Business conversion is an explicit command. Generic "
                     "person edits and form category controls must not change "
-                    "the customer account type."
+                    "the customer account type. Approved legacy Subscriber "
+                    "name corrections remain here until explicit Party cutover."
+                ),
+            ),
+            SOTService(
+                name="customer.name_remediation",
+                module="app.services.crm_customer_name_repair",
+                owns=(
+                    "July 20 CRM name remediation manifest execution",
+                    "PII-free CRM name repair manifest generation",
+                ),
+                depends_on=("customer.profile_commands",),
+                notes=(
+                    "Historical repair is dry-run-first and applies only through "
+                    "the profile-command owner after exact digest confirmation."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="July 20 CRM name remediation manifest execution",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "CRM identity-change audit evidence",
+                                "legacy Subscriber name state",
+                            ),
+                            canonical_writer="customer.name_remediation",
+                        ),
+                        ConcernContract(
+                            name="PII-free CRM name repair manifest generation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "CRM identity-change audit evidence",
+                                "legacy Subscriber name state",
+                            ),
+                            canonical_writer="customer.name_remediation",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="CRM identity-change audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="immutable CRM customer identity update audit events",
+                        ),
+                        AuthorityInput(
+                            name="legacy Subscriber name state",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked Party-unbound Subscriber name columns",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The reviewed manifest is revalidated and its selected "
+                            "Subscriber corrections commit atomically."
+                        ),
+                        locking="Selected Subscriber rows are locked before revalidation.",
+                        idempotency=(
+                            "The manifest digest marks an exact successfully applied "
+                            "remediation replay."
+                        ),
+                        retries=(
+                            "Stale, invalid, or Party-bound rows fail closed and may be "
+                            "replanned from immutable evidence."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "customer.name_remediation"
+                            ),
+                            "customer.name_remediation.invalid_manifest",
+                            "customer.name_remediation.party_bound",
+                            "customer.name_remediation.stale_manifest",
+                        ),
+                        mapping_owner="CRM remediation operations adapters",
+                    ),
+                    events=EventContract(
+                        event_types=("subscriber.updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Existing subscriber update consumers receive the established "
+                            "subscriber.updated event shape."
+                        ),
+                        replay=(
+                            "The persisted manifest digest makes an exact replay a no-op."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        new_owner="customer.name_remediation",
+                        old_owner="ad-hoc CRM customer name repair scripts",
+                        verification=(
+                            "Plan, exact replay, Party-bound rejection, and drift "
+                            "rollback tests verify the remediation boundary."
+                        ),
+                        cutover_gate=(
+                            "Only an operator-confirmed digest may apply a generated plan."
+                        ),
+                        fallback_retirement=(
+                            "Generic CRM webhooks observe rejected names and do not repair "
+                            "Subscriber records."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=("docs/PARTY_CUSTOMER_LIFECYCLE.md",),
+                    test_refs=("tests/test_crm_customer_name_repair.py",),
                 ),
             ),
             SOTService(
@@ -1855,6 +1964,170 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="financial_access",
         services=(
             SOTService(
+                name="billing.addon_contract_backfill",
+                module="app.services.billing.addon_contract_backfill",
+                owns=("recurring add-on contract migration snapshot",),
+                depends_on=(
+                    "billing.contracts",
+                    "events.dispatcher",
+                    "events.owner_outputs",
+                    "financial.addon_purchases",
+                ),
+                notes=(
+                    "ADR 0007 shadow migration only. This temporary observation "
+                    "owner binds one future service-period boundary to the exact "
+                    "legacy SubscriptionAddOn identities, quantities, intervals, "
+                    "and unique active recurring price ids. It never decides a "
+                    "price, charges money, writes a contract line, or repairs "
+                    "another owner. The confirmed fingerprint stages a durable "
+                    "output that billing.contracts must receipt into the shared "
+                    "next-boundary draft and exact durable timer."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="recurring add-on contract migration snapshot",
+                            role=OwnerRole.OBSERVATION_COLLECTOR,
+                            input_names=(
+                                "legacy recurring add-on facts",
+                                "recorded billing contract boundary",
+                            ),
+                            canonical_writer="billing.addon_contract_backfill",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="legacy recurring add-on facts",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "SubscriptionAddOn identity, quantity, start/end "
+                                "interval, AddOn description, and the unique active "
+                                "recurring AddOnPrice id, amount, and currency"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded billing contract boundary",
+                            owner="billing.contracts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "current effective shadow contract version, cadence, "
+                                "currency, and structural SalesOrderLine anchor"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The capture command enters execute_owner_command once "
+                            "on a transaction-free session; source locks, fingerprint "
+                            "confirmation, idempotency evidence, and the staged "
+                            "owner output commit together."
+                        ),
+                        locking=(
+                            "The BillingContract and current effective version are "
+                            "locked before the confirmed source snapshot is rebuilt."
+                        ),
+                        idempotency=(
+                            "One durable idempotency row records the emitted event "
+                            "for each business key; exact replay emits no second output."
+                        ),
+                        retries=(
+                            "Retry the whole command with the same idempotency key. "
+                            "Changed contract or add-on facts require a new preview."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "billing.addon_contract_backfill"
+                            ),
+                            "billing.addon_contract_backfill.already_captured",
+                            "billing.addon_contract_backfill.ambiguous_recurring_price",
+                            "billing.addon_contract_backfill.contract_not_found",
+                            (
+                                "billing.addon_contract_backfill."
+                                "current_contract_version_not_found"
+                            ),
+                            "billing.addon_contract_backfill.invalid_addon_price",
+                            "billing.addon_contract_backfill.invalid_addon_quantity",
+                            ("billing.addon_contract_backfill.invalid_period_index"),
+                            (
+                                "billing.addon_contract_backfill."
+                                "invalid_preview_fingerprint"
+                            ),
+                            "billing.addon_contract_backfill.idempotency_conflict",
+                            (
+                                "billing.addon_contract_backfill."
+                                "incomplete_idempotency_evidence"
+                            ),
+                            ("billing.addon_contract_backfill.missing_idempotency_key"),
+                            (
+                                "billing.addon_contract_backfill."
+                                "missing_sales_order_anchor"
+                            ),
+                            "billing.addon_contract_backfill.mixed_currency_addon",
+                            "billing.addon_contract_backfill.partial_period_addon",
+                            "billing.addon_contract_backfill.stale_preview",
+                        ),
+                        mapping_owner="billing migration adapters",
+                        fail_closed_on=(
+                            "ambiguous or mixed-currency recurring price",
+                            "partial-period add-on terms",
+                            "stale preview or current contract version",
+                            "missing structural SalesOrderLine anchor",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("billing.addon_contract_backfill.captured",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact source ids, quantities, price "
+                            "ids, currency, intervals, target period, and the current "
+                            "contract version identity."
+                        ),
+                        replay=(
+                            "The idempotency row and staged output commit together; "
+                            "billing.contracts receipts each event exactly once."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "direct reads of mutable SubscriptionAddOn and AddOnPrice "
+                            "rows by legacy invoice and renewal paths"
+                        ),
+                        new_owner="billing.addon_contract_backfill",
+                        verification=(
+                            "Focused preview, fail-closed, replay, owner-output, "
+                            "contract-version, and obligation-chain tests."
+                        ),
+                        cutover_gate=(
+                            "Every active recurring SubscriptionAddOn has one exact "
+                            "BillingContractLine identity and shadow obligation; all "
+                            "live add-on writers emit owner-backed billing-term "
+                            "outputs and the temporary backfill owner is retired."
+                        ),
+                        fallback_retirement=(
+                            "Delete the temporary producer after all legacy rows are "
+                            "captured and cancellation, admin, route, sales, and "
+                            "remediation writers emit owner-backed contract changes "
+                            "atomically."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="billing.contracts",
                 module="app.services.billing.contracts",
                 owns=(
@@ -1866,7 +2139,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "access.subscription_lifecycle",
                     "events.dispatcher",
                     "events.owner_outputs",
+                    "financial.addon_purchases",
                     "financial.tax_configuration",
+                    "runtime.durable_timers",
                     "sales.orders",
                     "sales.fulfillment",
                 ),
@@ -1890,15 +2165,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "accepted commercial order line",
                                 "canonical subscription projection",
                                 "effective tax treatment inputs",
+                                "recurring add-on migration output",
+                                "live recurring add-on purchase output",
                                 "recorded billing contract terms",
                                 "receipted owner-output deliveries",
+                                "exact pending-terms time trigger",
                             ),
                             canonical_writer="billing.contracts",
                         ),
                         ConcernContract(
                             name="billing contract version supersession",
                             role=OwnerRole.COMMAND_WRITER,
-                            input_names=("recorded billing contract terms",),
+                            input_names=(
+                                "recorded billing contract terms",
+                                "exact pending-terms time trigger",
+                                "receipted owner-output deliveries",
+                            ),
                             canonical_writer="billing.contracts",
                         ),
                         ConcernContract(
@@ -1932,6 +2214,35 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="effective tax rate and treatment vocabulary",
                         ),
                         AuthorityInput(
+                            name="recurring add-on migration output",
+                            owner="billing.addon_contract_backfill",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "receipted exact recurring add-on source identities, "
+                                "terms, current contract version, and future period "
+                                "boundary from the confirmed migration snapshot"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live recurring add-on purchase output",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "receipted exact SubscriptionAddOn, AddOnPrice, "
+                                "quantity, price, currency, cadence, and purchase "
+                                "instant from the live owner transition"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="exact pending-terms time trigger",
+                            owner="runtime.durable_timers",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "fired billing-contract timer id, generation, due "
+                                "boundary, and expected draft version"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="receipted owner-output deliveries",
                             owner="events.owner_outputs",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -1953,20 +2264,25 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Adapters own the session; record_version and "
-                            "cancel_version, and consume_sales_funding each enter "
+                            "Adapters own the session; record_version, cancel_version, "
+                            "consume_sales_funding, and "
+                            "consume_recurring_addon_backfill, "
+                            "consume_recurring_addon_purchase, and "
+                            "consume_pending_terms_effective_due each enter "
                             "execute_owner_command once on a transaction-free "
                             "session."
                         ),
                         locking=(
                             "The BillingContract row and the current effective "
-                            "version are locked FOR UPDATE before a new version is "
-                            "inserted, so concurrent term changes serialise."
+                            "version are locked FOR UPDATE; live purchase outputs "
+                            "coalesce additively into one locked next-boundary draft "
+                            "and replace its exact durable timer generation."
                         ),
                         idempotency=(
                             "One version per (contract, business idempotency key). "
-                            "A replay returns the recorded version and reports "
-                            "replayed=True without writing a second version."
+                            "Owner-output receipts prevent duplicate draft changes "
+                            "and timer triggers; direct version replay returns the "
+                            "recorded version without writing a second."
                         ),
                         retries=(
                             "The complete command is retryable. A unique-constraint "
@@ -1978,34 +2294,56 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.contracts.active_caller_transaction",
                             "billing.contracts.command_contract_violation",
                             "billing.contracts.contract_account_mismatch",
+                            "billing.contracts.contract_not_found",
                             "billing.contracts.contract_version_not_found",
                             "billing.contracts.duplicate_contract_line",
                             "billing.contracts.duplicate_subscription_output",
                             "billing.contracts.invalid_command_context",
                             "billing.contracts.invalid_contract_terms",
+                            "billing.contracts.invalid_addon_period",
+                            "billing.contracts.invalid_addon_purchase_time",
+                            "billing.contracts.invalid_addon_terms",
+                            "billing.contracts.invalid_pending_contract_boundary",
+                            "billing.contracts.invalid_pending_terms_timer",
                             "billing.contracts.missing_idempotency_key",
                             "billing.contracts.mixed_currency_contract",
                             "billing.contracts.nested_owner_command",
                             "billing.contracts.nested_transaction_completion",
                             "billing.contracts.out_of_order_contract_version",
+                            "billing.contracts.sales_order_anchor_mismatch",
+                            "billing.contracts.stale_pending_contract_terms",
+                            "billing.contracts.stale_addon_snapshot",
+                            "billing.contracts.unsupported_addon_cadence",
+                            "billing.contracts.ambiguous_pending_contract_terms",
+                            "billing.contracts.duplicate_addon_term_conflict",
+                            "billing.contracts.pending_contract_version_not_found",
                         ),
                         mapping_owner="billing and sales adapters",
                         fail_closed_on=(
                             "mixed currency between contract and line",
+                            "an add-on cadence differing from the service cadence",
                             "a version starting before the current effective one",
+                            "a stale draft or timer generation",
                             "missing business idempotency key",
                         ),
                     ),
                     events=EventContract(
                         event_types=("billing.contracts.shadow_recorded",),
-                        schema_version=1,
+                        schema_version=2,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 is additive. Consumers validate identity and "
-                            "never re-decide the producer's contracted terms."
+                            "Version 2 carries only contract-version, line, and "
+                            "period identity; billing.obligations resolves money "
+                            "through billing.rating. The consumer accepts legacy "
+                            "Version 1 envelopes but never trusts their amount fields. "
+                            "Live add-on activation uses the subscription envelope "
+                            "while preserving the opening SalesOrder anchor as "
+                            "migration evidence."
                         ),
                         replay=(
-                            "The sales output receipt, contract rows, and staged "
+                            "The sales or add-on-backfill output receipt, contract "
+                            "rows, or live purchase receipt, draft timer and due "
+                            "receipt, and staged "
                             "billing.contracts.shadow_recorded output commit in "
                             "one owner transaction. Redelivery is an exact no-op."
                         ),
@@ -2040,6 +2378,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_contracts.py",
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/test_api_me_addons.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -2049,10 +2389,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.billing.obligations",
                 owns=(
                     "unique billing obligation identity",
+                    "immutable obligation rating provenance",
                     "billing obligation state transition",
                 ),
                 depends_on=(
                     "billing.contracts",
+                    "billing.rating",
                     "events.dispatcher",
                     "events.owner_outputs",
                 ),
@@ -2064,7 +2406,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "invoice, a payment, or an entitlement, and its state is "
                     "never inferred from an invoice label or payment origin."
                     " Phase 1 consumes the contract owner's output through a "
-                    "receipt and emits a terminal shadow result atomically."
+                    "receipt and emits a terminal shadow result atomically. "
+                    "Phase 2 resolves every amount through billing.rating; producer "
+                    "payloads carry identity, never a parallel money formula. New "
+                    "obligations snapshot complete versioned rating inputs and replay "
+                    "from that immutable snapshot without consulting current tax "
+                    "configuration. Pre-snapshot rows remain explicitly incomplete."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2074,7 +2421,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded billing contract terms",
                                 "recorded billing obligations",
+                                "deterministic target rating",
                                 "receipted owner-output deliveries",
+                            ),
+                            canonical_writer="billing.obligations",
+                        ),
+                        ConcernContract(
+                            name="immutable obligation rating provenance",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded billing contract terms",
+                                "deterministic target rating",
+                                "recorded billing obligations",
                             ),
                             canonical_writer="billing.obligations",
                         ),
@@ -2105,10 +2463,23 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="deterministic target rating",
+                            owner="billing.rating",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed net, tax, gross, currency, versioned policy, "
+                                "coverage, cadence, tax source/value, and input "
+                                "fingerprint for the exact line and period"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="recorded billing obligations",
                             owner="billing.obligations",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="billing_obligations rows and their natural identity",
+                            source=(
+                                "billing_obligations rows, natural identity, rated "
+                                "result, and immutable rating replay provenance"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -2127,8 +2498,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         idempotency=(
                             "The natural identity unique constraint is the "
                             "guarantee. A replay returns the existing obligation "
-                            "with replayed=True; a concurrent loser fails closed on "
-                            "billing.obligations.duplicate_obligation."
+                            "only after reproducing its recorded result from its "
+                            "fingerprinted provenance. New coverage for the same "
+                            "identity and incomplete legacy provenance fail closed."
                         ),
                         retries=(
                             "The complete command is retryable. Applications can "
@@ -2142,6 +2514,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.obligations.contract_line_not_found",
                             "billing.obligations.contract_version_not_found",
                             "billing.obligations.duplicate_obligation",
+                            "billing.obligations.incomplete_rating_provenance",
                             "billing.obligations.invalid_command_context",
                             "billing.obligations.invalid_obligation_amount",
                             "billing.obligations.invalid_obligation_transition",
@@ -2150,11 +2523,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.obligations.nested_transaction_completion",
                             "billing.obligations.obligation_not_found",
                             "billing.obligations.period_outside_contract_version",
+                            "billing.obligations.rating_provenance_conflict",
+                            "billing.obligations.recorded_rating_provenance_invalid",
+                            "billing.obligations.recorded_rating_result_mismatch",
                             "billing.obligations.resolution_exceeds_obligation",
                         ),
                         mapping_owner="billing, invoicing, and collections adapters",
                         fail_closed_on=(
                             "a duplicate natural identity under concurrency",
+                            "missing, corrupt, or conflicting rating provenance",
+                            "a stored result that cannot be reproduced from its "
+                            "recorded inputs",
                             "an application exceeding the obligation gross amount",
                             "a period outside the contract version interval",
                         ),
@@ -2164,8 +2543,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 is additive. Consumers validate the "
-                            "obligation identity and never re-decide its state."
+                            "Version 1 is additive. New outputs include the rating "
+                            "input fingerprint; consumers validate obligation "
+                            "identity and never re-decide state or money."
                         ),
                         replay=(
                             "The contract-output receipt, obligations, and staged "
@@ -2180,14 +2560,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="billing.obligations",
                         verification=(
-                            "Natural-identity uniqueness, replay, calendar period, "
-                            "and state-transition tests plus the ADR 0007 guards."
+                            "Natural-identity uniqueness, immutable-input replay "
+                            "after tax mutation, coverage conflict, fingerprint "
+                            "integrity, calendar period, and state-transition tests."
                         ),
                         cutover_gate=(
                             "ADR 0007 Phase 2 gate: exact period and amount parity "
                             "against current invoice generation and prepaid renewal "
-                            "for the active cohort, with zero duplicate, gapped, or "
-                            "overlapping obligations outside typed policy."
+                            "for the active cohort; complete reproducible provenance "
+                            "for every included obligation; and zero duplicate, "
+                            "gapped, or overlapping obligations outside typed policy."
                         ),
                         fallback_retirement=(
                             "Independent _period_end and monthly-only renewal "
@@ -2217,8 +2599,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "access.subscription_lifecycle",
                     "billing.contracts",
                     "billing.obligations",
+                    "billing.rating",
                     "events.dispatcher",
                     "events.owner_outputs",
+                    "financial.billing_automation",
+                    "financial.prepaid_service_renewals",
                 ),
                 notes=(
                     "ADR 0007 migration evidence only. The owner receipts the "
@@ -2226,9 +2611,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "content-addressed delivery evidence. Complete-cohort runs "
                     "store source/result fingerprints, exhaustive blocker "
                     "classifications, currency totals, delivery outcomes, and "
-                    "code/schema identity. It never repairs another owner or "
-                    "changes authority; operator and finance approvals are "
-                    "separate commands and are forbidden while blockers remain."
+                    "code/schema identity. Phase 2 adds current-owner preview and "
+                    "target rating totals plus explicit expected-difference, gap, "
+                    "and overlap categories. Postpaid comparison consumes the "
+                    "current owner's complete base-plus-recurring-add-on component "
+                    "result and exact SubscriptionAddOn component identities. "
+                    "Prepaid comparison preserves the current owner's explicit "
+                    "add-on exclusions as blockers. It never repairs another owner, "
+                    "asks a non-owner to repair, or changes authority; operator and "
+                    "finance approvals are separate commands and are forbidden while "
+                    "blockers remain."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2248,6 +2640,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "complete active subscription cohort",
                                 "recorded billing contract terms",
+                                "recorded billing obligations",
+                                "deterministic target rating",
+                                "current postpaid billing preview",
+                                "current prepaid renewal preview",
                                 "receipted owner-output deliveries",
                                 "recorded shadow verification evidence",
                             ),
@@ -2283,6 +2679,44 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="recorded billing obligations",
+                            owner="billing.obligations",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "shadow BillingObligation natural identities, "
+                                "periods, rating values, and topology"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="deterministic target rating",
+                            owner="billing.rating",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed net, tax, gross, currency, rate-unit, and "
+                                "proration result for the exact target period"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current postpaid billing preview",
+                            owner="financial.billing_automation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed current-owner period, base service, recurring "
+                                "add-on identities, net/tax/gross components, and "
+                                "unsafe exclusion issues for each postpaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current prepaid renewal preview",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed current-owner monthly period, taxed base "
+                                "renewal, and explicit recurring-add-on exclusions "
+                                "for each prepaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="receipted owner-output deliveries",
                             owner="events.owner_outputs",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -2310,16 +2744,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         locking=(
                             "Terminal delivery uniqueness is database-enforced; "
-                            "verification locks the complete selected Subscription "
-                            "and contract-version cohort; approvals lock one run."
+                            "verification locks the complete selected Subscription, "
+                            "contract-version, and obligation cohort; approvals lock "
+                            "one run."
                         ),
                         idempotency=(
                             "One terminal evidence row per event and one run per "
                             "business idempotency key. Replays return stored evidence."
                         ),
                         retries=(
-                            "Delivery and run commands are retryable. Approval "
-                            "fails closed until all stored blocker counts are zero."
+                            "Delivery and run commands are retryable. Expected new-"
+                            "cadence differences require explicit approval; approval "
+                            "fails closed until every blocker count is zero."
                         ),
                     ),
                     errors=ErrorContract(
@@ -2342,7 +2778,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="billing migration operator adapters",
                         fail_closed_on=(
                             "an incomplete or non-timezone-aware observation window",
-                            "any non-zero blocker category",
+                            "any unresolved, ambiguous, unlinked, duplicate, gap, "
+                            "overlap, or variance category",
                             "finance approval without operator approval",
                         ),
                     ),
@@ -2369,13 +2806,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         old_owner="WARNING logs and ad-hoc billing comparison output",
                         new_owner="billing.shadow_verification",
                         verification=(
-                            "Terminal receipt replay, complete-cohort classification, "
-                            "fingerprint, blocker, and approval-gate tests."
+                            "Terminal receipt replay, Phase 1/2 complete-cohort "
+                            "classification, fingerprints, current/target currency "
+                            "totals, topology blockers, and approval-gate tests."
                         ),
                         cutover_gate=(
-                            "A durable run meets ADR 0007's evidence standard, all "
-                            "blockers are zero, and operator and finance approvals "
-                            "are recorded. This evidence does not itself move authority."
+                            "A phase-specific durable run meets ADR 0007's evidence "
+                            "standard, all blockers are zero, expected differences "
+                            "are explicitly reviewed, and operator and finance "
+                            "approvals are recorded. Evidence does not move authority."
                         ),
                         fallback_retirement=(
                             "Log-only shadow completion and undocumented cutover "
@@ -2389,6 +2828,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_shadow_pipeline.py",
+                        "tests/test_billing_phase2_shadow.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -2404,9 +2844,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "ADR 0007 Phase 2. Read-only policy/resolver: the same "
                     "contract version, line, period, coverage, and tax inputs "
-                    "always produce the same typed rated result. A contracted "
-                    "tax treatment code with no active tax rate fails closed "
-                    "instead of rating tax-free."
+                    "always produce the same typed rated result and content-addressed "
+                    "provenance. Recorded provenance replays through its named policy "
+                    "without reading mutable current tax configuration. A contracted "
+                    "tax code with zero or multiple active rates fails closed."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -2447,9 +2888,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "rows before recording a rated result."
                         ),
                         idempotency=(
-                            "Deterministic: identical version, line, period, "
-                            "coverage, and tax inputs produce an identical typed "
-                            "result."
+                            "Deterministic: identical versioned policy, line, period, "
+                            "coverage, cadence, price, and tax inputs produce an "
+                            "identical fingerprint and typed result. Recorded policy "
+                            "versions remain replayable when a new policy is added."
                         ),
                         retries=(
                             "Transient reads may be retried; a missing named tax "
@@ -2457,10 +2899,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     errors=ErrorContract(
-                        domain_codes=(),
+                        domain_codes=(
+                            "billing.rating.ambiguous_tax_treatment",
+                            "billing.rating.contract_line_not_found",
+                            "billing.rating.contract_version_not_found",
+                            "billing.rating.invalid_rating_provenance",
+                            "billing.rating.rating_provenance_fingerprint_mismatch",
+                            "billing.rating.unknown_tax_treatment",
+                            "billing.rating.unsupported_policy_version",
+                            "billing.rating.usage_rating_requires_observation",
+                        ),
                         mapping_owner="billing and invoicing adapters",
                         fail_closed_on=(
-                            "a contracted tax treatment code with no active rate",
+                            "a contracted tax treatment code with zero or multiple "
+                            "active rates",
+                            "corrupt or unsupported recorded rating provenance",
                             "usage-metered rating without an observed quantity",
                         ),
                     ),
@@ -2472,13 +2925,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="billing.rating",
                         verification=(
-                            "Deterministic rating, proration, tax-inclusive, and "
-                            "fail-closed tax tests plus the ADR 0007 guards."
+                            "Deterministic rating, content-addressed replay, tax "
+                            "mutation, proration, tax-inclusive, ambiguous-tax, and "
+                            "fail-closed tests plus the ADR 0007 guards."
                         ),
                         cutover_gate=(
                             "ADR 0007 Phase 2 gate: rated totals match current "
                             "postpaid invoice generation and prepaid renewal "
-                            "previews for the complete active cohort."
+                            "previews for the complete active cohort and every "
+                            "included obligation has complete replayable provenance."
                         ),
                         fallback_retirement=(
                             "Parallel money formulas in invoice generation and "
@@ -9201,14 +9656,220 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "add-on price and subscription-state confirmation",
                     "add-on purchase idempotency and audit evidence",
                     "exact add-on entitlement-to-adjustment link",
+                    "canonical recurring add-on billing-terms output",
                 ),
                 depends_on=(
+                    "access.subscription_lifecycle",
+                    "events.dispatcher",
+                    "events.owner_outputs",
                     "financial.account_adjustments",
                     "customer.financial_position",
+                    "observability.audit_log",
                 ),
                 notes=(
                     "Paid purchases request one exact debit from the adjustment "
-                    "owner. Free add-ons explicitly produce no ledger transaction."
+                    "owner. Free add-ons explicitly produce no ledger transaction. "
+                    "A recurring purchase stages its exact accepted term output in "
+                    "the same owner transaction. billing.contracts receipts that "
+                    "output into a next-boundary draft and durable timer; purchase "
+                    "never writes contract rows. Cancellation is a later migration "
+                    "slice and remains outside this command."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer add-on purchase eligibility and preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "current customer financial position",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="add-on price and subscription-state confirmation",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "current customer financial position",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="add-on purchase idempotency and audit evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded add-on purchase evidence",
+                                "canonical audit participant",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                        ConcernContract(
+                            name="exact add-on entitlement-to-adjustment link",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "confirmed account adjustment",
+                                "recorded add-on purchase evidence",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                        ConcernContract(
+                            name="canonical recurring add-on billing-terms output",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical subscription state",
+                                "offered add-on commercial terms",
+                                "recorded add-on purchase evidence",
+                            ),
+                            canonical_writer="financial.addon_purchases",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical subscription state",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "owned Subscription account, offer identity, and "
+                                "lifecycle state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="offered add-on commercial terms",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "OfferAddOn authorization plus exact AddOn and active "
+                                "AddOnPrice identity, amount, currency, and cadence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="current customer financial position",
+                            owner="customer.financial_position",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed prepaid funding, postpaid receivables, "
+                                "collection-blocking balance, and shortfall"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="confirmed account adjustment",
+                            owner="financial.account_adjustments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "flush-only confirmed add-on-purchase adjustment "
+                                "and exact ledger-entry identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical audit participant",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="flush-only customer confirmation audit protocol",
+                        ),
+                        AuthorityInput(
+                            name="recorded add-on purchase evidence",
+                            owner="financial.addon_purchases",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "SubscriptionAddOn, purchase preview fingerprint, "
+                                "business idempotency key, and adjustment link"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The typed confirmation enters execute_owner_command "
+                            "once on a transaction-free session; entitlement, exact "
+                            "adjustment, usage grant, idempotency, audit, and recurring "
+                            "terms output commit or roll back together."
+                        ),
+                        locking=(
+                            "The account is locked before the owned Subscription and "
+                            "preview are re-read; all account debits follow the same "
+                            "account-first lock order."
+                        ),
+                        idempotency=(
+                            "The caller key is unique in addon_purchase scope and "
+                            "replays the exact SubscriptionAddOn without a second "
+                            "debit or owner output."
+                        ),
+                        retries=(
+                            "Retry the complete command with the same key. A changed "
+                            "price, subscription, or funding fingerprint requires a "
+                            "new preview."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.addon_purchases"
+                            ),
+                            "financial.addon_purchases.addon_not_available",
+                            "financial.addon_purchases.idempotency_conflict",
+                            (
+                                "financial.addon_purchases."
+                                "incomplete_idempotency_evidence"
+                            ),
+                            "financial.addon_purchases.invalid_preview_fingerprint",
+                            "financial.addon_purchases.missing_idempotency_key",
+                            "financial.addon_purchases.service_not_found",
+                            "financial.addon_purchases.stale_preview",
+                        ),
+                        mapping_owner="customer API and web adapters",
+                        fail_closed_on=(
+                            "stale price, service, or financial preview",
+                            "ambiguous active recurring price",
+                            "missing or conflicting business idempotency",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("billing.contract_terms.recurring_addon_added",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact account, subscription, "
+                            "SubscriptionAddOn, AddOn, AddOnPrice, quantity, price, "
+                            "currency, cadence, and purchase-time identities."
+                        ),
+                        replay=(
+                            "The purchase row and output commit atomically; "
+                            "billing.contracts receipts each event exactly once."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "customer portal helper-owned commit and rollback with "
+                            "no canonical billing-terms consequence"
+                        ),
+                        new_owner="financial.addon_purchases",
+                        verification=(
+                            "Typed command-boundary, stale preview, adjustment link, "
+                            "replay, owner-output, draft, timer, activation, "
+                            "obligation, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "The live customer purchase adapter uses only the typed "
+                            "owner command and recurring purchases complete the "
+                            "receipted shadow chain."
+                        ),
+                        fallback_retirement=(
+                            "The helper-level purchase commit path and unreceipted "
+                            "recurring purchase path are removed in this slice."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_api_me_addons.py",
+                        "tests/test_billing_addon_contract_backfill.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -9700,6 +10361,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="financial.billing_automation",
                 module="app.services.billing_automation",
                 owns=(
+                    "postpaid recurring charge preview",
                     "postpaid invoice batch execution",
                     "durable billing-run lifecycle and retry lineage",
                     "billing-run audit projection and repair",
@@ -9714,10 +10376,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Scheduled execution may compose the independently owned prepaid "
                     "renewal pass. Confirmed manual invoice batches disable it. "
                     "BillingRun is authoritative operational evidence for the "
-                    "resumable workflow; invoice period keys make retries convergent."
+                    "resumable workflow; invoice period keys make retries convergent. "
+                    "The typed per-subscription recurring-charge preview is read-only "
+                    "and reuses the exact current period, price, discount, proration, "
+                    "recurring add-on, route-cap, and tax helpers for Phase 2 "
+                    "migration evidence. Its component total is the complete current "
+                    "postpaid cycle; skipped, ambiguous, or route-capped add-ons are "
+                    "typed issues rather than silent parity."
                 ),
                 contract=ServiceContract(
                     concerns=(
+                        ConcernContract(
+                            name="postpaid recurring charge preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("canonical billable subscription facts",),
+                        ),
                         ConcernContract(
                             name="postpaid invoice batch execution",
                             role=OwnerRole.COMMAND_WRITER,
@@ -9747,8 +10420,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
                                 "native active or pending postpaid Subscription rows, "
-                                "billing anchors, offer prices, billing treatments, "
-                                "account state, and existing canonical invoice lines"
+                                "billing anchors, offer and recurring add-on prices, "
+                                "SubscriptionAddOn intervals and quantities, route-cap "
+                                "inputs, billing treatments, account state, and "
+                                "existing canonical invoice lines"
                             ),
                         ),
                         AuthorityInput(
@@ -9774,10 +10449,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Billing automation persists a running launch before work, "
-                            "commits canonical invoice-owner results, and records the "
-                            "terminal run state. This is a durable resumable workflow, "
-                            "not one database transaction."
+                            "The recurring-charge preview is read-only in the caller's "
+                            "session. Batch execution persists a running launch before "
+                            "work, commits canonical invoice-owner results, and records "
+                            "the terminal run state. This is a durable resumable "
+                            "workflow, not one database transaction."
                         ),
                         locking=(
                             "Invoice and subscription period idempotency keys prevent "
@@ -9804,8 +10480,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.billing_automation.invalid_cycle",
                             "financial.billing_automation.invalid_date",
                             "financial.billing_automation.execution_failed",
+                            "financial.billing_automation.account_not_billable",
                             "financial.billing_automation.retry_ineligible",
                             "financial.billing_automation.audit_projection_failed",
+                            "financial.billing_automation.missing_price",
+                            "financial.billing_automation.mode_not_postpaid",
+                            "financial.billing_automation.service_ended",
+                            "financial.billing_automation.subscription_not_billable",
+                            "financial.billing_automation.subscription_not_found",
+                            "financial.billing_automation.zero_amount",
                         ),
                         mapping_owner=(
                             "scheduled billing and administrative batch adapters"
@@ -12417,6 +13100,231 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the same parent/child completion projection. A pre-cutover "
                     "broker envelope may only re-submit intent to the command "
                     "owner and cannot enter device code."
+                ),
+            ),
+            SOTService(
+                name="network.cpe_dialer_credential",
+                module="app.services.cpe_dialer_credential_reconcile",
+                owns=(
+                    "derived CPE PPPoE dialer credential projection",
+                    "CPE dialer credential fingerprint comparison and readback",
+                ),
+                depends_on=(
+                    "network.identity",
+                    "access.radius_projection",
+                    "secrets.credential_crypto",
+                    "events.dispatcher",
+                    "runtime.db_sessions",
+                ),
+                notes=(
+                    "AccessCredential/RadiusUser stays the authoritative access "
+                    "credential and access.radius_projection stays the only "
+                    "writer of the RADIUS auth tables. What the CPE dials with "
+                    "is a DERIVED projection of that credential onto "
+                    "OntUnit.desired_config wan.pppoe_username/pppoe_password, "
+                    "and this reconciler is its single canonical writer. "
+                    "Operator-typed dialer values are repaired back to the "
+                    "authoritative credential; they never flow the other way "
+                    "and never reach RADIUS. Delivery to the physical CPE "
+                    "remains with the ONT reconciler. Comparison is by keyed "
+                    "fingerprint only — credential values are never logged, "
+                    "returned, or stored in drift records."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="derived CPE PPPoE dialer credential projection",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "active ONT-to-subscriber assignment",
+                                "derived CPE dialer projection",
+                                "credential fingerprint key",
+                            ),
+                            canonical_writer="network.cpe_dialer_credential",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "CPE dialer credential fingerprint comparison "
+                                "and readback"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "derived CPE dialer projection",
+                                "ACS-reported PPPoE dialer username",
+                                "credential fingerprint key",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authoritative subscriber access credential",
+                            owner="access.radius_projection",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active AccessCredential username and encrypted "
+                                "secret for the ONT's assigned subscriber; the "
+                                "same record that decides RADIUS authentication"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active ONT-to-subscriber assignment",
+                            owner="network.identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active OntAssignment subscriber binding for an "
+                                "active OntUnit"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="ACS-reported PPPoE dialer username",
+                            owner="external:genieacs",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "last GenieACS-reported WANPPPConnection Username, "
+                                "cached on OntObservation by the ONT reconciler; "
+                                "the dialer password is never readable from a CPE"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="derived CPE dialer projection",
+                            owner="network.cpe_dialer_credential",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "OntUnit.desired_config wan.pppoe_username and "
+                                "wan.pppoe_password plus the recorded dialer "
+                                "fingerprint under delivery"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="credential fingerprint key",
+                            owner="secrets.credential_crypto",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "configured credential-encryption key, used to key "
+                                "the HMAC-SHA256 dialer fingerprint so comparison "
+                                "never handles or exposes the credential value"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "One pass flushes each ONT's projection into the "
+                            "caller's session; the scheduling adapter's session "
+                            "context owns the commit."
+                        ),
+                        locking=(
+                            "No cross-row lock is taken. Each ONT is repaired "
+                            "independently from its own authoritative credential, "
+                            "so a concurrent pass converges on the same value."
+                        ),
+                        idempotency=(
+                            "The keyed fingerprint is the idempotency key: a pass "
+                            "whose desired and observed fingerprints already agree "
+                            "performs no write."
+                        ),
+                        retries=(
+                            "Safe to re-run at any time; a partially applied pass "
+                            "is completed by the next one."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.cpe_dialer_credential.fingerprint_key_unavailable",
+                            "network.cpe_dialer_credential.unreadable_stored_credential",
+                        ),
+                        mapping_owner=(
+                            "ONT reconcile sweep task and administrative adapters"
+                        ),
+                        retryable_codes=(
+                            "network.cpe_dialer_credential.fingerprint_key_unavailable",
+                        ),
+                        fail_closed_on=(
+                            "missing credential-encryption key",
+                            "credential with no usable secret",
+                            "ONT with no active access credential",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("ont.dialer_credential_reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries ONT identity, repair reason, and "
+                            "truncated credential fingerprints only. It never "
+                            "carries a dialer username or secret."
+                        ),
+                        replay=(
+                            "Re-running the reconciler reproduces the outcome from "
+                            "the authoritative credential; the recorded fingerprint "
+                            "on the ONT reconstructs which projection was applied."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="CPE PPPoE dialer credential projection",
+                            input_names=(
+                                "authoritative subscriber access credential",
+                                "active ONT-to-subscriber assignment",
+                                "derived CPE dialer projection",
+                                "ACS-reported PPPoE dialer username",
+                                "credential fingerprint key",
+                            ),
+                            writer="network.cpe_dialer_credential",
+                            freshness=(
+                                "Current while the recorded dialer fingerprint "
+                                "equals the authoritative credential's fingerprint "
+                                "and the last ACS-reported username matches it."
+                            ),
+                            stale_behavior=(
+                                "A stale projection is rewritten from the "
+                                "authoritative credential; a correct projection the "
+                                "CPE has not taken is re-flagged for delivery, not "
+                                "rewritten. Operator-typed values never win."
+                            ),
+                            drift_signal=(
+                                "Keyed HMAC-SHA256 fingerprint over the "
+                                "(username, secret) pair, plus username-only device "
+                                "readback. pppoe_health CATEGORY_CREDENTIAL_MISMATCH "
+                                "is the weaker read-side detector."
+                            ),
+                            rebuild_operation=(
+                                "Re-run reconcile_cpe_dialer_credentials; it is "
+                                "fully derivable from the authoritative credential."
+                            ),
+                            repair_owner="network.cpe_dialer_credential",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.cpe_dialer_credential",
+                        old_owner=(
+                            "operator-typed ONT dialer values written directly by "
+                            "web_network_ont_actions.config_setters."
+                            "set_pppoe_credentials and update_ont_config"
+                        ),
+                        verification=(
+                            "Each sweep audits every assigned ONT by fingerprint "
+                            "and reports drift before repairing; the audit mode "
+                            "reports exactly what a repair pass would change."
+                        ),
+                        cutover_gate=(
+                            "Fleet-wide dialer drift stays at zero across "
+                            "consecutive sweeps, and the ONT configuration UI no "
+                            "longer presents the dialer fields as an "
+                            "authentication fix."
+                        ),
+                        fallback_retirement=(
+                            "The manual dialer action is retained only as a CPE "
+                            "repair tool and is documented as non-authoritative; "
+                            "its values are re-converged by this owner."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_cpe_dialer_credential_reconcile.py",),
                 ),
             ),
             SOTService(
@@ -15529,214 +16437,147 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="workforce_operations",
         services=(
             SOTService(
-                name="operations.service_team_party_cutover",
-                module="app.services.service_team_party_cutover",
+                name="operations.service_team_source_retirement",
+                module="app.services.service_team_source_retirement",
                 owns=(
-                    "service-team Party cutover readiness",
-                    "approved service-team Party cutover adoption",
+                    "legacy service-team source retirement",
+                    "legacy service-team source-retirement readiness",
                 ),
                 depends_on=(
                     "operations.service_team_lifecycle",
-                    "party.registry",
-                    "auth.staff_provisioning",
-                    "control.settings_spec",
                     "events.store",
                     "observability.audit_log",
                 ),
                 notes=(
-                    "A pre-migration coordinator consumes an expiring, "
-                    "digest-bound review of the exact CRM Person, SystemUser, "
-                    "and membership snapshot. It preserves CRM Person UUIDs as "
-                    "Person Party IDs, delegates identity links to party.registry, "
-                    "adopts exact native memberships, and records only PII-free "
-                    "receipt evidence before migration 426."
+                    "The one-time pre-426 owner verifies the five retained native "
+                    "team pointers, retires workflow-setting sources, clears the "
+                    "non-authoritative manager pointer, and removes only membership "
+                    "rows that migration 426 would reject. It never reads CRM, "
+                    "chooses a conflicting identity, or creates identities, "
+                    "memberships, or grants."
                 ),
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
-                            name="service-team Party cutover readiness",
-                            role=OwnerRole.RESOLVER,
+                            name="legacy service-team source retirement",
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
-                                "current native service-team cutover state",
-                                "canonical Person Party identity",
-                                "staff authentication principal state",
-                                "legacy workflow team settings",
+                                "native service-team identity pointers",
+                                "legacy workflow service-team sources",
+                            ),
+                            canonical_writer=(
+                                "operations.service_team_source_retirement"
                             ),
                         ),
                         ConcernContract(
-                            name="approved service-team Party cutover adoption",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            name="legacy service-team source-retirement readiness",
+                            role=OwnerRole.RESOLVER,
                             input_names=(
-                                "CRM service-team identity snapshot",
-                                "reviewed service-team identity decisions",
-                                "current native service-team cutover state",
-                                "canonical Person Party identity",
-                                "staff authentication principal state",
+                                "native service-team identity pointers",
+                                "legacy workflow service-team sources",
                             ),
                         ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
-                            name="CRM service-team identity snapshot",
-                            owner="external:dotmac_crm",
-                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
-                            source=(
-                                "repeatable-read CRM service-team, membership, "
-                                "manager, and referenced Person rows captured in "
-                                "one SHA-256-bound private plan"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="reviewed service-team identity decisions",
-                            owner="operations.service_team_party_cutover",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source=(
-                                "private explicit CRM Person to SystemUser or "
-                                "identity-only decisions, separate expiring "
-                                "approval, file digests, limits, actor, and reason"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="current native service-team cutover state",
+                            name="native service-team identity pointers",
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked ServiceTeam and ServiceTeamMember rows "
-                                "plus migration-426 readiness invariants"
+                                "the five retained ticket, project, dispatch, "
+                                "Inbox-route, and Inbox-conversation team pointers"
                             ),
                         ),
                         AuthorityInput(
-                            name="canonical Person Party identity",
-                            owner="party.registry",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source=(
-                                "Person Party, CRM external reference, and reviewed "
-                                "SystemUser principal binding"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="staff authentication principal state",
-                            owner="auth.staff_provisioning",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="SystemUser identity and active state",
-                        ),
-                        AuthorityInput(
-                            name="legacy workflow team settings",
-                            owner="control.settings_spec",
+                            name="legacy workflow service-team sources",
+                            owner="operations.service_team_source_retirement",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed aggregate resolver over the active legacy "
-                                "workflow settings retired by migration 426"
+                                "active support_service_teams and "
+                                "support_service_team_members settings plus legacy "
+                                "manager and migration-blocking membership pointers"
                             ),
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "The public adoption enters execute_owner_command once "
-                            "on a transaction-free session and commits Party, "
-                            "principal-binding, membership, audit, and event state "
-                            "in one SERIALIZABLE transaction."
+                            "The explicit operator command enters "
+                            "execute_owner_command once; source, pointer, audit, "
+                            "and event changes flush in the root transaction."
                         ),
                         locking=(
-                            "A plan-digest advisory transaction lock serializes "
-                            "execution; the coordinator then locks its receipt, "
-                            "teams, SystemUsers, Parties, external references, and "
-                            "memberships in stable identifier order."
+                            "Teams, memberships, and legacy settings lock in stable "
+                            "identifier order after the five pointer checks."
                         ),
                         idempotency=(
-                            "The canonical plan digest and private file hashes "
-                            "identify one execution. Exact replay verifies the "
-                            "PII-free audit receipt and every applied identity and "
-                            "membership; changed evidence fails closed."
+                            "A fully retired source replays with zero mutations; "
+                            "constraints and the pointer audit reject changed state."
                         ),
                         retries=(
-                            "An adapter may retry the complete owner command with "
-                            "the same unexpired approval after full rollback. "
-                            "Validation, stale source, drift, and identity conflicts "
-                            "are not retryable without a new reviewed plan."
+                            "Retry the whole command only after rollback; dangling "
+                            "pointers and source mismatches require adjudication."
                         ),
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "operations.service_team_party_cutover.invalid_plan",
-                            "operations.service_team_party_cutover.approval_invalid",
-                            "operations.service_team_party_cutover.stale_source",
-                            "operations.service_team_party_cutover.identity_conflict",
-                            (
-                                "operations.service_team_party_cutover."
-                                "membership_conflict"
-                            ),
-                            "operations.service_team_party_cutover.not_ready",
+                            "service_team_source_retirement_dangling_pointer",
+                            "service_team_source_retirement_duplicate_name",
+                            "service_team_source_retirement_malformed",
+                            "service_team_source_retirement_team_mismatch",
                             *owner_command_boundary_error_codes(
-                                "operations.service_team_party_cutover"
+                                "operations.service_team_source_retirement"
                             ),
                         ),
                         mapping_owner=(
-                            "scripts.migration.execute_service_team_party_cutover"
+                            "scripts.migration.retire_legacy_service_team_sources"
                         ),
                         fail_closed_on=(
-                            "missing, malformed, stale, expired, or digest-mismatched approval",
-                            "incomplete CRM Person decisions",
-                            "inactive manager or active-member principals",
-                            "Party, external-reference, binding, membership, or receipt conflicts",
-                            "remaining migration-426 blockers",
+                            "any dangling native team pointer",
+                            "duplicate native name or source/native identity mismatch",
+                            "malformed active workflow source",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("service_team.party_cutover_adopted",),
+                        event_types=("service_team.changed",),
                         schema_version=1,
                         delivery_owner="events.store",
                         compatibility=(
-                            "Version 1 carries only plan/source/file hashes, "
-                            "aggregate counts, and command/correlation identifiers."
+                            "Version 1 records aggregate pointer and retirement "
+                            "counts without staff or CRM identity."
                         ),
                         replay=(
-                            "The immutable audit receipt plus current Party, "
-                            "principal, external-reference, and membership state "
-                            "prove exact replay; the private plan remains the "
-                            "identity-level operator evidence."
+                            "The audit plus inactive sources, null manager pointers, "
+                            "and resolvable remaining memberships prove retirement."
                         ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.CUTOVER_READY,
-                        old_owner=(
-                            "dotmac_crm service-team membership rows and CRM Person "
-                            "UUIDs copied into Sub without Party adoption"
-                        ),
-                        new_owner="operations.service_team_party_cutover",
+                        old_owner="legacy workflow settings and imported scalar pointers",
+                        new_owner="operations.service_team_source_retirement",
                         verification=(
-                            "Aggregate audit, plan/approval, owner-command, exact "
-                            "replay, rollback, forward staff-bootstrap, migration "
-                            "rehearsal, and architecture tests."
+                            "five-pointer, malformed-source, mismatch, exact replay, "
+                            "migration-426, and architecture tests"
                         ),
                         cutover_gate=(
-                            "The protected reviewed plan is applied, readiness has "
-                            "zero blockers, migration 426 succeeds on a restored "
-                            "revision-423/424 database, and production evidence is "
-                            "attached before authorization."
+                            "The read-only deploy check reports five pointer "
+                            "contracts, zero dangling references, and zero active "
+                            "legacy sources or migration-426 identity blockers."
                         ),
                         fallback_retirement=(
-                            "The one-time executor remains unavailable without an "
-                            "exact approval; CRM membership writes and the legacy "
-                            "workflow settings are retired only through the "
-                            "service-team lifecycle cutover gate."
+                            "No CRM membership planner, identity review, adoption "
+                            "coordinator, or email-matching fallback remains."
                         ),
                     ),
-                    steward="operations administration and identity governance",
+                    steward="operations administration",
                     design_refs=(
                         "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
-                        "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
                         "docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     test_refs=(
-                        "tests/test_service_team_party_cutover.py",
-                        "tests/test_staff_provisioning_owner.py",
-                        (
-                            "tests/architecture/"
-                            "test_service_team_party_cutover_boundary.py"
-                        ),
+                        "tests/test_service_team_source_retirement.py",
+                        ("tests/architecture/test_service_team_lifecycle_boundary.py"),
                     ),
                 ),
             ),
@@ -15746,8 +16587,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "service-team lifecycle",
                     "service-team membership lifecycle",
-                    "staff service-team resolution",
-                    "staff service-team scope projection",
+                    "set-valued staff service-team membership resolution",
                     "active service-team selector projection",
                     "service-team administration projection",
                 ),
@@ -15782,16 +16622,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             canonical_writer="operations.service_team_lifecycle",
                         ),
                         ConcernContract(
-                            name="staff service-team resolution",
-                            role=OwnerRole.RESOLVER,
-                            input_names=(
-                                "active staff authentication principal",
-                                "canonical Person Party identity",
-                                "current native service-team state",
-                            ),
-                        ),
-                        ConcernContract(
-                            name="staff service-team scope projection",
+                            name="set-valued staff service-team membership resolution",
                             role=OwnerRole.RESOLVER,
                             input_names=(
                                 "active staff authentication principal",
@@ -15811,6 +16642,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "active staff authentication principal",
                                 "canonical Person Party identity",
                                 "current native service-team state",
+                                "current service-team composition",
                             ),
                         ),
                     ),
@@ -15820,7 +16652,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed create, update, activation, membership, and role "
+                                "typed identity, activation, and membership "
                                 "commands with CommandContext and expected state"
                             ),
                         ),
@@ -15846,6 +16678,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="ServiceTeam and ServiceTeamMember rows",
+                        ),
+                        AuthorityInput(
+                            name="current service-team composition",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "composition-owned set-valued capability, "
+                                "responsibility, and typed scope queries"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -15893,11 +16734,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="service-team web and API adapters",
                         fail_closed_on=(
                             "unknown, inactive, or Party-unbound selected staff identity",
-                            "reactivation or role change with retired staff identity",
+                            "membership reactivation with retired staff identity",
                             "stale lifecycle evidence",
                             "team identity collision",
                             "deactivation with active members",
-                            "zero or multiple active memberships during staff-team resolution",
+                            "unavailable Party identity during set-valued resolution",
                         ),
                     ),
                     events=EventContract(
@@ -15908,8 +16749,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.store",
                         compatibility=(
-                            "Version 1 carries team, command/correlation, operation, member, "
-                            "role, and actor identifiers without private staff payloads."
+                            "Version 1 carries team, command/correlation, operation, "
+                            "member, and actor identifiers without private staff payloads."
                         ),
                         replay=(
                             "Native team/member rows plus transactional event and audit evidence "
@@ -15918,49 +16759,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     projections=(
                         ProjectionContract(
-                            name="staff service-team resolution",
+                            name="set-valued staff service-team membership resolution",
                             input_names=(
                                 "active staff authentication principal",
                                 "canonical Person Party identity",
                                 "current native service-team state",
+                                "current service-team composition",
                             ),
                             writer="operations.service_team_lifecycle",
                             freshness="Transaction-current native database state.",
                             stale_behavior=(
-                                "Return identity-unavailable, no-membership, or ambiguous; "
-                                "never select by row age or compare principal IDs to Party IDs."
+                                "Return identity-unavailable, no-membership, or every "
+                                "active membership; never select by row age."
                             ),
                             drift_signal=(
-                                "An active staff principal has zero or multiple matching active "
-                                "Party-backed memberships for a caller requiring one team."
+                                "A caller requiring one team consumes membership "
+                                "instead of an explicit assignment or routing policy."
                             ),
                             rebuild_operation=(
                                 "Requery the reviewed SystemUser-to-Party binding and native "
                                 "active memberships."
-                            ),
-                            repair_owner="operations.service_team_lifecycle",
-                        ),
-                        ProjectionContract(
-                            name="staff service-team scope projection",
-                            input_names=(
-                                "active staff authentication principal",
-                                "canonical Person Party identity",
-                                "current native service-team state",
-                            ),
-                            writer="operations.service_team_lifecycle",
-                            freshness="Transaction-current native database state.",
-                            stale_behavior=(
-                                "Return no accessible teams for an inactive, Party-unbound, "
-                                "or inactive-Party principal; never compare principal and "
-                                "Party identifier domains directly."
-                            ),
-                            drift_signal=(
-                                "A workqueue or routing caller derives team membership with "
-                                "direct ServiceTeamMember queries."
-                            ),
-                            rebuild_operation=(
-                                "Requery active native teams, Party-backed memberships, "
-                                "lead roles, managers, and active SystemUser bindings."
                             ),
                             repair_owner="operations.service_team_lifecycle",
                         ),
@@ -15994,11 +16812,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "Render an explicit error; never fall back to retired settings."
                             ),
                             drift_signal=(
-                                "Membership references an absent staff principal or a duplicate "
-                                "case-insensitive team name exists."
+                                "Membership references an absent staff principal, "
+                                "a duplicate case-insensitive team name exists, or "
+                                "the composition owner reports governed-key drift."
                             ),
                             rebuild_operation=(
-                                "Recompose team, membership, and staff labels from native rows."
+                                "Recompose identity and membership locally, then "
+                                "join composition-owner capability, responsibility, "
+                                "and typed-scope sets."
                             ),
                             repair_owner="operations.service_team_lifecycle",
                         ),
@@ -16039,6 +16860,314 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="operations.service_team_composition",
+                module="app.services.service_team_composition",
+                owns=(
+                    "service-team composition lifecycle",
+                    "explicit service-team routing policy",
+                    (
+                        "set-valued service-team capability, responsibility, "
+                        "and scope resolution"
+                    ),
+                    "service-team composition shadow verification",
+                ),
+                depends_on=(
+                    "operations.service_team_lifecycle",
+                    "party.registry",
+                    "auth.staff_provisioning",
+                    "gis.spatial_sync",
+                    "events.store",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "Stable team identity composes governed capabilities, "
+                    "Party-backed membership responsibilities, typed GeoArea or "
+                    "global scope, explicit topology, provider-neutral external "
+                    "observations, and domain route keys. Responsibilities never "
+                    "grant RBAC; consumers intersect authorized access with the "
+                    "returned operational scope. Code-consumed domain route keys "
+                    "are registered with a domain owner, version, and required "
+                    "capability. Geo-scoped route resolution accepts one "
+                    "caller-derived effective GeoArea and never derives it from "
+                    "topology itself: the network-zone catalog "
+                    "(app.services.network.zones, a legacy-baseline writer) is "
+                    "the single writer of the zone -> GeoArea binding, and "
+                    "consumers such as outage routing derive an incident's "
+                    "effective GeoArea only through NetworkZones.resolve_geo_area "
+                    "(parent-chain inheritance; an inactive GeoArea on the "
+                    "nearest bound zone degrades to global routing rather than "
+                    "rebinding to a wider area)."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="service-team composition lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "typed service-team composition command",
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            canonical_writer="operations.service_team_composition",
+                        ),
+                        ConcernContract(
+                            name="explicit service-team routing policy",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "typed service-team routing decision",
+                                "registered service-team routing vocabulary",
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            canonical_writer="operations.service_team_composition",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "set-valued service-team capability, responsibility, "
+                                "and scope resolution"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="service-team composition shadow verification",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "native service-team identity and membership",
+                                "legacy service-team scalar shadow",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed service-team composition command",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed capability, responsibility, GeoArea scope, "
+                                "relationship, and external-observation commands"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="typed service-team routing decision",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "domain, route key, exact team, optional typed "
+                                "scope, priority, and active state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="registered service-team routing vocabulary",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "versioned domain/route contracts naming the "
+                                "domain owner and required governed capability"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="native service-team identity and membership",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active ServiceTeam identity and Party-backed "
+                                "ServiceTeamMember membership"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="registered service-team capability vocabulary",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "versioned capability definition rows matching "
+                                "the code registry; no team or access seed data"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="typed geographic scope record",
+                            owner="gis.spatial_sync",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active native GeoArea identity",
+                        ),
+                        AuthorityInput(
+                            name="legacy service-team scalar shadow",
+                            owner="operations.service_team_source_retirement",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "nullable team_type, region, manager_person_id, "
+                                "membership role, and workforce reference retained "
+                                "only for migration comparison"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each public composition mutation enters "
+                            "execute_owner_command once; the binding, audit, and "
+                            "event flush in the same root transaction."
+                        ),
+                        locking=(
+                            "Team then membership/definition/scope/policy records "
+                            "lock in stable identifier order; unique constraints "
+                            "arbitrate concurrent assignment."
+                        ),
+                        idempotency=(
+                            "Equivalent active-state commands replay. Routing and "
+                            "provider-reference identifiers reject changed evidence."
+                        ),
+                        retries=(
+                            "Retry the entire owner command after rollback; stale "
+                            "identity, inactive scope, and ambiguity are not "
+                            "automatically repairable."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "service_team_composition_invalid",
+                            "service_team_capability_unregistered",
+                            "service_team_capability_contract_drift",
+                            "service_team_responsibility_contract_drift",
+                            "service_team_scope_invalid",
+                            "service_team_scope_contract_drift",
+                            "service_team_scope_geo_area_inactive",
+                            "service_team_geo_area_not_found",
+                            "service_team_scope_not_found",
+                            "service_team_relationship_invalid",
+                            "service_team_relationship_cycle",
+                            "service_team_external_reference_conflict",
+                            "service_team_routing_invalid",
+                            "service_team_routing_unregistered",
+                            "service_team_routing_capability_missing",
+                            "service_team_routing_identity_collision",
+                            "service_team_routing_ambiguous",
+                            "service_team_not_found",
+                            "service_team_member_not_found",
+                            "service_team_member_inactive",
+                            "service_team_inactive",
+                            *owner_command_boundary_error_codes(
+                                "operations.service_team_composition"
+                            ),
+                        ),
+                        mapping_owner="domain route and administration adapters",
+                        fail_closed_on=(
+                            "unregistered capability or inactive team/member/scope",
+                            "unregistered domain route or capability-ineligible team",
+                            "provider-reference identity reuse",
+                            "multiple winning explicit routing policies",
+                            "missing required explicit route",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("service_team.changed",),
+                        schema_version=1,
+                        delivery_owner="events.store",
+                        compatibility=(
+                            "Version 1 carries governed keys, team/membership/"
+                            "scope/policy identifiers, and active state without "
+                            "private staff or provider payloads."
+                        ),
+                        replay=(
+                            "Native definition and binding rows plus event/audit "
+                            "evidence reconstruct composition."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "set-valued service-team capability, responsibility, "
+                                "and scope resolution"
+                            ),
+                            input_names=(
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            writer="operations.service_team_composition",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Return an empty set for unavailable identity or "
+                                "missing scope; never choose a row by age."
+                            ),
+                            drift_signal=(
+                                "A consumer reads scalar team type, region, "
+                                "manager, role, or workforce columns."
+                            ),
+                            rebuild_operation=(
+                                "Requery active memberships and active governed "
+                                "capability, responsibility, and scope bindings."
+                            ),
+                            repair_owner="operations.service_team_composition",
+                        ),
+                        ProjectionContract(
+                            name="service-team composition shadow verification",
+                            input_names=(
+                                "native service-team identity and membership",
+                                "legacy service-team scalar shadow",
+                            ),
+                            writer="operations.service_team_composition",
+                            freshness="On-demand transaction-current comparison.",
+                            stale_behavior=(
+                                "Any unmatched shadow pointer blocks contract."
+                            ),
+                            drift_signal=(
+                                "One of the five scalar shadow comparisons is nonzero."
+                            ),
+                            rebuild_operation=(
+                                "Idempotently rerun the forward backfill and bind "
+                                "legacy region labels only through reviewed GeoAreas."
+                            ),
+                            repair_owner="operations.service_team_composition",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "team_type, region, manager_person_id, membership role, "
+                            "and workforce department scalar columns"
+                        ),
+                        new_owner="operations.service_team_composition",
+                        verification=(
+                            "migration 440, owner commands, set-valued queries, "
+                            "explicit routing, five-field shadow drift, and "
+                            "architecture consumer guards"
+                        ),
+                        cutover_gate=(
+                            "All consumers use composition, a complete shadow run "
+                            "has zero drift, every legacy region is reviewed against "
+                            "GeoArea, and rollback requirements have expired."
+                        ),
+                        fallback_retirement=(
+                            "Only then may a forward contract migration drop "
+                            "team_type, region, manager_person_id, membership role, "
+                            "workforce_system, and workforce_department_reference."
+                        ),
+                    ),
+                    steward="operations administration",
+                    design_refs=(
+                        "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_service_team_composition.py",
+                        "tests/test_team_outbound.py",
+                        "tests/test_field_job_chat.py",
+                        "tests/services/topology/test_outage_operations.py",
+                        "tests/test_api_network_catalog.py",
+                        "tests/test_workqueue_parity.py",
+                        ("tests/architecture/test_service_team_lifecycle_boundary.py"),
+                    ),
+                ),
+            ),
+            SOTService(
                 name="operations.agent_workqueue",
                 module="app.services.workqueue.commands",
                 owns=(
@@ -16050,6 +17179,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "auth.staff_provisioning",
                     "operations.service_team_lifecycle",
+                    "operations.service_team_composition",
                     "support.ticket_lifecycle",
                     "support.ticket_sla_clock",
                     "communications.team_inbox_projection",
@@ -16123,11 +17253,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         AuthorityInput(
                             name="native service-team scope",
-                            owner="operations.service_team_lifecycle",
+                            owner="operations.service_team_composition",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source=(
-                                "Party-backed active member, lead, manager, accessible-team, "
-                                "and active team-member SystemUser projections"
+                                "Party-backed active membership plus queue-lead and "
+                                "accountable-manager responsibility sets, intersected "
+                                "with independently authorized RBAC audience"
                             ),
                         ),
                         AuthorityInput(

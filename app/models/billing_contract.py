@@ -516,6 +516,50 @@ class BillingObligation(Base):
             "resolved_amount >= 0 AND resolved_amount <= gross_amount",
             name="ck_billing_obligation_resolved_bound",
         ),
+        CheckConstraint(
+            "rating_coverage_start IS NULL OR rating_coverage_end IS NULL "
+            "OR (rating_coverage_end > rating_coverage_start "
+            "AND rating_coverage_start >= period_start "
+            "AND rating_coverage_end <= period_end)",
+            name="ck_billing_obligation_rating_coverage",
+        ),
+        CheckConstraint(
+            "NOT rating_provenance_complete OR ("
+            "rating_policy_version IS NOT NULL "
+            "AND rating_coverage_start IS NOT NULL "
+            "AND rating_coverage_end IS NOT NULL "
+            "AND rating_unit_price IS NOT NULL "
+            "AND rating_quantity IS NOT NULL "
+            "AND rating_rate_basis IS NOT NULL "
+            "AND rating_rate_unit IS NOT NULL "
+            "AND rating_rate_quantity IS NOT NULL "
+            "AND rating_timezone_name IS NOT NULL "
+            "AND rating_proration_policy IS NOT NULL "
+            "AND rating_rate_units IS NOT NULL "
+            "AND rating_proration_factor IS NOT NULL "
+            "AND rating_tax_rate_percent IS NOT NULL "
+            "AND rating_tax_inclusive IS NOT NULL "
+            "AND rating_input_fingerprint IS NOT NULL)",
+            name="ck_billing_obligation_rating_provenance_complete",
+        ),
+        CheckConstraint(
+            "NOT rating_provenance_complete OR ("
+            "rating_unit_price >= 0 AND rating_quantity > 0 "
+            "AND rating_rate_quantity > 0 AND rating_rate_units >= 0 "
+            "AND rating_proration_factor >= 0 "
+            "AND rating_proration_factor <= 1 "
+            "AND rating_tax_rate_percent >= 0)",
+            name="ck_billing_obligation_rating_values",
+        ),
+        CheckConstraint(
+            "NOT rating_provenance_complete OR ("
+            "(rating_tax_treatment_code IS NULL "
+            "AND rating_tax_rate_id IS NULL "
+            "AND rating_tax_rate_percent = 0) "
+            "OR (rating_tax_treatment_code IS NOT NULL "
+            "AND rating_tax_rate_id IS NOT NULL))",
+            name="ck_billing_obligation_rating_tax_source",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -578,6 +622,39 @@ class BillingObligation(Base):
     gross_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 4), nullable=False, default=Decimal("0")
     )
+    # Immutable rating provenance. Existing expand-and-shadow rows remain
+    # explicitly incomplete; no migration guesses historical inputs. Every
+    # newly scheduled obligation records the exact replay inputs and their
+    # fingerprint in the same owner transaction as the rated result.
+    rating_provenance_complete: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    rating_policy_version: Mapped[str | None] = mapped_column(String(40))
+    rating_coverage_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    rating_coverage_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    rating_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    rating_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    rating_rate_basis: Mapped[RateBasis | None] = mapped_column(_rate_basis_enum)
+    rating_rate_unit: Mapped[IntervalUnit | None] = mapped_column(_interval_unit_enum)
+    rating_rate_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14, 4))
+    rating_timezone_name: Mapped[str | None] = mapped_column(String(64))
+    rating_proration_policy: Mapped[ProrationPolicy | None] = mapped_column(
+        _proration_enum
+    )
+    rating_rate_units: Mapped[Decimal | None] = mapped_column(Numeric(38, 28))
+    rating_proration_factor: Mapped[Decimal | None] = mapped_column(Numeric(38, 28))
+    rating_tax_treatment_code: Mapped[str | None] = mapped_column(String(60))
+    rating_tax_rate_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tax_rates.id", ondelete="RESTRICT"),
+    )
+    rating_tax_rate_percent: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+    rating_tax_inclusive: Mapped[bool | None] = mapped_column(Boolean)
+    rating_input_fingerprint: Mapped[str | None] = mapped_column(String(64))
     resolved_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 4), nullable=False, default=Decimal("0")
     )

@@ -43,6 +43,10 @@ DECLARED_RAW_SETTING_OWNERS = {
     "app/services/settings_secret_cleanup.py",
     "app/services/settings_seed.py",
     "app/services/settings_spec.py",
+    # One-time migration-cutover owner (operations.service_team_source_retirement
+    # in the SOT registry): it retires the raw legacy setting source itself, so
+    # it must read and deactivate the raw rows rather than use typed resolution.
+    "app/services/service_team_source_retirement.py",
     "app/services/web_control_plane.py",
 }
 

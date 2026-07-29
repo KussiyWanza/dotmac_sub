@@ -126,7 +126,6 @@ def funding_setup(db_session, subscriber, subscription):
                 contract_version_id=version.version_id,
                 contract_line_key=line_key,
                 period_index=index,
-                net_amount=Decimal("12500.00"),
             ),
             context=_context(),
         )

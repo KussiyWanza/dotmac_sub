@@ -421,7 +421,7 @@ def send_inbox_reply(
     sender = team_outbound.resolve_team_email_sender(
         db,
         service_team_id=service_team_id,
-        fallback_activity="support_ticket",
+        activity="support_ticket",
         metadata_override=owner_link.metadata_ if owner_link is not None else None,
     )
     config = sender.config

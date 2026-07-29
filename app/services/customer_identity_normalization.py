@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from typing import Any
 
 IDENTITY_TYPE_EMAIL = "email"
 IDENTITY_TYPE_PHONE = "phone"
@@ -17,6 +20,40 @@ PHONE_LIKE_HINTS = {
     "tel",
 }
 DEFAULT_COUNTRY_CODE = "234"
+NAME_PLACEHOLDER_TOKENS = {
+    "blank",
+    "customer",
+    "empty",
+    "na",
+    "n/a",
+    "none",
+    "null",
+    "test",
+    "unknown",
+}
+NAME_PLACEHOLDER_MARKERS = {
+    "",
+    "-",
+    "--",
+    "---",
+    ".",
+    "..",
+    "...",
+    "anonymous",
+    "customer",
+    "customer customer",
+    "customer unknown",
+    "empty",
+    "missing",
+    "na",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
+    "unknown customer",
+    "unknown unknown",
+}
+_NAME_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 _GENERIC_CUSTOMER_NAME_MARKERS = {
     "n/a",
@@ -64,6 +101,65 @@ def default_country_code(db=None) -> str:
 def normalize_email_identifier(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     return normalized or None
+
+
+def collapse_whitespace(value: str | None) -> str | None:
+    text = str(value or "").replace("\u00a0", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def normalize_name_text(value: str | None) -> str | None:
+    text = collapse_whitespace(value)
+    return text.casefold() if text else None
+
+
+def is_placeholder_name(value: str | None) -> bool:
+    normalized = normalize_name_text(value)
+    if normalized is None:
+        return True
+    if normalized in NAME_PLACEHOLDER_MARKERS:
+        return True
+    tokens = _NAME_TOKEN_RE.findall(normalized)
+    if not tokens:
+        return True
+    return all(token in NAME_PLACEHOLDER_TOKENS for token in tokens)
+
+
+def customer_name_signature(
+    first_name: str | None,
+    last_name: str | None,
+    display_name: str | None = None,
+) -> str | None:
+    display = normalize_name_text(display_name)
+    if display:
+        return display
+    parts = [
+        part
+        for part in (
+            normalize_name_text(first_name),
+            normalize_name_text(last_name),
+        )
+        if part
+    ]
+    return " ".join(parts) or None
+
+
+def customer_name_fingerprint(
+    *,
+    first_name: str | None,
+    last_name: str | None,
+    display_name: str | None = None,
+    party_id: Any = None,
+) -> str:
+    payload = {
+        "display_name": normalize_name_text(display_name),
+        "first_name": normalize_name_text(first_name),
+        "last_name": normalize_name_text(last_name),
+        "party_id": str(party_id) if party_id else None,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def normalize_phone_identifier(
