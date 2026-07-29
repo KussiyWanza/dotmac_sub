@@ -16212,214 +16212,147 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="workforce_operations",
         services=(
             SOTService(
-                name="operations.service_team_party_cutover",
-                module="app.services.service_team_party_cutover",
+                name="operations.service_team_source_retirement",
+                module="app.services.service_team_source_retirement",
                 owns=(
-                    "service-team Party cutover readiness",
-                    "approved service-team Party cutover adoption",
+                    "legacy service-team source retirement",
+                    "legacy service-team source-retirement readiness",
                 ),
                 depends_on=(
                     "operations.service_team_lifecycle",
-                    "party.registry",
-                    "auth.staff_provisioning",
-                    "control.settings_spec",
                     "events.store",
                     "observability.audit_log",
                 ),
                 notes=(
-                    "A pre-migration coordinator consumes an expiring, "
-                    "digest-bound review of the exact CRM Person, SystemUser, "
-                    "and membership snapshot. It preserves CRM Person UUIDs as "
-                    "Person Party IDs, delegates identity links to party.registry, "
-                    "adopts exact native memberships, and records only PII-free "
-                    "receipt evidence before migration 426."
+                    "The one-time pre-426 owner verifies the five retained native "
+                    "team pointers, retires workflow-setting sources, clears the "
+                    "non-authoritative manager pointer, and removes only membership "
+                    "rows that migration 426 would reject. It never reads CRM, "
+                    "chooses a conflicting identity, or creates identities, "
+                    "memberships, or grants."
                 ),
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
-                            name="service-team Party cutover readiness",
-                            role=OwnerRole.RESOLVER,
+                            name="legacy service-team source retirement",
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
-                                "current native service-team cutover state",
-                                "canonical Person Party identity",
-                                "staff authentication principal state",
-                                "legacy workflow team settings",
+                                "native service-team identity pointers",
+                                "legacy workflow service-team sources",
+                            ),
+                            canonical_writer=(
+                                "operations.service_team_source_retirement"
                             ),
                         ),
                         ConcernContract(
-                            name="approved service-team Party cutover adoption",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            name="legacy service-team source-retirement readiness",
+                            role=OwnerRole.RESOLVER,
                             input_names=(
-                                "CRM service-team identity snapshot",
-                                "reviewed service-team identity decisions",
-                                "current native service-team cutover state",
-                                "canonical Person Party identity",
-                                "staff authentication principal state",
+                                "native service-team identity pointers",
+                                "legacy workflow service-team sources",
                             ),
                         ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
-                            name="CRM service-team identity snapshot",
-                            owner="external:dotmac_crm",
-                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
-                            source=(
-                                "repeatable-read CRM service-team, membership, "
-                                "manager, and referenced Person rows captured in "
-                                "one SHA-256-bound private plan"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="reviewed service-team identity decisions",
-                            owner="operations.service_team_party_cutover",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source=(
-                                "private explicit CRM Person to SystemUser or "
-                                "identity-only decisions, separate expiring "
-                                "approval, file digests, limits, actor, and reason"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="current native service-team cutover state",
+                            name="native service-team identity pointers",
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked ServiceTeam and ServiceTeamMember rows "
-                                "plus migration-426 readiness invariants"
+                                "the five retained ticket, project, dispatch, "
+                                "Inbox-route, and Inbox-conversation team pointers"
                             ),
                         ),
                         AuthorityInput(
-                            name="canonical Person Party identity",
-                            owner="party.registry",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source=(
-                                "Person Party, CRM external reference, and reviewed "
-                                "SystemUser principal binding"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="staff authentication principal state",
-                            owner="auth.staff_provisioning",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="SystemUser identity and active state",
-                        ),
-                        AuthorityInput(
-                            name="legacy workflow team settings",
-                            owner="control.settings_spec",
+                            name="legacy workflow service-team sources",
+                            owner="operations.service_team_source_retirement",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed aggregate resolver over the active legacy "
-                                "workflow settings retired by migration 426"
+                                "active support_service_teams and "
+                                "support_service_team_members settings plus legacy "
+                                "manager and migration-blocking membership pointers"
                             ),
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "The public adoption enters execute_owner_command once "
-                            "on a transaction-free session and commits Party, "
-                            "principal-binding, membership, audit, and event state "
-                            "in one SERIALIZABLE transaction."
+                            "The explicit operator command enters "
+                            "execute_owner_command once; source, pointer, audit, "
+                            "and event changes flush in the root transaction."
                         ),
                         locking=(
-                            "A plan-digest advisory transaction lock serializes "
-                            "execution; the coordinator then locks its receipt, "
-                            "teams, SystemUsers, Parties, external references, and "
-                            "memberships in stable identifier order."
+                            "Teams, memberships, and legacy settings lock in stable "
+                            "identifier order after the five pointer checks."
                         ),
                         idempotency=(
-                            "The canonical plan digest and private file hashes "
-                            "identify one execution. Exact replay verifies the "
-                            "PII-free audit receipt and every applied identity and "
-                            "membership; changed evidence fails closed."
+                            "A fully retired source replays with zero mutations; "
+                            "constraints and the pointer audit reject changed state."
                         ),
                         retries=(
-                            "An adapter may retry the complete owner command with "
-                            "the same unexpired approval after full rollback. "
-                            "Validation, stale source, drift, and identity conflicts "
-                            "are not retryable without a new reviewed plan."
+                            "Retry the whole command only after rollback; dangling "
+                            "pointers and source mismatches require adjudication."
                         ),
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "operations.service_team_party_cutover.invalid_plan",
-                            "operations.service_team_party_cutover.approval_invalid",
-                            "operations.service_team_party_cutover.stale_source",
-                            "operations.service_team_party_cutover.identity_conflict",
-                            (
-                                "operations.service_team_party_cutover."
-                                "membership_conflict"
-                            ),
-                            "operations.service_team_party_cutover.not_ready",
+                            "service_team_source_retirement_dangling_pointer",
+                            "service_team_source_retirement_duplicate_name",
+                            "service_team_source_retirement_malformed",
+                            "service_team_source_retirement_team_mismatch",
                             *owner_command_boundary_error_codes(
-                                "operations.service_team_party_cutover"
+                                "operations.service_team_source_retirement"
                             ),
                         ),
                         mapping_owner=(
-                            "scripts.migration.execute_service_team_party_cutover"
+                            "scripts.migration.retire_legacy_service_team_sources"
                         ),
                         fail_closed_on=(
-                            "missing, malformed, stale, expired, or digest-mismatched approval",
-                            "incomplete CRM Person decisions",
-                            "inactive manager or active-member principals",
-                            "Party, external-reference, binding, membership, or receipt conflicts",
-                            "remaining migration-426 blockers",
+                            "any dangling native team pointer",
+                            "duplicate native name or source/native identity mismatch",
+                            "malformed active workflow source",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("service_team.party_cutover_adopted",),
+                        event_types=("service_team.changed",),
                         schema_version=1,
                         delivery_owner="events.store",
                         compatibility=(
-                            "Version 1 carries only plan/source/file hashes, "
-                            "aggregate counts, and command/correlation identifiers."
+                            "Version 1 records aggregate pointer and retirement "
+                            "counts without staff or CRM identity."
                         ),
                         replay=(
-                            "The immutable audit receipt plus current Party, "
-                            "principal, external-reference, and membership state "
-                            "prove exact replay; the private plan remains the "
-                            "identity-level operator evidence."
+                            "The audit plus inactive sources, null manager pointers, "
+                            "and resolvable remaining memberships prove retirement."
                         ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.CUTOVER_READY,
-                        old_owner=(
-                            "dotmac_crm service-team membership rows and CRM Person "
-                            "UUIDs copied into Sub without Party adoption"
-                        ),
-                        new_owner="operations.service_team_party_cutover",
+                        old_owner="legacy workflow settings and imported scalar pointers",
+                        new_owner="operations.service_team_source_retirement",
                         verification=(
-                            "Aggregate audit, plan/approval, owner-command, exact "
-                            "replay, rollback, forward staff-bootstrap, migration "
-                            "rehearsal, and architecture tests."
+                            "five-pointer, malformed-source, mismatch, exact replay, "
+                            "migration-426, and architecture tests"
                         ),
                         cutover_gate=(
-                            "The protected reviewed plan is applied, readiness has "
-                            "zero blockers, migration 426 succeeds on a restored "
-                            "revision-423/424 database, and production evidence is "
-                            "attached before authorization."
+                            "The read-only deploy check reports five pointer "
+                            "contracts, zero dangling references, and zero active "
+                            "legacy sources or migration-426 identity blockers."
                         ),
                         fallback_retirement=(
-                            "The one-time executor remains unavailable without an "
-                            "exact approval; CRM membership writes and the legacy "
-                            "workflow settings are retired only through the "
-                            "service-team lifecycle cutover gate."
+                            "No CRM membership planner, identity review, adoption "
+                            "coordinator, or email-matching fallback remains."
                         ),
                     ),
-                    steward="operations administration and identity governance",
+                    steward="operations administration",
                     design_refs=(
                         "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
-                        "docs/PARTY_PRINCIPAL_CONTEXT_BINDING.md",
                         "docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     test_refs=(
-                        "tests/test_service_team_party_cutover.py",
-                        "tests/test_staff_provisioning_owner.py",
-                        (
-                            "tests/architecture/"
-                            "test_service_team_party_cutover_boundary.py"
-                        ),
+                        "tests/test_service_team_source_retirement.py",
+                        ("tests/architecture/test_service_team_lifecycle_boundary.py"),
                     ),
                 ),
             ),
@@ -16429,8 +16362,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "service-team lifecycle",
                     "service-team membership lifecycle",
-                    "staff service-team resolution",
-                    "staff service-team scope projection",
+                    "set-valued staff service-team membership resolution",
                     "active service-team selector projection",
                     "service-team administration projection",
                 ),
@@ -16465,16 +16397,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             canonical_writer="operations.service_team_lifecycle",
                         ),
                         ConcernContract(
-                            name="staff service-team resolution",
-                            role=OwnerRole.RESOLVER,
-                            input_names=(
-                                "active staff authentication principal",
-                                "canonical Person Party identity",
-                                "current native service-team state",
-                            ),
-                        ),
-                        ConcernContract(
-                            name="staff service-team scope projection",
+                            name="set-valued staff service-team membership resolution",
                             role=OwnerRole.RESOLVER,
                             input_names=(
                                 "active staff authentication principal",
@@ -16494,6 +16417,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "active staff authentication principal",
                                 "canonical Person Party identity",
                                 "current native service-team state",
+                                "current service-team composition",
                             ),
                         ),
                     ),
@@ -16503,7 +16427,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed create, update, activation, membership, and role "
+                                "typed identity, activation, and membership "
                                 "commands with CommandContext and expected state"
                             ),
                         ),
@@ -16529,6 +16453,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="ServiceTeam and ServiceTeamMember rows",
+                        ),
+                        AuthorityInput(
+                            name="current service-team composition",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "composition-owned set-valued capability, "
+                                "responsibility, and typed scope queries"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -16576,11 +16509,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="service-team web and API adapters",
                         fail_closed_on=(
                             "unknown, inactive, or Party-unbound selected staff identity",
-                            "reactivation or role change with retired staff identity",
+                            "membership reactivation with retired staff identity",
                             "stale lifecycle evidence",
                             "team identity collision",
                             "deactivation with active members",
-                            "zero or multiple active memberships during staff-team resolution",
+                            "unavailable Party identity during set-valued resolution",
                         ),
                     ),
                     events=EventContract(
@@ -16591,8 +16524,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.store",
                         compatibility=(
-                            "Version 1 carries team, command/correlation, operation, member, "
-                            "role, and actor identifiers without private staff payloads."
+                            "Version 1 carries team, command/correlation, operation, "
+                            "member, and actor identifiers without private staff payloads."
                         ),
                         replay=(
                             "Native team/member rows plus transactional event and audit evidence "
@@ -16601,49 +16534,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     projections=(
                         ProjectionContract(
-                            name="staff service-team resolution",
+                            name="set-valued staff service-team membership resolution",
                             input_names=(
                                 "active staff authentication principal",
                                 "canonical Person Party identity",
                                 "current native service-team state",
+                                "current service-team composition",
                             ),
                             writer="operations.service_team_lifecycle",
                             freshness="Transaction-current native database state.",
                             stale_behavior=(
-                                "Return identity-unavailable, no-membership, or ambiguous; "
-                                "never select by row age or compare principal IDs to Party IDs."
+                                "Return identity-unavailable, no-membership, or every "
+                                "active membership; never select by row age."
                             ),
                             drift_signal=(
-                                "An active staff principal has zero or multiple matching active "
-                                "Party-backed memberships for a caller requiring one team."
+                                "A caller requiring one team consumes membership "
+                                "instead of an explicit assignment or routing policy."
                             ),
                             rebuild_operation=(
                                 "Requery the reviewed SystemUser-to-Party binding and native "
                                 "active memberships."
-                            ),
-                            repair_owner="operations.service_team_lifecycle",
-                        ),
-                        ProjectionContract(
-                            name="staff service-team scope projection",
-                            input_names=(
-                                "active staff authentication principal",
-                                "canonical Person Party identity",
-                                "current native service-team state",
-                            ),
-                            writer="operations.service_team_lifecycle",
-                            freshness="Transaction-current native database state.",
-                            stale_behavior=(
-                                "Return no accessible teams for an inactive, Party-unbound, "
-                                "or inactive-Party principal; never compare principal and "
-                                "Party identifier domains directly."
-                            ),
-                            drift_signal=(
-                                "A workqueue or routing caller derives team membership with "
-                                "direct ServiceTeamMember queries."
-                            ),
-                            rebuild_operation=(
-                                "Requery active native teams, Party-backed memberships, "
-                                "lead roles, managers, and active SystemUser bindings."
                             ),
                             repair_owner="operations.service_team_lifecycle",
                         ),
@@ -16677,11 +16587,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "Render an explicit error; never fall back to retired settings."
                             ),
                             drift_signal=(
-                                "Membership references an absent staff principal or a duplicate "
-                                "case-insensitive team name exists."
+                                "Membership references an absent staff principal, "
+                                "a duplicate case-insensitive team name exists, or "
+                                "the composition owner reports governed-key drift."
                             ),
                             rebuild_operation=(
-                                "Recompose team, membership, and staff labels from native rows."
+                                "Recompose identity and membership locally, then "
+                                "join composition-owner capability, responsibility, "
+                                "and typed-scope sets."
                             ),
                             repair_owner="operations.service_team_lifecycle",
                         ),
@@ -16722,6 +16635,304 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="operations.service_team_composition",
+                module="app.services.service_team_composition",
+                owns=(
+                    "service-team composition lifecycle",
+                    "explicit service-team routing policy",
+                    (
+                        "set-valued service-team capability, responsibility, "
+                        "and scope resolution"
+                    ),
+                    "service-team composition shadow verification",
+                ),
+                depends_on=(
+                    "operations.service_team_lifecycle",
+                    "party.registry",
+                    "auth.staff_provisioning",
+                    "gis.spatial_sync",
+                    "events.store",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "Stable team identity composes governed capabilities, "
+                    "Party-backed membership responsibilities, typed GeoArea or "
+                    "global scope, explicit topology, provider-neutral external "
+                    "observations, and domain route keys. Responsibilities never "
+                    "grant RBAC; consumers intersect authorized access with the "
+                    "returned operational scope. Code-consumed domain route keys "
+                    "are registered with a domain owner, version, and required "
+                    "capability."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="service-team composition lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "typed service-team composition command",
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            canonical_writer="operations.service_team_composition",
+                        ),
+                        ConcernContract(
+                            name="explicit service-team routing policy",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "typed service-team routing decision",
+                                "registered service-team routing vocabulary",
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            canonical_writer="operations.service_team_composition",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "set-valued service-team capability, responsibility, "
+                                "and scope resolution"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="service-team composition shadow verification",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "native service-team identity and membership",
+                                "legacy service-team scalar shadow",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed service-team composition command",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed capability, responsibility, GeoArea scope, "
+                                "relationship, and external-observation commands"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="typed service-team routing decision",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "domain, route key, exact team, optional typed "
+                                "scope, priority, and active state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="registered service-team routing vocabulary",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "versioned domain/route contracts naming the "
+                                "domain owner and required governed capability"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="native service-team identity and membership",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active ServiceTeam identity and Party-backed "
+                                "ServiceTeamMember membership"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="registered service-team capability vocabulary",
+                            owner="operations.service_team_composition",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "versioned capability definition rows matching "
+                                "the code registry; no team or access seed data"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="typed geographic scope record",
+                            owner="gis.spatial_sync",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active native GeoArea identity",
+                        ),
+                        AuthorityInput(
+                            name="legacy service-team scalar shadow",
+                            owner="operations.service_team_source_retirement",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "nullable team_type, region, manager_person_id, "
+                                "membership role, and workforce reference retained "
+                                "only for migration comparison"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each public composition mutation enters "
+                            "execute_owner_command once; the binding, audit, and "
+                            "event flush in the same root transaction."
+                        ),
+                        locking=(
+                            "Team then membership/definition/scope/policy records "
+                            "lock in stable identifier order; unique constraints "
+                            "arbitrate concurrent assignment."
+                        ),
+                        idempotency=(
+                            "Equivalent active-state commands replay. Routing and "
+                            "provider-reference identifiers reject changed evidence."
+                        ),
+                        retries=(
+                            "Retry the entire owner command after rollback; stale "
+                            "identity, inactive scope, and ambiguity are not "
+                            "automatically repairable."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "service_team_composition_invalid",
+                            "service_team_capability_unregistered",
+                            "service_team_capability_contract_drift",
+                            "service_team_responsibility_contract_drift",
+                            "service_team_scope_invalid",
+                            "service_team_scope_contract_drift",
+                            "service_team_scope_geo_area_inactive",
+                            "service_team_geo_area_not_found",
+                            "service_team_scope_not_found",
+                            "service_team_relationship_invalid",
+                            "service_team_relationship_cycle",
+                            "service_team_external_reference_conflict",
+                            "service_team_routing_invalid",
+                            "service_team_routing_unregistered",
+                            "service_team_routing_capability_missing",
+                            "service_team_routing_identity_collision",
+                            "service_team_routing_ambiguous",
+                            "service_team_not_found",
+                            "service_team_member_not_found",
+                            "service_team_member_inactive",
+                            "service_team_inactive",
+                            *owner_command_boundary_error_codes(
+                                "operations.service_team_composition"
+                            ),
+                        ),
+                        mapping_owner="domain route and administration adapters",
+                        fail_closed_on=(
+                            "unregistered capability or inactive team/member/scope",
+                            "unregistered domain route or capability-ineligible team",
+                            "provider-reference identity reuse",
+                            "multiple winning explicit routing policies",
+                            "missing required explicit route",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("service_team.changed",),
+                        schema_version=1,
+                        delivery_owner="events.store",
+                        compatibility=(
+                            "Version 1 carries governed keys, team/membership/"
+                            "scope/policy identifiers, and active state without "
+                            "private staff or provider payloads."
+                        ),
+                        replay=(
+                            "Native definition and binding rows plus event/audit "
+                            "evidence reconstruct composition."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "set-valued service-team capability, responsibility, "
+                                "and scope resolution"
+                            ),
+                            input_names=(
+                                "native service-team identity and membership",
+                                "registered service-team capability vocabulary",
+                                "typed geographic scope record",
+                            ),
+                            writer="operations.service_team_composition",
+                            freshness="Transaction-current native database state.",
+                            stale_behavior=(
+                                "Return an empty set for unavailable identity or "
+                                "missing scope; never choose a row by age."
+                            ),
+                            drift_signal=(
+                                "A consumer reads scalar team type, region, "
+                                "manager, role, or workforce columns."
+                            ),
+                            rebuild_operation=(
+                                "Requery active memberships and active governed "
+                                "capability, responsibility, and scope bindings."
+                            ),
+                            repair_owner="operations.service_team_composition",
+                        ),
+                        ProjectionContract(
+                            name="service-team composition shadow verification",
+                            input_names=(
+                                "native service-team identity and membership",
+                                "legacy service-team scalar shadow",
+                            ),
+                            writer="operations.service_team_composition",
+                            freshness="On-demand transaction-current comparison.",
+                            stale_behavior=(
+                                "Any unmatched shadow pointer blocks contract."
+                            ),
+                            drift_signal=(
+                                "One of the five scalar shadow comparisons is nonzero."
+                            ),
+                            rebuild_operation=(
+                                "Idempotently rerun the forward backfill and bind "
+                                "legacy region labels only through reviewed GeoAreas."
+                            ),
+                            repair_owner="operations.service_team_composition",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "team_type, region, manager_person_id, membership role, "
+                            "and workforce department scalar columns"
+                        ),
+                        new_owner="operations.service_team_composition",
+                        verification=(
+                            "migration 440, owner commands, set-valued queries, "
+                            "explicit routing, five-field shadow drift, and "
+                            "architecture consumer guards"
+                        ),
+                        cutover_gate=(
+                            "All consumers use composition, a complete shadow run "
+                            "has zero drift, every legacy region is reviewed against "
+                            "GeoArea, and rollback requirements have expired."
+                        ),
+                        fallback_retirement=(
+                            "Only then may a forward contract migration drop "
+                            "team_type, region, manager_person_id, membership role, "
+                            "workforce_system, and workforce_department_reference."
+                        ),
+                    ),
+                    steward="operations administration",
+                    design_refs=(
+                        "docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_service_team_composition.py",
+                        "tests/test_team_outbound.py",
+                        "tests/test_field_job_chat.py",
+                        "tests/services/topology/test_outage_operations.py",
+                        "tests/test_workqueue_parity.py",
+                        ("tests/architecture/test_service_team_lifecycle_boundary.py"),
+                    ),
+                ),
+            ),
+            SOTService(
                 name="operations.agent_workqueue",
                 module="app.services.workqueue.commands",
                 owns=(
@@ -16733,6 +16944,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "auth.staff_provisioning",
                     "operations.service_team_lifecycle",
+                    "operations.service_team_composition",
                     "support.ticket_lifecycle",
                     "support.ticket_sla_clock",
                     "communications.team_inbox_projection",
@@ -16806,11 +17018,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         AuthorityInput(
                             name="native service-team scope",
-                            owner="operations.service_team_lifecycle",
+                            owner="operations.service_team_composition",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source=(
-                                "Party-backed active member, lead, manager, accessible-team, "
-                                "and active team-member SystemUser projections"
+                                "Party-backed active membership plus queue-lead and "
+                                "accountable-manager responsibility sets, intersected "
+                                "with independently authorized RBAC audience"
                             ),
                         ),
                         AuthorityInput(

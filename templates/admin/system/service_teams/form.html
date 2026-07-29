@@ -4,14 +4,11 @@
 
 {% block content %}
 {% set current_name = values.get("name", team.name if team else "") %}
-{% set current_type = values.get("team_type", team.team_type.value if team else "support") %}
-{% set current_region = values.get("region", team.region if team and team.region else "") %}
-{% set current_manager = values.get("manager_system_user_id", team.manager_system_user_id|string if team and team.manager_system_user_id else "") %}
 <div class="mx-auto max-w-3xl space-y-6">
     <header>
         <nav class="mb-2 text-sm text-slate-500 dark:text-slate-400"><a href="/admin/system/service-teams" class="hover:text-amber-600">Service Teams</a><span aria-hidden="true"> / </span><span>{{ "Create" if mode == "create" else "Edit" }}</span></nav>
         <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{{ "Create service team" if mode == "create" else "Edit service team" }}</h1>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Team identity is shared across operational modules. Changes are audited and emitted transactionally.</p>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">This form maintains only stable team identity. Capabilities, geographic scopes, relationships, external observations, and member responsibilities are composed independently.</p>
     </header>
 
     {% if error %}<div role="alert" class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-200">{{ error }}</div>{% endif %}
@@ -20,13 +17,7 @@
         {% include "components/forms/csrf_input.html" %}
         <input type="hidden" name="request_id" value="{{ request_id }}">
         {% if mode == "create" %}<input type="hidden" name="team_id" value="{{ request_id }}">{% else %}<input type="hidden" name="expected_updated_at" value="{{ team.updated_at.isoformat() }}">{% endif %}
-
         <div><label for="team-name" class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Name</label><input id="team-name" name="name" required maxlength="160" value="{{ current_name }}" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></div>
-        <div class="grid gap-4 sm:grid-cols-2">
-            <div><label for="team-type" class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Type</label><select id="team-type" name="team_type" required class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">{% for item in team_types %}<option value="{{ item.value }}" {% if current_type == item.value %}selected{% endif %}>{{ item.value|replace("_", " ")|title }}</option>{% endfor %}</select></div>
-            <div><label for="team-region" class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Region</label><input id="team-region" name="region" maxlength="80" value="{{ current_region }}" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></div>
-        </div>
-        <div><label for="team-manager" class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-200">Manager</label>{% if team and team.manager_person_id and not team.manager_identity_active %}<p class="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">The current manager identity is unavailable. Select an active manager or clear the assignment before reactivating this team.</p>{% endif %}<select id="team-manager" name="manager_system_user_id" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"><option value="">No manager</option>{% for staff in staff_options %}<option value="{{ staff.system_user_id }}" {% if current_manager == staff.system_user_id|string %}selected{% endif %}>{{ staff.label }} — {{ staff.email }}</option>{% endfor %}</select><p class="mt-1 text-xs text-slate-500">Only active staff with a reviewed Person Party binding appear.</p></div>
         <div class="flex justify-end gap-3"><a href="{{ '/admin/system/service-teams/' ~ team.team_id if team else '/admin/system/service-teams' }}" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-200">Cancel</a><button type="submit" class="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700">{{ "Create team" if mode == "create" else "Save changes" }}</button></div>
     </form>
 </div>

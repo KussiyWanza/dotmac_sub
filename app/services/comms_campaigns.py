@@ -853,7 +853,7 @@ def _sender_delivery_metadata(
     default_sender = team_outbound.resolve_team_email_sender(
         db,
         service_team_id=campaign.service_team_id,
-        fallback_activity="notification_queue",
+        activity="notification_queue",
     )
     activity = default_sender.activity or "notification_queue"
     if campaign.sender is not None:

@@ -16,9 +16,15 @@ from app.models.operational_escalation import (
     OperationalRoomLink,
     OperationalWatcher,
 )
-from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.service_team import (
+    ServiceTeam,
+    ServiceTeamCapability,
+    ServiceTeamCapabilityDefinition,
+    ServiceTeamCapabilityKey,
+    ServiceTeamRoutingPolicy,
+)
 from app.models.subscriber import Subscriber
-from app.services import operational_escalation
+from app.services import operational_escalation, service_team_composition
 from app.services.topology.outage import (
     confirm_incident,
     declare_outage,
@@ -29,9 +35,43 @@ from app.services.topology.outage import (
 from app.services.topology.outage_operations import plan_outage_escalations
 
 
-def _team(db_session, name: str, team_type: str) -> ServiceTeam:
-    team = ServiceTeam(name=name, team_type=team_type)
+def _team(
+    db_session,
+    name: str,
+    capability: ServiceTeamCapabilityKey,
+    route_key: str,
+) -> ServiceTeam:
+    contract = service_team_composition.CAPABILITY_CONTRACTS[capability]
+    if db_session.get(ServiceTeamCapabilityDefinition, capability.value) is None:
+        db_session.add(
+            ServiceTeamCapabilityDefinition(
+                key=capability.value,
+                display_name=contract.display_name,
+                contract_owner=contract.contract_owner,
+                contract_version=contract.contract_version,
+                description=f"Test contract for {capability.value}",
+                is_active=True,
+            )
+        )
+    team = ServiceTeam(name=name)
     db_session.add(team)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ServiceTeamCapability(
+                team_id=team.id,
+                capability_key=capability.value,
+                is_active=True,
+            ),
+            ServiceTeamRoutingPolicy(
+                domain="network.outage",
+                route_key=route_key,
+                team_id=team.id,
+                priority=100,
+                is_active=True,
+            ),
+        ]
+    )
     db_session.flush()
     return team
 
@@ -41,17 +81,20 @@ def _seed_ops_teams(db_session):
         "operations": _team(
             db_session,
             "NOC",
-            ServiceTeamType.operations.value,
+            ServiceTeamCapabilityKey.outage_response,
+            "incident.primary",
         ),
         "support": _team(
             db_session,
             "Support",
-            ServiceTeamType.support.value,
+            ServiceTeamCapabilityKey.customer_support,
+            "incident.support_watcher",
         ),
         "field": _team(
             db_session,
             "Field Service",
-            ServiceTeamType.field_service.value,
+            ServiceTeamCapabilityKey.field_service,
+            "incident.field_watcher",
         ),
     }
 

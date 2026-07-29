@@ -25,7 +25,7 @@ WORKQUEUE_VIEW_PERMISSION = "support:ticket:read"
 #: Taking an inline action (snooze/claim/complete) on an item.
 WORKQUEUE_ACT_PERMISSION = "support:ticket:update"
 
-#: Token scopes that can widen the audience without a team-lead role.
+#: RBAC scopes that may widen audience only when operational team scope agrees.
 AUDIENCE_TEAM_SCOPE = "workqueue:audience:team"
 AUDIENCE_ORG_SCOPE = "workqueue:audience:org"
 
@@ -98,7 +98,9 @@ def natural_audience(
     """The widest audience a principal holds without asking for it."""
     if principal.is_admin or AUDIENCE_ORG_SCOPE in principal.scopes:
         return WorkqueueAudience.org
-    if leads_team or AUDIENCE_TEAM_SCOPE in principal.scopes:
+    # A responsibility narrows which team can be operated; it never grants the
+    # RBAC scope. Conversely, RBAC cannot invent operational team ownership.
+    if leads_team and AUDIENCE_TEAM_SCOPE in principal.scopes:
         return WorkqueueAudience.team
     return WorkqueueAudience.self_
 

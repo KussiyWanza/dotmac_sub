@@ -10,8 +10,8 @@ import pytest
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
-    ServiceTeamMemberRole,
-    ServiceTeamType,
+    ServiceTeamMemberResponsibility,
+    ServiceTeamResponsibilityKey,
 )
 from app.models.support import Ticket
 from app.services import realtime_platform, workqueue
@@ -25,6 +25,7 @@ from app.services.workqueue.events import (
     team_channel,
     user_channel,
 )
+from app.services.workqueue.permissions import AUDIENCE_TEAM_SCOPE
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
@@ -42,27 +43,37 @@ def published(monkeypatch):
     return sent
 
 
-def _principal(person_id=None, *, roles=()):
+def _principal(person_id=None, *, roles=(), scopes=()):
     return WorkqueuePrincipal(
         person_id=person_id or uuid4(),
         roles=frozenset(roles),
-        scopes=frozenset(),
+        scopes=frozenset(scopes),
         can_view=True,
         can_act=True,
     )
 
 
 def _team(db, name="Support"):
-    team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
+    team = ServiceTeam(name=name)
     db.add(team)
     db.flush()
     return team
 
 
-def _member(db, team, person_id, *, role=ServiceTeamMemberRole.member.value):
+def _member(db, team, person_id, *, queue_lead=False):
     _user, person = add_bound_staff_user(db, system_user_id=person_id)
-    db.add(ServiceTeamMember(team_id=team.id, person_id=person.id, role=role))
+    member = ServiceTeamMember(team_id=team.id, person_id=person.id, role=None)
+    db.add(member)
     db.flush()
+    if queue_lead:
+        db.add(
+            ServiceTeamMemberResponsibility(
+                membership_id=member.id,
+                responsibility_key=ServiceTeamResponsibilityKey.queue_lead.value,
+                is_active=True,
+            )
+        )
+        db.flush()
 
 
 def test_channel_names_match_the_documented_shape():
@@ -85,9 +96,12 @@ def test_a_plain_agent_only_listens_on_their_own_channel(db_session):
 def test_a_team_lead_also_listens_on_their_team_channels(db_session):
     lead = uuid4()
     team = _team(db_session)
-    _member(db_session, team, lead, role=ServiceTeamMemberRole.lead.value)
+    _member(db_session, team, lead, queue_lead=True)
 
-    scope = get_workqueue_scope(db_session, _principal(lead))
+    scope = get_workqueue_scope(
+        db_session,
+        _principal(lead, scopes=(AUDIENCE_TEAM_SCOPE,)),
+    )
     assert channels_for_scope(scope) == [user_channel(lead), team_channel(team.id)]
 
 

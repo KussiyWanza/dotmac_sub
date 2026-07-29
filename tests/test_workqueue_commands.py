@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.models.idempotency import IdempotencyKey
-from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
 from app.models.team_inbox import (
     InboxConversation,
@@ -53,7 +53,7 @@ def _context(
 
 
 def _team_member(db, system_user_id: UUID, *, name: str = "Support") -> ServiceTeam:
-    team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
+    team = ServiceTeam(name=name)
     db.add(team)
     db.flush()
     _user, person = add_bound_staff_user(db, system_user_id=system_user_id)

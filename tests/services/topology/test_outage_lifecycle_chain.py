@@ -24,10 +24,16 @@ from app.models.operational_escalation import (
     OperationalOwner,
     OperationalWatcher,
 )
-from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.service_team import (
+    ServiceTeam,
+    ServiceTeamCapability,
+    ServiceTeamCapabilityDefinition,
+    ServiceTeamCapabilityKey,
+    ServiceTeamRoutingPolicy,
+)
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
-from app.services import operational_escalation
+from app.services import operational_escalation, service_team_composition
 from app.services.events.handlers.outage_lifecycle_projection import (
     OutageLifecycleProjectionHandler,
 )
@@ -50,12 +56,54 @@ def _node(db) -> NetworkDevice:
 
 
 def _seed_teams(db) -> None:
-    for name, team_type in (
-        ("NOC", ServiceTeamType.operations.value),
-        ("Support", ServiceTeamType.support.value),
-        ("Field", ServiceTeamType.field_service.value),
+    for name, capability, route_key in (
+        (
+            "NOC",
+            ServiceTeamCapabilityKey.outage_response,
+            "incident.primary",
+        ),
+        (
+            "Support",
+            ServiceTeamCapabilityKey.customer_support,
+            "incident.support_watcher",
+        ),
+        (
+            "Field",
+            ServiceTeamCapabilityKey.field_service,
+            "incident.field_watcher",
+        ),
     ):
-        db.add(ServiceTeam(name=name, team_type=team_type))
+        contract = service_team_composition.CAPABILITY_CONTRACTS[capability]
+        if db.get(ServiceTeamCapabilityDefinition, capability.value) is None:
+            db.add(
+                ServiceTeamCapabilityDefinition(
+                    key=capability.value,
+                    display_name=contract.display_name,
+                    contract_owner=contract.contract_owner,
+                    contract_version=contract.contract_version,
+                    description=f"Test contract for {capability.value}",
+                    is_active=True,
+                )
+            )
+        team = ServiceTeam(name=name)
+        db.add(team)
+        db.flush()
+        db.add_all(
+            [
+                ServiceTeamCapability(
+                    team_id=team.id,
+                    capability_key=capability.value,
+                    is_active=True,
+                ),
+                ServiceTeamRoutingPolicy(
+                    domain="network.outage",
+                    route_key=route_key,
+                    team_id=team.id,
+                    priority=100,
+                    is_active=True,
+                ),
+            ]
+        )
     db.flush()
 
 

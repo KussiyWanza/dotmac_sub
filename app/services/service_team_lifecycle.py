@@ -11,18 +11,21 @@ from datetime import UTC, datetime
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
+from app.models.gis import GeoArea
 from app.models.party import Party, PartyIdentityStatus, PartyType
 from app.models.service_team import (
     ServiceTeam,
+    ServiceTeamCapabilityKey,
     ServiceTeamMember,
-    ServiceTeamMemberRole,
-    ServiceTeamType,
+    ServiceTeamResponsibilityKey,
+    ServiceTeamScopeType,
 )
 from app.models.system_user import SystemUser
+from app.services import service_team_composition
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
@@ -57,11 +60,6 @@ _ADD_MEMBER = OwnerCommandDefinition(
     concern=MEMBERSHIP_CONCERN,
     name="add_service_team_member",
 )
-_UPDATE_MEMBER = OwnerCommandDefinition(
-    owner=OWNER,
-    concern=MEMBERSHIP_CONCERN,
-    name="update_service_team_member",
-)
 _REMOVE_MEMBER = OwnerCommandDefinition(
     owner=OWNER,
     concern=MEMBERSHIP_CONCERN,
@@ -78,9 +76,6 @@ class CreateServiceTeam:
     context: CommandContext
     team_id: UUID
     name: str
-    team_type: ServiceTeamType
-    region: str | None = None
-    manager_system_user_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -89,9 +84,6 @@ class UpdateServiceTeam:
     team_id: UUID
     expected_updated_at: datetime
     name: str
-    team_type: ServiceTeamType
-    region: str | None = None
-    manager_system_user_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -108,15 +100,6 @@ class AddServiceTeamMember:
     context: CommandContext
     team_id: UUID
     system_user_id: UUID
-    role: ServiceTeamMemberRole
-
-
-@dataclass(frozen=True)
-class UpdateServiceTeamMember:
-    context: CommandContext
-    team_id: UUID
-    member_id: UUID
-    role: ServiceTeamMemberRole
 
 
 @dataclass(frozen=True)
@@ -150,7 +133,7 @@ class ServiceTeamMemberView:
     system_user_id: UUID | None
     person_label: str
     person_email: str
-    role: ServiceTeamMemberRole
+    responsibilities: tuple[ServiceTeamResponsibilityKey, ...]
     is_active: bool
     staff_identity_active: bool
     created_at: datetime
@@ -160,12 +143,10 @@ class ServiceTeamMemberView:
 class ServiceTeamView:
     team_id: UUID
     name: str
-    team_type: ServiceTeamType
-    region: str | None
-    manager_person_id: UUID | None
-    manager_system_user_id: UUID | None
-    manager_label: str | None
-    manager_identity_active: bool | None
+    capabilities: tuple[ServiceTeamCapabilityKey, ...]
+    geo_area_ids: tuple[UUID, ...]
+    has_global_scope: bool
+    accountable_manager_labels: tuple[str, ...]
     is_active: bool
     active_member_count: int
     created_at: datetime
@@ -178,6 +159,16 @@ class ServiceTeamDetail:
     members: tuple[ServiceTeamMemberView, ...]
     available_staff: tuple[StaffOption, ...]
     actions: ServiceTeamActionEligibility
+    scope_bindings: tuple[service_team_composition.TeamScopeBinding, ...]
+    relationships: tuple[service_team_composition.TeamRelationshipEdge, ...]
+    external_references: tuple[
+        service_team_composition.TeamExternalReferenceObservation, ...
+    ]
+    routing_policies: tuple[service_team_composition.TeamRoutingPolicyBinding, ...]
+    geo_area_labels: dict[UUID, str]
+    geo_area_options: tuple[tuple[UUID, str], ...]
+    related_team_names: dict[UUID, str]
+    related_team_options: tuple[tuple[UUID, str], ...]
 
 
 @dataclass(frozen=True)
@@ -193,7 +184,6 @@ class ServiceTeamResolutionKind(str, Enum):
     resolved = "resolved"
     identity_unavailable = "identity_unavailable"
     no_membership = "no_membership"
-    ambiguous = "ambiguous"
 
 
 @dataclass(frozen=True)
@@ -201,60 +191,19 @@ class ServiceTeamResolution:
     system_user_id: UUID
     person_party_id: UUID | None
     kind: ServiceTeamResolutionKind
-    team_id: UUID | None
-    candidate_team_ids: tuple[UUID, ...]
-
-
-@dataclass(frozen=True)
-class StaffServiceTeamScope:
-    """Active native team scope for one authenticated staff principal."""
-
-    system_user_id: UUID
-    person_party_id: UUID | None
-    identity_available: bool
-    member_team_ids: tuple[UUID, ...]
-    lead_team_ids: tuple[UUID, ...]
-    managed_team_ids: tuple[UUID, ...]
+    team_ids: tuple[UUID, ...]
 
     @property
-    def accessible_team_ids(self) -> tuple[UUID, ...]:
-        return tuple(
-            sorted(
-                {
-                    *self.member_team_ids,
-                    *self.managed_team_ids,
-                },
-                key=str,
-            )
-        )
+    def team_id(self) -> UUID | None:
+        """Compatibility projection for callers whose domain requires exactly one."""
+
+        return self.team_ids[0] if len(self.team_ids) == 1 else None
 
     @property
-    def leads_team(self) -> bool:
-        return bool(self.lead_team_ids or self.managed_team_ids)
+    def candidate_team_ids(self) -> tuple[UUID, ...]:
+        """Compatibility name; candidates are now the authoritative result set."""
 
-
-@dataclass(frozen=True)
-class ServiceTeamRoleRegionMember:
-    person_id: UUID
-    system_user_id: UUID
-    label: str
-    email: str
-    team_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ServiceTeamRoleRegionGroup:
-    group_key: str
-    region: str
-    role: ServiceTeamMemberRole
-    members: tuple[ServiceTeamRoleRegionMember, ...]
-
-
-@dataclass
-class _RoleRegionAccumulator:
-    region: str
-    role: ServiceTeamMemberRole
-    members: dict[UUID, tuple[SystemUser, set[str]]]
+        return self.team_ids
 
 
 @dataclass(frozen=True)
@@ -284,17 +233,6 @@ def _clean_name(value: str) -> str:
             field="name",
         )
     return name
-
-
-def _clean_region(value: str | None) -> str | None:
-    region = " ".join(str(value or "").split()) or None
-    if region is not None and len(region) > 80:
-        raise _error(
-            "service_team_invalid",
-            "Region must be 80 characters or fewer.",
-            field="region",
-        )
-    return region
 
 
 def _clean_reason(value: str) -> str:
@@ -382,25 +320,6 @@ def _active_staff_identity(
     return user, user.person_party_id
 
 
-def _active_staff_for_person_party(
-    db: Session,
-    person_party_id: UUID,
-) -> SystemUser:
-    user = db.scalar(
-        select(SystemUser)
-        .where(SystemUser.person_party_id == person_party_id)
-        .with_for_update()
-    )
-    if user is None:
-        raise _error(
-            "service_team_staff_identity_unbound",
-            "The service-team identity has no reviewed staff principal binding.",
-            person_party_id=str(person_party_id),
-        )
-    validated, _person_party_id = _active_staff_identity(db, user.id)
-    return validated
-
-
 def _locked_team(db: Session, team_id: UUID) -> ServiceTeam:
     team = db.scalar(
         select(ServiceTeam).where(ServiceTeam.id == team_id).with_for_update()
@@ -484,7 +403,6 @@ def _audit_and_event(
         "correlation_id": str(context.correlation_id),
         "operation": action,
         "team_id": str(team.id),
-        "team_type": str(team.team_type),
         "member_id": str(member.id) if member is not None else None,
         "person_id": str(member.person_id) if member is not None else None,
         **(metadata or {}),
@@ -519,7 +437,6 @@ def create_team(db: Session, command: CreateServiceTeam) -> ServiceTeamMutation:
     """Create one native team; exact caller-supplied team-id replays are stable."""
 
     name = _clean_name(command.name)
-    region = _clean_region(command.region)
 
     def apply() -> ServiceTeamMutation:
         existing = db.scalar(
@@ -527,19 +444,8 @@ def create_team(db: Session, command: CreateServiceTeam) -> ServiceTeamMutation:
             .where(ServiceTeam.id == command.team_id)
             .with_for_update()
         )
-        manager_person_id = None
-        if command.manager_system_user_id is not None:
-            _, manager_person_id = _active_staff_identity(
-                db, command.manager_system_user_id
-            )
         if existing is not None:
-            if (
-                existing.name == name
-                and existing.team_type == command.team_type.value
-                and existing.region == region
-                and existing.manager_person_id == manager_person_id
-                and existing.is_active
-            ):
+            if existing.name == name and existing.is_active:
                 return ServiceTeamMutation(existing.id, None, "created", replayed=True)
             raise _error(
                 "service_team_identity_collision",
@@ -550,9 +456,6 @@ def create_team(db: Session, command: CreateServiceTeam) -> ServiceTeamMutation:
         team = ServiceTeam(
             id=command.team_id,
             name=name,
-            team_type=command.team_type.value,
-            region=region,
-            manager_person_id=manager_person_id,
             is_active=True,
         )
         db.add(team)
@@ -572,28 +475,10 @@ def update_team(db: Session, command: UpdateServiceTeam) -> ServiceTeamMutation:
     """Update descriptive team fields with desired-state replay and stale guard."""
 
     name = _clean_name(command.name)
-    region = _clean_region(command.region)
 
     def apply() -> ServiceTeamMutation:
         team = _locked_team(db, command.team_id)
-        manager_person_id = None
-        if command.manager_system_user_id is not None:
-            _, manager_person_id = _active_staff_identity(
-                db, command.manager_system_user_id
-            )
-        desired = (
-            name,
-            command.team_type.value,
-            region,
-            manager_person_id,
-        )
-        current = (
-            team.name,
-            team.team_type,
-            team.region,
-            team.manager_person_id,
-        )
-        if current == desired:
+        if team.name == name:
             return ServiceTeamMutation(team.id, None, "updated", replayed=True)
         if not _same_timestamp(team.updated_at, command.expected_updated_at):
             raise _error(
@@ -604,16 +489,8 @@ def update_team(db: Session, command: UpdateServiceTeam) -> ServiceTeamMutation:
         _ensure_name_available(db, name=name, excluding_team_id=team.id)
         previous: dict[str, object] = {
             "previous_name": team.name,
-            "previous_team_type": team.team_type,
-            "previous_region": team.region,
-            "previous_manager_person_id": (
-                str(team.manager_person_id) if team.manager_person_id else None
-            ),
         }
         team.name = name
-        team.team_type = command.team_type.value
-        team.region = region
-        team.manager_person_id = manager_person_id
         db.flush()
         _audit_and_event(
             db,
@@ -665,8 +542,6 @@ def set_team_active(
                     team_id=str(team.id),
                     active_member_count=int(active_members),
                 )
-        elif team.manager_person_id is not None:
-            _active_staff_for_person_party(db, team.manager_person_id)
         team.is_active = command.is_active
         db.flush()
         _audit_and_event(
@@ -709,11 +584,7 @@ def add_member(
             )
             .with_for_update()
         )
-        if (
-            member is not None
-            and member.is_active
-            and member.role == command.role.value
-        ):
+        if member is not None and member.is_active:
             return ServiceTeamMutation(
                 team.id, member.id, "member_added", replayed=True
             )
@@ -721,12 +592,11 @@ def add_member(
             member = ServiceTeamMember(
                 team_id=team.id,
                 person_id=person_party_id,
-                role=command.role.value,
+                role=None,
                 is_active=True,
             )
             db.add(member)
         else:
-            member.role = command.role.value
             member.is_active = True
         db.flush()
         _audit_and_event(
@@ -735,58 +605,12 @@ def add_member(
             action="member_added",
             team=team,
             member=member,
-            metadata={"role": member.role},
         )
         return ServiceTeamMutation(team.id, member.id, "member_added", replayed=False)
 
     return execute_owner_command(
         db,
         definition=_ADD_MEMBER,
-        context=command.context,
-        operation=apply,
-    )
-
-
-def update_member(
-    db: Session,
-    command: UpdateServiceTeamMember,
-) -> ServiceTeamMutation:
-    """Change the role of one active membership."""
-
-    def apply() -> ServiceTeamMutation:
-        team = _locked_team(db, command.team_id)
-        member = _locked_member(
-            db,
-            team_id=team.id,
-            member_id=command.member_id,
-        )
-        if not member.is_active:
-            raise _error(
-                "service_team_member_inactive",
-                "Reactivate the member before changing their role.",
-                member_id=str(member.id),
-            )
-        _active_staff_for_person_party(db, member.person_id)
-        if member.role == command.role.value:
-            return ServiceTeamMutation(
-                team.id, member.id, "member_updated", replayed=True
-            )
-        previous_role = member.role
-        member.role = command.role.value
-        db.flush()
-        _audit_and_event(
-            db,
-            context=command.context,
-            action="member_updated",
-            team=team,
-            member=member,
-            metadata={"previous_role": previous_role, "role": member.role},
-        )
-        return ServiceTeamMutation(team.id, member.id, "member_updated", replayed=False)
-
-    return execute_owner_command(
-        db,
-        definition=_UPDATE_MEMBER,
         context=command.context,
         operation=apply,
     )
@@ -819,7 +643,7 @@ def remove_member(
             action="member_removed",
             team=team,
             member=member,
-            metadata={"reason": reason, "role": member.role},
+            metadata={"reason": reason},
         )
         return ServiceTeamMutation(team.id, member.id, "member_removed", replayed=False)
 
@@ -833,32 +657,6 @@ def remove_member(
 
 def _team_views(db: Session, teams: list[ServiceTeam]) -> tuple[ServiceTeamView, ...]:
     team_ids = [team.id for team in teams]
-    manager_ids = {
-        team.manager_person_id for team in teams if team.manager_person_id is not None
-    }
-    manager_users = (
-        {
-            user.person_party_id: user
-            for user in db.scalars(
-                select(SystemUser).where(SystemUser.person_party_id.in_(manager_ids))
-            ).all()
-        }
-        if manager_ids
-        else {}
-    )
-    active_manager_party_ids = (
-        set(
-            db.scalars(
-                select(Party.id).where(
-                    Party.id.in_(manager_ids),
-                    Party.party_type == PartyType.person.value,
-                    Party.status == PartyIdentityStatus.active.value,
-                )
-            ).all()
-        )
-        if manager_ids
-        else set()
-    )
     member_counts = (
         {
             team_id: int(count)
@@ -874,31 +672,61 @@ def _team_views(db: Session, teams: list[ServiceTeam]) -> tuple[ServiceTeamView,
         if team_ids
         else {}
     )
+    capabilities = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team_ids),
+    )
+    scopes = service_team_composition.scope_bindings_by_team(
+        db,
+        tuple(team_ids),
+    )
+    geo_areas: dict[UUID, set[UUID]] = {}
+    global_teams: set[UUID] = set()
+    for team_id, bindings in scopes.items():
+        for binding in bindings:
+            if binding.scope_type is ServiceTeamScopeType.global_:
+                global_teams.add(team_id)
+            elif binding.geo_area_id is not None:
+                geo_areas.setdefault(team_id, set()).add(binding.geo_area_id)
+    manager_rows = (
+        db.execute(
+            select(ServiceTeamMember.team_id, ServiceTeamMember.id, SystemUser)
+            .join(
+                SystemUser,
+                SystemUser.person_party_id == ServiceTeamMember.person_id,
+            )
+            .join(Party, Party.id == ServiceTeamMember.person_id)
+            .where(
+                ServiceTeamMember.team_id.in_(team_ids),
+                ServiceTeamMember.is_active.is_(True),
+                SystemUser.is_active.is_(True),
+                Party.party_type == PartyType.person.value,
+                Party.status == PartyIdentityStatus.active.value,
+            )
+        ).all()
+        if team_ids
+        else []
+    )
+    manager_responsibilities = service_team_composition.responsibilities_by_membership(
+        db,
+        tuple(member_id for _team_id, member_id, _user in manager_rows),
+    )
+    manager_labels: dict[UUID, set[str]] = {}
+    for team_id, member_id, user in manager_rows:
+        if (
+            ServiceTeamResponsibilityKey.accountable_manager
+            in manager_responsibilities[member_id]
+        ):
+            manager_labels.setdefault(team_id, set()).add(_staff_label(user))
     return tuple(
         ServiceTeamView(
             team_id=team.id,
             name=team.name,
-            team_type=ServiceTeamType(team.team_type),
-            region=team.region,
-            manager_person_id=team.manager_person_id,
-            manager_system_user_id=(
-                manager_users[team.manager_person_id].id
-                if team.manager_person_id in manager_users
-                else None
-            ),
-            manager_label=(
-                _staff_label(manager_users[team.manager_person_id])
-                if team.manager_person_id in manager_users
-                else None
-            ),
-            manager_identity_active=(
-                None
-                if team.manager_person_id is None
-                else (
-                    team.manager_person_id in manager_users
-                    and manager_users[team.manager_person_id].is_active
-                    and team.manager_person_id in active_manager_party_ids
-                )
+            capabilities=capabilities[team.id],
+            geo_area_ids=tuple(sorted(geo_areas.get(team.id, set()), key=str)),
+            has_global_scope=team.id in global_teams,
+            accountable_manager_labels=tuple(
+                sorted(manager_labels.get(team.id, set()), key=str.casefold)
             ),
             is_active=team.is_active,
             active_member_count=member_counts.get(team.id, 0),
@@ -925,13 +753,7 @@ def list_teams(
     filters = []
     if normalized_search:
         pattern = f"%{normalized_search}%"
-        filters.append(
-            or_(
-                ServiceTeam.name.ilike(pattern),
-                ServiceTeam.region.ilike(pattern),
-                ServiceTeam.team_type.ilike(pattern),
-            )
-        )
+        filters.append(ServiceTeam.name.ilike(pattern))
     if is_active is not None:
         filters.append(ServiceTeam.is_active.is_(is_active))
     statement = select(ServiceTeam)
@@ -981,8 +803,6 @@ def get_team(db: Session, team_id: UUID) -> ServiceTeamDetail:
         )
     ).all()
     person_ids = {member.person_id for member in member_rows}
-    if team.manager_person_id is not None:
-        person_ids.add(team.manager_person_id)
     staff = (
         {
             user.person_party_id: user
@@ -1011,6 +831,10 @@ def get_team(db: Session, team_id: UUID) -> ServiceTeamDetail:
         for person_party_id, user in staff.items()
         if user.is_active and person_party_id in active_party_ids
     }
+    responsibilities = service_team_composition.responsibilities_by_membership(
+        db,
+        tuple(member.id for member in member_rows),
+    )
     members = tuple(
         ServiceTeamMemberView(
             member_id=member.id,
@@ -1026,7 +850,7 @@ def get_team(db: Session, team_id: UUID) -> ServiceTeamDetail:
             person_email=(
                 staff[member.person_id].email if member.person_id in staff else ""
             ),
-            role=ServiceTeamMemberRole(member.role),
+            responsibilities=responsibilities[member.id],
             is_active=member.is_active,
             staff_identity_active=member.person_id in active_staff_person_ids,
             created_at=member.created_at,
@@ -1068,25 +892,91 @@ def get_team(db: Session, team_id: UUID) -> ServiceTeamDetail:
             ),
         )
     else:
-        manager_identity_active = (
-            team.manager_person_id is None or team_view.manager_identity_active is True
-        )
         actions = ServiceTeamActionEligibility(
             can_edit=True,
             can_add_member=False,
-            can_activate=manager_identity_active,
+            can_activate=True,
             can_deactivate=False,
-            lifecycle_block_reason=(
-                None
-                if manager_identity_active
-                else "Assign an active, Party-bound manager before activation."
-            ),
+            lifecycle_block_reason=None,
         )
+    scope_bindings = service_team_composition.scope_bindings_for_team(
+        db,
+        team.id,
+        active_only=False,
+    )
+    relationships = service_team_composition.relationships_for_team(
+        db,
+        team.id,
+        active_only=False,
+    )
+    external_references = service_team_composition.external_references_for_team(
+        db,
+        team.id,
+        active_only=False,
+    )
+    routing_policies = service_team_composition.routing_policies_for_team(
+        db,
+        team.id,
+        active_only=False,
+    )
+    bound_geo_area_ids = {
+        binding.geo_area_id
+        for binding in scope_bindings
+        if binding.geo_area_id is not None
+    }
+    geo_area_labels = (
+        {
+            geo_area_id: name
+            for geo_area_id, name in db.execute(
+                select(GeoArea.id, GeoArea.name).where(
+                    GeoArea.id.in_(bound_geo_area_ids)
+                )
+            ).all()
+        }
+        if bound_geo_area_ids
+        else {}
+    )
+    geo_area_options = tuple(
+        (geo_area_id, name)
+        for geo_area_id, name in db.execute(
+            select(GeoArea.id, GeoArea.name)
+            .where(GeoArea.is_active.is_(True))
+            .order_by(GeoArea.name.asc(), GeoArea.id.asc())
+        ).all()
+    )
+    related_team_ids = {edge.parent_team_id for edge in relationships} | {
+        edge.child_team_id for edge in relationships
+    }
+    related_team_names = (
+        {
+            related_team_id: name
+            for related_team_id, name in db.execute(
+                select(ServiceTeam.id, ServiceTeam.name).where(
+                    ServiceTeam.id.in_(related_team_ids)
+                )
+            ).all()
+        }
+        if related_team_ids
+        else {}
+    )
+    related_team_options = tuple(
+        (option_team_id, name)
+        for option_team_id, name in list_active_team_options(db)
+        if option_team_id != team.id
+    )
     return ServiceTeamDetail(
         team=team_view,
         members=members,
         available_staff=available_staff,
         actions=actions,
+        scope_bindings=scope_bindings,
+        relationships=relationships,
+        external_references=external_references,
+        routing_policies=routing_policies,
+        geo_area_labels=geo_area_labels,
+        geo_area_options=geo_area_options,
+        related_team_names=related_team_names,
+        related_team_options=related_team_options,
     )
 
 
@@ -1113,18 +1003,17 @@ def list_staff_options(db: Session) -> tuple[StaffOption, ...]:
     )
 
 
-def resolve_staff_service_team(
+def resolve_staff_service_teams(
     db: Session,
     system_user_id: UUID,
-    *,
-    team_type: ServiceTeamType | None = None,
 ) -> ServiceTeamResolution:
-    """Resolve one active staff principal to one active native team.
+    """Resolve one active staff principal to every active native membership.
 
     System-user identifiers are adapter-facing identity. Membership rows are
     Party-backed, so callers must use this owner query instead of comparing the
-    two identifier domains. Multiple matching memberships are deliberately
-    ambiguous; the owner never invents precedence from row creation order.
+    two identifier domains. Multiple memberships are valid and returned as a
+    stable set; a domain that needs one team must use an explicit assignment or
+    routing policy rather than row age, type, or name precedence.
     """
 
     user = db.get(SystemUser, system_user_id)
@@ -1133,8 +1022,7 @@ def resolve_staff_service_team(
             system_user_id=system_user_id,
             person_party_id=(user.person_party_id if user is not None else None),
             kind=ServiceTeamResolutionKind.identity_unavailable,
-            team_id=None,
-            candidate_team_ids=(),
+            team_ids=(),
         )
     person_party_id = user.person_party_id
     party_is_active = db.scalar(
@@ -1149,8 +1037,7 @@ def resolve_staff_service_team(
             system_user_id=system_user_id,
             person_party_id=person_party_id,
             kind=ServiceTeamResolutionKind.identity_unavailable,
-            team_id=None,
-            candidate_team_ids=(),
+            team_ids=(),
         )
     statement = (
         select(ServiceTeam.id)
@@ -1161,109 +1048,29 @@ def resolve_staff_service_team(
             ServiceTeam.is_active.is_(True),
         )
     )
-    if team_type is not None:
-        statement = statement.where(ServiceTeam.team_type == team_type.value)
-    candidate_team_ids = tuple(
-        db.scalars(statement.order_by(ServiceTeam.id.asc())).all()
-    )
-    if not candidate_team_ids:
+    team_ids = tuple(db.scalars(statement.order_by(ServiceTeam.id.asc())).all())
+    if not team_ids:
         return ServiceTeamResolution(
             system_user_id=system_user_id,
             person_party_id=person_party_id,
             kind=ServiceTeamResolutionKind.no_membership,
-            team_id=None,
-            candidate_team_ids=(),
-        )
-    if len(candidate_team_ids) > 1:
-        return ServiceTeamResolution(
-            system_user_id=system_user_id,
-            person_party_id=person_party_id,
-            kind=ServiceTeamResolutionKind.ambiguous,
-            team_id=None,
-            candidate_team_ids=candidate_team_ids,
+            team_ids=(),
         )
     return ServiceTeamResolution(
         system_user_id=system_user_id,
         person_party_id=person_party_id,
         kind=ServiceTeamResolutionKind.resolved,
-        team_id=candidate_team_ids[0],
-        candidate_team_ids=candidate_team_ids,
+        team_ids=team_ids,
     )
 
 
-def resolve_staff_team_scope(
+def resolve_staff_service_team(
     db: Session,
     system_user_id: UUID,
-) -> StaffServiceTeamScope:
-    """Resolve every active native team role for one staff principal.
+) -> ServiceTeamResolution:
+    """Deprecated spelling retained while callers adopt the set-valued name."""
 
-    Workqueue, Inbox, ticket, and dispatch callers consume this query instead of
-    comparing adapter-facing ``SystemUser.id`` values with Party-backed
-    ``ServiceTeamMember.person_id`` values themselves.
-    """
-
-    user = db.get(SystemUser, system_user_id)
-    if user is None or not user.is_active or user.person_party_id is None:
-        return StaffServiceTeamScope(
-            system_user_id=system_user_id,
-            person_party_id=(user.person_party_id if user is not None else None),
-            identity_available=False,
-            member_team_ids=(),
-            lead_team_ids=(),
-            managed_team_ids=(),
-        )
-    person_party_id = user.person_party_id
-    party_is_active = db.scalar(
-        select(Party.id).where(
-            Party.id == person_party_id,
-            Party.party_type == PartyType.person.value,
-            Party.status == PartyIdentityStatus.active.value,
-        )
-    )
-    if party_is_active is None:
-        return StaffServiceTeamScope(
-            system_user_id=system_user_id,
-            person_party_id=person_party_id,
-            identity_available=False,
-            member_team_ids=(),
-            lead_team_ids=(),
-            managed_team_ids=(),
-        )
-
-    memberships = db.execute(
-        select(ServiceTeam.id, ServiceTeamMember.role)
-        .join(ServiceTeamMember, ServiceTeamMember.team_id == ServiceTeam.id)
-        .where(
-            ServiceTeam.is_active.is_(True),
-            ServiceTeamMember.is_active.is_(True),
-            ServiceTeamMember.person_id == person_party_id,
-        )
-        .order_by(ServiceTeam.id.asc())
-    ).all()
-    member_team_ids = tuple(row[0] for row in memberships)
-    lead_roles = {
-        ServiceTeamMemberRole.lead.value,
-        ServiceTeamMemberRole.manager.value,
-    }
-    lead_team_ids = tuple(row[0] for row in memberships if row[1] in lead_roles)
-    managed_team_ids = tuple(
-        db.scalars(
-            select(ServiceTeam.id)
-            .where(
-                ServiceTeam.is_active.is_(True),
-                ServiceTeam.manager_person_id == person_party_id,
-            )
-            .order_by(ServiceTeam.id.asc())
-        ).all()
-    )
-    return StaffServiceTeamScope(
-        system_user_id=system_user_id,
-        person_party_id=person_party_id,
-        identity_available=True,
-        member_team_ids=member_team_ids,
-        lead_team_ids=lead_team_ids,
-        managed_team_ids=managed_team_ids,
-    )
+    return resolve_staff_service_teams(db, system_user_id)
 
 
 def list_active_team_member_system_user_ids(
@@ -1308,98 +1115,4 @@ def list_active_team_options(db: Session) -> tuple[tuple[UUID, str], ...]:
             .where(ServiceTeam.is_active.is_(True))
             .order_by(ServiceTeam.name.asc())
         ).all()
-    )
-
-
-def list_role_region_groups(
-    db: Session,
-    *,
-    search: str | None = None,
-    limit: int = 500,
-) -> tuple[ServiceTeamRoleRegionGroup, ...]:
-    """Group active, Party-backed members by native team region and member role."""
-
-    normalized_search = " ".join(str(search or "").split())
-    normalized_limit = min(max(int(limit), 1), 1000)
-    statement = (
-        select(ServiceTeam, ServiceTeamMember, SystemUser)
-        .join(ServiceTeamMember, ServiceTeamMember.team_id == ServiceTeam.id)
-        .join(
-            SystemUser,
-            SystemUser.person_party_id == ServiceTeamMember.person_id,
-        )
-        .join(Party, Party.id == ServiceTeamMember.person_id)
-        .where(
-            ServiceTeam.is_active.is_(True),
-            ServiceTeamMember.is_active.is_(True),
-            SystemUser.is_active.is_(True),
-            Party.party_type == PartyType.person.value,
-            Party.status == PartyIdentityStatus.active.value,
-        )
-    )
-    if normalized_search:
-        pattern = f"%{normalized_search}%"
-        statement = statement.where(
-            or_(
-                ServiceTeam.name.ilike(pattern),
-                ServiceTeam.region.ilike(pattern),
-                ServiceTeamMember.role.ilike(pattern),
-                SystemUser.display_name.ilike(pattern),
-                SystemUser.first_name.ilike(pattern),
-                SystemUser.last_name.ilike(pattern),
-                SystemUser.email.ilike(pattern),
-            )
-        )
-    rows = db.execute(
-        statement.order_by(
-            ServiceTeam.region.asc(),
-            ServiceTeamMember.role.asc(),
-            SystemUser.first_name.asc(),
-            SystemUser.last_name.asc(),
-            SystemUser.email.asc(),
-            ServiceTeam.name.asc(),
-        ).limit(normalized_limit)
-    ).all()
-    grouped: dict[tuple[str, ServiceTeamMemberRole], _RoleRegionAccumulator] = {}
-    for team, member, user in rows:
-        region = str(team.region or "").strip() or "unassigned"
-        role = ServiceTeamMemberRole(member.role)
-        key = (region.casefold(), role)
-        accumulator = grouped.setdefault(
-            key,
-            _RoleRegionAccumulator(region=region, role=role, members={}),
-        )
-        current = accumulator.members.get(member.person_id)
-        if current is None:
-            accumulator.members[member.person_id] = (user, {team.name})
-        else:
-            current[1].add(team.name)
-
-    return tuple(
-        ServiceTeamRoleRegionGroup(
-            group_key=f"{region_key}_{role.value}",
-            region=accumulator.region,
-            role=role,
-            members=tuple(
-                ServiceTeamRoleRegionMember(
-                    person_id=person_id,
-                    system_user_id=user.id,
-                    label=_staff_label(user),
-                    email=user.email,
-                    team_names=tuple(sorted(team_names, key=str.casefold)),
-                )
-                for person_id, (user, team_names) in sorted(
-                    accumulator.members.items(),
-                    key=lambda item: (
-                        _staff_label(item[1][0]).casefold(),
-                        item[1][0].email.casefold(),
-                        str(item[0]),
-                    ),
-                )
-            ),
-        )
-        for (region_key, role), accumulator in sorted(
-            grouped.items(),
-            key=lambda item: (item[0][0], item[0][1].value),
-        )
     )

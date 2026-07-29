@@ -17,7 +17,7 @@ from app.models.team_inbox import (
     InboxMessage,
     InboxMessageDirection,
 )
-from app.services import team_inbox_assignment
+from app.services import service_team_composition, team_inbox_assignment
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class InboxAgentPerformanceMetrics:
 class InboxTeamPerformanceReportRow:
     service_team_id: str
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     response_sla_seconds: int | None
     metrics: InboxTeamPerformanceMetrics
 
@@ -58,7 +58,7 @@ class InboxAgentPerformanceReportRow:
     person_id: str
     service_team_id: str
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     metrics: InboxAgentPerformanceMetrics
 
 
@@ -67,7 +67,7 @@ class InboxEscalationCandidate:
     conversation_id: str
     service_team_id: str
     service_team_name: str
-    service_team_type: str
+    service_team_capabilities: tuple[str, ...]
     subject: str | None
     contact_address: str | None
     status: str
@@ -406,8 +406,13 @@ def team_performance_report(
     query = db.query(ServiceTeam).order_by(ServiceTeam.name.asc())
     if not include_inactive:
         query = query.filter(ServiceTeam.is_active.is_(True))
+    teams = query.all()
+    capabilities_by_team = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team.id for team in teams),
+    )
     rows: list[InboxTeamPerformanceReportRow] = []
-    for team in query.all():
+    for team in teams:
         team_sla_seconds = response_sla_seconds_for_team(
             team,
             fallback=response_sla_seconds,
@@ -416,7 +421,9 @@ def team_performance_report(
             InboxTeamPerformanceReportRow(
                 service_team_id=str(team.id),
                 service_team_name=team.name,
-                service_team_type=team.team_type,
+                service_team_capabilities=tuple(
+                    capability.value for capability in capabilities_by_team[team.id]
+                ),
                 response_sla_seconds=team_sla_seconds,
                 metrics=team_performance_metrics(
                     db,
@@ -451,8 +458,13 @@ def agent_performance_report(
     if not include_inactive_members:
         query = query.filter(ServiceTeamMember.is_active.is_(True))
 
+    members = query.all()
+    capabilities_by_team = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team.id for _member, team, _user in members),
+    )
     rows: list[InboxAgentPerformanceReportRow] = []
-    for member, team, user in query.all():
+    for member, team, user in members:
         metrics = agent_performance_metrics(
             db,
             service_team_id=team.id,
@@ -463,7 +475,9 @@ def agent_performance_report(
                 person_id=str(user.id),
                 service_team_id=str(team.id),
                 service_team_name=team.name,
-                service_team_type=team.team_type,
+                service_team_capabilities=tuple(
+                    capability.value for capability in capabilities_by_team[team.id]
+                ),
                 metrics=metrics,
             )
         )
@@ -492,8 +506,13 @@ def escalation_candidates(
     if not include_inactive:
         team_query = team_query.filter(ServiceTeam.is_active.is_(True))
 
+    teams = team_query.all()
+    capabilities_by_team = service_team_composition.capabilities_by_team(
+        db,
+        tuple(team.id for team in teams),
+    )
     candidates: list[InboxEscalationCandidate] = []
-    for team in team_query.all():
+    for team in teams:
         team_response_sla = response_sla_seconds_for_team(
             team,
             fallback=response_sla_seconds,
@@ -567,7 +586,9 @@ def escalation_candidates(
                     conversation_id=str(conversation.id),
                     service_team_id=str(team.id),
                     service_team_name=team.name,
-                    service_team_type=team.team_type,
+                    service_team_capabilities=tuple(
+                        capability.value for capability in capabilities_by_team[team.id]
+                    ),
                     subject=conversation.subject,
                     contact_address=conversation.contact_address,
                     status=conversation.status,

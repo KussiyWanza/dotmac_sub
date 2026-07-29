@@ -39,8 +39,9 @@ def test_agent_workqueue_has_complete_typed_owner_contract():
 
 def test_workqueue_scope_consumes_service_team_owner_queries():
     source = Path("app/services/workqueue/scope.py").read_text(encoding="utf-8")
-    assert "service_team_lifecycle.resolve_staff_team_scope" in source
+    assert "service_team_composition.resolve_staff_capability_scope" in source
     assert "service_team_lifecycle.list_active_team_member_system_user_ids" in source
+    assert "ServiceTeamResponsibilityKey.queue_lead" in source
     assert "ServiceTeamMember" not in source
     assert "SystemUser" not in source
 

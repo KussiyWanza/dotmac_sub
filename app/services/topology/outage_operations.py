@@ -15,8 +15,7 @@ from app.models.operational_escalation import (
     OperationalWatcher,
     OperationalWatcherRole,
 )
-from app.models.service_team import ServiceTeam, ServiceTeamType
-from app.services import operational_escalation
+from app.services import operational_escalation, service_team_composition
 from app.services.topology.affected import affected_customers
 
 SEVERITY_RANK = {
@@ -55,14 +54,10 @@ def _scope_name(session, incident: OutageIncident) -> str:
     return str(incident.id)
 
 
-def _active_team_by_type(session, team_type: str) -> ServiceTeam | None:
-    return (
-        session.query(ServiceTeam)
-        .filter(ServiceTeam.team_type == team_type)
-        .filter(ServiceTeam.is_active.is_(True))
-        .order_by(ServiceTeam.created_at.asc())
-        .first()
-    )
+OUTAGE_ROUTING_DOMAIN = "network.outage"
+OUTAGE_PRIMARY_ROUTE = "incident.primary"
+OUTAGE_SUPPORT_WATCHER_ROUTE = "incident.support_watcher"
+OUTAGE_FIELD_WATCHER_ROUTE = "incident.field_watcher"
 
 
 def _has_active_primary_owner(session, incident: OutageIncident) -> bool:
@@ -86,19 +81,32 @@ def ensure_outage_operations(session, incident: OutageIncident) -> None:
     """
 
     entity_id = str(incident.id)
-    operations = _active_team_by_type(session, ServiceTeamType.operations.value)
-    support = _active_team_by_type(session, ServiceTeamType.support.value)
-    field = _active_team_by_type(session, ServiceTeamType.field_service.value)
+    operations = service_team_composition.resolve_routing_team(
+        session,
+        domain=OUTAGE_ROUTING_DOMAIN,
+        route_key=OUTAGE_PRIMARY_ROUTE,
+    )
+    support = service_team_composition.resolve_routing_team(
+        session,
+        domain=OUTAGE_ROUTING_DOMAIN,
+        route_key=OUTAGE_SUPPORT_WATCHER_ROUTE,
+    )
+    field = service_team_composition.resolve_routing_team(
+        session,
+        domain=OUTAGE_ROUTING_DOMAIN,
+        route_key=OUTAGE_FIELD_WATCHER_ROUTE,
+    )
 
     if operations is not None and not _has_active_primary_owner(session, incident):
         operational_escalation.set_owner(
             session,
             entity_type=OperationalEntityType.outage,
             entity_id=entity_id,
-            service_team_id=operations.id,
-            source="outage_lifecycle",
-            reason="Default outage owner",
+            service_team_id=operations.team_id,
+            source="outage_routing_policy",
+            reason="Explicit outage primary route",
             metadata={
+                "routing_policy_id": str(operations.policy_id),
                 "status": incident.status,
                 "severity": incident.severity,
                 "affected_count": incident.affected_count,
@@ -116,11 +124,12 @@ def ensure_outage_operations(session, incident: OutageIncident) -> None:
             session,
             entity_type=OperationalEntityType.outage,
             entity_id=entity_id,
-            service_team_id=team.id,
+            service_team_id=team.team_id,
             role=role,
-            source="outage_lifecycle",
-            reason="Outage coordination",
+            source="outage_routing_policy",
+            reason="Explicit outage coordination route",
             metadata={
+                "routing_policy_id": str(team.policy_id),
                 "status": incident.status,
                 "severity": incident.severity,
                 "affected_count": incident.affected_count,

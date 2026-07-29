@@ -65,7 +65,7 @@ class InboxConversationContactLinkRead(BaseModel):
 class InboxTimelineTeamRead(BaseModel):
     service_team_id: UUID
     service_team_name: str | None = None
-    service_team_type: str | None = None
+    service_team_capabilities: tuple[str, ...] = ()
     role: str
     source: str
     is_active: bool
@@ -123,7 +123,7 @@ class InboxConversationListItemRead(BaseModel):
     subscriber_id: UUID | None = None
     primary_service_team_id: UUID | None = None
     primary_service_team_name: str | None = None
-    primary_service_team_type: str | None = None
+    primary_service_team_capabilities: tuple[str, ...] = ()
     channel_type: str
     status: str
     priority: int = 100

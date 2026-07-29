@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from playwright.sync_api import Page, expect
 
-from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
 from app.models.system_user import SystemUser
 
@@ -47,10 +47,7 @@ def workqueue_ticket(e2e_db, settings):
     system_user = e2e_db.query(SystemUser).filter(SystemUser.email == username).one()
     assert system_user.person_party_id is not None
     suffix = uuid4().hex[:10]
-    team = ServiceTeam(
-        name=f"E2E Workqueue {suffix}",
-        team_type=ServiceTeamType.support.value,
-    )
+    team = ServiceTeam(name=f"E2E Workqueue {suffix}")
     e2e_db.add(team)
     e2e_db.flush()
     e2e_db.add(

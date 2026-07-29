@@ -1,10 +1,8 @@
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.models.subscription_engine import SettingValueType
@@ -68,31 +66,6 @@ class SettingSpec(ListResponseMixin):
     min_value: int | None = None
     max_value: int | None = None
     is_secret: bool = False
-
-
-@dataclass(frozen=True)
-class LegacyServiceTeamCutoverTeam:
-    """One validated legacy team definition consumed by migration 426."""
-
-    team_id: UUID
-    label: str
-
-
-@dataclass(frozen=True)
-class LegacyServiceTeamCutoverMember:
-    """One validated legacy team-member reference consumed by migration 426."""
-
-    team_id: UUID
-    system_user_id: UUID
-
-
-@dataclass(frozen=True)
-class LegacyServiceTeamCutoverSettings:
-    """Typed aggregate of the workflow settings retired by migration 426."""
-
-    teams: tuple[LegacyServiceTeamCutoverTeam, ...]
-    members: tuple[LegacyServiceTeamCutoverMember, ...]
-    malformed_entry_count: int
 
 
 SCHEDULER_BOOLEAN_SETTING_KEYS = frozenset(
@@ -4860,84 +4833,6 @@ def get_spec(domain: SettingDomain, key: str) -> SettingSpec | None:
 
 def list_specs(domain: SettingDomain) -> list[SettingSpec]:
     return [spec for spec in SETTINGS_SPECS if spec.domain == domain]
-
-
-def resolve_legacy_service_team_cutover_settings(
-    db: Session,
-) -> LegacyServiceTeamCutoverSettings:
-    """Resolve only the legacy team settings needed by the migration-426 gate."""
-
-    service = settings_service.workflow_settings
-    team_setting = service.get_optional_by_key(
-        db,
-        "support_service_teams",
-        active_only=True,
-    )
-    member_setting = service.get_optional_by_key(
-        db,
-        "support_service_team_members",
-        active_only=True,
-    )
-    team_payload = getattr(team_setting, "value_json", None)
-    member_payload = getattr(member_setting, "value_json", None)
-    malformed = 0
-    teams: list[LegacyServiceTeamCutoverTeam] = []
-    if team_payload is None:
-        pass
-    elif not isinstance(team_payload, list):
-        malformed += 1
-    else:
-        for item in team_payload:
-            if not isinstance(item, dict):
-                malformed += 1
-                continue
-            try:
-                team_id = UUID(str(item.get("id")))
-            except (TypeError, ValueError):
-                malformed += 1
-                continue
-            label = " ".join(str(item.get("label") or "").split())
-            if not label or len(label) > 160:
-                malformed += 1
-                continue
-            teams.append(
-                LegacyServiceTeamCutoverTeam(
-                    team_id=team_id,
-                    label=label,
-                )
-            )
-
-    members: list[LegacyServiceTeamCutoverMember] = []
-    if member_payload is not None:
-        if not isinstance(member_payload, dict):
-            malformed += 1
-        else:
-            for raw_team_id, raw_members in member_payload.items():
-                try:
-                    team_id = UUID(str(raw_team_id))
-                except (TypeError, ValueError):
-                    malformed += 1
-                    continue
-                if not isinstance(raw_members, list):
-                    malformed += 1
-                    continue
-                for raw_user_id in raw_members:
-                    try:
-                        system_user_id = UUID(str(raw_user_id))
-                    except (TypeError, ValueError):
-                        malformed += 1
-                        continue
-                    members.append(
-                        LegacyServiceTeamCutoverMember(
-                            team_id=team_id,
-                            system_user_id=system_user_id,
-                        )
-                    )
-    return LegacyServiceTeamCutoverSettings(
-        teams=tuple(teams),
-        members=tuple(members),
-        malformed_entry_count=malformed,
-    )
 
 
 def resolve_value(db, domain: SettingDomain, key: str) -> Any:

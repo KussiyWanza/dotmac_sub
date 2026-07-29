@@ -14,10 +14,10 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: billing rating provenance (439) sits on Phase 2
-    # verification counts (438), PON port administrative state (437), billing
-    # shadow verification evidence (436), and
-    # access invitations (435) and the ADR 0007 billing target chain (434..430),
+    # Single linear head: composable service teams (440) sits on billing rating
+    # provenance (439), Phase 2 verification counts (438), PON port
+    # administrative state (437), billing shadow verification evidence (436),
+    # access invitations (435), and the ADR 0007 billing target chain (434..430),
     # which sits on inbox conversation participants (429), and chains through
     # vendor material release and advances (428), vendor principal user type (427),
     # service-team lifecycle (426), vendor project intake evidence (425),
@@ -25,7 +25,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["439_billing_obligation_rating_provenance"]
+    assert script.get_heads() == ["440_composable_service_teams"]
+    assert (
+        script.get_revision("440_composable_service_teams").down_revision
+        == "439_billing_obligation_rating_provenance"
+    )
     assert (
         script.get_revision("439_billing_obligation_rating_provenance").down_revision
         == "438_billing_phase2_verification_counts"

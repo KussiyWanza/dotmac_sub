@@ -92,8 +92,6 @@ class TestNativeServiceTeamLifecycle:
         _assert_rendered_post_forms_have_csrf(admin_page)
 
         admin_page.get_by_label("Name").fill(original_name)
-        admin_page.get_by_label("Type").select_option("operations")
-        admin_page.get_by_label("Region").fill("Abuja")
         admin_page.get_by_role("button", name="Create team").click()
         admin_page.wait_for_url(
             re.compile(r".*/admin/system/service-teams/[0-9a-f-]{36}$")
@@ -105,16 +103,14 @@ class TestNativeServiceTeamLifecycle:
             admin_page.get_by_role("button", name=re.compile("delete", re.I))
         ).to_have_count(0)
 
-        admin_page.get_by_role("link", name="Edit team").click()
+        admin_page.get_by_role("link", name="Edit identity").click()
         expect(
             admin_page.get_by_role("heading", name="Edit service team")
         ).to_be_visible()
         _assert_rendered_post_forms_have_csrf(admin_page)
         admin_page.get_by_label("Name").fill(edited_name)
-        admin_page.get_by_label("Region").fill("Lagos")
         admin_page.get_by_role("button", name="Save changes").click()
         expect(admin_page.get_by_role("heading", name=edited_name)).to_be_visible()
-        expect(admin_page.get_by_text("Lagos", exact=False).first).to_be_visible()
 
         staff_select = admin_page.locator('select[name="system_user_id"]')
         expect(staff_select).to_be_visible()
@@ -134,9 +130,6 @@ class TestNativeServiceTeamLifecycle:
             f'form[action="{SERVICE_TEAMS_PATH}/'
             f'{admin_page.url.rsplit("/", 1)[-1]}/members"]'
         )
-        add_role = add_form.locator('select[name="role"]')
-        add_role.select_option("lead")
-        expect(add_role).to_have_value("lead")
         with (
             admin_page.expect_request(
                 lambda request: (
@@ -151,7 +144,7 @@ class TestNativeServiceTeamLifecycle:
             ) as add_response,
         ):
             add_form.get_by_role("button", name="Add member").click()
-        assert parse_qs(add_request.value.post_data or "").get("role") == ["lead"]
+        assert "role" not in parse_qs(add_request.value.post_data or "")
         assert add_response.value.status == 303
         expect(admin_page.get_by_text(member_email, exact=False).first).to_be_visible()
         _assert_rendered_post_forms_have_csrf(admin_page)
@@ -161,13 +154,13 @@ class TestNativeServiceTeamLifecycle:
             .filter(has_text=member_email)
             .first
         )
-        role_form = member_row.locator('form[action$="/role"]')
-        expect(role_form.locator('select[name="role"]')).to_have_value("lead")
-        role_form.locator('select[name="role"]').select_option("manager")
-        role_form.get_by_role("button", name="Save").click()
-        expect(
-            member_row.locator('form[action$="/role"] select[name="role"]')
-        ).to_have_value("manager")
+        responsibility_form = member_row.locator('form[action$="/responsibilities"]')
+        responsibility_form.locator('select[name="responsibility"]').select_option(
+            "queue_lead"
+        )
+        responsibility_form.locator('select[name="is_active"]').select_option("true")
+        responsibility_form.get_by_role("button", name="Apply").click()
+        expect(member_row).to_contain_text("Queue Lead")
 
         remove_form = member_row.locator('form[action$="/remove"]')
         remove_form.locator('input[name="reason"]').fill("E2E lifecycle verification")

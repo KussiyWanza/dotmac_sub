@@ -141,42 +141,41 @@ The first selected slice is CRM's 11-route
 order issuance, Inbox routing, workqueue scope, outage coordination, project
 assignment, and field execution.
 
-Sub already has native `ServiceTeam` and `ServiceTeamMember` records, but the
-current ownership boundary is not coherent:
+The native identity foundation is retained, but scalar type, region, manager,
+member role, and workforce-department fields are only migration shadows.
+`operations.service_team_lifecycle` owns stable team identity and Party-backed
+membership. `operations.service_team_composition` separately owns registered
+capabilities, many member responsibilities, typed geographic scope, explicit
+team relationships, provider-neutral external observations, and exact routing
+policies.
 
-- the executable registry assigns synchronized team/member records to
-  `support.ticket_configuration` and labels that migration complete; while
-- `app/services/support_ticket_settings.py` says the old
-  `support_service_teams` and `support_service_team_members` settings remain
-  display/config truth and mirrors them into the native tables.
+The CRM-retirement slice therefore:
 
-That is an unresolved parallel-authority path, not completed parity. The
-recommended target owner is `operations.service_team_lifecycle`. Its slice must:
+1. retires `support_service_teams` and `support_service_team_members` without
+   importing CRM memberships or making identity matches;
+2. verifies the five retained native team pointers before source retirement;
+3. removes only compatibility memberships that would block migration 426;
+4. keeps RBAC permission grants separate from operational responsibility;
+5. moves each consumer to set-valued capability/scope queries or an explicit
+   assignment/routing policy;
+6. preserves historical references through soft lifecycle; and
+7. drops scalar shadows only in a later forward migration after complete-cohort
+   shadow verification and rollback expiry.
 
-1. make native service-team and membership records authoritative across all
-   consumers;
-2. provide typed create, update, activate/deactivate, membership, role, and
-   read-model contracts with locking, idempotency, audit, and events;
-3. provide the granularly permissioned `/admin/system/teams` operator surface;
-4. migrate and reconcile the settings payload into native records;
-5. change ticket configuration and every other caller to read or command the
-   shared owner, then remove the settings-to-table mirror and obsolete keys;
-6. preserve historical references by using deactivation as normal retirement;
-   CRM's hard-delete route receives an explicit reviewed-removal disposition
-   unless a stricter safe-delete contract is approved; and
-7. pass shadow parity, cutover, rollback, zero-traffic, and CRM deletion gates
-   before its 11 routes or module can be marked retired.
+The detailed contract and operator procedure are
+`docs/designs/SERVICE_TEAM_LIFECYCLE_SOT.md` and
+`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md`.
 
-The ledger records this owner as `cutover_ready`, not retired. Native records,
-typed commands, administration, Party-backed caller cutover, and architecture
-guards are implemented together. Production migration evidence, traffic
-cutover, fallback removal, the zero-traffic window, and CRM source deletion
-remain open gates.
+The executable registry records native lifecycle authority as complete and
+composable authority as shadowing. Production migration evidence,
+complete-cohort drift verification, rollback expiry, and the later scalar
+contract migration remain open gates.
 
 This is not an identity-system replacement. `party.registry` remains the
 canonical Person Party owner and `auth.staff_provisioning` remains the staff
 principal owner. Service-team lifecycle consumes those identities and owns only
-team topology, membership, role, activation, and retirement facts.
+stable team identity, Party-backed membership, activation, and retirement
+facts.
 
 ### Reconciliation after the Inbox and project PRs
 

@@ -1,129 +1,147 @@
-# Service-team lifecycle source of truth
+# Composable service-team source of truth
 
-Status: cutover-ready implementation; reviewed Party/membership adoption and
-production migration evidence pending.
+Status: composable authority in shadow; legacy scalar contraction pending
+complete-cohort verification.
 
 ## Ownership
 
-`operations.service_team_lifecycle` owns native service-team identity,
-activation, manager assignment, membership lifecycle, role changes, and the
-active-team/admin projections. Inbox, ticket configuration, ticket assignment,
-workqueue, outages, dispatch, projects, and delivery services are consumers.
+`operations.service_team_lifecycle` owns only stable native team identity,
+activation, Party-backed membership, and their administration projections.
 
-`party.registry` owns Person Party identity and the reviewed
-`SystemUser.person_party_id` binding. `auth.staff_provisioning` owns the staff
-authentication principal. Service-team `person_id` fields persist Person Party
-IDs; operational adapters translate to current SystemUser principal IDs only at
-their existing assignment/delivery boundaries.
+`operations.service_team_composition` owns:
 
-An agent is not a second identity model. In Sub, an operational agent is an
-active staff `SystemUser`, reviewed active Person Party binding, and active
-`ServiceTeamMember`.
+- registered capability definitions and team capability bindings;
+- multiple responsibilities per membership;
+- explicit parent/child, escalation, and collaboration relationships;
+- typed global or `GeoArea` scope bindings;
+- multiple provider-neutral external observations; and
+- domain route keys that select an exact team.
 
-External HR observation and reconciliation is a separate follow-up slice. This
-slice neither names an HR provider nor gives an external system authority over
-team or membership state. That follow-up must keep native records
-authoritative, treat provider payloads as observations, and reconcile through
-this owner with explicit completeness, idempotency, provenance, and drift
-repair semantics.
+`party.registry` owns Person Party identity.
+`auth.staff_provisioning` owns staff principals and RBAC remains the permission
+owner. A responsibility can narrow operational scope; it never grants a
+permission. A caller must hold the relevant RBAC permission and be within the
+returned team scope.
 
-`operations.service_team_party_cutover` is the one-time pre-migration
-coordinator for the already-imported CRM boundary. It consumes an exact,
-reviewed CRM Person-to-SystemUser decision plan, delegates Party creation and
-binding to `party.registry`, and adopts the CRM membership snapshot through a
-serializable transaction. CRM identifiers remain provenance; the coordinator
-does not give CRM continuing write authority.
+External workforce or CRM systems are observations. They never define local
+team identity, membership, responsibility, or access.
 
-## Command and lifecycle rules
+## Data contract
 
-- Public writes enter `execute_owner_command` once on a transaction-free
-  session.
-- Team and membership rows are locked; team names are unique
-  case-insensitively.
-- New manager/member selections require an active SystemUser, an active Person
-  Party, and a reviewed binding between them.
-- Reactivation and member-role changes revalidate the current staff principal
-  and Person Party state; a retired or ambiguous identity fails closed.
-- Create binds a caller-supplied UUID. Exact desired-state commands replay;
-  changed evidence or a deactivated row under the same identity fails closed.
-- Team changes use `updated_at` stale evidence.
-- A team with active members cannot be deactivated.
-- Membership removal deactivates the row. Team or membership hard-delete is not
-  exposed.
-- Audit and versioned domain events are staged in the owner transaction.
-- `resolve_staff_service_team` is the typed principal-to-Party membership query.
-  It returns resolved, identity-unavailable, no-membership, or ambiguous
-  outcomes and never selects a team by row creation order.
+`ServiceTeam` is a stable operational group identity with a name, active state,
+and lifecycle timestamps. The following facts are composed:
+
+- `ServiceTeamCapabilityDefinition` is governed, versioned vocabulary. Code may
+  consume only registered keys with a named contract owner.
+- `ServiceTeamCapability` assigns zero or many capabilities to a team.
+- `ServiceTeamMember` records Party-backed membership and has no authoritative
+  role.
+- `ServiceTeamMemberResponsibility` assigns zero or many of
+  `accountable_manager`, `queue_lead`, `agent`, `dispatcher`, and `on_call`.
+- `ServiceTeamRelationship` records explicit directed topology.
+- `ServiceTeamScopeBinding` represents either global scope or one typed
+  `GeoArea` reference. New scope kinds require new typed columns and checks;
+  arbitrary JSON or polymorphic string identifiers are forbidden.
+- `ServiceTeamExternalReference` records provider, account scope, external
+  identifier, provenance, observation time, and lifecycle. Many observations
+  may refer to one team; no observation is a local identity.
+- `ServiceTeamRoutingPolicy` records a domain, route key, exact team, optional
+  typed team scope, priority, and lifecycle. Code-consumed domain/route pairs
+  are registered with a contract owner, version, and required capability;
+  callers cannot invent a route key or substitute a different capability.
+
+Capability vocabulary is seeded by migration 440. Teams, members, managers,
+responsibilities, scopes, relationships, routing decisions, and access grants
+are never seeded.
+
+## Query and routing rules
+
+Principal-to-team resolution is set-valued. Zero teams means no membership;
+many teams are normal. A domain requiring one team must use its exact work
+assignment or an explicit route, never creation order, a team name, or scalar
+type.
+
+Capability and responsibility queries return stable sets. Scope filters may
+only narrow them. Explicit routing derives eligibility from the registered
+domain contract and rejects unknown route keys or multiple policies at the
+winning priority.
+
+The migrated consumers are:
+
+- outage coordination: `network.outage` route keys select exact primary,
+  support-watcher, and field-watcher teams, with capability eligibility;
+- Team Inbox outbound: explicit route metadata or caller activity wins,
+  otherwise one unambiguous governed capability activity may be used;
+- Team Inbox conversation and performance projections expose the full
+  capability set rather than a scalar team type;
+- field-job chat: the exact `WorkOrderAssignmentQueue` and its active
+  `DispatchRule.service_team_id` decide the team;
+- workqueue: membership scopes self work, while team audience requires both the
+  RBAC audience scope and `queue_lead`/`accountable_manager` responsibility.
+
+## Commands, transactions, and events
+
+Public lifecycle and composition writes enter `execute_owner_command` once on a
+transaction-free session. Teams lock before memberships, definitions, scopes,
+relationships, external observations, and routing policies. Nested helpers
+flush only. Unique/check/foreign-key constraints arbitrate concurrent winners.
+
+Exact desired state replays. Identity reuse, unregistered capability, inactive
+team/member/scope, provider-reference conflict, and ambiguous routing fail
+closed. State changes stage versioned service-team events and aggregate,
+PII-minimized audit evidence in the owner transaction.
 
 ## Admin page contract
 
-- Screen: `admin.system.service-teams`; list, detail, and lifecycle editor.
-- Audience/job: operations administrators maintain shared team topology and
-  membership used by Inbox, tickets, workqueue, dispatch, projects, outages,
-  and delivery.
-- Decision: identify the active team, its type/region/manager, current active
-  membership, and the one valid lifecycle or membership action.
-- Read owner: `operations.service_team_lifecycle` active-team and administration
-  projections. Command and eligibility owner:
-  `operations.service_team_lifecycle`. Authorization owner:
-  `auth.permission_gate`.
-- First viewport: team identity, active state, type, region, manager, active
-  member count, and the applicable edit or activate/deactivate action.
-- Actions: list has one create action; detail has edit, activation/deactivation,
-  add member, role change, and remove member. No hard delete or bulk mutation is
-  exposed. Deactivation requires a reason and is unavailable while active
-  memberships remain.
-- Fields and sensitivity: team metadata is operational; staff display name and
-  work email are internal identity data and appear only behind service-team
-  read/membership permissions. Party identifiers remain evidence-level data.
-- List behavior: server-owned search and active/inactive filter, active teams
-  before inactive teams, name order within state, bounded pagination, and no
-  export because the screen is a control plane rather than a reporting source.
-- The secondary role/region projection is derived from native active
-  membership. CRM-only designation labels have no canonical Sub source and are
-  retired rather than recreated.
-- States: empty, filtered-empty, not-found, stale, invalid identity, duplicate
-  name, active-member deactivation rejection, and unauthorized are explicit.
-  The UI never falls back to retired workflow-setting payloads.
-- Responsive projection: identity, state, member count, manager, and next action
-  remain visible; secondary metadata and evidence move below the summary.
-- Audit/observability: every mutation returns to the committed read projection
-  and is backed by the canonical audit event and versioned domain event.
+- Screen: `admin.system.service-teams`; list, detail, and identity editor.
+- Audience/job: authorized operations administrators maintain stable team
+  identity and composable operational facts.
+- First viewport: name, active state, capabilities, typed scope summary,
+  accountable managers, member count, and next lifecycle action.
+- Identity edit changes only the name. Capability and responsibility actions
+  are independent. Membership add never asks for a scalar role.
+- Staff identity data remains permission-gated. Provider identifiers and Party
+  identifiers are evidence-depth data.
+- No hard delete or bulk mutation is exposed. Deactivation retains historical
+  references and is blocked while active memberships remain.
 
-## Migration and retirement gate
+## Migration and verification
 
-Migration 426:
+Migration 426 is not rewritten. The pre-migration procedure in
+`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md` replaces the historical CRM
+membership-adoption guard. It verifies five native pointers and retires only
+the workflow sources, scalar manager pointer, and compatibility memberships
+that migration 426 would reject.
 
-1. rejects duplicate case-insensitive team names;
-2. backfills any remaining workflow-setting teams;
-3. resolves workflow and native compatibility member UUIDs through reviewed
-   SystemUser-to-Person-Party bindings;
-4. fails on unbound, inactive, ambiguous, conflicting, or duplicate identity
-   evidence, including active membership without an active SystemUser principal;
-5. adds Party foreign keys, existing team-provenance integrity constraints, and the
-   case-insensitive name index;
-6. deletes `support_service_teams` and `support_service_team_members`.
+Migration 440 adds the composable schema and idempotently backfills:
 
-Ticket settings now consumes the native active-team projection and cannot write
-team or membership rows. The CRM hard-delete capability is intentionally
-retired: deactivation retains the identity required by historical tickets,
-conversations, work orders, projects, outages, and audit evidence.
+- legacy team type to one registered capability;
+- legacy membership role to one or more responsibilities;
+- scalar manager to `accountable_manager` responsibility on membership; and
+- workforce system/reference to a provider-neutral external observation.
 
-Production cutover is complete only after migration preflight/apply evidence,
-caller traffic verification, and confirmation that no CRM route/job remains a
-writer. Authenticated browser lifecycle, CSRF, and permission parity is enforced
-by `tests/playwright/e2e/test_service_teams.py` before that production gate.
+It does not infer `GeoArea` from `region`.
 
-Before migration 426, the protected workflow in
-`docs/runbooks/SERVICE_TEAM_PARTY_CUTOVER.md` must report zero aggregate
-identity blockers. Empty native membership rows are not completeness evidence:
-the reviewed plan is built from the CRM membership source snapshot and must be
-applied before the migration rehearsal and release authorization.
+The legacy columns `team_type`, `region`, `manager_person_id`,
+`service_team_members.role`, `workforce_system`, and
+`workforce_department_reference` remain nullable shadow inputs. Contract
+requires all of the following:
+
+1. a complete-cohort shadow run reports zero missing capability,
+   responsibility, manager-responsibility, reviewed geographic-scope, and
+   external-reference bindings;
+2. every consumer reads composition or an explicit assignment/route;
+3. existing drift has an idempotent repair path;
+4. architecture tests prevent scalar decision reads from returning;
+5. production traffic and source-retirement evidence are attached; and
+6. rollback requirements have expired.
+
+Only then may a later forward migration drop the scalar columns and legacy
+enums. Reconstructing or dual-authoring scalar authority is forbidden.
 
 ## CRM parity disposition
 
-The CRM `service_teams` module’s list, create, detail, edit, activate,
-deactivate, add-member, and remove-member capabilities are replaced by
-`/admin/system/service-teams`. Hard delete is removed by policy and replaced by
-audited deactivation. The module cannot be marked retired in the CRM retirement
-ledger until production usage and retirement evidence are attached.
+The native surface replaces list, create, detail, edit, activation,
+deactivation, membership, and responsibility administration. CRM hard delete
+is intentionally removed. CRM membership import, email identity matching, and
+the 169-person review direction are not part of the target and must not return.

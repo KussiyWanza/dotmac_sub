@@ -316,12 +316,16 @@ def test_linked_disabled_subscriber_reply_is_suppressed(db_session):
     assert db_session.query(InboxMessage).count() == 0
 
 
-def test_send_inbox_reply_uses_field_service_sender_for_field_team(
-    db_session, monkeypatch
-):
+def test_send_inbox_reply_uses_team_metadata_activity_sender(db_session, monkeypatch):
+    # Team identity no longer derives delivery behavior. A team needing a
+    # distinct sender declares the outbound activity via operator metadata,
+    # which overrides the inbox caller's declared support_ticket activity.
     _smtp_sender(db_session, "field", from_email="field@dotmac.io")
     _activity_sender(db_session, "field_service", "field")
     team = _team(db_session, "Field Service", ServiceTeamType.field_service.value)
+    team.metadata_ = {
+        team_outbound.OUTBOUND_EMAIL_ACTIVITY_METADATA_KEY: "field_service"
+    }
     conversation = _conversation(db_session, team)
     db_session.commit()
 

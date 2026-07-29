@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from fastapi.routing import APIRoute
 
-from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
 from app.services.workqueue import ItemKind, WorkqueuePrincipal
 from app.services.workqueue.web import build_page
@@ -61,7 +61,7 @@ def test_web_projection_exposes_identity_state_urgency_owner_hint_and_next_actio
 ):
     actor_id = uuid4()
     user, person = add_bound_staff_user(db_session, system_user_id=actor_id)
-    team = ServiceTeam(name="Support", team_type=ServiceTeamType.support.value)
+    team = ServiceTeam(name="Support")
     db_session.add(team)
     db_session.flush()
     db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))

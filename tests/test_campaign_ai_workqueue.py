@@ -9,8 +9,6 @@ from app.models.notification import Notification
 from app.models.service_team import (
     ServiceTeam,
     ServiceTeamMember,
-    ServiceTeamMemberRole,
-    ServiceTeamType,
 )
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
 from app.models.support import Ticket
@@ -49,7 +47,7 @@ def _subscriber(
 
 
 def _team(db_session, name: str = "Support") -> ServiceTeam:
-    team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
+    team = ServiceTeam(name=name)
     db_session.add(team)
     db_session.flush()
     return team
@@ -266,7 +264,7 @@ def test_workqueue_aggregates_native_items_and_respects_snooze(db_session):
         ServiceTeamMember(
             team_id=team.id,
             person_id=person.id,
-            role=ServiceTeamMemberRole.member.value,
+            role=None,
         )
     )
     db_session.flush()

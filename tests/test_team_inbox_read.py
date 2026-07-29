@@ -9,7 +9,12 @@ from fastapi import HTTPException
 
 from app.api import support as support_api
 from app.models.notification import Notification
-from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.service_team import (
+    ServiceTeam,
+    ServiceTeamCapability,
+    ServiceTeamCapabilityDefinition,
+    ServiceTeamType,
+)
 from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
@@ -20,13 +25,36 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_read
+from app.services import service_team_composition, team_inbox_read
 from app.web.admin import inbox as admin_inbox
 
 
 def _team(db_session, name: str, team_type: str = ServiceTeamType.support.value):
+    capabilities = service_team_composition.LEGACY_TYPE_CAPABILITIES[team_type]
+    for capability in capabilities:
+        contract = service_team_composition.CAPABILITY_CONTRACTS[capability]
+        if db_session.get(ServiceTeamCapabilityDefinition, capability.value) is None:
+            db_session.add(
+                ServiceTeamCapabilityDefinition(
+                    key=capability.value,
+                    display_name=contract.display_name,
+                    contract_owner=contract.contract_owner,
+                    contract_version=contract.contract_version,
+                    description=f"Test definition for {capability.value}",
+                    is_active=True,
+                )
+            )
     team = ServiceTeam(name=name, team_type=team_type)
     db_session.add(team)
+    db_session.flush()
+    for capability in capabilities:
+        db_session.add(
+            ServiceTeamCapability(
+                team_id=team.id,
+                capability_key=capability.value,
+                is_active=True,
+            )
+        )
     db_session.flush()
     return team
 
@@ -159,6 +187,7 @@ def test_list_conversations_filters_by_team_search_and_response_need(db_session)
     assert result.count == 1
     assert [item.id for item in result.items] == [str(needs_reply.id)]
     assert result.items[0].primary_service_team_name == "Support"
+    assert result.items[0].primary_service_team_capabilities == ("customer_support",)
     assert result.items[0].latest_message_body == "Router is down"
     assert result.items[0].needs_response is True
 
@@ -415,6 +444,7 @@ def test_conversation_timeline_returns_teams_assignments_and_messages(db_session
     assert timeline.id == str(conversation.id)
     assert timeline.primary_service_team_id == str(team.id)
     assert timeline.teams[0].service_team_name == "Support"
+    assert timeline.teams[0].service_team_capabilities == ("customer_support",)
     assert timeline.assignments[0].person_id == str(assignee_id)
     assert [message.direction for message in timeline.messages] == [
         InboxMessageDirection.inbound.value,

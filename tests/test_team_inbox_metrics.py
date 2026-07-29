@@ -6,7 +6,14 @@ from uuid import uuid4
 
 from app.api import analytics as analytics_api
 from app.models.notification import Notification
-from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.service_team import (
+    ServiceTeam,
+    ServiceTeamCapability,
+    ServiceTeamCapabilityDefinition,
+    ServiceTeamCapabilityKey,
+    ServiceTeamMember,
+    ServiceTeamType,
+)
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxAgentPresenceStatus,
@@ -19,14 +26,35 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_metrics
+from app.services import service_team_composition, team_inbox_metrics
 from app.web.admin import reports as admin_reports
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _team(db_session, name: str = "Support") -> ServiceTeam:
+    capability = ServiceTeamCapabilityKey.customer_support
+    contract = service_team_composition.CAPABILITY_CONTRACTS[capability]
+    if db_session.get(ServiceTeamCapabilityDefinition, capability.value) is None:
+        db_session.add(
+            ServiceTeamCapabilityDefinition(
+                key=capability.value,
+                display_name=contract.display_name,
+                contract_owner=contract.contract_owner,
+                contract_version=contract.contract_version,
+                description=f"Test definition for {capability.value}",
+                is_active=True,
+            )
+        )
     team = ServiceTeam(name=name, team_type=ServiceTeamType.support.value)
     db_session.add(team)
+    db_session.flush()
+    db_session.add(
+        ServiceTeamCapability(
+            team_id=team.id,
+            capability_key=capability.value,
+            is_active=True,
+        )
+    )
     db_session.flush()
     return team
 
@@ -220,6 +248,7 @@ def test_team_performance_report_uses_team_sla_metadata(db_session):
 
     assert len(rows) == 1
     assert rows[0].response_sla_seconds == 900
+    assert rows[0].service_team_capabilities == ("customer_support",)
     assert rows[0].metrics.response_sla_breached_count == 1
 
 
@@ -254,6 +283,7 @@ def test_agent_performance_report_lists_active_team_members(db_session):
 
     assert len(rows) == 1
     assert rows[0].person_id == str(person_id)
+    assert rows[0].service_team_capabilities == ("customer_support",)
     assert rows[0].metrics.active_assignment_count == 1
     assert rows[0].metrics.average_queue_wait_seconds == 180
 
@@ -287,6 +317,7 @@ def test_analytics_api_returns_inbox_team_performance(db_session):
     item = response["items"][0]
     assert item.service_team_id == team.id
     assert item.service_team_name == "Support"
+    assert item.service_team_capabilities == ("customer_support",)
     assert item.responded_count == 1
     assert item.response_rate == 1.0
     assert item.response_sla_breach_rate == 0.0
@@ -320,6 +351,7 @@ def test_escalation_candidates_flag_breached_unassigned_conversation(db_session)
     candidate = candidates[0]
     assert candidate.conversation_id == str(conversation.id)
     assert candidate.service_team_id == str(team.id)
+    assert candidate.service_team_capabilities == ("customer_support",)
     assert candidate.contact_address == "customer@example.com"
     assert candidate.response_sla_seconds == 600
     assert candidate.queue_sla_seconds == 300
@@ -406,6 +438,7 @@ def test_analytics_api_returns_escalation_candidates(db_session):
     item = response["items"][0]
     assert item.conversation_id == conversation.id
     assert item.service_team_id == team.id
+    assert item.service_team_capabilities == ("customer_support",)
     assert "response_sla_breached" in item.reasons
     assert "unassigned_queue_breached" in item.reasons
 
@@ -436,6 +469,8 @@ def test_inbox_escalation_report_export_returns_candidates(db_session):
         in response.headers["Content-Disposition"]
     )
     assert "Router offline" in content
+    assert "service_team_capabilities" in content
+    assert "customer_support" in content
     assert "Response SLA breached" in content
     assert "Unassigned queue breached" in content
 
