@@ -75,6 +75,20 @@ def _lead_field_errors(exc: Exception) -> dict[str, str]:
     return {"form": "The lead change was rejected. Review the form and try again."}
 
 
+def _pipeline_settings_redirect(
+    notice: str,
+    *,
+    bulk_count: int | None = None,
+) -> RedirectResponse:
+    params: dict[str, str | int] = {"notice": notice}
+    if bulk_count is not None:
+        params["bulk_count"] = bulk_count
+    return RedirectResponse(
+        url=f"/admin/sales/pipelines-settings?{urlencode(params)}",
+        status_code=303,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Leads
 # ---------------------------------------------------------------------------
@@ -440,7 +454,7 @@ def lead_delete(lead_id: str, db: Session = Depends(get_db)):
 
 
 @router.get(
-    "/pipelines",
+    "/pipelines-settings",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
 )
@@ -452,7 +466,7 @@ def pipeline_settings(
     context.update(
         web_sales_service.build_pipeline_settings_context(
             db,
-            bulk_result=request.query_params.get("bulk_result", "").strip(),
+            notice=request.query_params.get("notice", "").strip(),
             bulk_count=request.query_params.get("bulk_count", "").strip(),
         )
     )
@@ -460,7 +474,22 @@ def pipeline_settings(
 
 
 @router.get(
-    "/pipelines/new",
+    "/pipelines",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
+)
+def legacy_pipeline_settings(request: Request):
+    query = str(request.url.query)
+    suffix = f"?{query}" if query else ""
+    return RedirectResponse(
+        url=f"/admin/sales/pipelines-settings{suffix}",
+        status_code=308,
+    )
+
+
+@router.get(
+    "/pipelines-settings/new",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
 )
@@ -470,10 +499,29 @@ def pipeline_new(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse("admin/sales/pipelines/form.html", context)
 
 
+@router.get(
+    "/pipelines/new",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
+)
+def legacy_pipeline_new():
+    return RedirectResponse(
+        url="/admin/sales/pipelines-settings/new",
+        status_code=308,
+    )
+
+
+@router.post(
+    "/pipelines-settings",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
 @router.post(
     "/pipelines",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
 )
 def pipeline_create(
     request: Request,
@@ -490,7 +538,10 @@ def pipeline_create(
             create_default_stages=create_default_stages,
         )
         return RedirectResponse(
-            url=f"/admin/sales/pipeline-board?pipeline_id={pipeline_id}",
+            url=(
+                f"/admin/sales/pipeline-board?pipeline_id={pipeline_id}"
+                "&notice=pipeline_created"
+            ),
             status_code=303,
         )
     except (ValidationError, ValueError) as exc:
@@ -514,7 +565,7 @@ def pipeline_create(
 
 
 @router.get(
-    "/pipelines/{pipeline_id}/edit",
+    "/pipelines-settings/{pipeline_id}/edit",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
 )
@@ -526,10 +577,29 @@ def pipeline_edit(request: Request, pipeline_id: str, db: Session = Depends(get_
     return templates.TemplateResponse("admin/sales/pipelines/form.html", context)
 
 
+@router.get(
+    "/pipelines/{pipeline_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
+)
+def legacy_pipeline_edit(pipeline_id: str):
+    return RedirectResponse(
+        url=f"/admin/sales/pipelines-settings/{pipeline_id}/edit",
+        status_code=308,
+    )
+
+
+@router.post(
+    "/pipelines-settings/{pipeline_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
 @router.post(
     "/pipelines/{pipeline_id}",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
 )
 def pipeline_update(
     request: Request,
@@ -542,7 +612,7 @@ def pipeline_update(
         web_sales_service.update_pipeline_from_form(
             db, pipeline_id=pipeline_id, name=name, is_active=is_active
         )
-        return RedirectResponse(url="/admin/sales/pipelines", status_code=303)
+        return _pipeline_settings_redirect("pipeline_updated")
     except (ValidationError, ValueError) as exc:
         db.rollback()
         error = _error_detail(exc)
@@ -571,13 +641,44 @@ def pipeline_update(
 def pipeline_delete(request: Request, pipeline_id: str, db: Session = Depends(get_db)):
     _ = request
     web_sales_service.deactivate_pipeline(db, pipeline_id)
-    return RedirectResponse(url="/admin/sales/pipelines", status_code=303)
+    return _pipeline_settings_redirect("pipeline_deactivated")
 
 
+@router.post(
+    "/pipelines-settings/{pipeline_id}/status",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def pipeline_status_update(
+    request: Request,
+    pipeline_id: str,
+    is_active: bool = Form(...),
+    db: Session = Depends(get_db),
+):
+    _ = request
+    try:
+        web_sales_service.set_pipeline_active(
+            db,
+            pipeline_id=pipeline_id,
+            is_active=is_active,
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect(
+        "pipeline_activated" if is_active else "pipeline_deactivated"
+    )
+
+
+@router.post(
+    "/pipelines-settings/{pipeline_id}/stages",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
 @router.post(
     "/pipelines/{pipeline_id}/stages",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
 )
 def pipeline_stage_create(
     request: Request,
@@ -585,23 +686,38 @@ def pipeline_stage_create(
     name: str = Form(...),
     order_index: int = Form(0),
     default_probability: int = Form(50),
+    stage_type: str = Form("standard"),
+    color: str = Form("#06B6D4"),
+    icon: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _ = request
-    web_sales_service.create_stage_from_form(
-        db,
-        pipeline_id=pipeline_id,
-        name=name,
-        order_index=order_index,
-        default_probability=default_probability,
-    )
-    return RedirectResponse(url="/admin/sales/pipelines", status_code=303)
+    try:
+        web_sales_service.create_stage_from_form(
+            db,
+            pipeline_id=pipeline_id,
+            name=name,
+            order_index=order_index,
+            default_probability=default_probability,
+            stage_type=stage_type,
+            color=color,
+            icon=icon,
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect("stage_created")
 
 
+@router.post(
+    "/pipelines-settings/stages/{stage_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
 @router.post(
     "/pipelines/stages/{stage_id}",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
 )
 def pipeline_stage_update(
     request: Request,
@@ -610,18 +726,27 @@ def pipeline_stage_update(
     order_index: int = Form(0),
     default_probability: int = Form(50),
     is_active: str | None = Form(default=None),
+    stage_type: str = Form("standard"),
+    color: str = Form("#06B6D4"),
+    icon: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _ = request
-    web_sales_service.update_stage_from_form(
-        db,
-        stage_id=stage_id,
-        name=name,
-        order_index=order_index,
-        default_probability=default_probability,
-        is_active=is_active,
-    )
-    return RedirectResponse(url="/admin/sales/pipelines", status_code=303)
+    try:
+        web_sales_service.update_stage_from_form(
+            db,
+            stage_id=stage_id,
+            name=name,
+            order_index=order_index,
+            default_probability=default_probability,
+            is_active=is_active,
+            stage_type=stage_type,
+            color=color,
+            icon=icon,
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect("stage_updated")
 
 
 @router.post(
@@ -634,13 +759,67 @@ def pipeline_stage_delete(
 ):
     _ = request
     web_sales_service.deactivate_stage(db, stage_id=stage_id)
-    return RedirectResponse(url="/admin/sales/pipelines", status_code=303)
+    return _pipeline_settings_redirect("stage_deactivated")
 
 
+@router.post(
+    "/pipelines-settings/stages/{stage_id}/status",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def pipeline_stage_status_update(
+    request: Request,
+    stage_id: str,
+    is_active: bool = Form(...),
+    db: Session = Depends(get_db),
+):
+    _ = request
+    try:
+        web_sales_service.set_stage_active(
+            db,
+            stage_id=stage_id,
+            is_active=is_active,
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect(
+        "stage_activated" if is_active else "stage_deactivated"
+    )
+
+
+@router.post(
+    "/pipelines-settings/{pipeline_id}/stages/reorder",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def pipeline_stage_reorder(
+    request: Request,
+    pipeline_id: str,
+    stage_ids: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    _ = request
+    try:
+        web_sales_service.reorder_stages(
+            db,
+            pipeline_id=pipeline_id,
+            stage_ids=stage_ids,
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect("stages_reordered")
+
+
+@router.post(
+    "/pipelines-settings/{pipeline_id}/bulk-assign-leads",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
 @router.post(
     "/pipelines/{pipeline_id}/bulk-assign-leads",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
+    include_in_schema=False,
 )
 def pipeline_bulk_assign_leads(
     request: Request,
@@ -650,13 +829,13 @@ def pipeline_bulk_assign_leads(
     db: Session = Depends(get_db),
 ):
     _ = request
-    count = web_sales_service.bulk_assign_leads(
-        db, pipeline_id=pipeline_id, stage_id=stage_id, scope=scope
-    )
-    return RedirectResponse(
-        url=f"/admin/sales/pipelines?bulk_result=ok&bulk_count={count}",
-        status_code=303,
-    )
+    try:
+        count = web_sales_service.bulk_assign_leads(
+            db, pipeline_id=pipeline_id, stage_id=stage_id, scope=scope
+        )
+    except (HTTPException, ValidationError, ValueError):
+        return _pipeline_settings_redirect("operation_failed")
+    return _pipeline_settings_redirect("bulk_assigned", bulk_count=count)
 
 
 # ---------------------------------------------------------------------------

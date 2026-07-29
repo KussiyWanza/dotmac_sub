@@ -61,6 +61,7 @@ from app.services.common import (
 from app.services.events import EventType, emit_event
 from app.services.response import ListResponseMixin
 from app.services.sales import lifecycle as lead_lifecycle
+from app.services.sales import pipeline_configuration
 
 _logger = logging.getLogger(__name__)
 
@@ -687,6 +688,13 @@ class PipelineStages(ListResponseMixin):
         return stage
 
     @staticmethod
+    def get(db: Session, stage_id: str):
+        stage = db.get(PipelineStage, coerce_uuid(stage_id))
+        if not stage:
+            raise HTTPException(status_code=404, detail="Pipeline stage not found")
+        return stage
+
+    @staticmethod
     def list(
         db: Session,
         pipeline_id: str | None,
@@ -725,6 +733,36 @@ class PipelineStages(ListResponseMixin):
         db.commit()
         db.refresh(stage)
         return stage
+
+    @staticmethod
+    def reorder(
+        db: Session,
+        pipeline_id: uuid.UUID,
+        stage_ids: tuple[uuid.UUID, ...],
+    ) -> tuple[uuid.UUID, ...]:
+        """Atomically apply one complete, stale-safe stage order."""
+
+        if len(stage_ids) != len(set(stage_ids)):
+            raise HTTPException(
+                status_code=400,
+                detail="Stage order contains duplicate stage identifiers",
+            )
+        stages = (
+            db.query(PipelineStage)
+            .filter(PipelineStage.pipeline_id == pipeline_id)
+            .with_for_update()
+            .all()
+        )
+        stage_map = {stage.id: stage for stage in stages}
+        if set(stage_map) != set(stage_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="Stage order is stale; reload Pipeline Settings and try again",
+            )
+        for order_index, stage_id in enumerate(stage_ids):
+            stage_map[stage_id].order_index = order_index
+        db.commit()
+        return stage_ids
 
 
 class Leads(ListResponseMixin):
@@ -1247,15 +1285,23 @@ class Leads(ListResponseMixin):
             )
             leads_rows = db.query(Lead).filter(Lead.is_active.is_(True)).all()
 
-        columns = [
-            {
-                "id": str(stage.id),
-                "title": stage.name,
-                "order_index": stage.order_index,
-                "default_probability": stage.default_probability,
-            }
-            for stage in stages
-        ]
+        columns = []
+        for stage in stages:
+            presentation = pipeline_configuration.stage_presentation(
+                stage_name=stage.name,
+                metadata=stage.metadata_,
+            )
+            columns.append(
+                {
+                    "id": str(stage.id),
+                    "title": stage.name,
+                    "order_index": stage.order_index,
+                    "default_probability": stage.default_probability,
+                    "stage_type": presentation.stage_type.value,
+                    "color": presentation.color,
+                    "icon": presentation.icon,
+                }
+            )
 
         # Batch load subscribers to avoid N+1 queries.
         subscriber_ids = [

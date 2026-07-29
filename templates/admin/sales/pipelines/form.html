@@ -3,55 +3,56 @@
 {% block title %}{{ form_title }} - Admin{% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-3xl space-y-4">
-    <div>
-        <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <a href="/admin/sales/pipelines" class="hover:text-cyan-600">Pipeline Settings</a>
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-            <span class="text-slate-900 dark:text-white">{{ form_title }}</span>
-        </nav>
-        <h1 class="font-display text-xl font-bold tracking-tight text-slate-900 dark:text-white">{{ form_title }}</h1>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Pipelines organize leads into sales stages.</p>
-    </div>
+<div class="mx-auto max-w-3xl space-y-5">
+    <header class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+            <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <a href="/admin/sales/pipelines-settings" class="hover:text-cyan-600">Pipeline Settings</a>
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <span class="text-slate-900 dark:text-white">{{ form_title }}</span>
+            </nav>
+            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ form_title }}</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Pipelines organize leads into a governed sequence of sales stages.</p>
+        </div>
+        <a href="/admin/sales" class="text-sm font-semibold text-cyan-700 hover:text-cyan-800 dark:text-cyan-300">Back to Dashboard</a>
+    </header>
 
     {% if error %}
-    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
-        {{ error }}
-    </div>
+    <div role="alert" class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">{{ error }}</div>
     {% endif %}
 
-    <form method="post" action="{{ action_url }}" class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <form method="post" action="{{ action_url }}"
+          {% if is_editing and pipeline.is_active %}onsubmit="return this.elements.is_active.value !== 'false' || confirm('Deactivate this pipeline? It will be unavailable for new work, but existing data will remain intact.')"{% endif %}
+          class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
         <div class="space-y-6 p-6">
             <div>
                 <label for="pipeline-name" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Pipeline Name</label>
-                <input id="pipeline-name" type="text" name="name" value="{{ pipeline.name }}"
+                <input id="pipeline-name" type="text" name="name" value="{{ pipeline.name }}" required maxlength="120"
                        class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                       placeholder="e.g. Sales Pipeline">
+                       placeholder="e.g. Enterprise Sales Pipeline">
             </div>
-
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                    <label for="pipeline-status" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
-                    <select id="pipeline-status" name="is_active"
-                            class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        <option value="true" {% if pipeline.is_active %}selected{% endif %}>Active</option>
-                        <option value="false" {% if not pipeline.is_active %}selected{% endif %}>Inactive</option>
-                    </select>
-                </div>
-                <div class="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800/60">
-                    <input id="pipeline-default-stages" type="checkbox" name="create_default_stages" value="true"
-                           class="h-4 w-4 rounded border-slate-300 text-cyan-600"
-                           {% if pipeline.create_default_stages %}checked{% endif %}>
-                    <label for="pipeline-default-stages">
-                        <div class="text-sm font-medium text-slate-700 dark:text-slate-200">Add default stages</div>
-                        <div class="text-xs text-slate-500 dark:text-slate-400">Creates the recommended starter set of stages.</div>
-                    </label>
-                </div>
+            <div>
+                <label for="pipeline-status" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
+                <select id="pipeline-status" name="is_active"
+                        class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <option value="true" {% if pipeline.is_active %}selected{% endif %}>Active</option>
+                    <option value="false" {% if not pipeline.is_active %}selected{% endif %}>Inactive</option>
+                </select>
             </div>
+            {% if not is_editing %}
+            <label for="pipeline-default-stages" class="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/20">
+                <input id="pipeline-default-stages" type="checkbox" name="create_default_stages" value="true"
+                       class="mt-0.5 h-4 w-4 rounded border-slate-300 text-cyan-600" {% if pipeline.create_default_stages %}checked{% endif %}>
+                <span>
+                    <span class="block text-sm font-medium text-slate-700 dark:text-slate-200">Add Default Stages</span>
+                    <span class="mt-1 block text-xs text-slate-500 dark:text-slate-400">Creates the eight recommended stages shown on Pipeline Settings. You can edit them afterward.</span>
+                </span>
+            </label>
+            {% endif %}
         </div>
         <div class="flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4 dark:border-slate-700 dark:bg-slate-800/50">
-            <a href="/admin/sales/pipelines" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
+            <a href="/admin/sales/pipelines-settings" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
             {{ submit_button(submit_label, loading_label="Submitting...") }}
         </div>
     </form>

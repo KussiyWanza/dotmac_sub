@@ -128,6 +128,17 @@ def test_lead_routes_require_lead_permissions():
 def test_pipeline_settings_routes_ride_lead_write():
     router = admin_sales.router
     for path, method in [
+        ("/sales/pipelines-settings", "GET"),
+        ("/sales/pipelines-settings/new", "GET"),
+        ("/sales/pipelines-settings", "POST"),
+        ("/sales/pipelines-settings/{pipeline_id}/edit", "GET"),
+        ("/sales/pipelines-settings/{pipeline_id}", "POST"),
+        ("/sales/pipelines-settings/{pipeline_id}/status", "POST"),
+        ("/sales/pipelines-settings/{pipeline_id}/stages", "POST"),
+        ("/sales/pipelines-settings/stages/{stage_id}", "POST"),
+        ("/sales/pipelines-settings/stages/{stage_id}/status", "POST"),
+        ("/sales/pipelines-settings/{pipeline_id}/stages/reorder", "POST"),
+        ("/sales/pipelines-settings/{pipeline_id}/bulk-assign-leads", "POST"),
         ("/sales/pipelines", "GET"),
         ("/sales/pipelines/new", "GET"),
         ("/sales/pipelines", "POST"),
@@ -171,6 +182,7 @@ def test_sales_router_is_registered_under_admin():
     assert "/admin/sales/leads/board" in paths
     assert "/admin/sales/leads/new" in paths
     assert "/admin/sales/leads/{lead_id}/edit" in paths
+    assert "/admin/sales/pipelines-settings" in paths
     assert "/admin/sales/pipelines" in paths
     assert "/admin/sales/quotes" in paths
     assert "/admin/sales/sales-orders" in paths
@@ -384,7 +396,11 @@ def test_kanban_cards_link_to_sub_admin_leads(db_session):
     )
 
     board = sales_service.leads.kanban_view(db_session, str(pipeline.id))
+    column = next(item for item in board["columns"] if item["id"] == str(stage.id))
     record = next(item for item in board["records"] if item["id"] == str(lead.id))
+    assert column["stage_type"] == "standard"
+    assert column["color"] == "#06B6D4"
+    assert column["icon"] is None
     assert record["url"] == f"/admin/sales/leads/{lead.id}"
 
 
@@ -406,6 +422,11 @@ def test_create_pipeline_from_form_seeds_default_stages(db_session):
     stages = context["stage_map"].get(pipeline_id, [])
     assert len(stages) == len(web_sales.DEFAULT_PIPELINE_STAGES)
     assert stages[0].name == "Lead Identified"
+    closed_won = next(stage for stage in stages if stage.name == "Closed Won")
+    assert (
+        context["stage_presentations"][str(closed_won.id)].stage_type.value
+        == "closed_won"
+    )
     assert any(str(p.id) == pipeline_id for p in context["pipelines"])
 
 
@@ -418,14 +439,16 @@ def test_create_pipeline_from_form_requires_name(db_session):
 
 def test_pipeline_form_contexts(db_session):
     new_ctx = web_sales.build_pipeline_new_context()
-    assert new_ctx["action_url"] == "/admin/sales/pipelines"
+    assert new_ctx["action_url"] == "/admin/sales/pipelines-settings"
     assert new_ctx["pipeline"]["create_default_stages"] is True
+    assert new_ctx["is_editing"] is False
 
     pipeline = _make_pipeline(db_session, name=f"Edit-{uuid.uuid4().hex[:6]}")
     edit_ctx = web_sales.build_pipeline_edit_context(
         db_session, pipeline_id=str(pipeline.id)
     )
-    assert edit_ctx["action_url"] == f"/admin/sales/pipelines/{pipeline.id}"
+    assert edit_ctx["action_url"] == f"/admin/sales/pipelines-settings/{pipeline.id}"
+    assert edit_ctx["is_editing"] is True
 
     err_ctx = web_sales.build_pipeline_form_error_context(
         mode="update",
@@ -436,6 +459,57 @@ def test_pipeline_form_contexts(db_session):
     )
     assert err_ctx["pipeline"]["name"] == "X"
     assert err_ctx["pipeline"]["is_active"] is False
+
+
+def test_stage_presentation_and_atomic_reordering(db_session):
+    pipeline = _make_pipeline(db_session, name=f"Order-{uuid.uuid4().hex[:6]}")
+    first = _make_stage(db_session, pipeline, name="First", order_index=0)
+    second = _make_stage(db_session, pipeline, name="Second", order_index=1)
+
+    web_sales.update_stage_from_form(
+        db_session,
+        stage_id=str(second.id),
+        name="Closed Won",
+        order_index=1,
+        default_probability=100,
+        is_active="true",
+        stage_type="closed_won",
+        color="#10B981",
+        icon="check",
+    )
+    reordered = web_sales.reorder_stages(
+        db_session,
+        pipeline_id=str(pipeline.id),
+        stage_ids=f"{second.id},{first.id}",
+    )
+    assert reordered == (str(second.id), str(first.id))
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert (second.order_index, first.order_index) == (0, 1)
+
+    board = sales_service.leads.kanban_view(db_session, str(pipeline.id))
+    won_column = next(item for item in board["columns"] if item["id"] == str(second.id))
+    assert won_column["stage_type"] == "closed_won"
+    assert won_column["color"] == "#10B981"
+    assert won_column["icon"] == "check"
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_sales.reorder_stages(
+            db_session,
+            pipeline_id=str(pipeline.id),
+            stage_ids=str(first.id),
+        )
+    assert exc_info.value.status_code == 409
+
+    with pytest.raises(ValueError, match="Unsupported pipeline stage type"):
+        web_sales.create_stage_from_form(
+            db_session,
+            pipeline_id=str(pipeline.id),
+            name="Unsupported",
+            order_index=2,
+            default_probability=50,
+            stage_type="custom_json_type",
+        )
 
 
 def test_stage_crud_and_bulk_assign_from_form(db_session):
@@ -699,6 +773,24 @@ def test_board_template_wires_kanban_api_endpoints():
     assert 'data-kanban-endpoint="/api/v1/leads/kanban?pipeline_id=' in source
     assert 'data-update-endpoint="/api/v1/leads/kanban/move"' in source
     assert "/static/js/kanban.js" in source
+    assert "/admin/sales/pipelines-settings" in source
+
+
+def test_pipeline_settings_template_uses_canonical_routes_and_ux():
+    source = Path("templates/admin/sales/pipelines/index.html").read_text()
+    assert "data-pipeline-settings" in source
+    assert 'id="pipeline-search"' in source
+    assert 'id="pipeline-status-filter"' in source
+    assert "data-stage-ordering" in source
+    assert "data-bulk-assignment-form" in source
+    assert "/admin/sales/pipelines-settings/new" in source
+    assert "/static/js/pipeline-settings.js" in source
+    assert "No pipelines have been created yet." in source
+    assert 'action="/admin/sales/pipelines/' not in source
+
+    script = Path("static/js/pipeline-settings.js").read_text()
+    assert "requestSubmit" in script
+    assert "All Active Leads" not in script
 
 
 def test_active_sales_ui_no_longer_links_to_legacy_board_url():

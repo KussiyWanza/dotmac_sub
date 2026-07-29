@@ -4262,7 +4262,8 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
 
 1. `sales.orders`: owns sales order lifecycle.
 2. `sales.selfserve`: owns the self-serve quote and signup flow.
-3. `sales.service`: owns sales service operations.
+3. `sales.service`: owns the sales pipeline and quote lifecycle, including the
+   governed stage-presentation vocabulary and atomic stage ordering.
 4. `referrals.program`: owns Party-first capture policy, canonical ReferralCode,
    Referral and exact-Party account-attachment records, qualification/reward
    policy, and atomic program transition orchestration.
@@ -4271,8 +4272,9 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
    account-creation/adjudication orchestration.
 
 Rule: sales order, self-serve quote/signup, sales service, and Refer & Earn
-referral logic resolve through these owners. `web_sales`/`web_referrals` adapters
-and API/task callers request an outcome. `customer.accounts` creates or prepares
+referral logic resolve through these owners. `web_sales`/`web_referrals`
+adapters and API/task callers request an outcome; they do not own pipeline
+ordering or stage interpretation. `customer.accounts` creates or prepares
 Subscriber rows; the referral coordinator never constructs them itself.
 Customer referral reads and writes are native-only. The legacy referral mirror
 is isolated compatibility evidence and never a SOT, decision, identity, or

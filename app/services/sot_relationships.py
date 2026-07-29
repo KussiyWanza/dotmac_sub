@@ -31542,7 +31542,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="sales.service",
                 module="app.services.sales.service",
-                owns=("sales pipeline and quote lifecycle",),
+                owns=(
+                    "sales pipeline and quote lifecycle",
+                    "governed pipeline stage presentation and ordering",
+                ),
                 depends_on=("sales.lead_lifecycle",),
             ),
             SOTService(

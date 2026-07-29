@@ -62,6 +62,7 @@ from app.services.list_query import (
     PageMeta,
     request_needs_canonicalization,
 )
+from app.services.sales import pipeline_configuration
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
@@ -69,14 +70,62 @@ from app.services.team_inbox_projection import list_agent_options
 # The CRM's recommended default stage set, seeded when "create default
 # stages" is ticked on the new-pipeline form (web_sales.py port).
 DEFAULT_PIPELINE_STAGES: list[dict[str, int | str]] = [
-    {"name": "Lead Identified", "probability": 10},
-    {"name": "Qualification Call Completed", "probability": 20},
-    {"name": "Needs Assessment / Demo", "probability": 35},
-    {"name": "Proposal Sent", "probability": 50},
-    {"name": "Commercial Negotiation", "probability": 70},
-    {"name": "Decision Pending", "probability": 85},
-    {"name": "Closed Won", "probability": 100},
-    {"name": "Closed Lost", "probability": 0},
+    {
+        "name": "Lead Identified",
+        "probability": 10,
+        "stage_type": "standard",
+        "color": "#0EA5E9",
+        "icon": "target",
+    },
+    {
+        "name": "Qualification Call Completed",
+        "probability": 20,
+        "stage_type": "standard",
+        "color": "#6366F1",
+        "icon": "circle",
+    },
+    {
+        "name": "Needs Assessment / Demo",
+        "probability": 35,
+        "stage_type": "standard",
+        "color": "#8B5CF6",
+        "icon": "document",
+    },
+    {
+        "name": "Proposal Sent",
+        "probability": 50,
+        "stage_type": "standard",
+        "color": "#D946EF",
+        "icon": "document",
+    },
+    {
+        "name": "Commercial Negotiation",
+        "probability": 70,
+        "stage_type": "standard",
+        "color": "#F59E0B",
+        "icon": "handshake",
+    },
+    {
+        "name": "Decision Pending",
+        "probability": 85,
+        "stage_type": "standard",
+        "color": "#F97316",
+        "icon": "clock",
+    },
+    {
+        "name": "Closed Won",
+        "probability": 100,
+        "stage_type": "closed_won",
+        "color": "#10B981",
+        "icon": "check",
+    },
+    {
+        "name": "Closed Lost",
+        "probability": 0,
+        "stage_type": "closed_lost",
+        "color": "#EF4444",
+        "icon": "close",
+    },
 ]
 
 LOST_REASON_OPTIONS = (
@@ -145,6 +194,28 @@ class LeadFormValidationError(ValueError):
     def __init__(self, field_errors: dict[str, str]):
         super().__init__("Please correct the highlighted fields.")
         self.field_errors = field_errors
+
+
+PIPELINE_SETTINGS_NOTICES: dict[str, tuple[str, str]] = {
+    "pipeline_updated": ("Pipeline updated.", "success"),
+    "pipeline_activated": ("Pipeline activated.", "success"),
+    "pipeline_deactivated": ("Pipeline deactivated.", "success"),
+    "stage_created": ("Stage created.", "success"),
+    "stage_updated": ("Stage updated.", "success"),
+    "stage_activated": ("Stage activated.", "success"),
+    "stage_deactivated": ("Stage deactivated.", "success"),
+    "stages_reordered": ("Stage order updated.", "success"),
+    "bulk_assigned": ("Bulk assignment complete.", "success"),
+    "operation_failed": ("Operation failed. Please try again.", "error"),
+}
+
+_OPEN_LEAD_STATUSES = {
+    LeadStatus.new.value,
+    LeadStatus.contacted.value,
+    LeadStatus.qualified.value,
+    LeadStatus.proposal.value,
+    LeadStatus.negotiation.value,
+}
 
 
 def _as_bool(value: str | None) -> bool:
@@ -1070,7 +1141,11 @@ def build_leads_board_context(
 
 
 def build_pipeline_settings_context(
-    db: Session, *, bulk_result: str, bulk_count: str
+    db: Session,
+    *,
+    notice: str = "",
+    bulk_count: str = "",
+    bulk_result: str = "",
 ) -> dict[str, Any]:
     pipelines = (
         db.query(Pipeline)
@@ -1091,10 +1166,46 @@ def build_pipeline_settings_context(
     stage_map: dict[str, list[PipelineStage]] = {}
     for stage in stages:
         stage_map.setdefault(str(stage.pipeline_id), []).append(stage)
+    pipeline_lead_counts = {
+        str(pipeline_id): int(count)
+        for pipeline_id, count in (
+            db.query(Lead.pipeline_id, func.count(Lead.id))
+            .filter(Lead.is_active.is_(True), Lead.pipeline_id.is_not(None))
+            .group_by(Lead.pipeline_id)
+            .all()
+        )
+    }
+    stage_lead_counts = {
+        str(stage_id): int(count)
+        for stage_id, count in (
+            db.query(Lead.stage_id, func.count(Lead.id))
+            .filter(Lead.is_active.is_(True), Lead.stage_id.is_not(None))
+            .group_by(Lead.stage_id)
+            .all()
+        )
+    }
+    stage_presentations = {
+        str(stage.id): pipeline_configuration.stage_presentation(
+            stage_name=stage.name,
+            metadata=stage.metadata_,
+        )
+        for stage in stages
+    }
+    resolved_notice = "bulk_assigned" if bulk_result == "ok" and not notice else notice
+    toast = PIPELINE_SETTINGS_NOTICES.get(resolved_notice)
+    toast_message = toast[0] if toast else ""
+    if resolved_notice == "bulk_assigned" and bulk_count:
+        toast_message = f"Bulk assignment complete. Updated {bulk_count} lead(s)."
     return {
         "pipelines": pipelines,
         "stage_map": stage_map,
-        "bulk_result": bulk_result,
+        "pipeline_lead_counts": pipeline_lead_counts,
+        "stage_lead_counts": stage_lead_counts,
+        "stage_presentations": stage_presentations,
+        "stage_type_options": tuple(pipeline_configuration.PipelineStageType),
+        "stage_icon_options": pipeline_configuration.STAGE_ICON_OPTIONS,
+        "toast_message": toast_message,
+        "toast_type": toast[1] if toast else "",
         "bulk_count": bulk_count,
         "default_pipeline_stages": DEFAULT_PIPELINE_STAGES,
     }
@@ -1105,7 +1216,8 @@ def build_pipeline_new_context() -> dict[str, Any]:
         "pipeline": {"name": "", "is_active": True, "create_default_stages": True},
         "form_title": "New Pipeline",
         "submit_label": "Create Pipeline",
-        "action_url": "/admin/sales/pipelines",
+        "action_url": "/admin/sales/pipelines-settings",
+        "is_editing": False,
         "error": None,
     }
 
@@ -1116,7 +1228,8 @@ def build_pipeline_edit_context(db: Session, *, pipeline_id: str) -> dict[str, A
         "pipeline": pipeline,
         "form_title": "Edit Pipeline",
         "submit_label": "Update Pipeline",
-        "action_url": f"/admin/sales/pipelines/{pipeline_id}",
+        "action_url": f"/admin/sales/pipelines-settings/{pipeline_id}",
+        "is_editing": True,
         "error": None,
     }
 
@@ -1140,10 +1253,11 @@ def build_pipeline_form_error_context(
         "form_title": "Edit Pipeline" if editing else "New Pipeline",
         "submit_label": "Update Pipeline" if editing else "Create Pipeline",
         "action_url": (
-            f"/admin/sales/pipelines/{pipeline_id}"
+            f"/admin/sales/pipelines-settings/{pipeline_id}"
             if editing
-            else "/admin/sales/pipelines"
+            else "/admin/sales/pipelines-settings"
         ),
+        "is_editing": editing,
     }
 
 
@@ -1164,14 +1278,22 @@ def create_pipeline_from_form(
     pipeline = sales_service.pipelines.create(db, payload)
     if _as_bool(create_default_stages):
         for index, stage in enumerate(DEFAULT_PIPELINE_STAGES):
+            stage_name = str(stage["name"])
             sales_service.pipeline_stages.create(
                 db,
                 PipelineStageCreate(
                     pipeline_id=pipeline.id,
-                    name=str(stage["name"]),
+                    name=stage_name,
                     order_index=index,
                     default_probability=int(stage["probability"]),
                     is_active=True,
+                    metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                        None,
+                        stage_name=stage_name,
+                        stage_type=stage["stage_type"],
+                        color=stage["color"],
+                        icon=stage["icon"],
+                    ),
                 ),
             )
     return str(pipeline.id)
@@ -1191,6 +1313,14 @@ def deactivate_pipeline(db: Session, pipeline_id: str) -> None:
     sales_service.pipelines.delete(db, pipeline_id)
 
 
+def set_pipeline_active(db: Session, *, pipeline_id: str, is_active: bool) -> None:
+    sales_service.pipelines.update(
+        db,
+        pipeline_id,
+        PipelineUpdate(is_active=is_active),
+    )
+
+
 def create_stage_from_form(
     db: Session,
     *,
@@ -1198,15 +1328,26 @@ def create_stage_from_form(
     name: str,
     order_index: int,
     default_probability: int,
+    stage_type: str = "standard",
+    color: str = pipeline_configuration.DEFAULT_STAGE_COLOR,
+    icon: str | None = None,
 ) -> None:
+    stage_name = name.strip()
     sales_service.pipeline_stages.create(
         db,
         PipelineStageCreate(
             pipeline_id=coerce_uuid(pipeline_id),
-            name=name.strip(),
+            name=stage_name,
             order_index=order_index,
             default_probability=default_probability,
             is_active=True,
+            metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                None,
+                stage_name=stage_name,
+                stage_type=stage_type,
+                color=color,
+                icon=icon,
+            ),
         ),
     )
 
@@ -1219,15 +1360,27 @@ def update_stage_from_form(
     order_index: int,
     default_probability: int,
     is_active: str | None,
+    stage_type: str = "standard",
+    color: str = pipeline_configuration.DEFAULT_STAGE_COLOR,
+    icon: str | None = None,
 ) -> None:
+    stage = sales_service.pipeline_stages.get(db, stage_id)
+    stage_name = name.strip()
     sales_service.pipeline_stages.update(
         db,
         stage_id,
         PipelineStageUpdate(
-            name=name.strip(),
+            name=stage_name,
             order_index=order_index,
             default_probability=default_probability,
-            is_active=_as_bool(is_active) if is_active is not None else False,
+            is_active=_as_bool(is_active) if is_active is not None else None,
+            metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                stage.metadata_,
+                stage_name=stage_name,
+                stage_type=stage_type,
+                color=color,
+                icon=icon,
+            ),
         ),
     )
 
@@ -1236,6 +1389,33 @@ def deactivate_stage(db: Session, *, stage_id: str) -> None:
     sales_service.pipeline_stages.update(
         db, stage_id, PipelineStageUpdate(is_active=False)
     )
+
+
+def set_stage_active(db: Session, *, stage_id: str, is_active: bool) -> None:
+    sales_service.pipeline_stages.update(
+        db,
+        stage_id,
+        PipelineStageUpdate(is_active=is_active),
+    )
+
+
+def reorder_stages(
+    db: Session,
+    *,
+    pipeline_id: str,
+    stage_ids: str,
+) -> tuple[str, ...]:
+    ordered_ids = tuple(
+        coerce_uuid(stage_id.strip())
+        for stage_id in stage_ids.split(",")
+        if stage_id.strip()
+    )
+    result = sales_service.pipeline_stages.reorder(
+        db,
+        coerce_uuid(pipeline_id),
+        ordered_ids,
+    )
+    return tuple(str(stage_id) for stage_id in result)
 
 
 def bulk_assign_leads(
