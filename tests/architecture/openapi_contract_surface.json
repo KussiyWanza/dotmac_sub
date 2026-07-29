@@ -3137,6 +3137,7 @@
     "query:order_dir",
     "query:owner_agent_id",
     "query:pipeline_id",
+    "query:search",
     "query:stage_id",
     "query:status"
    ],

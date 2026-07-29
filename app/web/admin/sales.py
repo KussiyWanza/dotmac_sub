@@ -19,10 +19,13 @@ lead permissions, matching the API port); quotes and sales orders use
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+import logging
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -31,6 +34,7 @@ from app.services.auth_dependencies import require_permission
 
 router = APIRouter(prefix="/sales", tags=["web-admin-sales"])
 templates = Jinja2Templates(directory="templates")
+logger = logging.getLogger(__name__)
 
 
 def _ctx(request: Request, db: Session, active_page: str) -> dict:
@@ -49,6 +53,27 @@ def _error_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
 
+def _lead_field_errors(exc: Exception) -> dict[str, str]:
+    if isinstance(exc, web_sales_service.LeadFormValidationError):
+        return exc.field_errors
+    if isinstance(exc, ValidationError):
+        errors: dict[str, str] = {}
+        for issue in exc.errors():
+            location = issue.get("loc") or ("form",)
+            field = str(location[-1])
+            errors.setdefault(field, str(issue.get("msg") or "Invalid value."))
+        return errors
+    if isinstance(exc, HTTPException):
+        detail = str(exc.detail or "").lower()
+        if "stage does not belong" in detail or "pipeline stage" in detail:
+            return {"stage_id": "Select a stage from the chosen pipeline."}
+        if "subscriber" in detail or "party" in detail:
+            return {
+                "subscriber_id": ("Select a valid existing Person/Contact identity.")
+            }
+    return {"form": "The lead change was rejected. Review the form and try again."}
+
+
 # ---------------------------------------------------------------------------
 # Leads
 # ---------------------------------------------------------------------------
@@ -64,6 +89,7 @@ def leads_list(
     status: str | None = Query(default=None),
     pipeline_id: str | None = Query(default=None),
     stage_id: str | None = Query(default=None),
+    owner_agent_id: str | None = Query(default=None),
     lead_source: str | None = Query(default=None),
     search: str | None = Query(default=None),
     sort_by: str | None = Query(default=None, alias="sort"),
@@ -72,25 +98,140 @@ def leads_list(
     per_page: int = Query(default=25),
     db: Session = Depends(get_db),
 ):
-    state = web_sales_service.build_leads_list_context(
-        db,
-        status=status,
-        pipeline_id=pipeline_id,
-        stage_id=stage_id,
-        lead_source=lead_source,
-        search=search,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        page=page,
-        per_page=per_page,
-    )
+    try:
+        state = web_sales_service.build_leads_list_context(
+            db,
+            status=status,
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            owner_agent_id=owner_agent_id,
+            lead_source=lead_source,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            page=page,
+            per_page=per_page,
+        )
+    except SQLAlchemyError:
+        logger.exception("sales_leads_list_load_failed")
+        state = web_sales_service.build_leads_failure_context(
+            search=search,
+            page=page,
+            per_page=per_page,
+        )
     if state["canonicalization_needed"]:
         return RedirectResponse(
             url=state["list_query"].url("/admin/sales/leads"), status_code=307
         )
     context = _ctx(request, db, "sales-leads")
     context.update(state)
+    context["success"] = (
+        "Lead deleted successfully."
+        if request.query_params.get("result") == "deleted"
+        else None
+    )
     return templates.TemplateResponse("admin/sales/leads/index.html", context)
+
+
+@router.get(
+    "/leads/new",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def lead_new(request: Request, db: Session = Depends(get_db)):
+    context = _ctx(request, db, "sales-leads")
+    context.update(web_sales_service.build_lead_new_context(db))
+    return templates.TemplateResponse("admin/sales/leads/form.html", context)
+
+
+@router.post(
+    "/leads",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def lead_create(
+    request: Request,
+    title: str | None = Form(default=None),
+    status: str | None = Form(default=None),
+    subscriber_id: str | None = Form(default=None),
+    contact_label: str | None = Form(default=None),
+    owner_agent_id: str | None = Form(default=None),
+    pipeline_id: str | None = Form(default=None),
+    stage_id: str | None = Form(default=None),
+    lead_source: str | None = Form(default=None),
+    region: str | None = Form(default=None),
+    estimated_value: str | None = Form(default=None),
+    currency: str | None = Form(default=None),
+    address: str | None = Form(default=None),
+    probability: str | None = Form(default=None),
+    expected_close_date: str | None = Form(default=None),
+    lost_reason: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
+    is_active: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    active = is_active is not None
+    fields: dict[str, str | bool | None] = {
+        "title": title,
+        "status": status,
+        "subscriber_id": subscriber_id,
+        "contact_label": contact_label,
+        "owner_agent_id": owner_agent_id,
+        "pipeline_id": pipeline_id,
+        "stage_id": stage_id,
+        "lead_source": lead_source,
+        "region": region,
+        "estimated_value": estimated_value,
+        "currency": currency,
+        "address": address,
+        "probability": probability,
+        "expected_close_date": expected_close_date,
+        "lost_reason": lost_reason,
+        "notes": notes,
+        "is_active": active,
+    }
+    try:
+        lead_id, existing = web_sales_service.create_lead_from_form(
+            db,
+            title=title,
+            status=status,
+            subscriber_id=subscriber_id,
+            owner_agent_id=owner_agent_id,
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            lead_source=lead_source,
+            region=region,
+            estimated_value=estimated_value,
+            currency=currency,
+            address=address,
+            probability=probability,
+            expected_close_date=expected_close_date,
+            lost_reason=lost_reason,
+            notes=notes,
+            is_active=active,
+        )
+        result = "existing" if existing else "created"
+        return RedirectResponse(
+            url=f"/admin/sales/leads/{lead_id}?result={result}", status_code=303
+        )
+    except (
+        web_sales_service.LeadFormValidationError,
+        ValidationError,
+        HTTPException,
+    ) as exc:
+        context = _ctx(request, db, "sales-leads")
+        context.update(
+            web_sales_service.build_lead_form_error_context(
+                db,
+                mode="create",
+                lead_id=None,
+                field_errors=_lead_field_errors(exc),
+                **fields,
+            )
+        )
+        return templates.TemplateResponse(
+            "admin/sales/leads/form.html", context, status_code=400
+        )
 
 
 @router.get(
@@ -118,7 +259,161 @@ def leads_board(
 def lead_detail(request: Request, lead_id: str, db: Session = Depends(get_db)):
     context = _ctx(request, db, "sales-leads")
     context.update(web_sales_service.build_lead_detail_context(db, lead_id=lead_id))
+    result = request.query_params.get("result")
+    if result == "created":
+        context["success"] = "Lead created successfully."
+    elif result == "existing":
+        context["success"] = "An existing open lead matched this contact and pipeline."
+    elif result == "updated":
+        context["success"] = "Lead updated successfully."
+    elif result == "status-updated":
+        context["success"] = "Lead status updated successfully."
     return templates.TemplateResponse("admin/sales/leads/detail.html", context)
+
+
+@router.get(
+    "/leads/{lead_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def lead_edit(request: Request, lead_id: str, db: Session = Depends(get_db)):
+    context = _ctx(request, db, "sales-leads")
+    context.update(web_sales_service.build_lead_edit_context(db, lead_id=lead_id))
+    return templates.TemplateResponse("admin/sales/leads/form.html", context)
+
+
+@router.post(
+    "/leads/{lead_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def lead_update(
+    request: Request,
+    lead_id: str,
+    title: str | None = Form(default=None),
+    status: str | None = Form(default=None),
+    subscriber_id: str | None = Form(default=None),
+    contact_label: str | None = Form(default=None),
+    owner_agent_id: str | None = Form(default=None),
+    pipeline_id: str | None = Form(default=None),
+    stage_id: str | None = Form(default=None),
+    lead_source: str | None = Form(default=None),
+    region: str | None = Form(default=None),
+    estimated_value: str | None = Form(default=None),
+    currency: str | None = Form(default=None),
+    address: str | None = Form(default=None),
+    probability: str | None = Form(default=None),
+    expected_close_date: str | None = Form(default=None),
+    lost_reason: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
+    is_active: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    active = is_active is not None
+    fields: dict[str, str | bool | None] = {
+        "title": title,
+        "status": status,
+        "subscriber_id": subscriber_id,
+        "contact_label": contact_label,
+        "owner_agent_id": owner_agent_id,
+        "pipeline_id": pipeline_id,
+        "stage_id": stage_id,
+        "lead_source": lead_source,
+        "region": region,
+        "estimated_value": estimated_value,
+        "currency": currency,
+        "address": address,
+        "probability": probability,
+        "expected_close_date": expected_close_date,
+        "lost_reason": lost_reason,
+        "notes": notes,
+        "is_active": active,
+    }
+    try:
+        web_sales_service.update_lead_from_form(
+            db,
+            lead_id=lead_id,
+            title=title,
+            status=status,
+            subscriber_id=subscriber_id,
+            contact_label=contact_label,
+            owner_agent_id=owner_agent_id,
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            lead_source=lead_source,
+            region=region,
+            estimated_value=estimated_value,
+            currency=currency,
+            address=address,
+            probability=probability,
+            expected_close_date=expected_close_date,
+            lost_reason=lost_reason,
+            notes=notes,
+            is_active=active,
+        )
+        return RedirectResponse(
+            url=f"/admin/sales/leads/{lead_id}?result=updated", status_code=303
+        )
+    except (
+        web_sales_service.LeadFormValidationError,
+        ValidationError,
+        HTTPException,
+    ) as exc:
+        context = _ctx(request, db, "sales-leads")
+        context.update(
+            web_sales_service.build_lead_form_error_context(
+                db,
+                mode="update",
+                lead_id=lead_id,
+                field_errors=_lead_field_errors(exc),
+                **fields,
+            )
+        )
+        return templates.TemplateResponse(
+            "admin/sales/leads/form.html", context, status_code=400
+        )
+
+
+@router.post(
+    "/leads/{lead_id}/status",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def lead_status_update(
+    request: Request,
+    lead_id: str,
+    status: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        web_sales_service.set_lead_status(db, lead_id=lead_id, status=status)
+    except (
+        web_sales_service.LeadFormValidationError,
+        ValidationError,
+        HTTPException,
+    ):
+        context = _ctx(request, db, "sales-leads")
+        context.update(web_sales_service.build_lead_detail_context(db, lead_id=lead_id))
+        context["api_error"] = (
+            "The status could not be updated. Review the current lead and retry."
+        )
+        return templates.TemplateResponse(
+            "admin/sales/leads/detail.html", context, status_code=400
+        )
+    return RedirectResponse(
+        url=f"/admin/sales/leads/{lead_id}?result=status-updated",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/leads/{lead_id}/delete",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:delete"))],
+)
+def lead_delete(lead_id: str, db: Session = Depends(get_db)):
+    web_sales_service.deactivate_lead(db, lead_id=lead_id)
+    return RedirectResponse(url="/admin/sales/leads?result=deleted", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -393,9 +688,13 @@ def quotes_list(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:quote:write"))],
 )
-def quote_new(request: Request, db: Session = Depends(get_db)):
+def quote_new(
+    request: Request,
+    lead_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     context = _ctx(request, db, "sales-quotes")
-    context.update(web_sales_service.build_quote_new_context())
+    context.update(web_sales_service.build_quote_new_context(db, lead_id=lead_id))
     return templates.TemplateResponse("admin/sales/quotes/form.html", context)
 
 

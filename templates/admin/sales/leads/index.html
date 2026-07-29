@@ -1,173 +1,219 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import status_badge %}
-{% from "components/ui/list_macros.html" import list_pagination, sort_header %}
+{% from "components/ui/list_macros.html" import list_pagination %}
 {% block title %}Leads - Admin{% endblock %}
 
 {% set lead_status_variants = {
-    'new': 'new',
-    'contacted': 'info',
-    'qualified': 'info',
-    'proposal': 'pending',
-    'negotiation': 'warning',
-    'won': 'success',
-    'lost': 'error'
+    'new': 'new', 'contacted': 'info', 'qualified': 'info',
+    'proposal': 'pending', 'negotiation': 'warning',
+    'won': 'success', 'lost': 'error'
 } %}
 
 {% block content %}
 <div class="space-y-4">
-    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-            <h1 class="font-display text-xl font-bold tracking-tight text-slate-900 dark:text-white">Leads</h1>
-            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Track opportunities and customer interest across pipelines.</p>
+            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Leads</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Track opportunities and customer interest.</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-            <a href="/admin/sales/quotes"
-               class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                Quotes
+            <details class="relative">
+                <summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
+                    More <span aria-hidden="true">&#9662;</span>
+                </summary>
+                <div class="absolute right-0 z-20 mt-2 w-52 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                    <a href="/admin/sales/leads" class="block rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Leads</a>
+                    <a href="/admin/sales/leads/board" class="block rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Pipeline Board</a>
+                    <a href="/admin/sales/quotes" class="block rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Quotes</a>
+                    <a href="/admin/sales/sales-orders" class="block rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Sales Orders</a>
+                    {% if can(request, "crm:lead:write") %}
+                    <a href="/admin/sales/pipelines" class="block rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Pipeline Settings</a>
+                    {% endif %}
+                </div>
+            </details>
+            {% if can(request, "crm:lead:write") %}
+            <a href="/admin/sales/leads/new" class="inline-flex items-center justify-center gap-1.5 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700">
+                <span aria-hidden="true">+</span> New Lead
             </a>
-            <a href="/admin/sales/sales-orders"
-               class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
-                Sales Orders
-            </a>
-            <a href="/admin/sales/leads/board"
-               class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"/></svg>
-                Pipeline Board
-            </a>
-            <a href="/admin/sales/pipelines"
-               class="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                Pipeline Settings
-            </a>
+            {% endif %}
         </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    {% if success %}
+    <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200" role="status">{{ success }}</div>
+    {% endif %}
+    {% if api_error %}
+    <div class="flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between dark:border-red-800 dark:bg-red-950/40 dark:text-red-200" role="alert">
+        <span>{{ api_error }}</span>
+        <a href="{{ retry_url or '/admin/sales/leads' }}" class="font-semibold underline">Retry</a>
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <a href="/admin/sales/leads" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-cyan-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-cyan-700">
             <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Total Leads</p>
-            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ lead_stats.total }}</p>
+            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ lead_stats.total if lead_stats.total is not none else 'Unavailable' }}</p>
+        </a>
+        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Open Leads</p>
+            <p class="mt-1 font-display text-2xl font-bold text-cyan-600 dark:text-cyan-400">{{ lead_stats.open if lead_stats.open is not none else 'Unavailable' }}</p>
         </div>
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Open</p>
-            <p class="mt-1 font-display text-2xl font-bold text-cyan-600 dark:text-cyan-400">{{ lead_stats.open }}</p>
-        </div>
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Won</p>
-            <p class="mt-1 font-display text-2xl font-bold text-emerald-600 dark:text-emerald-400">{{ lead_stats.won }}</p>
-        </div>
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Open Pipeline Value</p>
-            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">NGN {{ "{:,.0f}".format(lead_stats.total_value) }}</p>
+        <a href="/admin/sales/leads?status=won&sort=created_at&dir=desc&page=1&per_page={{ list_query.per_page }}" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-emerald-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-emerald-700">
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Won Leads</p>
+            <p class="mt-1 font-display text-2xl font-bold text-emerald-600 dark:text-emerald-400">{{ lead_stats.won if lead_stats.won is not none else 'Unavailable' }}</p>
+        </a>
+        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Pipeline Value</p>
+            <p class="mt-1 font-display text-xl font-bold tabular-nums text-slate-900 dark:text-white">{% if lead_stats.total_value is not none %}{{ lead_stats.currency }} {{ "{:,.2f}".format(lead_stats.total_value) }}{% else %}Unavailable{% endif %}</p>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Open statuses only</p>
         </div>
     </div>
 
     <div class="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <form method="get" action="/admin/sales/leads" class="space-y-3">
+        <form method="get" action="/admin/sales/leads" class="space-y-3" data-filter-form>
             <input type="hidden" name="sort" value="{{ list_query.sort_by }}">
             <input type="hidden" name="dir" value="{{ list_query.sort_dir }}">
             <input type="hidden" name="page" value="1">
             <input type="hidden" name="per_page" value="{{ list_query.per_page }}">
-            <div class="grid gap-2 lg:grid-cols-12">
-                <div class="lg:col-span-4">
-                    <label class="sr-only" for="lead-search">Search</label>
-                    <input id="lead-search" type="text" name="search" value="{{ search }}"
-                           placeholder="Search title, subscriber name, email, or phone..."
-                           class="w-full rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-white">
+            <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+                <div class="sm:col-span-2 lg:col-span-2">
+                    <label class="sr-only" for="lead-search">Search leads</label>
+                    <input id="lead-search" type="search" name="search" value="{{ search }}" placeholder="Search lead, contact, email, or phone"
+                           class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
-                <div class="lg:col-span-2">
-                    <select name="status" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Status">
-                        <option value="">All Statuses</option>
-                        {% for item in lead_statuses %}
-                        <option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item | replace('_', ' ') | title }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="lg:col-span-2">
-                    <select name="pipeline_id" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Pipeline">
-                        <option value="">All Pipelines</option>
-                        {% for pipeline in pipelines %}
-                        <option value="{{ pipeline.id }}" {% if pipeline_id == pipeline.id|string %}selected{% endif %}>{{ pipeline.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="lg:col-span-2">
-                    <select name="stage_id" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Stage">
-                        <option value="">All Stages</option>
-                        {% for stage in stages %}
-                        <option value="{{ stage.id }}" {% if stage_id == stage.id|string %}selected{% endif %}>{{ stage.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="lg:col-span-2">
-                    <select name="lead_source" class="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Source">
-                        <option value="">All Sources</option>
-                        {% for option in lead_sources %}
-                        <option value="{{ option }}" {% if lead_source == option %}selected{% endif %}>{{ option }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
+                <select name="status" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Status">
+                    <option value="">All Statuses</option>
+                    {% for item in lead_statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item | replace('_', ' ') | title }}</option>{% endfor %}
+                </select>
+                <select id="lead-pipeline-filter" name="pipeline_id" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Pipeline">
+                    <option value="">All Pipelines</option>
+                    {% for pipeline in pipelines %}<option value="{{ pipeline.id }}" {% if pipeline_id == pipeline.id|string %}selected{% endif %}>{{ pipeline.name }}</option>{% endfor %}
+                </select>
+                <select id="lead-stage-filter" name="stage_id" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Stage">
+                    <option value="">All Stages</option>
+                    {% for stage in all_stages %}<option value="{{ stage.id }}" data-pipeline-id="{{ stage.pipeline_id }}" {% if stage_id == stage.id|string %}selected{% endif %}>{{ stage.name }}</option>{% endfor %}
+                </select>
+                <select name="owner_agent_id" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Owner">
+                    <option value="">All Owners</option>
+                    {% for agent in agents %}<option value="{{ agent.id }}" {% if owner_agent_id == agent.id|string %}selected{% endif %}>{{ agent.name }}</option>{% endfor %}
+                </select>
+                <select name="lead_source" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" aria-label="Lead Source">
+                    <option value="">All Sources</option>
+                    {% for option in lead_sources %}<option value="{{ option }}" {% if lead_source == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+                </select>
             </div>
             <div class="flex items-center justify-end gap-2">
-                <a href="/admin/sales/leads" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Reset</a>
-                <button type="submit" class="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-cyan-700">Filter</button>
+                <span class="hidden text-xs text-slate-500 dark:text-slate-400" data-loading role="status">Loading leads...</span>
+                <a href="/admin/sales/leads" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Reset</a>
+                <button type="submit" data-filter-submit class="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-cyan-700 disabled:opacity-60">Filter</button>
             </div>
         </form>
     </div>
 
-    <div class="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-700">
-            <thead class="bg-slate-50 dark:bg-slate-900">
-                <tr>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lead</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Subscriber</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
-                    <th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Est. Value</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Source</th>
-                    <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Pipeline / Stage</th>
-                    {{ sort_header(list_query, '/admin/sales/leads', 'created_at', 'Created', entity='leads', th_class='px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400') }}
-                </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
-                {% for lead in leads %}
-                {% set subscriber = subscriber_map.get(lead.subscriber_id|string) %}
-                {% set pipeline = pipeline_map.get(lead.pipeline_id|string) if lead.pipeline_id else None %}
-                {% set stage = stage_map.get(lead.stage_id|string) if lead.stage_id else None %}
-                <tr class="cursor-pointer transition hover:bg-cyan-50/40 dark:hover:bg-cyan-900/10" onclick="window.location='/admin/sales/leads/{{ lead.id }}'">
-                    <td class="px-4 py-2.5">
-                        <a class="font-semibold text-cyan-700 hover:underline dark:text-cyan-400" href="/admin/sales/leads/{{ lead.id }}">
-                            {{ lead.title or ('Lead ' ~ lead.id|string|truncate(8, True, '')) }}
-                        </a>
-                    </td>
-                    <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">
-                        {% if subscriber %}
-                        {{ subscriber.display_name or ((subscriber.first_name or '') ~ ' ' ~ (subscriber.last_name or ''))|trim or subscriber.email or '-' }}
-                        {% else %}-{% endif %}
-                    </td>
-                    <td class="px-4 py-2.5">
-                        {% set status_val = lead.status or 'new' %}
-                        {{ status_badge(status_val | replace('_', ' ') | title, lead_status_variants.get(status_val, 'default'), size='sm') }}
-                    </td>
-                    <td class="px-4 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-300">
-                        {% if lead.estimated_value %}{{ lead.currency or '' }} {{ "{:,.2f}".format(lead.estimated_value) }}{% else %}-{% endif %}
-                    </td>
-                    <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">{{ lead.lead_source or '-' }}</td>
-                    <td class="px-4 py-2.5 text-slate-700 dark:text-slate-300">
-                        {{ pipeline.name if pipeline else '-' }}
-                        {% if stage %}<span class="block text-xs text-slate-500 dark:text-slate-400">{{ stage.name }}</span>{% endif %}
-                    </td>
-                    <td class="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{{ lead.created_at | app_datetime('%Y-%m-%d %H:%M', '-') }}</td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="7" class="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No leads found for the current filters.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-700">
+                <thead class="bg-slate-50 dark:bg-slate-900">
+                    <tr>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Lead</th>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Contact</th>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+                        <th scope="col" class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Estimated Value</th>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Source</th>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Pipeline / Stage</th>
+                        <th scope="col" class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Owner</th>
+                        <th scope="col" class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
+                    {% if api_error %}
+                    <tr>
+                        <td colspan="8" class="px-4 py-14 text-center">
+                            <p class="font-semibold text-slate-900 dark:text-white">Leads are temporarily unavailable</p>
+                            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Retry to load the current CRM-backed list.</p>
+                            <a href="{{ retry_url }}" class="mt-3 inline-flex rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 dark:border-slate-600 dark:text-slate-200">Retry</a>
+                        </td>
+                    </tr>
+                    {% else %}
+                    {% for lead in leads %}
+                    {% set contact = contact_map.get(lead.id|string) %}
+                    {% set pipeline = pipeline_map.get(lead.pipeline_id|string) if lead.pipeline_id else None %}
+                    {% set stage = stage_map.get(lead.stage_id|string) if lead.stage_id else None %}
+                    {% set owner = agent_map.get(lead.owner_agent_id|string) if lead.owner_agent_id else None %}
+                    {% set status_val = lead.status or 'new' %}
+                    <tr class="transition hover:bg-cyan-50/40 dark:hover:bg-cyan-900/10">
+                        <td class="px-4 py-3">
+                            <a class="font-semibold text-cyan-700 hover:underline dark:text-cyan-400" href="/admin/sales/leads/{{ lead.id }}">{{ lead.title or ('Lead ' ~ lead.id|string|truncate(8, True, '')) }}</a>
+                            <span class="mt-0.5 block text-xs text-slate-400 md:hidden">{{ contact.name if contact else 'Contact unavailable' }}</span>
+                        </td>
+                        <td class="hidden px-4 py-3 text-slate-700 sm:table-cell dark:text-slate-300">
+                            <span class="font-medium">{{ contact.name if contact else 'Contact unavailable' }}</span>
+                            {% if contact and (contact.email or contact.phone) %}<span class="block max-w-52 truncate text-xs text-slate-500 dark:text-slate-400">{{ contact.email or contact.phone }}</span>{% endif %}
+                        </td>
+                        <td class="px-4 py-3">{{ status_badge(status_val | replace('_', ' ') | title, lead_status_variants.get(status_val, 'default'), size='sm') }}</td>
+                        <td class="px-4 py-3 text-right tabular-nums text-slate-700 dark:text-slate-300">{% if lead.estimated_value is not none %}{{ lead.currency or lead_stats.currency }} {{ "{:,.2f}".format(lead.estimated_value) }}{% else %}-{% endif %}</td>
+                        <td class="hidden px-4 py-3 text-slate-700 lg:table-cell dark:text-slate-300">{{ lead.lead_source or '-' }}</td>
+                        <td class="hidden px-4 py-3 text-slate-700 md:table-cell dark:text-slate-300">{{ pipeline.name if pipeline else '-' }}{% if stage %}<span class="block text-xs text-slate-500 dark:text-slate-400">{{ stage.name }}</span>{% endif %}</td>
+                        <td class="hidden px-4 py-3 text-slate-700 xl:table-cell dark:text-slate-300">{{ owner.name if owner else ('Owner unavailable' if lead.owner_agent_id else 'Unassigned') }}</td>
+                        <td class="px-4 py-3">
+                            <div class="flex items-center justify-end gap-2">
+                                <a href="/admin/sales/leads/{{ lead.id }}" class="text-sm font-semibold text-cyan-700 hover:underline dark:text-cyan-400">View</a>
+                                {% if can(request, "crm:lead:write") or can(request, "crm:lead:delete") %}
+                                <details class="relative">
+                                    <summary class="cursor-pointer list-none rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 dark:border-slate-600 dark:text-slate-200" aria-label="More actions for {{ lead.title or 'lead' }}">More</summary>
+                                    <div class="absolute right-0 z-10 mt-1 w-32 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                                        {% if can(request, "crm:lead:write") %}<a href="/admin/sales/leads/{{ lead.id }}/edit" class="block rounded px-2 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">Edit</a>{% endif %}
+                                        {% if can(request, "crm:lead:delete") %}
+                                        <form method="post" action="/admin/sales/leads/{{ lead.id }}/delete" data-confirm="Delete this lead? This removes it from active lead views." data-confirm-label="Delete Lead">
+                                            {% include "components/forms/csrf_input.html" %}
+                                            <button type="submit" class="block w-full rounded px-2 py-1.5 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40">Delete</button>
+                                        </form>
+                                        {% endif %}
+                                    </div>
+                                </details>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="px-4 py-14 text-center">
+                            <p class="font-semibold text-slate-900 dark:text-white">No leads found</p>
+                            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Try adjusting your filters or create a new lead.</p>
+                            {% if can(request, "crm:lead:write") %}<a href="/admin/sales/leads/new" class="mt-3 inline-flex rounded-lg bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-700">New Lead</a>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        {{ list_pagination(list_query, page_meta, '/admin/sales/leads', entity='leads') }}
     </div>
-
-    {{ list_pagination(list_query, page_meta, '/admin/sales/leads', entity='leads') }}
 </div>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+    const pipeline = document.getElementById("lead-pipeline-filter");
+    const stage = document.getElementById("lead-stage-filter");
+    const filterStages = () => {
+        const pipelineId = pipeline.value;
+        let selectedVisible = !stage.value;
+        Array.from(stage.options).forEach((option, index) => {
+            if (index === 0) return;
+            const visible = !pipelineId || option.dataset.pipelineId === pipelineId;
+            option.hidden = !visible;
+            option.disabled = !visible;
+            if (visible && option.value === stage.value) selectedVisible = true;
+        });
+        if (!selectedVisible) stage.value = "";
+    };
+    pipeline.addEventListener("change", filterStages);
+    filterStages();
+    document.querySelector("[data-filter-form]").addEventListener("submit", () => {
+        document.querySelector("[data-loading]").classList.remove("hidden");
+        document.querySelector("[data-filter-submit]").disabled = true;
+    });
+})();
+</script>
 {% endblock %}

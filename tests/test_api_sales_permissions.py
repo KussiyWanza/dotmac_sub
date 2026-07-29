@@ -75,8 +75,21 @@ def test_lead_routes_keep_crm_lead_permissions():
         router, "/crm/leads/{lead_id}", "PATCH", "crm:lead:write"
     )
     assert _route_has_permission(
-        router, "/crm/leads/{lead_id}", "DELETE", "crm:lead:write"
+        router, "/crm/leads/{lead_id}", "DELETE", "crm:lead:delete"
     )
+
+
+def test_lead_list_exposes_contact_search_and_owner_filters():
+    route = _get_route(crm_sales_api.router, "/crm/leads", "GET")
+    param_names = {param.name for param in route.dependant.query_params}
+    assert {
+        "search",
+        "status",
+        "pipeline_id",
+        "stage_id",
+        "owner_agent_id",
+        "lead_source",
+    } <= param_names
 
 
 def test_quote_routes_tightened_onto_crm_quote_permissions():

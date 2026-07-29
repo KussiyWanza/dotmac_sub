@@ -447,7 +447,11 @@ def _seed_rbac_module():
 def test_sales_permission_keys_are_seeded():
     seed = _seed_rbac_module()
     seeded = {key for key, _ in seed.DEFAULT_PERMISSIONS}
-    for key in SALES_KEYS + ("crm:lead:read", "crm:lead:write"):
+    for key in SALES_KEYS + (
+        "crm:lead:read",
+        "crm:lead:write",
+        "crm:lead:delete",
+    ):
         assert key in seeded, f"{key} not seeded in RBAC"
 
 

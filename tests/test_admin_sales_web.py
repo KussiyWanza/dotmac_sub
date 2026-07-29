@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 
@@ -108,6 +109,17 @@ def test_lead_routes_require_lead_permissions():
     assert _route_has_permission(
         router, "/sales/leads/{lead_id}", "GET", "crm:lead:read"
     )
+    for path, method in [
+        ("/sales/leads/new", "GET"),
+        ("/sales/leads", "POST"),
+        ("/sales/leads/{lead_id}/edit", "GET"),
+        ("/sales/leads/{lead_id}/edit", "POST"),
+        ("/sales/leads/{lead_id}/status", "POST"),
+    ]:
+        assert _route_has_permission(router, path, method, "crm:lead:write")
+    assert _route_has_permission(
+        router, "/sales/leads/{lead_id}/delete", "POST", "crm:lead:delete"
+    )
 
 
 def test_pipeline_settings_routes_ride_lead_write():
@@ -153,6 +165,8 @@ def test_sales_router_is_registered_under_admin():
     paths = {route.path for route in admin_router.routes if isinstance(route, APIRoute)}
     assert "/admin/sales/leads" in paths
     assert "/admin/sales/leads/board" in paths
+    assert "/admin/sales/leads/new" in paths
+    assert "/admin/sales/leads/{lead_id}/edit" in paths
     assert "/admin/sales/pipelines" in paths
     assert "/admin/sales/quotes" in paths
     assert "/admin/sales/sales-orders" in paths
@@ -261,6 +275,80 @@ def test_lead_detail_context_includes_quotes(db_session):
     assert context["subscriber_label"]
     assert [str(item.id) for item in context["quotes"]] == [str(quote.id)]
     assert context["status_val"] == "new"
+
+
+def test_create_quote_context_preselects_lead_and_subscriber(db_session):
+    subscriber = _make_subscriber(db_session)
+    lead = _make_lead(db_session, subscriber)
+
+    context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
+
+    assert context["quote_form"]["lead_id"] == str(lead.id)
+    assert context["quote_form"]["subscriber_id"] == str(subscriber.id)
+
+
+def test_lead_form_creates_through_native_sales_owner(db_session):
+    subscriber = _make_subscriber(db_session)
+    pipeline = _make_pipeline(db_session, name=f"Form-{uuid.uuid4().hex[:6]}")
+    stage = _make_stage(db_session, pipeline, name="Qualified")
+
+    lead_id, existing = web_sales.create_lead_from_form(
+        db_session,
+        title="Enterprise fibre opportunity",
+        status="qualified",
+        subscriber_id=str(subscriber.id),
+        owner_agent_id=None,
+        pipeline_id=str(pipeline.id),
+        stage_id=str(stage.id),
+        lead_source="Website",
+        region="Lagos",
+        estimated_value="250000.00",
+        currency="NGN",
+        address="Victoria Island",
+        probability="65",
+        expected_close_date="2026-08-31",
+        lost_reason=None,
+        notes="Customer requested a site survey.",
+        is_active=True,
+    )
+
+    lead = sales_service.leads.get(db_session, lead_id)
+    assert existing is False
+    assert lead.subscriber_id == subscriber.id
+    assert lead.pipeline_id == pipeline.id
+    assert lead.stage_id == stage.id
+    assert lead.probability == 65
+    assert lead.estimated_value == Decimal("250000.00")
+
+
+def test_pipeline_stage_pair_is_enforced_by_sales_owner(db_session):
+    subscriber = _make_subscriber(db_session)
+    first = _make_pipeline(db_session, name=f"First-{uuid.uuid4().hex[:6]}")
+    second = _make_pipeline(db_session, name=f"Second-{uuid.uuid4().hex[:6]}")
+    second_stage = _make_stage(db_session, second)
+
+    with pytest.raises(HTTPException) as exc:
+        web_sales.create_lead_from_form(
+            db_session,
+            title="Mismatched pipeline",
+            status="new",
+            subscriber_id=str(subscriber.id),
+            owner_agent_id=None,
+            pipeline_id=str(first.id),
+            stage_id=str(second_stage.id),
+            lead_source="Website",
+            region=None,
+            estimated_value=None,
+            currency="NGN",
+            address=None,
+            probability="10",
+            expected_close_date=None,
+            lost_reason=None,
+            notes=None,
+            is_active=True,
+        )
+
+    assert "stage does not belong" in str(exc.value.detail).lower()
 
 
 def test_leads_board_context_defaults_to_first_pipeline(db_session):
@@ -575,6 +663,7 @@ _SALES_TEMPLATES = [
     "admin/sales/leads/index.html",
     "admin/sales/leads/board.html",
     "admin/sales/leads/detail.html",
+    "admin/sales/leads/form.html",
     "admin/sales/pipelines/index.html",
     "admin/sales/pipelines/form.html",
     "admin/sales/quotes/index.html",

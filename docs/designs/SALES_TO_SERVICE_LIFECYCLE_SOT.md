@@ -111,6 +111,38 @@ They authorize/verify input, call the owner, and translate transport-neutral
 errors. They do not write lifecycle state directly. Domain services must not
 depend on HTTP request/response or exception types.
 
+## Selfcare CRM Leads page contract
+
+- Screen identifiers: `sales-leads-list`, `sales-lead-create`,
+  `sales-lead-edit`, and `sales-lead-detail`.
+- Audience and job: authorized sales staff triage opportunities, maintain the
+  commercial context of an existing Party/Subscriber identity, and start a
+  lead-backed Quote.
+- Authoritative owners: `sales.lead_lifecycle` owns Lead identity/origin and
+  Party alignment; `sales.service` owns Lead, Pipeline, Stage, summary, and
+  Quote projections and commands; Party/Subscriber services own contact
+  identity; RBAC owns `crm:lead:{read,write,delete}` and quote permissions.
+- First viewport: Lead identity, status, value, owner, pipeline/stage,
+  authoritative KPI summary, common filters, and the next permitted action.
+- Actions: create/edit/status use `crm:lead:write`; list/detail use
+  `crm:lead:read`; delete uses `crm:lead:delete`; quote creation uses
+  `crm:quote:write` and navigates to the quote editor with the Lead selected.
+- List contract: server-side search across Lead title plus authoritative
+  contact name/email/phone, status/pipeline/stage/owner/source filters,
+  updated/created ordering, 10/25/50/100 page sizes, and URL-preserved state.
+- Summary contract: Total, Open, Won, and Pipeline Value come from
+  `sales.service`; Open is New/Contacted/Qualified/Proposal/Negotiation and
+  won/lost value is excluded.
+- States: permission denial is enforced by route dependencies; forms preserve
+  validated input and field errors; empty, loading/submitting, API failure with
+  retry, duplicate-open-lead, and unavailable-contact states are explicit.
+- Responsive projection: mobile retains Lead, contact, status, value, and the
+  next action; lower-priority source/pipeline/owner columns progressively
+  disclose at larger viewports. Dark mode uses the shared admin design tokens.
+- Out of scope: no activity timeline, appointments, tasks, conversation
+  history, import/export, bulk Lead commands, aging analytics, or parallel
+  Lead persistence is introduced by these screens.
+
 ## Configuration versus code contracts
 
 Operational values are not embedded in orchestration code. The default sales
