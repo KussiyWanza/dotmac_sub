@@ -110,19 +110,45 @@
                         </div>
                     </div>
                     <p class="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{{ comment.body }}</p>
+                    {% if comment.attachments %}
+                    <ul class="mt-2 space-y-1">
+                        {% for attachment in comment.attachments %}
+                        <li><a href="/api/v1/files/{{ attachment.stored_file_id }}/download" class="text-xs font-semibold text-emerald-700 hover:underline dark:text-emerald-400">{{ attachment.file_name }}</a></li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
                 </article>
                 {% else %}
                 <p class="text-sm text-slate-500 dark:text-slate-400">No comments yet.</p>
                 {% endfor %}
             </div>
-            <form method="post" action="/admin/projects/tasks/{{ task.number or task.id }}/comments" class="mt-5 space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-600 dark:bg-slate-700/30">
+            <form method="post" enctype="multipart/form-data" action="/admin/projects/tasks/{{ task.number or task.id }}/comments" class="mt-5 space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-600 dark:bg-slate-700/30" data-project-comment-form>
                 <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
                 <textarea name="body" rows="3" required placeholder="Add a comment..." class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></textarea>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Attachments
+                        <input type="file" name="attachments" multiple class="mt-1 block w-full text-xs">
+                    </label>
+                    <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Mention staff or teams
+                        <select multiple data-mention-select class="mt-1 block w-full rounded-lg border border-slate-200 bg-white p-2 text-xs dark:border-slate-600 dark:bg-slate-700">
+                            {% for agent in mention_agents %}<option value="{{ agent.id }}">{{ agent.label }}</option>{% endfor %}
+                        </select>
+                    </label>
+                </div>
+                <input type="hidden" name="mentions" value="[]" data-mentions-json>
                 <div class="flex justify-end">
                     <button class="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-emerald-500/20">Add Comment</button>
                 </div>
             </form>
             {% endcall %}
+            <script>
+            document.querySelectorAll('[data-project-comment-form]').forEach(function (form) {
+                form.addEventListener('submit', function () {
+                    var select = form.querySelector('[data-mention-select]');
+                    form.querySelector('[data-mentions-json]').value = JSON.stringify(Array.from(select.selectedOptions).map(function (option) { return option.value; }));
+                });
+            });
+            </script>
 
             {% call project_card(title='Activity Timeline', subtitle='Audit and workflow events.', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>') %}
             <div class="space-y-3">

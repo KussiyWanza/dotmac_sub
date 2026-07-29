@@ -421,20 +421,21 @@ def project_task_quick_status(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("project:task:write"))],
 )
-def project_task_comment_create(
-    request: Request,
-    task_ref: str,
-    body: str = Form(...),
-    db: Session = Depends(get_db),
+async def project_task_comment_create(
+    request: Request, task_ref: str, db: Session = Depends(get_db)
 ):
     task, _ = projects_web_service.resolve_task_reference(db, task_ref)
-    if body.strip():
+    form = await request.form()
+    body = str(form.get("body") or "").strip()
+    if body:
         projects_web_service.add_task_comment_from_form(
             db,
             request=request,
             task_id=str(task.id),
             actor_id=_actor_id(request),
-            body=body.strip(),
+            body=body,
+            attachments=form.getlist("attachments"),
+            mentions=str(form.get("mentions") or ""),
         )
     return RedirectResponse(url=projects_web_service.task_url(task), status_code=303)
 
@@ -943,20 +944,21 @@ def project_quick_priority(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("project:update"))],
 )
-def project_comment_create(
-    request: Request,
-    project_ref: str,
-    body: str = Form(...),
-    db: Session = Depends(get_db),
+async def project_comment_create(
+    request: Request, project_ref: str, db: Session = Depends(get_db)
 ):
     project, _ = projects_web_service.resolve_project_reference(db, project_ref)
-    if body.strip():
+    form = await request.form()
+    body = str(form.get("body") or "").strip()
+    if body:
         projects_web_service.add_project_comment_from_form(
             db,
             request=request,
             project_id=str(project.id),
             actor_id=_actor_id(request),
-            body=body.strip(),
+            body=body,
+            attachments=form.getlist("attachments"),
+            mentions=str(form.get("mentions") or ""),
         )
     return RedirectResponse(
         url=projects_web_service.project_url(project), status_code=303
