@@ -21,7 +21,7 @@
     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
             <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                <a href="/admin/sales/sales-orders" class="hover:text-cyan-600">Sales Orders</a>
+                <a href="/admin/sales/sales-order" class="hover:text-cyan-600">Sales Orders</a>
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 <span class="text-slate-900 dark:text-white">Details</span>
             </nav>
@@ -34,6 +34,12 @@
             </div>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Order ID: {{ order.id }}</p>
         </div>
+        {% if can(request, "crm:sales_order:write") %}
+        <div class="flex flex-wrap gap-2">
+            <a href="/admin/sales/sales-order/{{ order.id }}/edit" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Edit</a>
+            <button type="button" data-delete-open class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-slate-800 dark:text-red-300">Delete</button>
+        </div>
+        {% endif %}
     </div>
 
     <div class="grid gap-4 lg:grid-cols-4">
@@ -79,7 +85,9 @@
             {% endif %}
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Source</h2>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Sales Ownership & Source</h2>
+            <p class="mt-3 text-sm font-semibold text-slate-900 dark:text-white">{{ agent.name if agent else ('Unassigned' if not order.owner_agent_id else (order.owner_agent_id|string)[:8]) }}</p>
+            {% if agent and agent.email %}<p class="text-xs text-slate-500 dark:text-slate-400">{{ agent.email }}</p>{% endif %}
             <p class="mt-3 text-sm text-slate-700 dark:text-slate-300">
                 {% if order.quote_id %}Created from an accepted quote.{% else %}Manually created order.{% endif %}
             </p>
@@ -158,4 +166,29 @@
     </div>
     {% endif %}
 </div>
+
+{% if can(request, "crm:sales_order:write") %}
+<dialog data-delete-dialog class="w-full max-w-md rounded-xl border border-slate-200 bg-white p-0 shadow-2xl backdrop:bg-slate-900/60 dark:border-slate-700 dark:bg-slate-800">
+    <form method="dialog" class="p-5">
+        <h2 class="text-lg font-bold text-slate-900 dark:text-white">Delete {{ order.order_number }}?</h2>
+        <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">This removes the order from active sales views. Linked quote, customer and project records are retained.</p>
+        <div class="mt-5 flex justify-end gap-2"><button class="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold dark:border-slate-600">Cancel</button><button type="button" data-delete-confirm class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Delete Sales Order</button></div>
+    </form>
+    <form data-delete-form method="post" action="/admin/sales/sales-order/{{ order.id }}/delete">
+        {% include "components/forms/csrf_input.html" %}
+    </form>
+</dialog>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}{{ super() }}
+{% if can(request, "crm:sales_order:write") %}
+<script>
+(() => {
+  const dialog = document.querySelector('[data-delete-dialog]');
+  document.querySelector('[data-delete-open]')?.addEventListener('click', () => dialog.showModal());
+  document.querySelector('[data-delete-confirm]')?.addEventListener('click', () => document.querySelector('[data-delete-form]').submit());
+})();
+</script>
+{% endif %}
 {% endblock %}

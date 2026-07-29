@@ -42,6 +42,8 @@ native models, with Sub ownership deltas applied:
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -78,6 +80,47 @@ from app.services.sales import lifecycle as lead_lifecycle
 logger = logging.getLogger(__name__)
 
 _PAID = SalesOrderPaymentStatus.paid.value
+SALES_ORDER_VAT_RATE = Decimal("0.075")
+
+
+@dataclass(frozen=True)
+class SalesOrderTotals:
+    subtotal: Decimal
+    tax_total: Decimal
+    total: Decimal
+
+
+def fixed_vat_amount(subtotal: Decimal) -> Decimal:
+    """Return the canonical fixed VAT amount for a manually priced order."""
+
+    return round_money(Decimal(subtotal) * SALES_ORDER_VAT_RATE)
+
+
+def calculate_manual_order_totals(
+    lines: Sequence[tuple[Decimal, Decimal]],
+) -> SalesOrderTotals:
+    """Price manual lines and apply the canonical fixed VAT policy."""
+
+    subtotal = round_money(
+        sum((quantity * unit_price for quantity, unit_price in lines), Decimal("0"))
+    )
+    tax_total = fixed_vat_amount(subtotal)
+    return SalesOrderTotals(
+        subtotal=subtotal,
+        tax_total=tax_total,
+        total=round_money(subtotal + tax_total),
+    )
+
+
+def validate_manual_payment_amount(*, amount_paid: Decimal, total: Decimal) -> Decimal:
+    """Validate and round a manual order's collected amount."""
+
+    rounded = round_money(amount_paid)
+    if rounded < 0 or rounded > total:
+        raise ValueError("Amount paid must be between zero and the grand total.")
+    return rounded
+
+
 _PARTIAL = SalesOrderPaymentStatus.partial.value
 _PENDING = SalesOrderPaymentStatus.pending.value
 _WAIVED = SalesOrderPaymentStatus.waived.value

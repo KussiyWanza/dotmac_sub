@@ -21,15 +21,17 @@ CRM-compatible Selfcare adaptations:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.orm import Session
 
+from app.models.field_material import FieldInventoryItem
 from app.models.party import Party, PartyContactPoint
+from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
     LeadStatus,
@@ -53,8 +55,15 @@ from app.schemas.sales import (
     QuoteLineItemCreate,
     QuoteUpdate,
 )
+from app.schemas.sales_order import (
+    SalesOrderCreate,
+    SalesOrderLineCreate,
+    SalesOrderLineUpdate,
+    SalesOrderUpdate,
+)
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_orders_service
+from app.services import web_catalog_subscriptions, web_system_users
 from app.services.common import coerce_uuid
 from app.services.list_query import (
     ListDefinition,
@@ -271,6 +280,11 @@ SALES_ORDER_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("payment_status", "Payment", filterable=True),
         ListFieldDefinition("source_type", "Source", filterable=True),
+        ListFieldDefinition("owner_agent_id", "Sales agent", filterable=True),
+        ListFieldDefinition("lead_source", "Lead source", filterable=True),
+        ListFieldDefinition("period", "Period", filterable=True),
+        ListFieldDefinition("from_date", "From date", filterable=True),
+        ListFieldDefinition("to_date", "To date", filterable=True),
         ListFieldDefinition("total", "Total", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
@@ -1991,7 +2005,11 @@ def _sales_orders_query(
     status: str | None,
     payment_status: str | None,
     source_type: str | None,
-    search: str | None,
+    owner_agent_id: str | None,
+    lead_source: str | None,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    search: str | None = None,
 ):
     query = db.query(SalesOrder).filter(SalesOrder.is_active.is_(True))
     if status:
@@ -2002,6 +2020,14 @@ def _sales_orders_query(
         query = query.filter(SalesOrder.quote_id.isnot(None))
     elif source_type == "manual":
         query = query.filter(SalesOrder.quote_id.is_(None))
+    if owner_agent_id:
+        query = query.filter(SalesOrder.owner_agent_id == coerce_uuid(owner_agent_id))
+    if lead_source:
+        query = query.filter(SalesOrder.source == lead_source)
+    if start_at:
+        query = query.filter(SalesOrder.created_at >= start_at)
+    if end_at:
+        query = query.filter(SalesOrder.created_at < end_at)
     if search:
         like = f"%{search.strip()}%"
         query = query.outerjoin(
@@ -2019,25 +2045,91 @@ def _sales_orders_query(
     return query
 
 
+class _SalesOrderFilterArgs(TypedDict):
+    status: str | None
+    payment_status: str | None
+    source_type: str | None
+    owner_agent_id: str | None
+    lead_source: str | None
+    start_at: datetime | None
+    end_at: datetime | None
+    search: str | None
+
+
+def sales_agent_options(db: Session) -> list[dict[str, str]]:
+    """Active system users granted the canonical Customer Experience role.
+
+    Imported/mapped role grants land in ``SystemUserRole`` too, so this query
+    includes both locally assigned and externally mapped Customer Experience
+    users without creating a second sales-agent directory.
+    """
+
+    return web_system_users.customer_experience_user_options(db)
+
+
+def _sales_order_period(
+    period: str | None, from_date: str | None, to_date: str | None
+) -> tuple[str, str, str, datetime | None, datetime | None]:
+    allowed = {"all", "7", "30", "90", "180", "365", "custom"}
+    safe_period = period if period in allowed else "all"
+    now = datetime.now(UTC)
+    safe_from = (from_date or "").strip()
+    safe_to = (to_date or "").strip()
+    if safe_period == "all":
+        return safe_period, "", "", None, None
+    if safe_period != "custom":
+        return safe_period, "", "", now - timedelta(days=int(safe_period)), now
+    try:
+        start_at = datetime.strptime(safe_from, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        safe_from, start_at = "", None
+    try:
+        end_at = datetime.strptime(safe_to, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(
+            days=1
+        )
+    except ValueError:
+        safe_to, end_at = "", None
+    return safe_period, safe_from, safe_to, start_at, end_at
+
+
 def build_sales_orders_list_context(
     db: Session,
     *,
     status: str | None,
     payment_status: str | None,
     source_type: str | None,
-    search: str | None,
+    owner_agent_id: str | None = None,
+    lead_source: str | None = None,
+    period: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    search: str | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
-    page: int,
-    per_page: int,
+    page: int = 1,
+    per_page: int = 25,
 ) -> dict[str, Any]:
     requested_status = status
     requested_payment_status = payment_status
     requested_source_type = source_type
+    requested_owner_agent_id = owner_agent_id
+    requested_lead_source = lead_source
+    requested_period = period
+    requested_from_date = from_date
+    requested_to_date = to_date
     status = _clean_choice(status, sales_order_status_values())
     payment_status = _clean_choice(payment_status, sales_order_payment_status_values())
     if source_type not in {"quote", "manual"}:
         source_type = None
+    owner_agent_id = _clean_uuid(owner_agent_id)
+    lead_source = (lead_source or "").strip() or None
+    (
+        period,
+        from_date,
+        to_date,
+        start_at,
+        end_at,
+    ) = _sales_order_period(period, from_date, to_date)
 
     safe_sort = (
         sort_by
@@ -2056,16 +2148,25 @@ def build_sales_orders_list_context(
             "status": status,
             "payment_status": payment_status,
             "source_type": source_type,
+            "owner_agent_id": owner_agent_id,
+            "lead_source": lead_source,
+            "period": period,
+            "from_date": from_date,
+            "to_date": to_date,
         },
         sort_by=safe_sort,
         sort_dir=safe_dir,
         page=max(1, page),
         per_page=safe_per_page,
     )
-    filters = {
+    filters: _SalesOrderFilterArgs = {
         "status": status,
         "payment_status": payment_status,
         "source_type": source_type,
+        "owner_agent_id": owner_agent_id,
+        "lead_source": lead_source,
+        "start_at": start_at,
+        "end_at": end_at,
         "search": requested_query.search,
     }
 
@@ -2137,9 +2238,75 @@ def build_sales_orders_list_context(
         "quote_backed": int(totals.quote_backed or 0),
         "manual": int(totals.manual or 0),
         "paid_rate": round((paid / total) * 100, 1) if total else 0,
+        "average_order": (
+            Decimal(str(totals.gross_sales or 0)) / total if total else Decimal("0")
+        ),
     }
 
     subscriber_map = _subscriber_map(db, [order.subscriber_id for order in orders])
+    agents = sales_agent_options(db)
+    agent_map = {agent["id"]: agent for agent in agents}
+    agent_rows = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.owner_agent_id,
+            func.count(SalesOrder.id).label("orders"),
+            func.sum(
+                case(
+                    (
+                        SalesOrder.payment_status == SalesOrderPaymentStatus.paid.value,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("paid_orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("gross"),
+            func.coalesce(func.sum(SalesOrder.amount_paid), 0).label("collected"),
+            func.coalesce(func.sum(SalesOrder.balance_due), 0).label("outstanding"),
+        )
+        .group_by(SalesOrder.owner_agent_id)
+        .order_by(func.coalesce(func.sum(SalesOrder.total), 0).desc())
+        .all()
+    )
+    agent_performance = []
+    for row in agent_rows:
+        key = str(row.owner_agent_id) if row.owner_agent_id else ""
+        agent = agent_map.get(key)
+        agent_performance.append(
+            {
+                "name": agent["name"]
+                if agent
+                else ("Unassigned" if not key else key[:8]),
+                "email": agent["email"] if agent else "",
+                "orders": int(row.orders or 0),
+                "paid_orders": int(row.paid_orders or 0),
+                "gross": Decimal(str(row.gross or 0)),
+                "collected": Decimal(str(row.collected or 0)),
+                "outstanding": Decimal(str(row.outstanding or 0)),
+            }
+        )
+    payment_mix = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.payment_status.label("name"),
+            func.count(SalesOrder.id).label("orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("value"),
+        )
+        .group_by(SalesOrder.payment_status)
+        .order_by(func.count(SalesOrder.id).desc())
+        .all()
+    )
+    source_mix = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.source.label("name"),
+            func.count(SalesOrder.id).label("orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("value"),
+        )
+        .group_by(SalesOrder.source)
+        .order_by(func.count(SalesOrder.id).desc())
+        .all()
+    )
 
     return {
         "orders": orders,
@@ -2152,6 +2319,11 @@ def build_sales_orders_list_context(
                 "status": requested_status,
                 "payment_status": requested_payment_status,
                 "source_type": requested_source_type,
+                "owner_agent_id": requested_owner_agent_id,
+                "lead_source": requested_lead_source,
+                "period": requested_period,
+                "from_date": requested_from_date,
+                "to_date": requested_to_date,
             },
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -2166,10 +2338,21 @@ def build_sales_orders_list_context(
         "status": status or "",
         "payment_status": payment_status or "",
         "source_type": source_type or "",
+        "owner_agent_id": owner_agent_id or "",
+        "lead_source": lead_source or "",
+        "period": period,
+        "from_date": from_date,
+        "to_date": to_date,
         "search": list_query.search or "",
         "statuses": sales_order_status_values(),
         "payment_statuses": sales_order_payment_status_values(),
         "subscriber_map": subscriber_map,
+        "agents": agents,
+        "agent_map": agent_map,
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "agent_performance": agent_performance,
+        "payment_mix": payment_mix,
+        "source_mix": source_mix,
     }
 
 
@@ -2186,6 +2369,14 @@ def build_sales_order_detail_context(
         offset=0,
     )
     project = _resolve_project_for_sales_order(db, order.id)
+    agent = next(
+        (
+            item
+            for item in sales_agent_options(db)
+            if item["id"] == str(order.owner_agent_id)
+        ),
+        None,
+    )
     return {
         "order": order,
         "lines": lines,
@@ -2193,4 +2384,233 @@ def build_sales_order_detail_context(
         "subscriber_label": subscriber_label(order.subscriber),
         "quote": order.quote,
         "project": project,
+        "agent": agent,
     }
+
+
+def build_sales_order_form_context(
+    db: Session, *, sales_order_id: str | None = None
+) -> dict[str, Any]:
+    order = (
+        sales_orders_service.sales_orders.get(db, sales_order_id)
+        if sales_order_id
+        else None
+    )
+    lines = (
+        sales_orders_service.sales_order_lines.list(
+            db,
+            sales_order_id=str(order.id),
+            order_by="created_at",
+            order_dir="asc",
+            limit=500,
+            offset=0,
+        )
+        if order
+        else []
+    )
+    inventory_items = (
+        db.query(FieldInventoryItem)
+        .filter(FieldInventoryItem.is_active.is_(True))
+        .order_by(FieldInventoryItem.name.asc())
+        .limit(500)
+        .all()
+    )
+    return {
+        "order": order,
+        "lines": lines,
+        "subscriber": order.subscriber if order else None,
+        "subscriber_label": subscriber_label(order.subscriber) if order else "",
+        "agents": sales_agent_options(db),
+        "offers": web_catalog_subscriptions.active_offer_options(db),
+        "inventory_items": inventory_items,
+        "statuses": sales_order_status_values(),
+        "payment_statuses": sales_order_payment_status_values(),
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "project_types": [item.value for item in ProjectType],
+        "vat_rate": sales_orders_service.SALES_ORDER_VAT_RATE * 100,
+    }
+
+
+def _validated_sales_agent_id(db: Session, value: str | None) -> UUID | None:
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+    allowed = {item["id"] for item in sales_agent_options(db)}
+    if candidate not in allowed:
+        raise ValueError(
+            "Sales agent must be an active Customer Experience system user."
+        )
+    return coerce_uuid(candidate)
+
+
+def _manual_line_inputs(
+    *,
+    descriptions: list[str],
+    quantities: list[str],
+    unit_prices: list[str],
+    inventory_item_ids: list[str],
+    subscription_plan_ids: list[str],
+    line_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, description in enumerate(descriptions):
+        clean_description = description.strip()
+        if not clean_description:
+            continue
+        try:
+            quantity = Decimal(quantities[index])
+            unit_price = Decimal(unit_prices[index])
+        except (IndexError, ArithmeticError) as exc:
+            raise ValueError(
+                "Every line needs a valid quantity and unit price."
+            ) from exc
+        if quantity <= 0 or unit_price < 0:
+            raise ValueError(
+                "Quantity must be positive and unit price cannot be negative."
+            )
+        inventory_id = (
+            inventory_item_ids[index].strip() if index < len(inventory_item_ids) else ""
+        )
+        plan_id = (
+            subscription_plan_ids[index].strip()
+            if index < len(subscription_plan_ids)
+            else ""
+        )
+        result.append(
+            {
+                "line_id": (
+                    line_ids[index].strip()
+                    if line_ids and index < len(line_ids)
+                    else ""
+                ),
+                "description": clean_description,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "inventory_item_id": coerce_uuid(inventory_id)
+                if inventory_id
+                else None,
+                "metadata_": {"sub_offer_id": plan_id} if plan_id else None,
+            }
+        )
+    if not result:
+        raise ValueError("Add at least one line item.")
+    return result
+
+
+def save_manual_sales_order(
+    db: Session,
+    *,
+    sales_order_id: str | None,
+    subscriber_id: str,
+    owner_agent_id: str | None,
+    source: str | None,
+    project_type: str,
+    status: str,
+    payment_status: str,
+    amount_paid: str,
+    paid_at: str | None,
+    notes: str | None,
+    descriptions: list[str],
+    quantities: list[str],
+    unit_prices: list[str],
+    inventory_item_ids: list[str],
+    subscription_plan_ids: list[str],
+    line_ids: list[str] | None = None,
+) -> SalesOrder:
+    """Adapt an admin form into native sales-order owner commands."""
+
+    lines = _manual_line_inputs(
+        descriptions=descriptions,
+        quantities=quantities,
+        unit_prices=unit_prices,
+        inventory_item_ids=inventory_item_ids,
+        subscription_plan_ids=subscription_plan_ids,
+        line_ids=line_ids,
+    )
+    totals = sales_orders_service.calculate_manual_order_totals(
+        [(line["quantity"], line["unit_price"]) for line in lines]
+    )
+    try:
+        paid = Decimal((amount_paid or "0").strip() or "0")
+    except ArithmeticError as exc:
+        raise ValueError("Amount paid must be a valid amount.") from exc
+    paid = sales_orders_service.validate_manual_payment_amount(
+        amount_paid=paid, total=totals.total
+    )
+    if project_type not in {item.value for item in ProjectType}:
+        raise ValueError("Select a valid project type.")
+    paid_at_value = None
+    if paid_at:
+        paid_at_value = datetime.fromisoformat(paid_at).replace(tzinfo=UTC)
+    if payment_status == SalesOrderPaymentStatus.paid.value and paid_at_value is None:
+        paid_at_value = datetime.now(UTC)
+    agent_id = _validated_sales_agent_id(db, owner_agent_id)
+
+    if sales_order_id:
+        order = sales_orders_service.sales_orders.get(db, sales_order_id)
+        metadata = dict(order.metadata_) if isinstance(order.metadata_, dict) else {}
+        metadata["project_type"] = project_type
+        update_payload = SalesOrderUpdate(
+            subscriber_id=coerce_uuid(subscriber_id),
+            owner_agent_id=agent_id,
+            source=(source or "").strip() or None,
+            status=SalesOrderStatus(status),
+            payment_status=SalesOrderPaymentStatus(payment_status),
+            subtotal=totals.subtotal,
+            tax_total=totals.tax_total,
+            total=totals.total,
+            amount_paid=paid,
+            balance_due=totals.total - paid,
+            paid_at=paid_at_value,
+            notes=(notes or "").strip() or None,
+            metadata_=metadata,
+        )
+        order = sales_orders_service.sales_orders.update(
+            db, sales_order_id, update_payload
+        )
+        existing = {str(line.id): line for line in order.lines}
+        submitted_ids: set[str] = set()
+        for line in lines:
+            line_id = line.pop("line_id")
+            if line_id and line_id in existing:
+                submitted_ids.add(line_id)
+                sales_orders_service.sales_order_lines.update(
+                    db, line_id, SalesOrderLineUpdate(**line)
+                )
+            else:
+                sales_orders_service.sales_order_lines.create(
+                    db,
+                    SalesOrderLineCreate(sales_order_id=order.id, **line),
+                )
+        for existing_id in existing.keys() - submitted_ids:
+            sales_orders_service.sales_order_lines.update(
+                db, existing_id, SalesOrderLineUpdate(is_active=False)
+            )
+        return sales_orders_service.sales_orders.get(db, str(order.id))
+
+    create_payload = SalesOrderCreate(
+        subscriber_id=coerce_uuid(subscriber_id),
+        owner_agent_id=agent_id,
+        source=(source or "").strip() or None,
+        status=SalesOrderStatus(status),
+        payment_status=SalesOrderPaymentStatus(payment_status),
+        subtotal=totals.subtotal,
+        tax_total=totals.tax_total,
+        total=totals.total,
+        amount_paid=paid,
+        balance_due=totals.total - paid,
+        paid_at=paid_at_value,
+        notes=(notes or "").strip() or None,
+        metadata_={"project_type": project_type},
+    )
+    order = sales_orders_service.sales_orders.create(db, create_payload)
+    for line in lines:
+        line.pop("line_id")
+        sales_orders_service.sales_order_lines.create(
+            db, SalesOrderLineCreate(sales_order_id=order.id, **line)
+        )
+    return sales_orders_service.sales_orders.get(db, str(order.id))
+
+
+def delete_sales_order(db: Session, sales_order_id: str) -> None:
+    sales_orders_service.sales_orders.delete(db, sales_order_id)

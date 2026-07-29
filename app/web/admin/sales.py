@@ -1109,6 +1109,11 @@ def quote_delete(quote_id: str, db: Session = Depends(get_db)):
 
 
 @router.get(
+    "/sales-order",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:sales_order:read"))],
+)
+@router.get(
     "/sales-orders",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:sales_order:read"))],
@@ -1118,6 +1123,11 @@ def sales_orders_list(
     status: str | None = Query(default=None),
     payment_status: str | None = Query(default=None),
     source_type: str | None = Query(default=None),
+    owner_agent_id: str | None = Query(default=None),
+    lead_source: str | None = Query(default=None),
+    period: str | None = Query(default=None),
+    from_date: str | None = Query(default=None),
+    to_date: str | None = Query(default=None),
     search: str | None = Query(default=None),
     sort_by: str | None = Query(default=None, alias="sort"),
     sort_dir: str | None = Query(default=None, alias="dir"),
@@ -1130,15 +1140,25 @@ def sales_orders_list(
         status=status,
         payment_status=payment_status,
         source_type=source_type,
+        owner_agent_id=owner_agent_id,
+        lead_source=lead_source,
+        period=period,
+        from_date=from_date,
+        to_date=to_date,
         search=search,
         sort_by=sort_by,
         sort_dir=sort_dir,
         page=page,
         per_page=per_page,
     )
+    if request.url.path.endswith("/sales-orders"):
+        return RedirectResponse(
+            url=state["list_query"].url("/admin/sales/sales-order"),
+            status_code=307,
+        )
     if state["canonicalization_needed"]:
         return RedirectResponse(
-            url=state["list_query"].url("/admin/sales/sales-orders"),
+            url=state["list_query"].url("/admin/sales/sales-order"),
             status_code=307,
         )
     context = _ctx(request, db, "sales-orders")
@@ -1147,11 +1167,138 @@ def sales_orders_list(
 
 
 @router.get(
+    "/sales-order/new",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:sales_order:write"))],
+)
+def sales_order_new(request: Request, db: Session = Depends(get_db)):
+    context = _ctx(request, db, "sales-orders")
+    context.update(web_sales_service.build_sales_order_form_context(db))
+    return templates.TemplateResponse("admin/sales/sales_orders/form.html", context)
+
+
+@router.post(
+    "/sales-order/new",
+    dependencies=[Depends(require_permission("crm:sales_order:write"))],
+)
+async def sales_order_create(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    try:
+        order = web_sales_service.save_manual_sales_order(
+            db,
+            sales_order_id=None,
+            subscriber_id=str(form.get("subscriber_id") or ""),
+            owner_agent_id=str(form.get("owner_agent_id") or ""),
+            source=str(form.get("source") or ""),
+            project_type=str(form.get("project_type") or ""),
+            status=str(form.get("status") or ""),
+            payment_status=str(form.get("payment_status") or ""),
+            amount_paid=str(form.get("amount_paid") or "0"),
+            paid_at=str(form.get("paid_at") or ""),
+            notes=str(form.get("notes") or ""),
+            descriptions=[str(item) for item in form.getlist("description")],
+            quantities=[str(item) for item in form.getlist("quantity")],
+            unit_prices=[str(item) for item in form.getlist("unit_price")],
+            inventory_item_ids=[
+                str(item) for item in form.getlist("inventory_item_id")
+            ],
+            subscription_plan_ids=[
+                str(item) for item in form.getlist("subscription_plan_id")
+            ],
+        )
+    except (ValueError, ValidationError) as exc:
+        context = _ctx(request, db, "sales-orders")
+        context.update(web_sales_service.build_sales_order_form_context(db))
+        context.update({"form_error": _error_detail(exc), "form_data": dict(form)})
+        return templates.TemplateResponse(
+            "admin/sales/sales_orders/form.html", context, status_code=422
+        )
+    return RedirectResponse(url=f"/admin/sales/sales-order/{order.id}", status_code=303)
+
+
+@router.get(
+    "/sales-order/{order_id}/edit",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:sales_order:write"))],
+)
+def sales_order_edit(request: Request, order_id: str, db: Session = Depends(get_db)):
+    context = _ctx(request, db, "sales-orders")
+    context.update(
+        web_sales_service.build_sales_order_form_context(db, sales_order_id=order_id)
+    )
+    return templates.TemplateResponse("admin/sales/sales_orders/form.html", context)
+
+
+@router.post(
+    "/sales-order/{order_id}/edit",
+    dependencies=[Depends(require_permission("crm:sales_order:write"))],
+)
+async def sales_order_update(
+    request: Request, order_id: str, db: Session = Depends(get_db)
+):
+    form = await request.form()
+    try:
+        order = web_sales_service.save_manual_sales_order(
+            db,
+            sales_order_id=order_id,
+            subscriber_id=str(form.get("subscriber_id") or ""),
+            owner_agent_id=str(form.get("owner_agent_id") or ""),
+            source=str(form.get("source") or ""),
+            project_type=str(form.get("project_type") or ""),
+            status=str(form.get("status") or ""),
+            payment_status=str(form.get("payment_status") or ""),
+            amount_paid=str(form.get("amount_paid") or "0"),
+            paid_at=str(form.get("paid_at") or ""),
+            notes=str(form.get("notes") or ""),
+            descriptions=[str(item) for item in form.getlist("description")],
+            quantities=[str(item) for item in form.getlist("quantity")],
+            unit_prices=[str(item) for item in form.getlist("unit_price")],
+            inventory_item_ids=[
+                str(item) for item in form.getlist("inventory_item_id")
+            ],
+            subscription_plan_ids=[
+                str(item) for item in form.getlist("subscription_plan_id")
+            ],
+            line_ids=[str(item) for item in form.getlist("line_id")],
+        )
+    except (ValueError, ValidationError) as exc:
+        context = _ctx(request, db, "sales-orders")
+        context.update(
+            web_sales_service.build_sales_order_form_context(
+                db, sales_order_id=order_id
+            )
+        )
+        context.update({"form_error": _error_detail(exc), "form_data": dict(form)})
+        return templates.TemplateResponse(
+            "admin/sales/sales_orders/form.html", context, status_code=422
+        )
+    return RedirectResponse(url=f"/admin/sales/sales-order/{order.id}", status_code=303)
+
+
+@router.post(
+    "/sales-order/{order_id}/delete",
+    dependencies=[Depends(require_permission("crm:sales_order:write"))],
+)
+def sales_order_delete(order_id: str, db: Session = Depends(get_db)):
+    web_sales_service.delete_sales_order(db, order_id)
+    return RedirectResponse(url="/admin/sales/sales-order", status_code=303)
+
+
+@router.get(
+    "/sales-order/{order_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:sales_order:read"))],
+)
+@router.get(
     "/sales-orders/{order_id}",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:sales_order:read"))],
 )
 def sales_order_detail(request: Request, order_id: str, db: Session = Depends(get_db)):
+    if request.url.path.startswith("/admin/sales/sales-orders/"):
+        return RedirectResponse(
+            url=f"/admin/sales/sales-order/{order_id}", status_code=307
+        )
     context = _ctx(request, db, "sales-orders")
     context.update(
         web_sales_service.build_sales_order_detail_context(db, sales_order_id=order_id)

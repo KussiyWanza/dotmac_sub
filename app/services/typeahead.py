@@ -93,6 +93,7 @@ def subscribers(db: Session, query: str, limit: int) -> list[dict]:
                 Subscriber.legal_name.ilike(like_term),
                 Subscriber.domain.ilike(like_term),
                 Subscriber.email.ilike(like_term),
+                Subscriber.phone.ilike(like_term),
                 Subscriber.account_number.ilike(like_term),
                 Subscriber.subscriber_number.ilike(like_term),
             )
@@ -489,6 +490,26 @@ def catalog_offers(db: Session, query: str, limit: int) -> list[dict]:
 
 def catalog_offers_response(db: Session, query: str, limit: int) -> dict:
     return list_response(catalog_offers(db, query, limit), limit, 0)
+
+
+def sales_agents_response(db: Session, query: str, limit: int) -> dict:
+    """Search the active Customer Experience system-user directory."""
+
+    from app.services.web_system_users import customer_experience_user_options
+
+    term = (query or "").strip().lower()
+    candidates = customer_experience_user_options(db)
+    items = [
+        {
+            "id": item["id"],
+            "label": item["name"],
+            "email": item["email"] or None,
+            "type": "system_user",
+        }
+        for item in candidates
+        if not term or term in item["name"].lower() or term in item["email"].lower()
+    ][:limit]
+    return list_response(items, limit, 0)
 
 
 def global_search(db: Session, query: str, limit_per_type: int = 3) -> dict:

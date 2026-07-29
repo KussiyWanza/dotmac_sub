@@ -12,6 +12,11 @@ def test_sales_order_list_definition_declares_its_capabilities():
         "status",
         "payment_status",
         "source_type",
+        "owner_agent_id",
+        "lead_source",
+        "period",
+        "from_date",
+        "to_date",
     }
     assert definition.default_sort == "created_at"
 

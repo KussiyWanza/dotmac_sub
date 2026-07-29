@@ -6,6 +6,7 @@ from app.schemas.common import ListResponse
 from app.schemas.typeahead import TypeaheadItem
 from app.services import customer_search as customer_search_service
 from app.services import typeahead as typeahead_service
+from app.services.auth_dependencies import require_permission
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -135,6 +136,19 @@ def search_catalog_offers(
     db: Session = Depends(get_db),
 ):
     return typeahead_service.catalog_offers_response(db, q, limit)
+
+
+@router.get(
+    "/sales-agents",
+    response_model=ListResponse[TypeaheadItem],
+    dependencies=[Depends(require_permission("crm:sales_order:read"))],
+)
+def search_sales_agents(
+    q: str = Query(default="", max_length=120),
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    return typeahead_service.sales_agents_response(db, q, limit)
 
 
 @router.get("/global")

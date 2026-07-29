@@ -28,4 +28,4 @@ def test_inbox_and_work_orders_are_linked_in_the_sidebar() -> None:
 def test_quotes_and_sales_orders_are_reachable_from_the_sales_landing() -> None:
     leads = _read("admin/sales/leads/index.html")
     assert "/admin/sales/quotes" in leads
-    assert "/admin/sales/sales-orders" in leads
+    assert "/admin/sales/sales-order" in leads

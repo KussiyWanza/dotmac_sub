@@ -11,8 +11,10 @@ from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 
+from app.models.rbac import Role, SystemUserRole
 from app.models.sales import SalesOrder
 from app.models.subscriber import Subscriber
+from app.models.system_user import SystemUser
 from app.schemas.sales import (
     LeadCreate,
     PipelineCreate,
@@ -21,6 +23,7 @@ from app.schemas.sales import (
     QuoteLineItemCreate,
 )
 from app.services import sales as sales_service
+from app.services import sales_orders as sales_orders_service
 from app.services import web_sales
 from app.web.admin import sales as admin_sales
 
@@ -171,6 +174,24 @@ def test_sales_order_routes_require_sales_order_read():
     assert _route_has_permission(
         router, "/sales/sales-orders/{order_id}", "GET", "crm:sales_order:read"
     )
+    assert _route_has_permission(
+        router, "/sales/sales-order", "GET", "crm:sales_order:read"
+    )
+    assert _route_has_permission(
+        router, "/sales/sales-order/{order_id}", "GET", "crm:sales_order:read"
+    )
+
+
+def test_sales_order_mutations_require_sales_order_write():
+    router = admin_sales.router
+    for path, method in (
+        ("/sales/sales-order/new", "GET"),
+        ("/sales/sales-order/new", "POST"),
+        ("/sales/sales-order/{order_id}/edit", "GET"),
+        ("/sales/sales-order/{order_id}/edit", "POST"),
+        ("/sales/sales-order/{order_id}/delete", "POST"),
+    ):
+        assert _route_has_permission(router, path, method, "crm:sales_order:write")
 
 
 def test_sales_router_is_registered_under_admin():
@@ -186,6 +207,8 @@ def test_sales_router_is_registered_under_admin():
     assert "/admin/sales/pipelines" in paths
     assert "/admin/sales/quotes" in paths
     assert "/admin/sales/sales-orders" in paths
+    assert "/admin/sales/sales-order" in paths
+    assert "/admin/sales/sales-order/new" in paths
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +766,51 @@ def test_sales_order_detail_context(db_session):
     assert context["project"] is None
 
 
+def test_sales_agent_options_use_active_customer_experience_system_users(db_session):
+    role = Role(name=f"Customer-Experience-{uuid.uuid4().hex[:6]}", is_active=True)
+    # Normalize the test role to the supported mapped spelling after making its
+    # database name unique from any fixture seed.
+    role.name = "Customer_Experience"
+    user = SystemUser(
+        first_name="Chidi",
+        last_name="Okoro",
+        email=f"chidi-{uuid.uuid4().hex}@example.com",
+        is_active=True,
+    )
+    inactive = SystemUser(
+        first_name="Retired",
+        last_name="Agent",
+        email=f"retired-{uuid.uuid4().hex}@example.com",
+        is_active=False,
+    )
+    db_session.add_all([role, user, inactive])
+    db_session.flush()
+    db_session.add_all(
+        [
+            SystemUserRole(system_user_id=user.id, role_id=role.id, source="mapped"),
+            SystemUserRole(
+                system_user_id=inactive.id, role_id=role.id, source="mapped"
+            ),
+        ]
+    )
+    db_session.commit()
+
+    options = web_sales.sales_agent_options(db_session)
+    option_ids = {item["id"] for item in options}
+    assert str(user.id) in option_ids
+    assert str(inactive.id) not in option_ids
+    assert next(item for item in options if item["id"] == str(user.id))["email"]
+
+
+def test_manual_sales_order_vat_is_owned_by_sales_orders_service():
+    totals = sales_orders_service.calculate_manual_order_totals(
+        [(Decimal("2"), Decimal("50.00"))]
+    )
+    assert totals.subtotal == Decimal("100.00")
+    assert totals.tax_total == Decimal("7.50")
+    assert totals.total == Decimal("107.50")
+
+
 # ---------------------------------------------------------------------------
 # Templates compile
 # ---------------------------------------------------------------------------
@@ -758,6 +826,7 @@ _SALES_TEMPLATES = [
     "admin/sales/quotes/detail.html",
     "admin/sales/sales_orders/index.html",
     "admin/sales/sales_orders/detail.html",
+    "admin/sales/sales_orders/form.html",
 ]
 
 
