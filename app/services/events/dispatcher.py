@@ -496,6 +496,7 @@ def emit_event(
     invoice_id: UUID | str | None = None,
     service_order_id: UUID | str | None = None,
     defer_until_commit: bool = True,
+    dispatch_after_commit: bool = True,
 ) -> Event:
     """Emit an event to all registered handlers.
 
@@ -576,9 +577,13 @@ def emit_event(
                 callback_db.rollback()
                 raise
 
-    if defer_until_commit:
+    # Request paths that must remain responsive (such as customer ticket
+    # submission) can leave the durable outbox row for the periodic dispatcher.
+    # This prevents an unavailable broker or downstream integration from
+    # consuming the reverse proxy's request timeout after the write succeeded.
+    if defer_until_commit and dispatch_after_commit:
         run_after_commit(db, _dispatch_after_commit)
-    else:
+    elif not defer_until_commit:
         dispatcher.dispatch_pending_event(db, event_record_id)
 
     logger.info(

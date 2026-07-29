@@ -796,12 +796,121 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "admin customer profile edits",
                     "person-to-business customer conversion",
+                    "approved legacy Subscriber name corrections",
                 ),
                 depends_on=("customer.identity_scope",),
                 notes=(
                     "Business conversion is an explicit command. Generic "
                     "person edits and form category controls must not change "
-                    "the customer account type."
+                    "the customer account type. Approved legacy Subscriber "
+                    "name corrections remain here until explicit Party cutover."
+                ),
+            ),
+            SOTService(
+                name="customer.name_remediation",
+                module="app.services.crm_customer_name_repair",
+                owns=(
+                    "July 20 CRM name remediation manifest execution",
+                    "PII-free CRM name repair manifest generation",
+                ),
+                depends_on=("customer.profile_commands",),
+                notes=(
+                    "Historical repair is dry-run-first and applies only through "
+                    "the profile-command owner after exact digest confirmation."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="July 20 CRM name remediation manifest execution",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "CRM identity-change audit evidence",
+                                "legacy Subscriber name state",
+                            ),
+                            canonical_writer="customer.name_remediation",
+                        ),
+                        ConcernContract(
+                            name="PII-free CRM name repair manifest generation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "CRM identity-change audit evidence",
+                                "legacy Subscriber name state",
+                            ),
+                            canonical_writer="customer.name_remediation",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="CRM identity-change audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="immutable CRM customer identity update audit events",
+                        ),
+                        AuthorityInput(
+                            name="legacy Subscriber name state",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked Party-unbound Subscriber name columns",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The reviewed manifest is revalidated and its selected "
+                            "Subscriber corrections commit atomically."
+                        ),
+                        locking="Selected Subscriber rows are locked before revalidation.",
+                        idempotency=(
+                            "The manifest digest marks an exact successfully applied "
+                            "remediation replay."
+                        ),
+                        retries=(
+                            "Stale, invalid, or Party-bound rows fail closed and may be "
+                            "replanned from immutable evidence."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "customer.name_remediation"
+                            ),
+                            "customer.name_remediation.invalid_manifest",
+                            "customer.name_remediation.party_bound",
+                            "customer.name_remediation.stale_manifest",
+                        ),
+                        mapping_owner="CRM remediation operations adapters",
+                    ),
+                    events=EventContract(
+                        event_types=("subscriber.updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Existing subscriber update consumers receive the established "
+                            "subscriber.updated event shape."
+                        ),
+                        replay=(
+                            "The persisted manifest digest makes an exact replay a no-op."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        new_owner="customer.name_remediation",
+                        old_owner="ad-hoc CRM customer name repair scripts",
+                        verification=(
+                            "Plan, exact replay, Party-bound rejection, and drift "
+                            "rollback tests verify the remediation boundary."
+                        ),
+                        cutover_gate=(
+                            "Only an operator-confirmed digest may apply a generated plan."
+                        ),
+                        fallback_retirement=(
+                            "Generic CRM webhooks observe rejected names and do not repair "
+                            "Subscriber records."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=("docs/PARTY_CUSTOMER_LIFECYCLE.md",),
+                    test_refs=("tests/test_crm_customer_name_repair.py",),
                 ),
             ),
             SOTService(

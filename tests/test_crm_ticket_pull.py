@@ -3,8 +3,10 @@ from __future__ import annotations
 from unittest.mock import patch
 from uuid import uuid4
 
+from app.models.sequence import DocumentSequence
 from app.models.subscriber import Subscriber
 from app.models.support import Ticket, TicketComment
+from app.services import support as support_service
 from app.services.crm_ticket_pull import pull_tickets
 
 
@@ -113,6 +115,61 @@ def test_pull_crm_ticket_preserves_number_and_maps_subscriber(db_session, subscr
     assert ticket.title == "Router offline"
     assert ticket.metadata_["crm_ticket_id"] == crm_ticket_id
     assert db_session.query(TicketComment).filter_by(ticket_id=ticket.id).count() == 1
+
+
+def test_pull_advances_native_ticket_sequence_past_imported_numbers(
+    db_session, subscriber
+):
+    subscriber.splynx_customer_id = 201
+    db_session.add(DocumentSequence(key="support_ticket", next_value=1))
+    db_session.commit()
+    crm_subscriber_id = str(uuid4())
+    client = FakeCrmClient(
+        tickets=[
+            {
+                "id": str(uuid4()),
+                "subscriber_id": crm_subscriber_id,
+                "number": "20151",
+                "title": "Imported ticket",
+                "status": "open",
+                "priority": "normal",
+                "channel": "phone",
+                "is_active": True,
+            }
+        ],
+        subscribers={
+            crm_subscriber_id: {
+                "id": crm_subscriber_id,
+                "external_system": "splynx",
+                "external_id": "201",
+            }
+        },
+        comments={},
+    )
+
+    pull_tickets(db_session, client=client)
+
+    sequence = (
+        db_session.query(DocumentSequence)
+        .filter(DocumentSequence.key == "support_ticket")
+        .one()
+    )
+    assert sequence.next_value == 20152
+
+
+def test_native_allocation_reconciles_a_dense_imported_number_range(db_session):
+    db_session.add(DocumentSequence(key="support_ticket", next_value=1))
+    db_session.add_all(
+        [
+            Ticket(number=str(number), title=f"Imported ticket {number}")
+            for number in range(1, 10_001)
+        ]
+    )
+    db_session.commit()
+
+    number = support_service.Tickets._resolve_ticket_number(db_session)
+
+    assert number == "10001"
 
 
 def test_pull_crm_ticket_is_idempotent_for_ticket_and_comments(db_session, subscriber):

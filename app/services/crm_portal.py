@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Request
@@ -376,6 +377,49 @@ def ticket_create_context(
     }
 
 
+def _record_ticket_created_portal_notification(db: Session, ticket: Any) -> None:
+    """Add the immediate in-app acknowledgement for a customer-created ticket.
+
+    This is deliberately a portal event, not an email/SMS delivery: customers
+    should see the acknowledgement in their notification inbox even when no
+    external notification channel is configured.
+    """
+    subscriber_id = getattr(ticket, "subscriber_id", None)
+    if not subscriber_id:
+        return
+
+    try:
+        from app.models.comms import (
+            CustomerNotificationEvent,
+            CustomerNotificationStatus,
+        )
+
+        ticket_number = getattr(ticket, "number", None) or ""
+        reference = f" {ticket_number}" if ticket_number else ""
+        db.add(
+            CustomerNotificationEvent(
+                entity_type="support_ticket",
+                entity_id=ticket.id,
+                subscriber_id=subscriber_id,
+                channel="portal",
+                recipient=f"portal:{subscriber_id}",
+                message=(
+                    f"Your support ticket{reference} has been created. "
+                    "We will update you here."
+                ),
+                status=CustomerNotificationStatus.sent,
+                sent_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 - acknowledgement must not hide the ticket
+        db.rollback()
+        logger.exception(
+            "Failed to record portal acknowledgement for support ticket %s",
+            getattr(ticket, "id", None),
+        )
+
+
 def handle_ticket_create(
     db: Session,
     customer: dict,
@@ -420,6 +464,10 @@ def handle_ticket_create(
                 channel=TicketChannel.web,
             ),
             actor_id=None,
+            # The ticket is already durable before event delivery. Do not make
+            # the customer wait for a broker or third-party integration; the
+            # scheduled event dispatcher drains this outbox record.
+            dispatch_event_after_commit=False,
         )
         if files:
             uploaded = web_support_tickets.upload_ticket_attachments(
@@ -430,6 +478,7 @@ def handle_ticket_create(
                 actor_id=str(sid),
             )
             support_service.Tickets.add_attachments(db, str(ticket.id), uploaded)
+        _record_ticket_created_portal_notification(db, ticket)
         return {"success": True, "ticket": _ticket_to_dict(ticket)}
     except ValueError as e:
         # Attachment validation (type/size) — surface the specific reason.

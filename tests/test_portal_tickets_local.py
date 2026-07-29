@@ -6,7 +6,9 @@ support.Tickets / TicketComments service so the portal works standalone.
 """
 
 import uuid
+from unittest.mock import patch
 
+from app.models.event_store import EventStatus, EventStore
 from app.models.sequence import DocumentSequence
 from app.models.support import Ticket, TicketChannel, TicketCommentAuthorType
 from app.schemas.support import TicketCommentCreate
@@ -57,6 +59,34 @@ def test_create_advances_past_an_existing_imported_ticket_number(
 
     assert result["success"] is True, result
     assert result["ticket"]["ticket_number"] == "2"
+
+
+def test_create_does_not_dispatch_integrations_in_customer_request(
+    db_session, subscriber
+):
+    """A slow broker must not turn a successful ticket write into a 504."""
+    with patch(
+        "app.services.events.dispatcher.EventDispatcher.dispatch_pending_event"
+    ) as dispatch:
+        result = crm_portal.handle_ticket_create(
+            db_session,
+            customer={},
+            subscriber_id=str(subscriber.id),
+            title="Portal should return promptly",
+            description="",
+            priority="normal",
+        )
+
+    assert result["success"] is True, result
+    dispatch.assert_not_called()
+    event = (
+        db_session.query(EventStore)
+        .filter(EventStore.event_type == "custom")
+        .order_by(EventStore.created_at.desc())
+        .first()
+    )
+    assert event is not None
+    assert event.status == EventStatus.pending
 
 
 def test_list_and_detail_round_trip(db_session, subscriber):

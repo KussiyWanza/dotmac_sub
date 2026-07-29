@@ -21,13 +21,12 @@ def _format_number(prefix: str | None, padding: int | None, value: int) -> str:
     return f"{prefix_value}{value}"
 
 
-def _next_sequence_value(db: Session, key: str, start_value: int) -> int:
-    """Atomically reserve the next value for one document sequence.
+def lock_sequence(db: Session, key: str, start_value: int) -> DocumentSequence:
+    """Return a sequence row while holding its transaction-level row lock.
 
     The row must exist before it can be locked.  A query-then-insert race let
     two first-time callers both conclude that a sequence was absent.  Use the
-    database's conflict arbiter to establish the row, then lock it before
-    advancing the value.
+    database's conflict arbiter to establish the row before taking the lock.
     """
     bind = db.get_bind()
     values = {
@@ -60,6 +59,21 @@ def _next_sequence_value(db: Session, key: str, start_value: int) -> int:
     )
     if sequence is None:  # pragma: no cover - the insert/select invariant failed
         raise RuntimeError(f"document sequence {key!r} could not be established")
+    return sequence
+
+
+def reconcile_next_value(db: Session, key: str, minimum_next_value: int) -> int:
+    """Advance, but never rewind, a sequence while holding its row lock."""
+    sequence = lock_sequence(db, key, minimum_next_value)
+    if sequence.next_value < minimum_next_value:
+        sequence.next_value = minimum_next_value
+        db.flush()
+    return sequence.next_value
+
+
+def _next_sequence_value(db: Session, key: str, start_value: int) -> int:
+    """Atomically reserve the next value for one document sequence."""
+    sequence = lock_sequence(db, key, start_value)
     value = sequence.next_value
     sequence.next_value = value + 1
     db.flush()

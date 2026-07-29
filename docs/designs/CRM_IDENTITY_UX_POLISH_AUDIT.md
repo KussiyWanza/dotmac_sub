@@ -8,6 +8,13 @@ dead-letter/duplicate-merge + the Syncs admin UI, (b) customer-identity
 normalization/resolution + CRM customer upsert / portal / billing-push.
 **Status:** required P0/P1/P2 remediation completed in draft PR. Part of the remaining-module audit series.
 
+The July 20 incident read-back confirmed 436 webhook changes in the affected
+window, including 169 obvious placeholder overwrites. The remaining 267 changes
+are not auto-restored; they require private review for structurally suspicious
+names under the interim ownership boundary where CRM is transport only and
+`customer.profile_commands` owns approved legacy Subscriber name corrections
+until explicit Party cutover.
+
 > Known: full bidirectional CRM sync is deployed (incremental pull w/ watermark,
 > ticket/comment push, webhooks, billing snapshots); the `crm.ticket_pull`
 > feature-flag resolution bug was recently fixed (PR #506).

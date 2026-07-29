@@ -540,6 +540,9 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     assert sot_relationships.dependencies_for("customer.profile_commands") == (
         "customer.identity_scope",
     )
+    assert sot_relationships.dependencies_for("customer.name_remediation") == (
+        "customer.profile_commands",
+    )
     business_conversion = sot_relationships.owning_service_for(
         "person-to-business customer conversion"
     )

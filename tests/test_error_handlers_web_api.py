@@ -184,6 +184,29 @@ def test_redirect_error_unknown_token_keeps_redirect() -> None:
     assert resp.headers.get("location") == "/somewhere?error=post_failed"
 
 
+def test_html_http_303_preserves_location_redirect() -> None:
+    app = _build_app()
+
+    @app.get("/reseller/dashboard")
+    async def reseller_dashboard():
+        raise HTTPException(
+            status_code=303,
+            detail="See Other",
+            headers={"Location": "/reseller/auth/login"},
+        )
+
+    resp = _request(
+        app,
+        "GET",
+        "/reseller/dashboard",
+        headers={"accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers.get("location") == "/reseller/auth/login"
+
+
 def test_web_404_reseller_path_renders_without_500() -> None:
     # Regression: routing /reseller errors to reseller/errors/404.html crashed
     # with 500 because that template extended layouts/reseller.html (which uses
