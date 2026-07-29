@@ -3,6 +3,7 @@ RBAC guards, ``web_sales`` context builders, and Jinja compilation of the new
 ``templates/admin/sales/*`` pages."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,7 +25,8 @@ from app.schemas.sales import (
 )
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_orders_service
-from app.services import web_sales
+from app.services import web_sales, web_sales_dashboard
+from app.services.sales import reports as sales_reports
 from app.web.admin import sales as admin_sales
 
 # ---------------------------------------------------------------------------
@@ -128,6 +130,14 @@ def test_lead_routes_require_lead_permissions():
     )
 
 
+def test_sales_dashboard_routes_require_lead_read():
+    router = admin_sales.router
+    assert _route_has_permission(router, "/sales", "GET", "crm:lead:read")
+    assert _route_has_permission(
+        router, "/sales/dashboard-data", "GET", "crm:lead:read"
+    )
+
+
 def test_pipeline_settings_routes_ride_lead_write():
     router = admin_sales.router
     for path, method in [
@@ -200,6 +210,8 @@ def test_sales_router_is_registered_under_admin():
     paths = {route.path for route in admin_router.routes if isinstance(route, APIRoute)}
     assert "/admin/sales/leads" in paths
     assert "/admin/sales/pipeline-board" in paths
+    assert "/admin/sales" in paths
+    assert "/admin/sales/dashboard-data" in paths
     assert "/admin/sales/leads/board" in paths
     assert "/admin/sales/leads/new" in paths
     assert "/admin/sales/leads/{lead_id}/edit" in paths
@@ -425,6 +437,59 @@ def test_kanban_cards_link_to_sub_admin_leads(db_session):
     assert column["color"] == "#06B6D4"
     assert column["icon"] is None
     assert record["url"] == f"/admin/sales/leads/{lead.id}"
+
+
+def test_sales_dashboard_uses_native_currency_safe_reporting(db_session):
+    pipeline = _make_pipeline(db_session, name=f"D-{uuid.uuid4().hex[:6]}")
+    stage = _make_stage(
+        db_session,
+        pipeline,
+        default_probability=25,
+    )
+    open_lead = _make_lead(
+        db_session,
+        _make_subscriber(db_session),
+        pipeline_id=pipeline.id,
+        stage_id=stage.id,
+        estimated_value=Decimal("1000.00"),
+        currency="NGN",
+        probability=None,
+    )
+    owner_agent_id = uuid.uuid4()
+    won_lead = _make_lead(
+        db_session,
+        _make_subscriber(db_session),
+        pipeline_id=pipeline.id,
+        stage_id=stage.id,
+        owner_agent_id=owner_agent_id,
+        status="won",
+        estimated_value=Decimal("600.00"),
+        currency="USD",
+    )
+    now = datetime.now(UTC)
+
+    report = sales_reports.dashboard_report(
+        db_session,
+        pipeline_id=pipeline.id,
+        start_at=now - timedelta(days=30),
+        end_at=now + timedelta(seconds=1),
+    )
+    assert report.summary.pipeline_values == {"NGN": Decimal("1000.00")}
+    assert report.summary.weighted_values == {"NGN": Decimal("250.00")}
+    assert report.summary.open_deals == 1
+    assert report.summary.won_deals == 1
+    assert report.summary.average_deal_sizes == {"USD": Decimal("600.00")}
+    assert report.agent_performance[0].agent_id == owner_agent_id
+    assert report.recent_opportunities[0].id in {open_lead.id, won_lead.id}
+
+    context = web_sales_dashboard.build_dashboard_data_context(
+        db_session,
+        pipeline_id=str(pipeline.id),
+        period_days=30,
+    )
+    assert context["metrics"]["pipeline_value"] == "NGN 1,000.00"
+    assert context["metrics"]["weighted_value"] == "NGN 250.00"
+    assert context["metrics"]["average_deal_size"] == "USD 600.00"
 
 
 # ---------------------------------------------------------------------------
@@ -816,6 +881,8 @@ def test_manual_sales_order_vat_is_owned_by_sales_orders_service():
 # ---------------------------------------------------------------------------
 
 _SALES_TEMPLATES = [
+    "admin/sales/dashboard.html",
+    "admin/sales/_dashboard_data.html",
     "admin/sales/leads/index.html",
     "admin/sales/leads/board.html",
     "admin/sales/leads/detail.html",
@@ -877,6 +944,13 @@ def test_active_sales_ui_no_longer_links_to_legacy_board_url():
 
 def test_sidebar_has_sales_entry():
     source = Path("templates/components/navigation/admin_sidebar.html").read_text()
-    assert '"/admin/sales/leads"' in source or "'/admin/sales/leads'" in source
+    assert '"/admin/sales"' in source or "'/admin/sales'" in source
     assert "'sales-quotes': 'sales'" in source
     assert "'sales-orders': 'sales'" in source
+
+
+def test_sales_dashboard_more_menu_links_sales_worklists():
+    source = Path("templates/admin/sales/dashboard.html").read_text()
+    assert 'href="/admin/sales/leads"' in source
+    assert 'href="/admin/sales/quotes"' in source
+    assert 'href="/admin/sales/sales-orders"' in source

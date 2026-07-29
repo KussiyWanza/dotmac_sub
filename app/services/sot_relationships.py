@@ -31545,6 +31545,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "sales pipeline and quote lifecycle",
                     "governed pipeline stage presentation and ordering",
+                    "read-only sales pipeline reporting",
                 ),
                 depends_on=("sales.lead_lifecycle",),
             ),

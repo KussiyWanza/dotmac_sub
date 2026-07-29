@@ -4,8 +4,8 @@ quotes (list/detail), sales orders (list/detail).
 Native admin-sales port: CRM's ``web/admin/crm_leads.py`` /
 ``crm_sales.py`` / ``crm_quotes.py`` + the sales-order pages of
 ``operations.py``, restyled onto sub's thin-route + context-builder idiom
-(see ``support_tickets.py``). All business logic lives in
-``app.services.web_sales`` and the native sales managers.
+(see ``support_tickets.py``). Business rules and dashboard calculations live
+in the native sales owner; web services only assemble presentation context.
 
 The kanban board persists stage drags through the already-ported API
 endpoints ``GET /api/v1/leads/kanban`` / ``POST /api/v1/leads/kanban/move``
@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.services import web_sales as web_sales_service
+from app.services import web_sales_dashboard as dashboard_service
 from app.services.auth_dependencies import require_permission
 
 router = APIRouter(prefix="/sales", tags=["web-admin-sales"])
@@ -86,6 +87,75 @@ def _pipeline_settings_redirect(
     return RedirectResponse(
         url=f"/admin/sales/pipelines-settings?{urlencode(params)}",
         status_code=303,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:read"))],
+)
+def sales_dashboard(
+    request: Request,
+    pipeline_id: str | None = Query(default=None),
+    period_days: int = Query(default=30),
+    db: Session = Depends(get_db),
+):
+    context = _ctx(request, db, "sales-dashboard")
+    context.update(
+        dashboard_service.build_dashboard_shell_context(
+            db,
+            pipeline_id=pipeline_id,
+            period_days=period_days,
+        )
+    )
+    return templates.TemplateResponse("admin/sales/dashboard.html", context)
+
+
+@router.get(
+    "/dashboard-data",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:lead:read"))],
+)
+def sales_dashboard_data(
+    request: Request,
+    pipeline_id: str | None = Query(default=None),
+    period_days: int = Query(default=30),
+    db: Session = Depends(get_db),
+):
+    context: dict[str, object] = {"request": request}
+    try:
+        context.update(
+            dashboard_service.build_dashboard_data_context(
+                db,
+                pipeline_id=pipeline_id,
+                period_days=period_days,
+            )
+        )
+        status_code = 200
+    except Exception:
+        logger.exception("sales_dashboard_projection_failed")
+        context.update(
+            {
+                "dashboard_error": (
+                    "Sales reporting is temporarily unavailable. "
+                    "Your pipeline data has not been changed."
+                ),
+                "dashboard_data_url": str(request.url),
+            }
+        )
+        # HTMX swaps successful responses by default; the partial itself
+        # carries the explicit unavailable state.
+        status_code = 200
+    return templates.TemplateResponse(
+        "admin/sales/_dashboard_data.html",
+        context,
+        status_code=status_code,
     )
 
 
