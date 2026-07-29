@@ -154,7 +154,7 @@ be restated in durable domain language here or in the owning design document.
 
 Architecture liveness is checked in both directions. Every declared owner must
 have a real application/operator caller, and every new service module with a
-persistence-like mutation must name a declared owner. The 229 existing
+persistence-like mutation must name a declared owner. The 228 existing
 undeclared writer-like modules are an explicit shrink-only migration baseline,
 not approved parallel writers; resolving an owner or removing its write requires
 deleting the baseline entry. Adding an entry requires an explicit ownership
@@ -318,6 +318,9 @@ do not hand-edit these rows.
 | `financial.prepaid_draft_reconciliation` | stranded prepaid draft invoice reconciliation | `reconciler` | reviewed reconciliation command ← `financial.prepaid_draft_reconciliation`<br>canonical prepaid draft invoice ← `financial.invoices`<br>canonical payment-backed account credit ← `financial.account_credit_applications`<br>reviewed opening funding ← `financial.prepaid_funding_reconstruction`<br>canonical funded service entitlement ← `financial.prepaid_service_renewals`<br>canonical direct-renewal debit ← `financial.prepaid_service_renewals`<br>invoice and payment participant protocols ← `financial.invoices` | `owner_managed` | `cut_over` | billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/PREPAID_DRAFT_RECONCILIATION.md`<br>`tests/test_prepaid_draft_reconciliation.py`<br>`tests/test_prepaid_service_renewals.py`<br>`tests/test_subscription_lifecycle_commands.py`<br>`tests/integration/test_prepaid_draft_reconciliation_concurrency.py`<br>`tests/architecture/test_prepaid_draft_reconciliation_ownership.py` |
 | `financial.prepaid_draft_reconciliation` | reviewed opening funding invoice consumption | `reconciler` | reviewed reconciliation command ← `financial.prepaid_draft_reconciliation`<br>canonical prepaid draft invoice ← `financial.invoices`<br>canonical payment-backed account credit ← `financial.account_credit_applications`<br>reviewed opening funding ← `financial.prepaid_funding_reconstruction` | `owner_managed` | `cut_over` | billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/PREPAID_DRAFT_RECONCILIATION.md`<br>`tests/test_prepaid_draft_reconciliation.py`<br>`tests/test_prepaid_service_renewals.py`<br>`tests/test_subscription_lifecycle_commands.py`<br>`tests/integration/test_prepaid_draft_reconciliation_concurrency.py`<br>`tests/architecture/test_prepaid_draft_reconciliation_ownership.py` |
 | `financial.prepaid_draft_reconciliation` | prepaid draft reconciliation exceptions and operator alerts | `command_writer` | canonical prepaid draft invoice ← `financial.invoices`<br>canonical payment-backed account credit ← `financial.account_credit_applications`<br>reviewed opening funding ← `financial.prepaid_funding_reconstruction` | `owner_managed` | `cut_over` | billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/designs/PREPAID_DRAFT_RECONCILIATION.md`<br>`tests/test_prepaid_draft_reconciliation.py`<br>`tests/test_prepaid_service_renewals.py`<br>`tests/test_subscription_lifecycle_commands.py`<br>`tests/integration/test_prepaid_draft_reconciliation_concurrency.py`<br>`tests/architecture/test_prepaid_draft_reconciliation_ownership.py` |
+| `financial.walled_account_healing` | per-account healing timer lifecycle | `command_writer` | settled funding-change event ← `financial.payments`<br>durable timer runtime ← `runtime.durable_timers` | `owner_managed` | `cut_over` | billing operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_walled_account_healing.py`<br>`tests/test_restoration_outcome.py`<br>`tests/architecture/test_walled_account_healing_ownership.py`<br>`tests/architecture/test_billing_target_architecture.py` |
+| `financial.walled_account_healing` | locked zero-overdue-receivable healing decision | `reconciler` | fired account healing trigger ← `runtime.durable_timers`<br>canonical account access state ← `access.subscription_lifecycle`<br>exact overdue receivable snapshot ← `collections.lifecycle` | `owner_managed` | `cut_over` | billing operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_walled_account_healing.py`<br>`tests/test_restoration_outcome.py`<br>`tests/architecture/test_walled_account_healing_ownership.py`<br>`tests/architecture/test_billing_target_architecture.py` |
+| `financial.walled_account_healing` | walled-account healing operator exceptions | `projection_writer` | canonical account access state ← `access.subscription_lifecycle`<br>exact overdue receivable snapshot ← `collections.lifecycle` | `owner_managed` | `cut_over` | billing operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_walled_account_healing.py`<br>`tests/test_restoration_outcome.py`<br>`tests/architecture/test_walled_account_healing_ownership.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `financial.prepaid_recovery_billing` | suspended prepaid replacement-cycle draft creation | `application_coordinator` | locked prepaid subscription state ← `access.subscription_lifecycle`<br>active prepaid enforcement lock ← `financial.access_resolution`<br>contracted prepaid renewal price ← `financial.prepaid_service_renewals`<br>open recovery-invoice evidence ← `financial.prepaid_recovery_billing` | `coordinator_managed` | `native` | billing operations | `docs/designs/PREPAID_RECOVERY_BILLING.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_invoice_templates.py`<br>`tests/architecture/test_prepaid_recovery_billing_sot.py` |
 | `financial.prepaid_recovery_billing` | full settlement and restoration of a prepaid recovery invoice | `application_coordinator` | locked recovery invoice and service scope ← `financial.prepaid_recovery_billing`<br>active prepaid enforcement lock ← `financial.access_resolution`<br>confirmed unallocated payment credit ← `financial.account_credit_applications`<br>paid-invoice entitlement protocol ← `financial.prepaid_service_renewals`<br>financial access restoration protocol ← `financial.access_resolution` | `coordinator_managed` | `native` | billing operations | `docs/designs/PREPAID_RECOVERY_BILLING.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_invoice_templates.py`<br>`tests/architecture/test_prepaid_recovery_billing_sot.py` |
 | `financial.addon_purchases` | customer add-on purchase eligibility and preview | `resolver` | canonical subscription state ← `access.subscription_lifecycle`<br>offered add-on commercial terms ← `financial.addon_purchases`<br>current customer financial position ← `customer.financial_position` | `owner_managed` | `cut_over` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_api_me_addons.py`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/architecture/test_billing_target_architecture.py` |
@@ -1479,6 +1482,73 @@ Payment creation, settlement, and allocation are one coherent owner contract:
   `financial.prepaid_service_coverage_reconciliation`, which creates missing
   entitlement evidence from an exact existing debit or paid invoice line and
   quarantines ambiguity without posting money.
+- Billing-anchor writer boundary: `Subscription.next_billing_at` is a projection
+  of exact entitlement evidence, and
+  `financial.prepaid_service_renewals.project_prepaid_billing_anchor_for_invoice`
+  is its single owner-side writer for invoice-funded prepaid service. Payment
+  allocation, invoice application, and draft reconciliation are participants:
+  they commit exact entitlement evidence and then either emit the durable
+  funding-change event or request that projection. The former inline
+  `project_paid_invoice_billing_anchors` call in `financial.payments` and its
+  helper in `service_entitlements` are retired, so the payment owner never
+  writes the anchor. The projection is a pure recomputation from surviving
+  coverage, which makes it idempotent under event replay and lets a refund,
+  chargeback, or reversal retract the anchor back to the start of the period
+  that stopped being funded — a reversal cannot leave a stale advanced anchor.
+  Coverage is the union of active `ServiceEntitlement` intervals and applied
+  `ServiceExtensionEntry` grant intervals — the same evidence
+  `financial.prepaid_service_coverage` reads. The anchor never lands below that
+  union, nor below the start of the period the invoice funded. On top of that
+  floor the caller declares one thing, `BillingAnchorAuthority`, deciding
+  whether the anchor may move backwards past a lead this owner cannot explain:
+  - `funding_observation` (payment creation, allocation, refund, reversal) may
+    not. A settling payment observes that funding changed and says nothing
+    about why the anchor is ahead; that lead may be a
+    `financial.service_extensions` grant, a
+    `financial.subscription_billing_grants` grant, or the extension delta
+    `financial.payments` deliberately preserves while re-anchoring a lapsed
+    renewal. Advancement is monotonic while the invoice's own entitlements
+    survive.
+  - `reviewed_reconciliation` (the operator-confirmed opening-funding branch of
+    `financial.prepaid_draft_reconciliation`) may. That owner has rewritten the
+    invoice's documentary period from a fingerprint-bound reviewed preview and
+    holds exact entitlement evidence, and a stale anchor left by a long-lapsed
+    period is an unresolved projection rather than a grant. The floor keeps
+    this sound: a reviewed correction can only pull the anchor down onto
+    existing coverage, so it deletes an evidence-free lead and can never cancel
+    granted service.
+  These two values reproduce the two anchor policies that previously lived in
+  `_finalize_invoice_payment_effects` and `finalize_invoice_application_for_owner`
+  respectively; collapsing them into a single policy is what alternately clawed
+  back granted service or stranded a lapsed invoice at a stale anchor.
+  Retraction after a refund needs no special authority: revoked entitlements
+  leave the coverage union and the anchor follows the evidence down. `payment.refunded` and `payment.reversed` reach the same owner through
+  `PrepaidRenewalHandler`. The accumulated drift cohort (an active
+  `ServiceEntitlement` ending after `next_billing_at`) is repaired by the
+  owner's idempotent, fingerprint-bound
+  `preview_stale_prepaid_billing_anchor_repair` /
+  `apply_stale_prepaid_billing_anchor_repair` pair, driven by
+  `scripts/one_off/repair_stale_prepaid_billing_anchors.py`, which posts no
+  money and stages one audit event per repaired subscription. Known remaining
+  exception: `_reanchor_paid_prepaid_invoice_if_lapsed` in `financial.payments`
+  still advances the anchor while re-anchoring a lapsed prepaid invoice's
+  documentary period; retiring that second writer is a separate, wider change.
+- Walled-account self-heal boundary:
+  `financial.walled_account_healing` owns the exact account-bound repair
+  lifecycle. Every committed `payment_received` or
+  `account_credit_deposited` event schedules or replaces one
+  `runtime.durable_timers` row for that subscriber; no billing task scans the
+  customer or invoice cohort. When the timer fires, the billing lifecycle
+  adapter enters the healing owner once, receipts the timer event, validates
+  timer/entity/generation identity, locks the account, recomputes the exact
+  overdue receivable, and delegates reason-scoped restoration to
+  `access.subscription_lifecycle`. It applies only when the exact overdue
+  receivable is zero. NGN 0.50 therefore remains real debt and produces a
+  durable, deduplicated operator exception rather than being rounded away.
+  Admin, fraud, FUP, and lifecycle-override blockers are never cleared by this
+  owner. Historical accounts predating the event/timer path remain repairable
+  only through the reviewed targeted one-off command; that command is a
+  backfill, not a scheduled decision path.
 - Retired payment-application evidence boundary: the former
   `PaymentPrepaidApplication` runtime is not a current financial or coverage
   owner. Revision `394_retire_payment_prepaid_applications` renames its physical

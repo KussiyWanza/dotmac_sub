@@ -9458,6 +9458,244 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.walled_account_healing",
+                module="app.services.billing.unwall_paid_accounts",
+                owns=(
+                    "per-account healing timer lifecycle",
+                    "locked zero-overdue-receivable healing decision",
+                    "walled-account healing operator exceptions",
+                ),
+                depends_on=(
+                    "financial.access_resolution",
+                    "financial.billing_profile",
+                    "financial.payments",
+                    "collections.lifecycle",
+                    "access.subscription_lifecycle",
+                    "runtime.durable_timers",
+                    "events.owner_outputs",
+                ),
+                notes=(
+                    "Service-state only: this owner posts, moves and forgives no "
+                    "money. Each committed payment or account-credit event schedules "
+                    "one exact durable account timer; the generic timer runtime is "
+                    "the only scanner. The fired trigger is receipted before this "
+                    "owner recomputes the exact overdue receivable under an account "
+                    "lock and requests the financial-access restoration owner. "
+                    "Application is allowed only when that recomputation proves zero "
+                    "overdue receivable; there is no tolerance, epsilon or de-minimis "
+                    "threshold, so a sub-naira residue correctly blocks the automated "
+                    "restore. Every ambiguous or blocked row becomes a durable, "
+                    "deduplicated operator exception with its recomputed evidence "
+                    "instead of an automated guess. Restoration reason scoping stays "
+                    "with the lifecycle owner: healing never lifts an admin, fraud or "
+                    "FUP lock and never clears a lifecycle override."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-account healing timer lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "settled funding-change event",
+                                "durable timer runtime",
+                            ),
+                            canonical_writer="financial.walled_account_healing",
+                        ),
+                        ConcernContract(
+                            name="locked zero-overdue-receivable healing decision",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "fired account healing trigger",
+                                "canonical account access state",
+                                "exact overdue receivable snapshot",
+                            ),
+                            canonical_writer="financial.walled_account_healing",
+                        ),
+                        ConcernContract(
+                            name="walled-account healing operator exceptions",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=(
+                                "canonical account access state",
+                                "exact overdue receivable snapshot",
+                            ),
+                            canonical_writer="financial.walled_account_healing",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="settled funding-change event",
+                            owner="financial.payments",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "committed payment_received or "
+                                "account_credit_deposited event with exact account "
+                                "identity and durable event identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="durable timer runtime",
+                            owner="runtime.durable_timers",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "owner, subscriber entity, purpose, generation, due "
+                                "time, fired status, and fired event identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="fired account healing trigger",
+                            owner="runtime.durable_timers",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "receipted durable-timer trigger carrying timer, "
+                                "subscriber, purpose, and generation identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical account access state",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked subscriber and subscription statuses, active "
+                                "reason-scoped enforcement locks, lifecycle override, "
+                                "and restoration outcome"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="exact overdue receivable snapshot",
+                            owner="collections.lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "current collectible overdue invoices and exact "
+                                "remaining receivable amounts under the account lock"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The payment-event and fired-timer adapters each open a "
+                            "transaction-free owner session and enter "
+                            "execute_owner_command once. Durable-timer mutation, "
+                            "consumer receipt, locked restoration, alert projection, "
+                            "audit, lifecycle event, and access-state changes are "
+                            "flush-only participants in that command."
+                        ),
+                        locking=(
+                            "Schedule locks the current owner/entity/purpose timer. "
+                            "Consumption locks the fired timer, then the subscriber "
+                            "account, subscriptions, enforcement locks, and exact "
+                            "receivable evidence in stable account order."
+                        ),
+                        idempotency=(
+                            "The funding event id is the scheduling command identity; "
+                            "redelivery reuses its recorded timer. Timer generations "
+                            "reject superseded delivery, and the unique consumer/event "
+                            "receipt prevents a fired trigger from healing twice."
+                        ),
+                        retries=(
+                            "Retry the same funding or timer event identity after "
+                            "transient failure. Changed account or debt evidence is "
+                            "recomputed under lock; malformed timer identity fails "
+                            "closed and remains retryable."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.walled_account_healing.invalid_timer_due_at",
+                            "financial.walled_account_healing.invalid_timer_evidence",
+                            "financial.walled_account_healing.invalid_command_context",
+                            "financial.walled_account_healing.command_contract_violation",
+                            "financial.walled_account_healing.nested_owner_command",
+                            "financial.walled_account_healing.active_caller_transaction",
+                            "financial.walled_account_healing.nested_transaction_completion",
+                        ),
+                        mapping_owner="billing lifecycle event adapter",
+                        retryable_codes=(
+                            "financial.walled_account_healing.invalid_timer_evidence",
+                        ),
+                        fail_closed_on=(
+                            "any positive overdue receivable including NGN 0.50",
+                            "missing or mismatched durable timer identity",
+                            "ambiguous account, lock, lifecycle override, or "
+                            "restoration evidence",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("financial.walled_account_healing_due",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Timer, subscriber, purpose, generation, command, and "
+                            "correlation identity retain their meaning; additive "
+                            "payload fields are permitted."
+                        ),
+                        replay=(
+                            "The fired event is receipted by this owner. Replay returns "
+                            "the existing receipt without repeating restoration."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="walled-account healing operator exceptions",
+                            input_names=(
+                                "canonical account access state",
+                                "exact overdue receivable snapshot",
+                            ),
+                            writer="financial.walled_account_healing",
+                            freshness="recomputed when the exact account timer fires",
+                            stale_behavior=(
+                                "A later successful restore resolves the deduplicated "
+                                "account alert; unresolved evidence remains visible."
+                            ),
+                            drift_signal=(
+                                "An open walled_account_healing:<account_id> alert "
+                                "contains the exact residue or remaining blockers."
+                            ),
+                            rebuild_operation=(
+                                "Re-deliver the account timer event or run the reviewed "
+                                "targeted unwall command for the named account."
+                            ),
+                            repair_owner="financial.walled_account_healing",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "cohort-wide stale-overdue detector with apply=False and "
+                            "operator-only unwall script"
+                        ),
+                        new_owner="financial.walled_account_healing",
+                        verification=(
+                            "Exact account timer schedule, event replay, fired "
+                            "generation validation, zero-debt restore, NGN 0.50 "
+                            "refusal, operator exception, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "All committed payment and account-credit events schedule "
+                            "the exact account timer; no new billing cohort sweep is "
+                            "registered."
+                        ),
+                        fallback_retirement=(
+                            "The targeted one-off command remains only for historical "
+                            "rows that predate funding-event timers; it is not a "
+                            "scheduled decision path."
+                        ),
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_walled_account_healing.py",
+                        "tests/test_restoration_outcome.py",
+                        "tests/architecture/test_walled_account_healing_ownership.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_service_renewals",
                 module="app.services.prepaid_service_renewals",
                 owns=(
@@ -9466,6 +9704,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "locked and idempotent prepaid renewal debit",
                     "exact debit-to-entitlement evidence",
                     "prepaid subscription paid-through advancement",
+                    "billing-anchor projection from entitlement evidence",
+                    "billing-anchor retraction after funding reversal",
+                    "stale billing-anchor drift repair",
                     "canonical prepaid renewed-through outcome",
                     "post-credit-application due-service consequence",
                     "bounded scheduled renewal catch-up",
@@ -9488,7 +9729,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "same transaction; payment correlation is a trigger, not source "
                     "attribution for pooled account credit. Incomplete evidence raises "
                     "through the durable event-handler attempt so the permanent event "
-                    "redriver retries it; an explicit no-due-service outcome is success."
+                    "redriver retries it; an explicit no-due-service outcome is success. "
+                    "This owner is also the single writer of the invoice-funded "
+                    "billing anchor: payment allocation, invoice application and draft "
+                    "reconciliation commit entitlement evidence and then emit the "
+                    "funding-change event or request "
+                    "project_prepaid_billing_anchor_for_invoice. That projection is a "
+                    "pure recomputation from surviving coverage, so replay is "
+                    "idempotent and a refund, chargeback or reversal retracts the "
+                    "anchor to the start of the period that stopped being funded "
+                    "instead of leaving it stale. Coverage is the union of active "
+                    "entitlements and applied financial.service_extensions grant "
+                    "intervals, and the anchor never lands below it. Above that floor "
+                    "the caller declares a BillingAnchorAuthority: a funding "
+                    "observation advances monotonically and never claws back a lead "
+                    "another owner granted, while an operator-confirmed reviewed "
+                    "reconciliation may resolve an evidence-free stale lead downward "
+                    "onto exact coverage. Those two values reproduce the separate "
+                    "anchor policies that previously lived in "
+                    "_finalize_invoice_payment_effects and "
+                    "finalize_invoice_application_for_owner. The retired inline "
+                    "project_paid_invoice_billing_anchors helper is gone."
                 ),
             ),
             SOTService(

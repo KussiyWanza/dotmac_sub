@@ -26,10 +26,12 @@ from app.services.collections._core import (
     dunning_workflow,
     get_available_balance,
     has_overdue_balance,
+    overdue_receivable_snapshot,
     preview_financial_access_consequence,
     preview_financial_access_restoration,
     # Public functions
     restore_account_services,
+    restore_account_services_detailed,
 )
 
 __all__ = [
@@ -48,9 +50,11 @@ __all__ = [
     # Public functions
     "get_available_balance",
     "has_overdue_balance",
+    "overdue_receivable_snapshot",
     "preview_financial_access_consequence",
     "confirm_financial_access_consequence",
     "preview_financial_access_restoration",
     "confirm_financial_access_restoration",
     "restore_account_services",
+    "restore_account_services_detailed",
 ]

@@ -964,6 +964,10 @@ def _stage_action(
     invoice = lock_for_update(db, Invoice, str(preview.invoice_id))
     if invoice is None:
         _error("invoice_not_found", "Invoice was not found.")
+    # Only the operator-confirmed opening-funding branch is a reviewed
+    # correction of the record; every other path here is an ordinary settlement
+    # consequence. See the anchor-authority note at the projection call below.
+    reviewed_opening_correction = False
     if preview.recommended_action is PrepaidDraftAction.settle_paid:
         try:
             Invoices.issue_draft_for_owner(
@@ -1005,6 +1009,7 @@ def _stage_action(
                     invoice,
                     effective_at=_utc(effective_at),
                 )
+                reviewed_opening_correction = True
             else:
                 result = AccountCreditApplications.apply_invoice_fully(
                     db,
@@ -1044,6 +1049,37 @@ def _stage_action(
             "not_actionable",
             "This draft requires more funding or manual evidence review.",
             disposition=preview.disposition.value,
+        )
+    if preview.recommended_action is PrepaidDraftAction.settle_paid:
+        # This owner settles the documentary period; it never writes
+        # `Subscription.next_billing_at` itself. Billing-anchor advancement is
+        # owned by `financial.prepaid_service_renewals`, so the committed
+        # entitlement evidence is handed to that owner to project. See
+        # docs/SOT_RELATIONSHIP_MAP.md, "Prepaid renewal boundary".
+        #
+        # Authority mirrors the two finalizers this replaced. The reviewed
+        # opening-funding branch is where `finalize_invoice_application_for_owner`
+        # ran, and that finalizer projected the anchor unconditionally: an
+        # operator has confirmed a fingerprint-bound preview and this owner has
+        # just rewritten the invoice's period, so a stale anchor left by a
+        # long-lapsed period is corrected down to the effective date. Every
+        # other settlement here went through `_finalize_invoice_payment_effects`,
+        # which never wrote the anchor backwards, so it stays observational and
+        # cannot claw back a lead another owner granted.
+        from app.services.prepaid_service_renewals import (
+            BillingAnchorAuthority,
+            project_prepaid_billing_anchor_for_invoice,
+        )
+
+        project_prepaid_billing_anchor_for_invoice(
+            db,
+            invoice,
+            evidence_ref=f"prepaid_draft_reconciliation:{invoice.id}",
+            authority=(
+                BillingAnchorAuthority.reviewed_reconciliation
+                if reviewed_opening_correction
+                else BillingAnchorAuthority.funding_observation
+            ),
         )
     _record_metadata(
         invoice,

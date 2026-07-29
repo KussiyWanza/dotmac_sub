@@ -29,6 +29,7 @@ from app.services.collections._core import (
     preview_financial_access_consequence,
     preview_financial_access_restoration,
     restore_account_services,
+    restore_account_services_detailed,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,4 +51,5 @@ __all__ = [
     "preview_financial_access_restoration",
     "confirm_financial_access_restoration",
     "restore_account_services",
+    "restore_account_services_detailed",
 ]

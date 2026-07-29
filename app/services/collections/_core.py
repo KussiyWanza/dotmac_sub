@@ -121,6 +121,18 @@ class FinancialAccessConsequenceResult:
     preview: FinancialAccessConsequencePreview
     subscriptions_changed: int
     idempotent_replay: bool = False
+    # One typed restoration outcome per subscription the payment touched.
+    # `subscriptions_changed` alone cannot tell an operator why a settled
+    # customer is still offline; these can.
+    restoration_outcomes: tuple[dict[str, object], ...] = ()
+
+    @property
+    def settled_but_access_blocked(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            item
+            for item in self.restoration_outcomes
+            if item.get("financially_settled_but_access_blocked")
+        )
 
 
 class DunningStaffAction(StrEnum):
@@ -277,6 +289,16 @@ def get_available_balance(db: Session, account_id: str) -> Decimal:
 def has_overdue_balance(db: Session, account_id: str) -> bool:
     """Return whether canonical settlement facts leave overdue receivable."""
     return bool(_overdue_receivable_snapshot(db, coerce_uuid(account_id)))
+
+
+def overdue_receivable_snapshot(db: Session, account_id: str) -> list[dict]:
+    """Public exact overdue-receivable evidence for owner-side recomputation.
+
+    Callers that must PROVE zero overdue receivable — not merely observe a
+    boolean — record this snapshot as their decision evidence. Exact
+    arithmetic: a sub-naira residue is a real receivable and appears here.
+    """
+    return _overdue_receivable_snapshot(db, coerce_uuid(account_id))
 
 
 def _effective_billing_mode_for_account(
@@ -1303,11 +1325,15 @@ def confirm_financial_access_restoration(
     from app.services.account_lifecycle import (
         SUSPENDED_EQUIVALENT,
         resolve_stale_lock_without_restoration,
-        restore_subscription,
+        restore_subscription_detailed,
+    )
+    from app.services.settled_access_blocked import (
+        clear_financially_settled_but_access_blocked,
     )
 
     resolved_lock_ids: list[UUID] = []
     restored_subscriptions = 0
+    restoration_outcomes: list[dict[str, object]] = []
     for lock_id in preview.target_lock_ids:
         lock = db.get(EnforcementLock, lock_id)
         if lock is None or not lock.is_active:
@@ -1325,13 +1351,23 @@ def confirm_financial_access_restoration(
                 detail="Financial enforcement subscription no longer exists",
             )
         if subscription.status in SUSPENDED_EQUIVALENT:
-            restored = restore_subscription(
+            outcome = restore_subscription_detailed(
                 db,
                 str(lock.subscription_id),
                 trigger=trigger,
                 resolved_by=resolved_by or f"financial_access:{account.id}",
                 reason=lock.reason,
             )
+            # `subscriptions_changed` is a count of state transitions and keeps
+            # its legacy meaning; the worklist entry is only cleared once the
+            # customer genuinely has service again, so an account still held by
+            # a lifecycle override stays on the queue.
+            restored = outcome.subscription_reactivated
+            restoration_outcomes.append(outcome.to_dict())
+            if outcome.access_restored:
+                clear_financially_settled_but_access_blocked(
+                    db, str(lock.subscription_id)
+                )
         else:
             resolved = resolve_stale_lock_without_restoration(
                 db,
@@ -1441,7 +1477,7 @@ def confirm_financial_access_restoration(
         )
 
     has_effect = bool(resolved_lock_ids or resolved_case_ids or restored_credentials)
-    outcome = (
+    consequence_outcome = (
         "restored"
         if restored_subscriptions
         else ("reconciled" if has_effect else preview.outcome)
@@ -1452,7 +1488,7 @@ def confirm_financial_access_restoration(
         requested_reason=None,
         origin=origin,
         eligible=preview.eligible,
-        outcome=outcome,
+        outcome=consequence_outcome,
         preview_fingerprint=preview.fingerprint,
         idempotency_key=key,
         decision_inputs=preview.decision_inputs,
@@ -1505,7 +1541,7 @@ def confirm_financial_access_restoration(
             metadata_={
                 "consequence_id": str(consequence.id),
                 "origin": origin.value,
-                "outcome": outcome,
+                "outcome": consequence_outcome,
                 "preview_fingerprint": preview.fingerprint,
                 "resolved_lock_ids": [str(value) for value in resolved_lock_ids],
                 "resolved_case_ids": [str(value) for value in resolved_case_ids],
@@ -1538,6 +1574,7 @@ def confirm_financial_access_restoration(
         consequence=consequence,
         preview=preview,
         subscriptions_changed=restored_subscriptions,
+        restoration_outcomes=tuple(restoration_outcomes),
     )
 
 
@@ -2962,7 +2999,7 @@ def _restore_prepaid_if_funded(
     )
 
 
-def restore_account_services(
+def restore_account_services_detailed(
     db: Session,
     account_id: str,
     invoice_id: str | None = None,
@@ -2971,20 +3008,25 @@ def restore_account_services(
     idempotency_key: str | None = None,
     resolved_by: str | None = None,
     overdue_trigger: str = "payment",
-) -> int:
-    """Reconcile financial locks after a payment or balance change.
+) -> FinancialAccessConsequenceResult | None:
+    """Reconcile financial locks and return the full typed consequence.
 
     ``overdue`` and ``prepaid`` are independent enforcement reasons and use
     independent, named gates.  Invoice debt must be cleared before an overdue
     lock/case is resolved.  Prepaid access must meet the same available-balance
     threshold used by the suspension sweep before a prepaid lock or timer is
     cleared.  No caller can turn the mere existence of a payment into access.
+
+    ``None`` means the account does not exist. Every other outcome — including
+    "money settled, access still blocked" — is carried in
+    ``restoration_outcomes`` so payment results, staff surfaces, alerts, and
+    metrics can say exactly what happened instead of reporting a bare count.
     """
     preview = preview_financial_access_restoration(db, account_id, origin=origin)
     if preview.outcome == "account_not_found":
         logger.warning("Cannot restore account %s: account not found", account_id)
-        return 0
-    result = confirm_financial_access_restoration(
+        return None
+    return confirm_financial_access_restoration(
         db,
         account_id,
         preview_fingerprint=preview.fingerprint,
@@ -2998,6 +3040,30 @@ def restore_account_services(
         resolved_by=resolved_by or f"financial_access:{account_id}",
         overdue_trigger=overdue_trigger,
     )
+
+
+def restore_account_services(
+    db: Session,
+    account_id: str,
+    invoice_id: str | None = None,
+    *,
+    origin: FinancialAccessOrigin = FinancialAccessOrigin.financial_reconciliation,
+    idempotency_key: str | None = None,
+    resolved_by: str | None = None,
+    overdue_trigger: str = "payment",
+) -> int:
+    """Count-only facade over :func:`restore_account_services_detailed`."""
+    result = restore_account_services_detailed(
+        db,
+        account_id,
+        invoice_id,
+        origin=origin,
+        idempotency_key=idempotency_key,
+        resolved_by=resolved_by,
+        overdue_trigger=overdue_trigger,
+    )
+    if result is None:
+        return 0
     return result.subscriptions_changed
 
 
