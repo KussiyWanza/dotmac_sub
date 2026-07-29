@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -29,16 +30,29 @@ from app.models.network import (
     OntAssignment,
     OntUnit,
 )
-from app.models.network_monitoring import NetworkDevice, PopSite
+from app.models.network_monitoring import DeviceProjection, NetworkDevice, PopSite
 from app.models.radius_active_session import RadiusActiveSession
 from app.services.topology.customer_path import (
     GAP_NO_BASESTATION,
     GAP_NO_NODE,
     GAP_NO_ONT,
 )
-from app.services.topology.sources import RECONCILED_SOURCE as SOURCE
 
 DEFAULT_TABLE_PER_PAGE = 50
+
+# Inventory-vs-projection drift classes. Authority-neutral by construction:
+# every one of them is derived by comparing the authoritative device tables
+# against the materialised projection, and none of them keys on a provenance
+# string. (The previous drift filter required ``source == 'zabbix_reconcile'``,
+# the stamp of an importer removed on 2026-07-10, so it reported only on rows
+# predating that deletion and was silent about everything newer.)
+DRIFT_MISSING_PROJECTION = "missing_projection"
+DRIFT_ORPHAN_PROJECTION = "orphan_projection"
+DRIFT_STALE_PROJECTION = "stale_projection"
+
+# The projection reconciler is beat-scheduled every 60s. Rows older than this
+# mean the reconciler itself has stopped converging.
+PROJECTION_STALE_AFTER = timedelta(minutes=15)
 
 
 @dataclass
@@ -53,10 +67,17 @@ class TopologyGaps:
     subscription_gap_per_page: int = DEFAULT_TABLE_PER_PAGE
     active_subscriptions: int = 0
     resolved_complete: int = 0
+    # Inventory-vs-projection drift: [{id, name, drift}], newest report only.
+    projection_drift: list[dict] = field(default_factory=list)
+    projection_drift_total_count: int = 0
 
     @property
     def unmatched_node_count(self) -> int:
         return self.unmatched_node_total_count
+
+    @property
+    def projection_drift_count(self) -> int:
+        return self.projection_drift_total_count
 
     @property
     def unmatched_node_total_pages(self) -> int:
@@ -464,6 +485,85 @@ def _subscription_gap_rows(db: Session) -> tuple[int, list[dict]]:
     ]
 
 
+def _identity_keys(*values) -> set[str]:
+    """Lowercased non-empty identity tokens used to match a device to a row."""
+    return {
+        text for text in (str(value or "").strip().lower() for value in values) if text
+    }
+
+
+def projection_drift_rows(db: Session, *, now: datetime | None = None) -> list[dict]:
+    """Reconcile device inventory against the materialised device projection.
+
+    Three drift classes, all derived by comparing the authoritative device
+    tables to ``device_projections``:
+
+    ``missing_projection``
+        An inventory device with no projection row and no row that stands in
+        for it. ``collect_devices`` deliberately folds a monitored device into
+        the OLT/NAS/router row it duplicates, so a device is only "missing"
+        when nothing in the projection shares any of its identity tokens.
+    ``orphan_projection``
+        A projected core row whose source inventory row is gone — the phantom
+        the reconciler's prune is supposed to remove.
+    ``stale_projection``
+        Rows the reconciler has not refreshed within ``PROJECTION_STALE_AFTER``,
+        i.e. the reconciler itself stopped converging.
+
+    A report, not a decision: it never writes, and it names no owner's state.
+    """
+    current = now or datetime.now(UTC)
+    devices = list(db.scalars(select(NetworkDevice)).all())
+    rows = list(db.scalars(select(DeviceProjection)).all())
+
+    core_source_ids = {r.source_id for r in rows if r.device_type == "core"}
+    covered = set()
+    for row in rows:
+        covered |= _identity_keys(row.name, row.ip_address, row.serial_number)
+
+    drift: list[dict] = []
+    for device in devices:
+        if str(device.id) in core_source_ids:
+            continue
+        if _identity_keys(device.name, device.mgmt_ip, device.hostname) & covered:
+            continue  # folded into an OLT/NAS/router row by the derivation
+        drift.append(
+            {
+                "id": str(device.id),
+                "name": device.name,
+                "drift": DRIFT_MISSING_PROJECTION,
+            }
+        )
+
+    device_ids = {str(device.id) for device in devices}
+    for row in rows:
+        if row.device_type == "core" and row.source_id not in device_ids:
+            drift.append(
+                {
+                    "id": row.source_id,
+                    "name": row.name,
+                    "drift": DRIFT_ORPHAN_PROJECTION,
+                }
+            )
+            continue
+        refreshed = row.refreshed_at
+        if refreshed is None:
+            continue
+        if refreshed.tzinfo is None:
+            refreshed = refreshed.replace(tzinfo=UTC)
+        if current - refreshed > PROJECTION_STALE_AFTER:
+            drift.append(
+                {
+                    "id": row.source_id,
+                    "name": row.name,
+                    "drift": DRIFT_STALE_PROJECTION,
+                }
+            )
+
+    drift.sort(key=lambda row: (row["drift"], (row["name"] or "").lower()))
+    return drift
+
+
 def topology_gaps(
     db: Session,
     *,
@@ -483,8 +583,12 @@ def topology_gaps(
         subscription_gap_per_page=gap_per_page,
     )
 
+    # Authority-neutral: no provenance filter. This query used to require
+    # ``source == 'zabbix_reconcile'`` — the stamp of an importer deleted on
+    # 2026-07-10 — so the only drift report on the platform was structurally
+    # blind to every device created since. Whether a device needs a
+    # provisioning match is a property of the device, never of who filed it.
     unmatched_query = db.query(NetworkDevice).filter(
-        NetworkDevice.source == SOURCE,
         NetworkDevice.matched_device_id.is_(None),
         NetworkDevice.is_active.is_(True),
     )
@@ -504,6 +608,12 @@ def topology_gaps(
     )
     gaps.subscription_gaps = _page_slice(
         all_subscription_gaps, page=gap_page, per_page=gap_per_page
+    )
+
+    all_drift = projection_drift_rows(db)
+    gaps.projection_drift_total_count = len(all_drift)
+    gaps.projection_drift = _page_slice(
+        all_drift, page=node_page, per_page=node_per_page
     )
 
     return gaps

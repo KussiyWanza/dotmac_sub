@@ -44,6 +44,7 @@ from app.services.device_operational_status import (
     NOT_WORKING,
     annotate_operational_status,
 )
+from app.services.network_monitoring import set_network_device_active
 
 
 def _format_uptime_short(seconds: int | None) -> str | None:
@@ -475,7 +476,11 @@ def update_device(
     device.snmp_priv_protocol = cast(str | None, values.get("snmp_priv_protocol"))
     device.snmp_priv_secret = cast(str | None, values.get("snmp_priv_secret"))
     device.notes = cast(str | None, values.get("notes"))
-    device.is_active = bool(values.get("is_active"))
+    # Admission goes through the owning transition so an operator deactivating
+    # from this form also decays the stale reachability cache.
+    set_network_device_active(
+        db, device, bool(values.get("is_active")), reason="core_device_form"
+    )
     _sync_linked_nas_device_ip_state(db, device, previous_mgmt_ip=previous_mgmt_ip)
     try:
         db.commit()

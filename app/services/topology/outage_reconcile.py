@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.models.network_monitoring import NetworkDevice, OutageIncident
+from app.services.device_operational_status import warmer_is_stale
 from app.services.topology.affected import (
     _dist_to_core,
     affected_customers,
@@ -231,6 +232,9 @@ def _candidate_outages(session: Session, now: datetime) -> dict:
         root_ids=graph.root_device_ids,
     )
     candidates: dict = {}
+    # One dead-man read for the whole sweep — a frozen live_status must not
+    # certify a node "reachable but serving nobody" here either.
+    warm_stale = warmer_is_stale(now)
 
     nodes = session.query(NetworkDevice).filter(NetworkDevice.is_active.is_(True)).all()
     dark_nodes: list[NetworkDevice] = []
@@ -249,7 +253,13 @@ def _candidate_outages(session: Session, now: datetime) -> dict:
         dark_nodes = [
             n
             for n in nodes
-            if classify_node(n, online_by_node[n.id], provisioned[n.id] > 0)
+            if classify_node(
+                n,
+                online_by_node[n.id],
+                provisioned[n.id] > 0,
+                now=now,
+                warm_stale=warm_stale,
+            )
             == NODE_OUTAGE
         ]
 
@@ -262,7 +272,7 @@ def _candidate_outages(session: Session, now: datetime) -> dict:
         # Restricting to node_outage nodes keeps the boundary a genuine outage.
         scope = downstream_nodes(session, dn, dist=dist, adjacency=adjacency)
         dark_in_scope = [nid for nid in scope if nid in dark_ids]
-        loc = localize_outage(session, dark_in_scope, now=now)
+        loc = localize_outage(session, dark_in_scope, now=now, warm_stale=warm_stale)
         if loc is None:
             continue
         fid = loc["failure_node"]

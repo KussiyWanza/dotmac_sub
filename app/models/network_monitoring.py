@@ -1094,6 +1094,18 @@ class DeviceProjection(Base):
             "operational_status IN ('working', 'not_working')",
             name="ck_device_projection_binary_operational_status",
         ),
+        CheckConstraint(
+            "lifecycle_state IN ('active', 'inactive')",
+            name="ck_device_projection_lifecycle_state",
+        ),
+        # RELEASE GATE. An inactive device is not polled, so nothing can keep
+        # its reachability current; whatever it last reported is frozen. This
+        # constraint makes "an inactive device projects working" unrepresentable
+        # in the database, not merely unlikely in the code.
+        CheckConstraint(
+            "lifecycle_state = 'active' OR operational_status = 'not_working'",
+            name="ck_device_projection_inactive_never_working",
+        ),
         Index("ix_device_projection_type_status", "device_type", "operational_status"),
     )
 
@@ -1121,6 +1133,16 @@ class DeviceProjection(Base):
         index=True,
     )
     operational_reason: Mapped[str | None] = mapped_column(String(160))
+    # Admission state of the source device: 'active' or 'inactive'. A
+    # deactivated device stays projected (so it cannot vanish from the staff
+    # ledger) and is marked here instead of being pruned away.
+    lifecycle_state: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Linked subscriber, when the device is customer-premises equipment.

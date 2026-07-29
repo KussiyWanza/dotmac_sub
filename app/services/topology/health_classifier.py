@@ -39,6 +39,7 @@ from app.services.topology.affected import (
     _dist_to_core,
     subscriptions_for_nodes,
 )
+from app.services.topology.live_status import trusted_live_status
 
 logger = logging.getLogger(__name__)
 
@@ -122,15 +123,27 @@ def online_subscribers(
     return {r[0] for r in rows if r[0] is not None}
 
 
-def _mgmt_state(live_status: str | None) -> str:
-    """Warmer-fed ``live_status`` -> mgmt-plane state (up/down/unknown).
+def _mgmt_state(
+    node,
+    *,
+    now: datetime | None = None,
+    warm_stale: bool | None = None,
+) -> str:
+    """Node -> mgmt-plane state (up/down/unknown), with the freshness gate on.
 
     Today ``live_status`` is the *combined* reachability+agent signal. When the
     warmer starts publishing separate ping vs snmp signals (design §1), split
     this into two inputs and pass both to ``classify_node``; the impossible-row
     logic below already generalises.
+
+    Reads through :func:`trusted_live_status` rather than the raw column: a
+    ``live_status`` nothing is refreshing any more (device deactivated, checks
+    disabled, warmer dead) must not keep asserting ``up`` here, because the
+    ladder below turns a stale ``up`` into ``service_fault`` — "reachable but
+    serving nobody, NOT an area outage" — which silently vetoes outage
+    detection for every customer behind the node.
     """
-    value = (live_status or "").strip().lower()
+    value = trusted_live_status(node, now=now, warm_stale=warm_stale)
     if value == "up":
         return "up"
     if value == "down":
@@ -139,7 +152,14 @@ def _mgmt_state(live_status: str | None) -> str:
     return "unknown"
 
 
-def classify_node(node: NetworkDevice, online_count: int, had_prior_life: bool) -> str:
+def classify_node(
+    node: NetworkDevice,
+    online_count: int,
+    had_prior_life: bool,
+    *,
+    now: datetime | None = None,
+    warm_stale: bool | None = None,
+) -> str:
     """Per-node ladder state from mgmt-plane (live_status) + data-plane (online).
 
     Design §1 table, collapsed to the two P1 signals:
@@ -158,8 +178,12 @@ def classify_node(node: NetworkDevice, online_count: int, had_prior_life: bool) 
                                   mgmt unk  -> unknown (only one dark signal).
       online==0, no prior life -> unknown: dormant / small-N / never-provisioned,
                                   nothing to conclude.
+
+    ``warm_stale`` is the warmer's dead-man signal. Pass it in from batch
+    callers (one cache read for the whole sweep); left as ``None`` it is
+    resolved per node.
     """
-    mgmt = _mgmt_state(getattr(node, "live_status", None))
+    mgmt = _mgmt_state(node, now=now, warm_stale=warm_stale)
     if online_count > 0:
         if mgmt == "up":
             return HEALTHY
@@ -187,7 +211,11 @@ def _confidence(affected_before: int, survivors_elsewhere: bool) -> str:
 
 
 def localize_outage(
-    session: Session, node_ids, *, now: datetime | None = None
+    session: Session,
+    node_ids,
+    *,
+    now: datetime | None = None,
+    warm_stale: bool | None = None,
 ) -> dict | None:
     """Deepest dark-under-live node in a failure domain (design §3).
 
@@ -245,7 +273,11 @@ def localize_outage(
     affected_before = provisioned_by_node[failure_node]
 
     node = session.get(NetworkDevice, failure_node)
-    cls = classify_node(node, 0, had_prior_life=True) if node is not None else UNKNOWN
+    cls = (
+        classify_node(node, 0, had_prior_life=True, now=now, warm_stale=warm_stale)
+        if node is not None
+        else UNKNOWN
+    )
     return {
         "failure_node": failure_node,
         "class": cls,

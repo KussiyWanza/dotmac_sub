@@ -84,6 +84,8 @@ def _row_to_dict(row: DeviceProjection) -> dict:
         "last_seen": row.last_seen,
         "subscriber": row.subscriber_id,
         "class_facts": row.class_facts,
+        "lifecycle_state": row.lifecycle_state,
+        "is_inactive": row.lifecycle_state != "active",
     }
 
 
@@ -133,13 +135,18 @@ def device_projection_stats(
         select(
             DeviceProjection.device_type,
             DeviceProjection.operational_status,
+            DeviceProjection.lifecycle_state,
             func.count().label("n"),
         ),
         device_type=device_type,
         status=status,
         vendor=vendor,
         search=search,
-    ).group_by(DeviceProjection.device_type, DeviceProjection.operational_status)
+    ).group_by(
+        DeviceProjection.device_type,
+        DeviceProjection.operational_status,
+        DeviceProjection.lifecycle_state,
+    )
 
     stats = {
         "total": 0,
@@ -151,9 +158,18 @@ def device_projection_stats(
         "router": 0,
         "working": 0,
         "not_working": 0,
+        "inactive": 0,
     }
-    for dtype, dstatus, count in db.execute(filtered).all():
+    # Inactive devices stay in the projection (and in the device list) but are
+    # counted separately and excluded from every in-service total. Folding them
+    # into ``not_working`` would drag the operating percentage down with
+    # equipment that was deliberately taken out of service, and folding them
+    # into ``total`` alone would break ``working + not_working == total``.
+    for dtype, dstatus, lifecycle, count in db.execute(filtered).all():
         count = int(count or 0)
+        if str(lifecycle or "active") != "active":
+            stats["inactive"] += count
+            continue
         stats["total"] += count
         if dtype in stats:
             stats[dtype] += count

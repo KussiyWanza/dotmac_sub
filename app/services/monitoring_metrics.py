@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -367,10 +367,10 @@ def sync_router_to_monitoring(db: Session, router_id: str) -> NetworkDevice:
                 ).first()
                 if by_ip and by_ip.id != existing.id:
                     router.network_device_id = by_ip.id
-                    _sync_router_fields_to_device(router, by_ip)
+                    _sync_router_fields_to_device(db, router, by_ip)
                     db.flush()
                     return by_ip
-            _sync_router_fields_to_device(router, existing)
+            _sync_router_fields_to_device(db, router, existing)
             db.flush()
             return existing
 
@@ -380,7 +380,7 @@ def sync_router_to_monitoring(db: Session, router_id: str) -> NetworkDevice:
         ).first()
         if existing:
             router.network_device_id = existing.id
-            _sync_router_fields_to_device(router, existing)
+            _sync_router_fields_to_device(db, router, existing)
             db.flush()
             return existing
 
@@ -414,9 +414,23 @@ def sync_router_to_monitoring(db: Session, router_id: str) -> NetworkDevice:
     return device
 
 
-def _sync_router_fields_to_device(router, device: NetworkDevice) -> None:
-    """Copy non-secret RouterOS inventory fields to NetworkDevice."""
+def _sync_router_fields_to_device(db: Session, router, device: NetworkDevice) -> None:
+    """Copy non-secret RouterOS inventory fields to NetworkDevice.
+
+    Ownership: this is a field projection from router inventory into monitoring
+    inventory, and admission is deliberately NOT one of the copied fields.
+    ``device.is_active = router.is_active`` used to sit here — a
+    ``router_management`` writer performing a ``network.monitoring_inventory``
+    lifecycle transition through a raw attribute assignment, which skipped the
+    reachability-cache decay and left the device frozen at its last state.
+
+    The boundary decision (recorded in the SOT map): a monitoring device
+    auto-created from a router has no independent existence, so the router
+    remains the authoritative *input* to its admission — but the transition is
+    requested from the owner rather than written here.
+    """
     from app.models.network_monitoring import DeviceType
+    from app.services.network_monitoring import set_network_device_active
 
     device.name = router.name
     device.hostname = router.hostname or device.hostname
@@ -427,16 +441,35 @@ def _sync_router_fields_to_device(router, device: NetworkDevice) -> None:
     device.device_type = device.device_type or DeviceType.router
     device.status = _router_status_to_monitoring_status(router.status)
     device.ping_enabled = True
-    device.is_active = router.is_active
     if router.location and not device.notes:
         device.notes = router.location
+    set_network_device_active(
+        db, device, bool(router.is_active), reason="router_inventory_sync"
+    )
 
 
 def sync_all_routers_to_monitoring(db: Session) -> dict[str, int]:
-    """Sync all active RouterOS inventory rows to the monitoring system."""
+    """Sync RouterOS inventory rows to the monitoring system.
+
+    Scope deliberately includes inactive routers that still carry a linked
+    monitoring device. Selecting only ``is_active`` routers made deactivation
+    one-way: once a router was soft-deleted the sweep never looked at it again,
+    so its monitoring device could never be revisited — neither to converge a
+    deactivation that half-applied, nor to re-admit it if the router came back.
+    A sweep that cannot repair in both directions is not a reconciler.
+    """
     from app.models.router_management import Router
 
-    routers = list(db.scalars(select(Router).where(Router.is_active.is_(True))).all())
+    routers = list(
+        db.scalars(
+            select(Router).where(
+                or_(
+                    Router.is_active.is_(True),
+                    Router.network_device_id.isnot(None),
+                )
+            )
+        ).all()
+    )
 
     synced = 0
     skipped = 0

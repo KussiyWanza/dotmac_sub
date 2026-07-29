@@ -927,7 +927,9 @@ def execute_device_bulk_action(
         elif action == "disable_notifications":
             device.send_notifications = False
         elif action == "deactivate":
-            device.is_active = False
+            from app.services.network_monitoring import set_network_device_active
+
+            set_network_device_active(db, device, False, reason="bulk_deactivate")
         succeeded += 1
 
     if succeeded > 0:

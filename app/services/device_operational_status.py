@@ -51,6 +51,7 @@ _VERIFICATION_FAILURE_REASONS = frozenset(
 )
 _IMPAIRMENT_REASON_PREFIXES = ("active_trigger", "health_degraded", "poll_")
 _REASON_LABELS = {
+    "admin_inactive": "Removed from service (inactive inventory)",
     "active_trigger": "Working with an active alarm",
     "health_degraded": "Working with an impairment",
     "health_unhealthy": "Health verification confirmed failure",
@@ -168,6 +169,35 @@ def _is_fresh(ts, now: datetime, seconds: int) -> bool:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
     return (now - ts) <= timedelta(seconds=seconds)
+
+
+def _observation_window(device) -> tuple[datetime | None, int]:
+    """(when this device was last observed, how long that observation is good).
+
+    ``live_status_at`` is a *dwell* clock: the topology warmer stamps it only
+    when the derived state changes, so a device stably ``up`` for a week carries
+    a week-old value. Reading it as freshness marks healthy devices
+    ``verification_expired``. The poll columns are the real observation clock —
+    re-stamped every sweep — so prefer them, with the poller's own staleness
+    window; only fall back to the dwell clock (and the shorter warmer window)
+    for rows that carry no poll evidence at all.
+    """
+    from app.services.topology.live_status import (
+        STALE_POLL_AFTER_SECONDS,
+        live_status_observed_at,
+    )
+
+    polled = [
+        stamp
+        for stamp in (
+            getattr(device, "last_ping_at", None),
+            getattr(device, "last_snmp_at", None),
+        )
+        if stamp is not None
+    ]
+    if polled:
+        return live_status_observed_at(device), STALE_POLL_AFTER_SECONDS
+    return getattr(device, "live_status_at", None), _WARM_STALE_SECONDS
 
 
 # ── Per-type derivers (Phase 2b) ─────────────────────────────────────────────
@@ -358,6 +388,13 @@ def derive_operational_status(
     admin = _enum_value(getattr(device, "status", None))
     live = _enum_value(getattr(device, "live_status", None))
 
+    # 0. Inventory lifecycle wins over every observation. An inactive row is not
+    # polled, so anything it still carries in ``live_status`` is a frozen
+    # leftover — it must never be able to project ``working``. Deactivation is
+    # deliberate, so like the other admin_* reasons this is non-alarming.
+    if getattr(device, "is_active", True) is False:
+        return OperationalStatus(NOT_WORKING, "admin_inactive", admin, False, None)
+
     # 1. Lifecycle intent wins — intentional states never become alarms.
     if admin in _LIFECYCLE_OVERRIDE:
         return OperationalStatus(NOT_WORKING, f"admin_{admin}", admin, False, None)
@@ -372,20 +409,18 @@ def derive_operational_status(
     ):
         return _maybe_mismatch(NOT_WORKING, "verification_path_unavailable", admin)
 
-    # 3/4/5. Native observation time decides whether verification has expired.
-    # live_status_at is the status-transition/dwell timestamp, not freshness
-    # evidence. A current per-device collector timestamp is stronger than a
-    # missing global heartbeat; legacy rows without one fall back to the warmer
-    # heartbeat.
+    # 3/4/5. Observation time decides whether verification has expired. A
+    # current per-device timestamp is stronger than a missing global heartbeat;
+    # rows without their own timestamp fall back to the warmer heartbeat. The
+    # timestamp comes from _observation_window (poll clock first, dwell clock
+    # only as a fallback) — see that helper for why the distinction matters.
     if live is None:
         return _maybe_mismatch(NOT_WORKING, "verification_not_started", admin)
+    observed_at, observation_window = _observation_window(device)
     current = now or datetime.now(UTC)
-    from app.services.topology.live_status import live_status_observed_at
-
-    observation_at = live_status_observed_at(device, now=current)
     verification_expired = (
-        not _is_fresh(observation_at, current, _WARM_STALE_SECONDS)
-        if observation_at is not None
+        not _is_fresh(observed_at, current, observation_window)
+        if observed_at is not None
         else warm_stale
     )
     if verification_expired:

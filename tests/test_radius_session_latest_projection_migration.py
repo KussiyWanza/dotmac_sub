@@ -31,7 +31,11 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["442_customer_vat_exemption_policy"]
+    assert script.get_heads() == ["443_device_projection_lifecycle_state"]
+    assert (
+        script.get_revision("443_device_projection_lifecycle_state").down_revision
+        == "442_customer_vat_exemption_policy"
+    )
     assert (
         script.get_revision("442_customer_vat_exemption_policy").down_revision
         == "441_network_zone_geo_area_binding"

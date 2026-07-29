@@ -2889,7 +2889,26 @@ Dependency order:
 
 1. `network.identity`: resolves cross-model network/customer links.
 2. `network.monitoring_inventory`: owns monitoring inventory, metric records,
-   alert rules, and alert state mutations.
+   alert rules, and alert state mutations. Device admission is a single owned
+   transition (`set_network_device_active`), never a bare flag write: it leaves
+   polling eligibility, decays the derived `live_status` cache to `unknown` so
+   an unpollable row cannot keep asserting reachability nothing is checking,
+   and keeps the device visible in inventory marked inactive. Router inventory
+   is an authoritative *input* to the admission of the monitoring device it
+   links — an auto-created device has no independent existence — but
+   `router_management` requests the transition from this owner rather than
+   writing `is_active` itself. Reachability observations never drive inventory
+   lifecycle in either direction, and inventory lifecycle never fabricates a
+   reachability observation: decaying a derived cache withdraws an unsupported
+   assertion, it does not assert a new one. Deactivating a device that still
+   has customers attached raises an admin-facing data-integrity alert at the
+   transition, deduped per device and resolved on re-admission. That alert is a
+   statement about the inventory record with a known blast radius; it is never
+   an `OutageIncident` and never a customer-visible surface.
+   Inventory absence must not open a customer-facing outage: an unpolled device
+   supports no reachability verdict, which is exactly why deactivation
+   classifies as `unknown` rather than `node_outage`, and the outage sweep is
+   not widened to inactive nodes to compensate.
 3. `network.fiber_source_staging`: owns immutable source manifests, normalized
    staged map facts, and non-authoritative duplicate/match suggestions. Staging
    preserves evidence; it cannot create, merge, retire, or delete canonical
@@ -3183,7 +3202,17 @@ writers are retired; historical rows remain readable evidence.
    classification from administrative intent and monitoring observations, and
    owns the `up/degraded/down/maintenance` vocabulary. Retry-pending gaps stay
    binary but are non-alarming; presentation renders retry-pending `down` as
-   warning/clock rather than a confirmed negative failure.
+   warning/clock rather than a confirmed negative failure. Inventory admission
+   outranks every observation: an inactive device resolves `not_working`
+   (`admin_inactive`, non-alarming) because nothing polls it, so anything it
+   still carries is frozen. Freshness is read from the poll clock
+   (`last_ping_at` / `last_snmp_at`), never from `live_status_at`, which is a
+   dwell clock the warmer stamps only on state change. The release gate that
+   follows — **an inactive or stale device can never project `up`/`working`** —
+   is enforced at three levels: this resolver, the `network.device_projection`
+   reconciler's normalisation, and a CHECK constraint on `device_projections`.
+   `topology.live_status.trusted_live_status` applies the same gate on the read
+   path so a frozen `up` cannot veto outage detection for customers.
 34. `network.ont_status_refresh`: owns admission of stale ONT runtime-status
    refresh requests from read surfaces. ONT inventory may request a refresh when
    displayed evidence is stale, but it must not poll OLTs directly. Huawei ONTs

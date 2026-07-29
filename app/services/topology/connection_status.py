@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Subscription
+from app.services.device_operational_status import warmer_is_stale
 from app.services.topology import last_mile
 from app.services.topology.affected import affected_customers
 from app.services.topology.customer_path import resolve_customer_path
@@ -153,7 +154,7 @@ class Assessment:
 
 
 def _area_outage_boundary(
-    session: Session, path, now: datetime | None
+    session: Session, path, now: datetime | None, warm_stale: bool | None = None
 ) -> uuid.UUID | None:
     """An opaque area-outage boundary id for this customer, or None.
 
@@ -168,6 +169,12 @@ def _area_outage_boundary(
          mislabelled "your area" (design §7.1 small-N guard).
 
     Either way, "down but under an area outage" suppresses the last-mile blame.
+
+    ``warm_stale`` carries the warmer's dead-man signal into the P1 inference.
+    Without it a node frozen at ``live_status='up'`` (deactivated, checks
+    disabled, or warmer dead) classifies ``service_fault`` instead of
+    ``node_outage``, so this returns ``None`` and the customer is told to reboot
+    their router while the cabinet above them is dark.
     """
     incident = open_incident_for_path(session, path)
     if incident is not None:
@@ -177,7 +184,7 @@ def _area_outage_boundary(
     if node is None:
         return None
     impact = affected_customers(session, node=node)
-    loc = localize_outage(session, impact["node_ids"], now=now)
+    loc = localize_outage(session, impact["node_ids"], now=now, warm_stale=warm_stale)
     if loc is None or loc["class"] != NODE_OUTAGE:
         return None
     if loc["affected_online_before"] < AREA_MIN_AFFECTED:
@@ -190,7 +197,12 @@ def assess(
 ) -> Assessment:
     """Full internal assessment (last-mile verdict + area-outage overlay)."""
     checked_at = now or datetime.now(UTC)
-    diag = last_mile.diagnose_last_mile(session, subscription, now=now)
+    # One dead-man read shared by the last-mile diagnosis and the area
+    # inference, so the two cannot disagree about warmer freshness.
+    warm_stale = warmer_is_stale(checked_at)
+    diag = last_mile.diagnose_last_mile(
+        session, subscription, now=now, warm_stale=warm_stale
+    )
     verdict = diag["verdict"]
     medium = diag["medium"]
 
@@ -212,7 +224,7 @@ def assess(
     # Down: is there an area outage above this customer? If so, suppress the
     # last-mile blame and present the area message (design §5/§7.3).
     path = resolve_customer_path(session, subscription)
-    boundary = _area_outage_boundary(session, path, now)
+    boundary = _area_outage_boundary(session, path, now, warm_stale)
     if boundary is not None:
         state, headline, message, advice = _AREA_VIEW
         return Assessment(
