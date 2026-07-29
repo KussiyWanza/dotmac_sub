@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.billing import Payment
 from app.models.subscriber import Subscriber
+from app.schemas.billing import PaymentSettlementReconciliationRequest
 from app.services import billing as billing_service
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import web_billing_payment_forms as web_billing_payment_forms_service
@@ -661,6 +662,60 @@ def payment_detail(
             "current_user": get_current_user(request),
             "sidebar_stats": get_sidebar_stats(db),
         },
+    )
+
+
+@router.get(
+    "/payments/{payment_id:uuid}/settlement/evidence",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:ledger:read"))],
+)
+def payment_settlement_evidence(
+    request: Request, payment_id: UUID, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    evidence = billing_service.payments.inspect_settlement_evidence(db, str(payment_id))
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/billing/payment_settlement_evidence.html",
+        {
+            "request": request,
+            "evidence": evidence,
+            "payment_id": payment_id,
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+            "active_page": "payments",
+            "active_menu": "billing",
+        },
+    )
+
+
+@router.post(
+    "/payments/{payment_id:uuid}/settlement/evidence/reconcile",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:ledger:write"))],
+)
+async def reconcile_payment_settlement_evidence(
+    request: Request, payment_id: UUID, db: Session = Depends(get_db)
+) -> RedirectResponse:
+    form = await request.form()
+    evidence = billing_service.payments.inspect_settlement_evidence(db, str(payment_id))
+    allocation_ledger_entry_ids = {}
+    for allocation_id in cast(list[UUID], evidence["active_allocation_ids"]):
+        selected = form.get(f"allocation_{allocation_id}")
+        if selected:
+            allocation_ledger_entry_ids[allocation_id] = UUID(str(selected))
+    unallocated = form.get("unallocated_ledger_entry_id")
+    payload = PaymentSettlementReconciliationRequest(
+        allocation_ledger_entry_ids=allocation_ledger_entry_ids,
+        unallocated_ledger_entry_id=UUID(str(unallocated)) if unallocated else None,
+        reason=str(form.get("reason", "")).strip(),
+    )
+    web_billing_payments_service.reconcile_payment_settlement_evidence_with_audit(
+        db, request, payment_id=str(payment_id), payload=payload
+    )
+    return RedirectResponse(
+        url=f"/admin/billing/payments/{payment_id}", status_code=303
     )
 
 

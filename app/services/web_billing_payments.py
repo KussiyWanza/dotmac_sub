@@ -41,6 +41,7 @@ from app.schemas.billing import (
     PaymentRefundRequest,
     PaymentReversalPreviewRequest,
     PaymentReversalRequest,
+    PaymentSettlementReconciliationRequest,
     PaymentUpdate,
 )
 from app.services import audit as audit_service
@@ -1579,6 +1580,36 @@ def process_payment_settlement_with_audit(
             actor_id=_actor_id(request),
             metadata=result.audit_metadata(),
         )
+    return result
+
+
+def reconcile_payment_settlement_evidence_with_audit(
+    db: Session,
+    request,
+    *,
+    payment_id: str,
+    payload: PaymentSettlementReconciliationRequest,
+):
+    """Reconcile reviewed historical evidence and record the admin action."""
+    result = billing_service.payments.reconcile_settlement_evidence(
+        db, payment_id, payload
+    )
+    log_audit_event(
+        db=db,
+        request=request,
+        action="reconcile_settlement_evidence",
+        entity_type="payment",
+        entity_id=payment_id,
+        metadata={
+            "settlement_id": str(result.id),
+            "reason": payload.reason,
+            "unallocated_ledger_entry_id": (
+                str(payload.unallocated_ledger_entry_id)
+                if payload.unallocated_ledger_entry_id
+                else None
+            ),
+        },
+    )
     return result
 
 
