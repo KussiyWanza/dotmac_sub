@@ -10,6 +10,7 @@ from app.models.network_operation import (
     NetworkOperationTargetType,
 )
 from app.services.control_plane_intent import phase_for_network_operation
+from app.services.network.ont_authorization import LOCAL_INVENTORY_FAILED_HEADLINE
 from app.services.network_operation_dispatch import operation_dispatch_summary
 from app.services.network_operation_recovery import review_redrive
 from app.services.network_operations import network_operations
@@ -84,6 +85,36 @@ STATUS_DISPLAY: dict[str, str] = {
 }
 
 
+def _partial_outcome(op: Any) -> dict[str, Any]:
+    """Project the stored partial-success classification for the operator.
+
+    The authorization owner is the single writer of these flags; this only
+    reads them so "the OLT authorized the ONT but the local projection failed"
+    can never render as a generic failure.
+    """
+    payload = getattr(op, "output_payload", None)
+    if not isinstance(payload, dict):
+        return {
+            "device_authorization_completed": False,
+            "local_inventory_failed": False,
+            "partial_success_headline": None,
+            "device_message": None,
+            "device_authorization_reused_from": None,
+        }
+    local_inventory_failed = bool(payload.get("local_inventory_failed"))
+    return {
+        "device_authorization_completed": bool(payload.get("completed_authorization")),
+        "local_inventory_failed": local_inventory_failed,
+        "partial_success_headline": (
+            LOCAL_INVENTORY_FAILED_HEADLINE if local_inventory_failed else None
+        ),
+        "device_message": str(payload.get("device_message") or "") or None,
+        "device_authorization_reused_from": (
+            str(payload.get("device_authorization_reused_from") or "") or None
+        ),
+    }
+
+
 def _format_duration(op: Any) -> str | None:
     """Format the duration between started_at and completed_at."""
     if not op.started_at or not op.completed_at:
@@ -143,7 +174,9 @@ def build_operation_history(
 
         redrive_review = review_redrive(db, op)
         dispatch_summary = operation_dispatch_summary(op)
+        partial_outcome = _partial_outcome(op)
         entry: dict[str, Any] = {
+            **partial_outcome,
             "id": str(op.id),
             "title": _operation_title(op),
             "status": STATUS_DISPLAY.get(status_val, status_val),

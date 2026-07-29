@@ -183,6 +183,8 @@ def test_huawei_authorization_records_topology_only_through_observation_owner(
     )
     db_session.commit()
 
+    canonical_external_id = ont.external_id
+
     ont_id, _message = create_or_find_ont_for_authorized_serial(
         db_session,
         olt_id=str(observed_olt.id),
@@ -199,7 +201,14 @@ def test_huawei_authorization_records_topology_only_through_observation_owner(
     db_session.commit()
     db_session.refresh(ont)
 
-    assert ont_id == str(ont.id)
+    # Serial uniqueness is scoped to (olt_device_id, serial_number): the row on
+    # the canonical OLT is a different ONT and must never be hijacked.
+    assert ont_id is not None
+    assert ont_id != str(ont.id)
+    hijack_candidate = db_session.get(OntUnit, ont_id)
+    assert hijack_candidate is not None
+    assert hijack_candidate.olt_device_id == observed_olt.id
+    assert ont.external_id == canonical_external_id
     assert recorded is False
     assert "reviewed identity repair" in message
     assert ont.olt_device_id == canonical_olt.id
@@ -227,7 +236,9 @@ def test_new_huawei_authorization_initializes_only_an_exact_modeled_pon(db_sessi
     assert ont_id is not None
     ont = db_session.get(OntUnit, ont_id)
     assert ont is not None
-    assert ont.olt_device_id is None
+    # The constraint-scoping column is populated at creation time so the scoped
+    # unique constraint actually dedupes new rows under Postgres NULL semantics.
+    assert ont.olt_device_id == olt.id
     assert ont.pon_port_id is None
 
     recorded, _message = record_topology_observation_for_authorized_ont(

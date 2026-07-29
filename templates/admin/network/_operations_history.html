@@ -5,6 +5,12 @@
   Each entry has: id, title, status, status_value, status_class, is_running,
   is_waiting, is_failed, message, initiated_by, occurred_at, duration,
   can_retry, operation_type, target_type, target_id.
+
+  Partial-outcome fields projected from the operation's stored output payload:
+  device_authorization_completed, local_inventory_failed, device_message,
+  device_authorization_reused_from. `local_inventory_failed` means the OLT
+  accepted the write and only the local projection failed; it must never render
+  as a generic failure.
 #}
 
 {% if operations %}
@@ -30,8 +36,27 @@
                     {{ op.status }}
                 </span>
             </div>
-            {% if op.message %}
+            {% if op.local_inventory_failed %}
+            <div class="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 dark:border-amber-400/40 dark:bg-amber-400/10">
+                <p class="text-xs font-semibold text-amber-900 dark:text-amber-100">OLT authorization succeeded; local inventory failed</p>
+                <p class="mt-0.5 text-xs text-amber-800 dark:text-amber-200">
+                    The ONT is authorized on the OLT. Do not re-authorize it &mdash; retrying repairs only the local inventory record.
+                </p>
+                {% if op.message %}
+                <p class="mt-1 text-xs text-amber-800 dark:text-amber-200" title="{{ op.message }}">{{ op.message }}</p>
+                {% endif %}
+                {% if op.device_message %}
+                <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">OLT reported: {{ op.device_message }}</p>
+                {% endif %}
+            </div>
+            {% elif op.message %}
             <p class="mt-1 truncate text-xs {% if op.is_failed %}text-rose-600 dark:text-rose-400{% else %}text-slate-500 dark:text-slate-400{% endif %}" title="{{ op.message }}">{{ op.message }}</p>
+            {% endif %}
+            {% if op.device_authorization_reused_from %}
+            <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Reused the OLT authorization from operation
+                <span class="font-mono">{{ op.device_authorization_reused_from[:8] }}</span>; no device command was re-issued.
+            </p>
             {% endif %}
             {% if op.initiated_by or op.duration %}
             <p class="mt-0.5 text-xs text-slate-400 dark:text-slate-500">

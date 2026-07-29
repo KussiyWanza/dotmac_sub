@@ -504,7 +504,11 @@ def test_authorization_reports_partial_failure_when_local_record_setup_fails(
     assert result.completed_authorization is True
     assert result.partial_success is True
     assert result.status == "error"
-    assert "local inventory record setup failed" in result.message
+    assert result.local_inventory_failed is True
+    assert result.message.startswith(
+        "OLT authorization succeeded; local inventory failed"
+    )
+    assert "Failed to create ONT record." in result.message
 
 
 def test_authorization_links_assignment_before_reporting_success(
@@ -649,7 +653,11 @@ def test_authorization_reports_partial_failure_when_assignment_link_fails(
     assert result.completed_authorization is True
     assert result.partial_success is True
     assert result.status == "error"
-    assert "local PON assignment setup failed" in result.message
+    assert result.local_inventory_failed is True
+    assert result.message.startswith(
+        "OLT authorization succeeded; local inventory failed"
+    )
+    assert "Invalid OLT F/S/P for assignment." in result.message
 
 
 def test_authorization_fails_before_adapter_when_dependency_audit_fails(

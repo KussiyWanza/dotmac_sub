@@ -158,8 +158,15 @@ def execute_ont_authorization(
         force_reauthorize=force_reauthorize,
         preset_id=preset_id,
         request=None,
+        # Lets the authorization owner commit ``completed_authorization`` the
+        # moment the OLT accepts the write, independently of this payload.
+        operation_id=operation_id,
     )
-    payload = result.to_dict()
+    # Merge onto whatever the authorization owner already committed (notably the
+    # landed ``device_authorization`` evidence) so terminalizing the operation
+    # never erases the fact that the OLT write succeeded.
+    operation = network_operations.get(db, operation_id)
+    payload: dict[str, Any] = {**(operation.output_payload or {}), **result.to_dict()}
     payload["operation_id"] = operation_id
     follow_up = None
 
