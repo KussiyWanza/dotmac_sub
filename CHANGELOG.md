@@ -2,6 +2,10 @@
 
 All notable changes to DotMac Sub are tracked here.
 
+## 7.62.0 - 2026-07-29
+
+- Version bump.
+
 ## 7.59.0 - 2026-07-29
 
 - Compose service-team capabilities, member responsibilities, typed geographic scopes, relationships, external references, and explicit routing policies; legacy scalar team type, region, manager, and member role remain shadow inputs until the verification gate passes.
