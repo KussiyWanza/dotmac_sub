@@ -301,6 +301,33 @@ def test_unbound_zone_falls_back_to_global_routing_policy(db_session):
     assert owner.metadata_["affected_count"] == 7
 
 
+def test_stale_zone_binding_denies_routing_instead_of_global_fallback(db_session):
+    """Approved fail-closed rule: a binding to a retired GeoArea is stale and
+    must resolve unavailable — the incident stays unrouted rather than
+    masquerading as unbound and silently taking the global route."""
+
+    _seed_ops_teams(db_session)
+    area = GeoArea(name="Retired Coverage", is_active=True)
+    db_session.add(area)
+    db_session.flush()
+    node = _zoned_node(db_session, geo_area_id=area.id)
+    area.is_active = False
+    db_session.flush()
+
+    incident = declare_outage(
+        db_session,
+        node=node,
+        declared_by="noc@dotmac.io",
+        severity="high",
+        impact={"count": 3},
+    )
+    db_session.commit()
+
+    assert incident is not None
+    assert db_session.query(OperationalOwner).count() == 0
+    assert db_session.query(OperationalWatcher).count() == 0
+
+
 def test_classifier_outage_creates_operations_state_only_when_confirmed(db_session):
     _seed_ops_teams(db_session)
     node = _node(db_session)

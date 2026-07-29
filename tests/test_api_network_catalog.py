@@ -171,17 +171,19 @@ class TestNetworkZoneGeoAreaBinding:
         assert zone.geo_area_id is None
 
     def test_resolve_geo_area_returns_own_binding(self, db_session):
-        from app.services.network.zones import NetworkZones
+        from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 
         area = self._area(db_session, name="Own Binding Area")
         zone = NetworkZones.create(
             db_session, name="Bound Zone", geo_area_id=str(area.id)
         )
 
-        assert NetworkZones.resolve_geo_area(db_session, zone.id) == area.id
+        resolved = NetworkZones.resolve_geo_area(db_session, zone.id)
+        assert resolved.kind is ZoneGeoAreaResolutionKind.bound
+        assert resolved.geo_area_id == area.id
 
     def test_resolve_geo_area_inherits_through_parent_chain(self, db_session):
-        from app.services.network.zones import NetworkZones
+        from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 
         area = self._area(db_session, name="Inherited Area")
         grandparent = NetworkZones.create(
@@ -194,24 +196,32 @@ class TestNetworkZoneGeoAreaBinding:
             db_session, name="Street Zone", parent_id=str(parent.id)
         )
 
-        assert NetworkZones.resolve_geo_area(db_session, child.id) == area.id
+        resolved = NetworkZones.resolve_geo_area(db_session, child.id)
+        assert resolved.kind is ZoneGeoAreaResolutionKind.bound
+        assert resolved.geo_area_id == area.id
 
     def test_resolve_geo_area_returns_none_for_unbound_chain(self, db_session):
-        from app.services.network.zones import NetworkZones
+        from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 
         parent = NetworkZones.create(db_session, name="Unbound Parent")
         child = NetworkZones.create(
             db_session, name="Unbound Child", parent_id=str(parent.id)
         )
 
-        assert NetworkZones.resolve_geo_area(db_session, child.id) is None
-        assert NetworkZones.resolve_geo_area(db_session, None) is None
+        assert (
+            NetworkZones.resolve_geo_area(db_session, child.id).kind
+            is ZoneGeoAreaResolutionKind.unbound
+        )
+        assert (
+            NetworkZones.resolve_geo_area(db_session, None).kind
+            is ZoneGeoAreaResolutionKind.unbound
+        )
 
-    def test_resolve_geo_area_degrades_when_nearest_binding_is_inactive(
-        self, db_session
-    ):
-        """A retired GeoArea on the nearest bound zone must not rebind wider."""
-        from app.services.network.zones import NetworkZones
+    def test_resolve_geo_area_reports_stale_binding_unavailable(self, db_session):
+        """A stale binding resolves unavailable per the approved fail-closed
+        rule: it denies scoped consequences, never masquerading as unbound or
+        rebinding to a wider area."""
+        from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 
         wide_area = self._area(db_session, name="Wide Active Area")
         near_area = self._area(db_session, name="Near Area")
@@ -230,10 +240,12 @@ class TestNetworkZoneGeoAreaBinding:
         near_area.is_active = False
         db_session.flush()
 
-        assert NetworkZones.resolve_geo_area(db_session, child.id) is None
+        resolved = NetworkZones.resolve_geo_area(db_session, child.id)
+        assert resolved.kind is ZoneGeoAreaResolutionKind.unavailable
+        assert resolved.geo_area_id is None
 
     def test_resolve_geo_area_tolerates_parent_cycle(self, db_session):
-        from app.services.network.zones import NetworkZones
+        from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 
         first = NetworkZones.create(db_session, name="Cycle A")
         second = NetworkZones.create(
@@ -241,7 +253,10 @@ class TestNetworkZoneGeoAreaBinding:
         )
         NetworkZones.update(db_session, str(first.id), parent_id=str(second.id))
 
-        assert NetworkZones.resolve_geo_area(db_session, second.id) is None
+        assert (
+            NetworkZones.resolve_geo_area(db_session, second.id).kind
+            is ZoneGeoAreaResolutionKind.unbound
+        )
 
 
 class TestVendorCapabilitySchemas:

@@ -129,9 +129,11 @@ composition owner never derives it from topology. For outage routing that
 GeoArea comes only from the network-zone catalog's zone→GeoArea binding
 (`network_zones.geo_area_id`), written solely by `app.services.network.zones`
 and resolved solely through `NetworkZones.resolve_geo_area`: a zone without its
-own binding inherits through its parent chain, and an inactive GeoArea on the
-nearest bound zone degrades resolution to `None` (global routing) instead of
-rebinding the incident to a wider area. The one-time
+own binding inherits through its parent chain. Intentionally unbound zones may
+use configured global routing; a stale binding (a retired GeoArea on the
+nearest bound zone) resolves unavailable and denies the scoped routing
+consequence — it never masquerades as unbound, falls back to legacy fields, or
+rebinds the incident to a wider area. The one-time
 `operations.service_team_source_retirement` gate verifies the five retained
 native pointers and retires workflow-setting sources without CRM identity or
 membership adoption. Legacy scalar type, region, manager, role, and workforce
@@ -2880,10 +2882,12 @@ own manifest entry) is the single writer of zone rows and of the typed
 `network_zones.geo_area_id` binding to an active `gis.spatial_sync` GeoArea.
 Consumers never read the binding column directly; they resolve a zone's
 effective GeoArea only through the owner query `NetworkZones.resolve_geo_area`,
-which inherits through the zone parent chain, tolerates cycles, and returns
-`None` when the nearest bound zone's GeoArea is inactive so geo-scoped
+which inherits through the zone parent chain and tolerates cycles. The
+resolution is typed: `unbound` (no binding on the chain) lets geo-scoped
 consumers (for example `operations.service_team_composition` outage routing)
-fall back to global behavior rather than a wider area.
+use configured global behavior, while `unavailable` (a stale binding to a
+retired GeoArea) denies the scoped consequence per the approved fail-closed
+rule — never masquerading as unbound or rebinding to a wider area.
 
 Dependency order:
 

@@ -17219,9 +17219,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the single writer of the zone -> GeoArea binding, and "
                     "consumers such as outage routing derive an incident's "
                     "effective GeoArea only through NetworkZones.resolve_geo_area "
-                    "(parent-chain inheritance; an inactive GeoArea on the "
-                    "nearest bound zone degrades to global routing rather than "
-                    "rebinding to a wider area)."
+                    "(parent-chain inheritance). Intentionally unbound zones "
+                    "may use configured global routing; a stale binding — a "
+                    "retired GeoArea on the nearest bound zone — resolves "
+                    "unavailable and denies the scoped routing consequence, "
+                    "never masquerading as unbound or rebinding wider."
                 ),
                 contract=ServiceContract(
                     concerns=(
