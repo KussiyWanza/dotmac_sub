@@ -29,6 +29,21 @@ def test_operator_reconciliation_is_a_thin_reviewed_adapter() -> None:
     assert "reconciliation_head_stale" in owner
 
 
+def test_customer_detail_remote_plan_action_delegates_to_execution_owner() -> None:
+    route = (ROOT / "app/web/admin/customers.py").read_text()
+    template = (ROOT / "templates/admin/customers/detail.html").read_text()
+    owner = (ROOT / "app/services/subscription_change_execution.py").read_text()
+
+    assert "provision_and_verify_remote_change(" in route
+    assert 'require_permission("provisioning:service_change_reconcile")' in route
+    assert "SubscriptionChangeRequest(" not in route
+    assert "reconcile_subscription_connectivity(" in owner
+    assert "finalize_verified_remote_reprovision(" in owner
+    assert "Provision and verify now" in template
+    assert "can_reconcile_service_changes" in template
+    assert "remote-plan-change:" in template
+
+
 def test_operator_reconciliation_permission_is_seeded_admin_only() -> None:
     from scripts.seed.seed_rbac import ADMIN_ONLY_PERMISSION_KEYS, DEFAULT_PERMISSIONS
 

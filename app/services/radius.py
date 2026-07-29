@@ -1029,9 +1029,7 @@ def reconcile_subscription_connectivity(
         nas_device = db.get(NasDevice, subscription.provisioning_nas_device_id)
         if nas_device:
             radius_clients_changed = ensure_radius_clients_for_nas(db, nas_device)
-
-    radius_users_changed = ensure_radius_users_for_subscription(db, subscription)
-    db.flush()
+            db.flush()
 
     external_nas_synced = 0
     external_credentials_synced = 0
@@ -1066,7 +1064,6 @@ def reconcile_subscription_connectivity(
             subscription_id=str(subscription.id),
             disposition=ConnectivityProjectionDisposition.missing_login,
             radius_clients_changed=radius_clients_changed,
-            radius_users_changed=radius_users_changed,
             external_nas_synced=external_nas_synced,
             requested_logins=len(requested_usernames),
         )
@@ -1076,7 +1073,6 @@ def reconcile_subscription_connectivity(
             subscription_id=str(subscription.id),
             disposition=ConnectivityProjectionDisposition.target_unavailable,
             radius_clients_changed=radius_clients_changed,
-            radius_users_changed=radius_users_changed,
             external_nas_synced=external_nas_synced,
             requested_logins=len(requested_usernames),
         )
@@ -1097,6 +1093,13 @@ def reconcile_subscription_connectivity(
         if unbuildable_logins
         else ConnectivityProjectionDisposition.projected
     )
+    radius_users_changed = 0
+    if disposition is ConnectivityProjectionDisposition.projected:
+        # RadiusUser is the local observation consumed by exact service-change
+        # verification. Never advance its profile/watermark until every
+        # required external projection has converged.
+        radius_users_changed = ensure_radius_users_for_subscription(db, subscription)
+        db.flush()
     return SubscriptionConnectivityOutcome(
         subscription_id=str(subscription.id),
         disposition=disposition,
