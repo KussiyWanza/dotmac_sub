@@ -56,6 +56,7 @@ secrets/
 htmlcov/
 .coverage
 .pytest_cache/
+.ci-cache/
 .claude/
 test-results/.last-run.json
 

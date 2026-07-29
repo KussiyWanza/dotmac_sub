@@ -7,7 +7,7 @@ name: Mobile CI
 # filter below, so backend-only PRs still don't pay for a Flutter/iOS run.
 on:
   push:
-    branches: [main, develop, dev]
+    branches: [main, dev]
   pull_request:
     branches: [main, dev]
   merge_group:

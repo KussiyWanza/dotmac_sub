@@ -22,6 +22,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.architecture.source_index import python_ast, python_files, source_text
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVICES = PROJECT_ROOT / "app" / "services"
 APP = PROJECT_ROOT / "app"
@@ -43,9 +45,8 @@ def _ai_modules() -> list[Path]:
     """
     return [
         p
-        for p in SERVICES.rglob("*.py")
-        if "__pycache__" not in p.parts
-        and (p.name.startswith("ai") or "ai" in p.relative_to(SERVICES).parts[:-1])
+        for p in python_files(SERVICES)
+        if p.name.startswith("ai") or "ai" in p.relative_to(SERVICES).parts[:-1]
     ]
 
 
@@ -70,7 +71,7 @@ def _model_names_written(tree: ast.AST) -> set[str]:
 def test_ai_services_never_write_domain_rows():
     offenders: list[str] = []
     for path in _ai_modules():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = python_ast(path)
         for model in sorted(_model_names_written(tree) - _AI_OWNED_MODELS):
             offenders.append(f"{path.relative_to(PROJECT_ROOT)}: writes {model}")
     assert not offenders, (
@@ -82,19 +83,17 @@ def test_ai_services_never_write_domain_rows():
 
 def test_ai_insight_has_a_single_writer():
     offenders: list[str] = []
-    for path in APP.rglob("*.py"):
+    for path in python_files(APP):
         rel = str(path.relative_to(PROJECT_ROOT))
-        if "__pycache__" in path.parts:
-            continue
         if rel in {
             "app/services/ai_operations.py",
             "app/models/ai_insight.py",
         }:
             continue
-        text = path.read_text(encoding="utf-8")
+        text = source_text(path)
         if "AIInsight" not in text:
             continue
-        tree = ast.parse(text)
+        tree = python_ast(path)
         if "AIInsight" in _model_names_written(tree):
             offenders.append(rel)
     assert not offenders, (

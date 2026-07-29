@@ -3,6 +3,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.architecture.source_index import (
+    call_lines,
+    python_ast,
+    python_files,
+    source_text,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVICES = PROJECT_ROOT / "app/services"
 OWNER = SERVICES / "work_order_commands.py"
@@ -12,18 +19,13 @@ WEB = SERVICES / "web_dispatch_work_orders.py"
 
 
 def _constructors(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    return {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
+    return set(call_lines(path))
 
 
 def test_work_order_rows_have_one_native_constructor():
     native_constructors: list[str] = []
     queue_constructors: list[str] = []
-    for path in SERVICES.rglob("*.py"):
+    for path in python_files(SERVICES):
         constructors = _constructors(path)
         if "WorkOrder" in constructors:
             native_constructors.append(str(path.relative_to(PROJECT_ROOT)))
@@ -42,8 +44,8 @@ def test_assignment_projection_has_no_parallel_service_writer():
         "assigned_technician_id",
     }
     writers: set[str] = set()
-    for path in SERVICES.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path in python_files(SERVICES):
+        tree = python_ast(path)
         targets = [
             target
             for node in ast.walk(tree)
@@ -62,9 +64,9 @@ def test_assignment_projection_has_no_parallel_service_writer():
 
 
 def test_dispatch_adapters_delegate_and_cannot_write_assignment_state_directly():
-    dispatch_source = DISPATCH.read_text(encoding="utf-8")
-    manager_source = MANAGER.read_text(encoding="utf-8")
-    web_source = WEB.read_text(encoding="utf-8")
+    dispatch_source = source_text(DISPATCH)
+    manager_source = source_text(MANAGER)
+    web_source = source_text(WEB)
 
     assert "work_order_commands.create(" in dispatch_source
     assert "work_order_commands.update_header(" in dispatch_source
@@ -88,5 +90,5 @@ def test_assignment_readers_ignore_non_assigned_queue_rows():
         "customer_work_order_selfcare.py",
         "workqueue/providers/work_orders.py",
     ):
-        source = (SERVICES / relative_path).read_text(encoding="utf-8")
+        source = source_text(SERVICES / relative_path)
         assert "DispatchQueueStatus.assigned" in source

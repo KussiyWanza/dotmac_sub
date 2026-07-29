@@ -1,0 +1,41 @@
+name: Set up shared CI Python
+description: Restore the Python environment prepared once for this workflow.
+
+inputs:
+  python-version:
+    description: Python version used to build the shared environment
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Download shared Python environment
+      uses: actions/download-artifact@v4
+      with:
+        name: python-environment
+        path: ${{ runner.temp }}/python-environment
+
+    - name: Remove repository development environment pointer
+      shell: bash
+      run: |
+        if [ -L .venv ]; then
+          rm .venv
+        fi
+
+    - name: Restore shared Python environment
+      shell: bash
+      run: |
+        tar -xzf "$RUNNER_TEMP/python-environment/python-venv.tar.gz"
+        tar -xzf "$RUNNER_TEMP/python-environment/poetry-home.tar.gz" -C "$HOME"
+
+    - name: Configure shared Poetry
+      shell: bash
+      run: |
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/poetry" config virtualenvs.create true
+        "$HOME/.local/bin/poetry" config virtualenvs.in-project true

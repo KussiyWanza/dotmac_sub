@@ -17,6 +17,13 @@ import ast
 from pathlib import Path
 
 from app.services import sot_relationships
+from tests.architecture.source_index import (
+    class_names,
+    identifier_names,
+    python_files,
+    python_nodes,
+    string_constants,
+)
 
 APP = Path(__file__).resolve().parents[2] / "app"
 
@@ -40,16 +47,7 @@ ALLOWED_COMPANY_BANK_FILES = {
 
 
 def _python_files() -> list[Path]:
-    return sorted(APP.rglob("*.py"))
-
-
-def _string_constants(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    return {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
+    return list(python_files(APP))
 
 
 def _constant_offenders(needle: str, allowed: set[str]) -> list[str]:
@@ -58,7 +56,7 @@ def _constant_offenders(needle: str, allowed: set[str]) -> list[str]:
         rel = path.relative_to(APP).as_posix()
         if rel in allowed:
             continue
-        if needle in _string_constants(path):
+        if needle in string_constants(path):
             offenders.append(rel)
     return offenders
 
@@ -93,10 +91,8 @@ def test_sub_does_not_model_a_chart_of_accounts() -> None:
     banned = {"ChartOfAccounts", "JournalEntry", "AccountCategory"}
     offenders = []
     for path in _python_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name in banned:
-                offenders.append(f"{path.relative_to(APP).as_posix()}: {node.name}")
+        for name in sorted(class_names(path) & banned):
+            offenders.append(f"{path.relative_to(APP).as_posix()}: {name}")
     assert not offenders, (
         "Sub must not model a chart of accounts; it carries accounting_code "
         f"mappings only. Found: {offenders}"
@@ -111,10 +107,9 @@ def test_customer_bank_detail_consumers_delegate_to_the_owner_reader() -> None:
     }
     for relative, required_call in required_calls.items():
         path = APP / relative
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         calls = {
             node.func.attr
-            for node in ast.walk(tree)
+            for node in python_nodes(path)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
@@ -143,14 +138,8 @@ def test_collection_account_and_gateway_presentment_owners_are_registered() -> N
 
 def test_gateway_presentment_does_not_read_the_attribution_registry() -> None:
     path = APP / "services/payment_routing.py"
-    constants = _string_constants(path)
-    names = {
-        node.id
-        for node in ast.walk(
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        )
-        if isinstance(node, ast.Name)
-    }
+    constants = string_constants(path)
+    names = identifier_names(path)
 
     assert "payment_channels" not in constants
     assert "collection_accounts" not in constants

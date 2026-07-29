@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
+from tests.architecture.source_index import files, python_ast, python_files, source_text
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = PROJECT_ROOT / "app"
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
@@ -65,11 +67,9 @@ class _DynamicFormContract:
 
 def _server_consumer_symbols() -> set[str]:
     symbols: set[str] = set()
-    for path in APP_DIR.rglob("*.py"):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
+    for path in python_files(APP_DIR):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = python_ast(path)
         except SyntaxError:  # pragma: no cover - syntax checks fail elsewhere
             continue
         for node in ast.walk(tree):
@@ -87,7 +87,7 @@ def _python_symbols(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = python_ast(path)
     except SyntaxError:  # pragma: no cover - syntax checks fail elsewhere
         return set()
     symbols: set[str] = set()
@@ -120,7 +120,7 @@ def _module_name(path: Path) -> str:
 @cache
 def _direct_contract_imports(path: Path) -> set[str]:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = python_ast(path)
     except SyntaxError:  # pragma: no cover - syntax checks fail elsewhere
         return set()
     modules: set[str] = set()
@@ -250,8 +250,8 @@ def _form_fields(body: str) -> frozenset[str]:
 
 def _static_form_contracts() -> list[_FormContract]:
     contracts: list[_FormContract] = []
-    for path in TEMPLATE_DIR.rglob("*.html"):
-        text = path.read_text(encoding="utf-8")
+    for path in files(TEMPLATE_DIR, "*.html"):
+        text = source_text(path)
         for form in _FORM_BLOCK.finditer(text):
             method_match = _METHOD.search(form.group("attrs"))
             form_method = method_match.group(1).upper() if method_match else "GET"
@@ -296,8 +296,8 @@ def _static_form_contracts() -> list[_FormContract]:
 
 def _dynamic_form_contracts() -> list[_DynamicFormContract]:
     contracts: list[_DynamicFormContract] = []
-    for path in TEMPLATE_DIR.rglob("*.html"):
-        text = path.read_text(encoding="utf-8")
+    for path in files(TEMPLATE_DIR, "*.html"):
+        text = source_text(path)
         for form in _FORM_BLOCK.finditer(text):
             action_match = _ACTION.search(form.group("attrs"))
             if action_match is None:
@@ -352,7 +352,7 @@ def _target_context_name(node: ast.AST) -> str | None:
 @cache
 def _context_action_paths(path: Path, variable: str) -> set[str]:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = python_ast(path)
     except SyntaxError:  # pragma: no cover - syntax checks fail elsewhere
         return set()
     values: set[str] = set()
@@ -377,7 +377,7 @@ def _context_action_paths(path: Path, variable: str) -> set[str]:
 @cache
 def _template_context_producer_modules(path: Path, template_name: str) -> set[str]:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = python_ast(path)
     except SyntaxError:  # pragma: no cover - syntax checks fail elsewhere
         return set()
 
@@ -421,9 +421,7 @@ def _template_context_producer_modules(path: Path, template_name: str) -> set[st
 @cache
 def _reverse_contract_imports() -> dict[str, set[str]]:
     reverse: dict[str, set[str]] = {}
-    for path in APP_DIR.rglob("*.py"):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
+    for path in python_files(APP_DIR):
         importer = _module_name(path)
         for imported in _direct_contract_imports(path):
             if _module_path(imported) is not None:
@@ -436,7 +434,7 @@ def _template_action_paths(template: str, variable: str) -> set[str]:
     template_path = PROJECT_ROOT / template
     local_values = {
         _normalized_path(value)
-        for match in _TEMPLATE_SET.finditer(template_path.read_text(encoding="utf-8"))
+        for match in _TEMPLATE_SET.finditer(source_text(template_path))
         if match.group("variable") == variable
         for value in _jinja_expression_variants(
             "{{ " + match.group("expression") + " }}"
@@ -444,9 +442,7 @@ def _template_action_paths(template: str, variable: str) -> set[str]:
     }
     template_name = template.removeprefix("templates/")
     module_paths = [
-        path
-        for path in APP_DIR.rglob("*.py")
-        if path.is_file() and template_name in _python_symbols(path)
+        path for path in python_files(APP_DIR) if template_name in _python_symbols(path)
     ]
     seed_modules = {_module_name(path) for path in module_paths}
     candidates = set(seed_modules)
@@ -539,8 +535,8 @@ def _contract_failures(
 def _template_fields() -> tuple[dict[str, set[str]], set[str]]:
     locations: dict[str, set[str]] = {}
     client_consumed: set[str] = set()
-    for path in TEMPLATE_DIR.rglob("*.html"):
-        text = path.read_text(encoding="utf-8")
+    for path in files(TEMPLATE_DIR, "*.html"):
+        text = source_text(path)
         for tag in _FORM_TAG.findall(text):
             match = _STATIC_NAME.search(tag)
             if match is None:
@@ -582,8 +578,8 @@ def test_client_consumer_annotations_are_attached_to_named_fields() -> None:
 
 def test_typeahead_display_inputs_do_not_submit_shadow_values() -> None:
     violations: list[str] = []
-    for path in TEMPLATE_DIR.rglob("*.html"):
-        text = path.read_text(encoding="utf-8")
+    for path in files(TEMPLATE_DIR, "*.html"):
+        text = source_text(path)
         for tag in _FORM_TAG.findall(text):
             match = _STATIC_NAME.search(tag)
             if "data-typeahead-input" in tag and match is not None:

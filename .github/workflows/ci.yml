@@ -2,12 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, dev]
+    branches: [main, dev]
   pull_request:
     branches: [main, dev]
-  # A required check that never reports deadlocks the merge queue: GitHub waits
-  # forever for a context that no run will ever produce. Every required context
-  # in this file must therefore be reachable from `merge_group`.
   merge_group:
   workflow_dispatch:
 
@@ -17,137 +14,328 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
+  POETRY_VERSION: "2.4.1"
   DATABASE_URL: "sqlite:///./test.db"
-  SECRET_KEY: "ci-test-secret-key-not-for-production"  # pragma: allowlist secret
+  SECRET_KEY: "ci-test-secret-key-not-for-production" # pragma: allowlist secret
   REDIS_URL: "redis://localhost:6379/0"
 
 jobs:
-  lint:
-    name: Lint & Format
+  changes:
+    name: Classify Changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.classify.outputs.docs-only }}
+      application: ${{ steps.classify.outputs.application }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "docs-only=false" >> "$GITHUB_OUTPUT"
+            echo "application=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="$BEFORE_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          elif [ "$EVENT_NAME" = "merge_group" ]; then
+            base="$MERGE_BASE_SHA"
+          fi
+
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-list --max-parents=0 HEAD)"
+          fi
+
+          git diff --name-only "$base" HEAD > "$RUNNER_TEMP/changed-paths"
+          if [ ! -s "$RUNNER_TEMP/changed-paths" ]; then
+            echo "docs-only=false" >> "$GITHUB_OUTPUT"
+            echo "application=true" >> "$GITHUB_OUTPUT"
+          elif grep -Ev '^(docs/|.*\.md$)' "$RUNNER_TEMP/changed-paths" >/dev/null; then
+            echo "docs-only=false" >> "$GITHUB_OUTPUT"
+            echo "application=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs-only=true" >> "$GITHUB_OUTPUT"
+            echo "application=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  python-environment:
+    name: Prepare Python Environment
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Python
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Restore Poetry installation
+        id: poetry-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: poetry-v1-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ env.POETRY_VERSION }}
+
       - name: Install Poetry
+        if: steps.poetry-cache.outputs.cache-hit != 'true'
         uses: snok/install-poetry@v1
         with:
+          version: ${{ env.POETRY_VERSION }}
           virtualenvs-create: true
           virtualenvs-in-project: true
 
-      - name: Cache dependencies
+      - name: Configure Poetry
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/poetry" config virtualenvs.create true
+          "$HOME/.local/bin/poetry" config virtualenvs.in-project true
+
+      - name: Remove repository development environment pointer
+        run: |
+          if [ -L .venv ]; then
+            rm .venv
+          fi
+
+      - name: Restore Python environment
+        id: python-cache
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
+          key: python-venv-v3-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ env.POETRY_VERSION }}-${{ hashFiles('poetry.lock', 'pyproject.toml') }}
 
       - name: Install dependencies
-        run: poetry install --only dev --no-interaction
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction
+
+      - name: Pack Python environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/python-environment"
+          tar -czf "$RUNNER_TEMP/python-environment/python-venv.tar.gz" .venv
+          tar -czf "$RUNNER_TEMP/python-environment/poetry-home.tar.gz" \
+            -C "$HOME" .local
+
+      - name: Share Python environment
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-environment
+          path: ${{ runner.temp }}/python-environment/
+          retention-days: 1
+          compression-level: 0
+
+  lint:
+    name: Lint & Format
+    needs: [changes, python-environment]
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || needs.python-environment.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Lint and format checks are not needed for documentation-only changes."
+
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true'
+
+      - uses: ./.github/actions/setup-ci-python
+        if: needs.changes.outputs.docs-only != 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Ruff check
-        run: poetry run ruff check app/
+        if: needs.changes.outputs.docs-only != 'true'
+        run: poetry run ruff check app tests scripts alembic
 
       - name: Ruff format check
-        run: poetry run ruff format --check app/
+        if: needs.changes.outputs.docs-only != 'true'
+        run: poetry run ruff format --check app tests scripts alembic
 
   type-check:
     name: Type Check
+    needs: [changes, python-environment]
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || needs.python-environment.result == 'success')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Type checking is not needed for documentation-only changes."
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true'
+
+      - uses: ./.github/actions/setup-ci-python
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install --no-interaction
-
       - name: Run mypy
-        run: poetry run mypy app/ --ignore-missing-imports --no-incremental
+        if: needs.changes.outputs.docs-only != 'true'
+        run: poetry run mypy app --ignore-missing-imports --no-incremental
 
   import-boundaries:
     name: Import Boundaries
+    needs: [changes, python-environment]
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || needs.python-environment.result == 'success')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Import-boundary checks are not needed for documentation-only changes."
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true'
+
+      - uses: ./.github/actions/setup-ci-python
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        # import-linter needs to import the app package to build the module
-        # graph, so it needs the full runtime dependency set, not just dev.
-        run: poetry install --no-interaction
-
       - name: Run import-linter
+        if: needs.changes.outputs.docs-only != 'true'
         run: poetry run lint-imports
+
+  unit-shards:
+    name: Unit Tests (shard ${{ matrix.shard }}/4)
+    needs: [changes, python-environment]
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restore historical unit-test durations
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-cache/test-durations.json
+          key: unit-test-durations-v1-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            unit-test-durations-v1-${{ github.head_ref || github.ref_name }}-
+            unit-test-durations-v1-${{ github.base_ref || github.ref_name }}-
+            unit-test-durations-v1-
+
+      - name: Run unit-test shard
+        env:
+          COVERAGE_CORE: sysmon
+          COVERAGE_FILE: .coverage.${{ matrix.shard }}
+        run: >-
+          make test-ci-shard
+          CI_SHARD="${{ matrix.shard }}"
+          CI_DURATIONS_OUTPUT=".ci-cache/current-${{ matrix.shard }}.json"
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage-${{ matrix.shard }}
+          path: .coverage.${{ matrix.shard }}
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload unit-test duration data
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-durations-${{ matrix.shard }}
+          path: .ci-cache/current-${{ matrix.shard }}.json
+          include-hidden-files: true
+          retention-days: 1
+
+  architecture:
+    name: Architecture Tests
+    needs: [changes, python-environment]
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run architecture guards
+        run: make test-architecture
 
   test:
     name: Tests
+    needs: [changes, python-environment, unit-shards, architecture]
+    if: always() && needs.changes.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Unit and architecture tests are not needed for documentation-only changes."
+
+      - name: Require all test groups
+        if: needs.changes.outputs.docs-only != 'true'
+        env:
+          PYTHON_ENVIRONMENT_RESULT: ${{ needs.python-environment.result }}
+          UNIT_RESULT: ${{ needs.unit-shards.result }}
+          ARCHITECTURE_RESULT: ${{ needs.architecture.result }}
+        run: |
+          test "$PYTHON_ENVIRONMENT_RESULT" = "success"
+          test "$UNIT_RESULT" = "success"
+          test "$ARCHITECTURE_RESULT" = "success"
+
+  coverage:
+    name: Combine Coverage
+    needs: [changes, python-environment, unit-shards]
+    if: needs.changes.outputs.docs-only != 'true' && needs.unit-shards.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup-ci-python
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
+      - uses: actions/download-artifact@v4
         with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
+          pattern: unit-coverage-*
+          merge-multiple: true
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
+      - name: Download unit-test duration data
+        uses: actions/download-artifact@v4
         with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
+          pattern: unit-durations-*
+          path: ${{ runner.temp }}/unit-durations
+          merge-multiple: true
 
-      - name: Install dependencies
-        run: poetry install --no-interaction
+      - name: Create combined coverage report
+        run: |
+          poetry run coverage combine
+          poetry run coverage xml
 
-      - name: Run tests with coverage
-        env:
-          # Use 3.12's sys.monitoring coverage backend — much lower instrumentation
-          # overhead than the legacy trace function. Unit tests only.
-          COVERAGE_CORE: sysmon
-        run: make test-ci
+      - name: Prepare duration history for the next run
+        run: >-
+          poetry run python scripts/ci/merge_test_durations.py
+          --input-dir "$RUNNER_TEMP/unit-durations"
+          --output .ci-cache/test-durations.json
 
-      - name: Upload coverage
+      - name: Save unit-test duration history
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-cache/test-durations.json
+          key: unit-test-durations-v1-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload coverage report
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
@@ -156,141 +344,47 @@ jobs:
 
   security:
     name: Security Scan
+    needs: [changes, python-environment]
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || needs.python-environment.result == 'success')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "Application security scans are not needed for documentation-only changes."
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true'
+
+      - uses: ./.github/actions/setup-ci-python
+        if: needs.changes.outputs.docs-only != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install --only dev --no-interaction
-
-      - name: Security lint (bandit via ruff)
-        run: poetry run ruff check app/ --select S --ignore S101,S105,S110,S112,S507,S603,S607
+      - name: Security lint
+        if: needs.changes.outputs.docs-only != 'true'
+        run: poetry run ruff check app --select S --ignore S101,S105,S110,S112,S507,S603,S607
 
       - name: Bandit security scan
-        run: poetry run bandit -r app/ -c pyproject.toml -q || true
+        if: needs.changes.outputs.docs-only != 'true'
+        run: poetry run bandit -r app -c pyproject.toml -q
 
   pre-commit:
     name: Pre-commit
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
+          cache: pip
       - uses: pre-commit/action@v3.0.1
 
-  docker-build:
-    name: Docker Build & Health Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: dotmac-sub:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Create CI network
-        run: docker network create ci-net
-
-      - name: Start PostgreSQL
-        run: |
-          docker run -d --name ci-db --network ci-net \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_PASSWORD=postgres \
-            -e POSTGRES_DB=dotmac_sub_ci \
-            --health-cmd "pg_isready -U postgres" \
-            --health-interval 5s \
-            --health-retries 10 \
-            postgis/postgis:16-3.4
-
-      - name: Start Redis
-        run: docker run -d --name ci-redis --network ci-net redis:7
-
-      - name: Wait for PostgreSQL
-        run: |
-          for i in $(seq 1 30); do
-            if docker exec ci-db pg_isready -U postgres > /dev/null 2>&1; then
-              echo "PostgreSQL ready"
-              break
-            fi
-            echo "Waiting for PostgreSQL... ($i/30)"
-            sleep 2
-          done
-
-      - name: Run database migrations
-        run: |
-          docker run --rm --network ci-net \
-            -e DATABASE_URL=postgresql+psycopg://postgres:postgres@ci-db:5432/dotmac_sub_ci \
-            -e SECRET_KEY=ci-test-secret-key-not-for-production \
-            -e REDIS_URL=redis://ci-redis:6379/0 \
-            dotmac-sub:ci alembic upgrade head
-
-      - name: Start application
-        run: |
-          docker run -d --name ci-app --network ci-net \
-            -e DATABASE_URL=postgresql+psycopg://postgres:postgres@ci-db:5432/dotmac_sub_ci \
-            -e SECRET_KEY=ci-test-secret-key-not-for-production \
-            -e REDIS_URL=redis://ci-redis:6379/0 \
-            -e CELERY_BROKER_URL=redis://ci-redis:6379/0 \
-            dotmac-sub:ci
-
-      - name: Wait for health check
-        run: |
-          for i in $(seq 1 60); do
-            STATUS=$(docker inspect --format='{{.State.Status}}' ci-app 2>/dev/null || echo "missing")
-            if [ "$STATUS" = "exited" ]; then
-              echo "Container exited unexpectedly!"
-              docker logs ci-app
-              exit 1
-            fi
-            HEALTH=$(docker exec ci-app python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8001/health').read().decode())" 2>/dev/null || echo "")
-            if echo "$HEALTH" | grep -qi 'ok\|healthy'; then
-              echo "Health check passed: $HEALTH"
-              exit 0
-            fi
-            echo "Waiting for app to be healthy... ($i/60)"
-            sleep 3
-          done
-          echo "Health check timed out after 180 seconds"
-          docker logs ci-app
-          exit 1
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker rm -f ci-app ci-db ci-redis 2>/dev/null || true
-          docker network rm ci-net 2>/dev/null || true
-
-  integration-test:
-    name: Integration Tests (PostgreSQL)
+  integration-run:
+    name: PostgreSQL Gate
+    needs: [changes, python-environment]
+    if: needs.changes.outputs.docs-only != 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -309,75 +403,104 @@ jobs:
     env:
       DATABASE_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/dotmac_sub_test"
       TEST_DATABASE_URL: "postgresql+psycopg://postgres:postgres@localhost:5432/dotmac_sub_test"
-      REDIS_URL: "redis://localhost:6379/0"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup-ci-python
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Install dependencies
-        run: poetry install --no-interaction
 
       - name: Run Alembic migrations
         run: poetry run alembic upgrade head
 
       - name: Run integration tests
-        # No `|| true`: these are the module flow gates (native Phase 3 paths
-        # on real PostgreSQL). If they fail, the build fails.
         run: make test-integration
 
-  publish-image:
-    name: Publish Docker Image
+  integration-test:
+    name: Integration Tests (PostgreSQL)
+    needs: [changes, integration-run]
+    if: always() && needs.changes.result == 'success'
     runs-on: ubuntu-latest
-    needs: [lint, type-check, test, docker-build]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Documentation-only change
+        if: needs.changes.outputs.docs-only == 'true'
+        run: echo "PostgreSQL checks are not needed for documentation-only changes."
+
+      - name: Require PostgreSQL gate
+        if: needs.changes.outputs.docs-only != 'true'
+        env:
+          INTEGRATION_RESULT: ${{ needs.integration-run.result }}
+        run: test "$INTEGRATION_RESULT" = "success"
+
+  docker-build:
+    name: Docker Build & Health Check
+    needs: [changes, lint, type-check, import-boundaries, test, security, pre-commit, integration-test]
+    if: always() && needs.changes.result == 'success' && (needs.changes.outputs.docs-only == 'true' || (needs.lint.result == 'success' && needs.type-check.result == 'success' && needs.import-boundaries.result == 'success' && needs.test.result == 'success' && needs.security.result == 'success' && needs.pre-commit.result == 'success' && needs.integration-test.result == 'success'))
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
+      - name: Docker validation not required
+        if: needs.changes.outputs.docs-only == 'true' || github.event_name == 'push'
+        run: echo "Docker validation runs before merge; branch pushes use the sole GHCR publisher."
+
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
 
       - name: Set up Docker Buildx
+        if: needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=sha-,format=short
-            type=raw,value={{date 'YYYY-MM-DD'}}
-
-      - name: Build and push Docker image
+      - name: Build Docker image once
+        if: needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          load: true
+          tags: dotmac-sub:ci
+          cache-from: type=gha,scope=dotmac-sub-application
+          cache-to: type=gha,mode=max,scope=dotmac-sub-application
+
+      - name: Create CI network and services
+        if: needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
+        run: |
+          docker network create ci-net
+          docker run -d --name ci-db --network ci-net \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=dotmac_sub_ci \
+            --health-cmd "pg_isready -U postgres" --health-interval 5s \
+            --health-retries 10 postgis/postgis:16-3.4
+          docker run -d --name ci-redis --network ci-net redis:7
+          for i in $(seq 1 30); do
+            docker exec ci-db pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+      - name: Run migrations and application health check
+        if: needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
+        run: |
+          common_args="--network ci-net \
+            -e DATABASE_URL=postgresql+psycopg://postgres:postgres@ci-db:5432/dotmac_sub_ci \
+            -e SECRET_KEY=ci-test-secret-key-not-for-production \
+            -e REDIS_URL=redis://ci-redis:6379/0"
+          docker run --rm $common_args dotmac-sub:ci alembic upgrade head
+          docker run -d --name ci-app $common_args \
+            -e CELERY_BROKER_URL=redis://ci-redis:6379/0 dotmac-sub:ci
+          for i in $(seq 1 60); do
+            status="$(docker inspect --format='{{.State.Status}}' ci-app 2>/dev/null || echo missing)"
+            if [ "$status" = "exited" ]; then
+              docker logs ci-app
+              exit 1
+            fi
+            health="$(docker exec ci-app python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8001/health').read().decode())" 2>/dev/null || true)"
+            echo "$health" | grep -qi 'ok\|healthy' && exit 0
+            sleep 3
+          done
+          docker logs ci-app
+          exit 1
+
+      - name: Cleanup
+        if: always() && needs.changes.outputs.docs-only != 'true' && github.event_name != 'push'
+        run: |
+          docker rm -f ci-app ci-db ci-redis 2>/dev/null || true
+          docker network rm ci-net 2>/dev/null || true
