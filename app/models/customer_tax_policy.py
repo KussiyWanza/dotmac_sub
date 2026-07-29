@@ -33,6 +33,11 @@ class CustomerTaxPolicy(Base):
         nullable=False,
         default=False,
     )
+    vat_exempt: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(

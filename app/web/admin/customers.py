@@ -198,6 +198,11 @@ def _billing_form_defaults(db: Session, customer_type: str, customer) -> dict[st
         values["withholding_tax_enabled"] = (
             "true" if wht_policy.withholding_tax_enabled else "false"
         )
+        vat_policy = customer_tax_policies.get_customer_vat_exemption_policy(
+            db,
+            account_id=customer.id,
+        )
+        values["vat_exempt"] = "true" if vat_policy.vat_exempt else "false"
     return values
 
 
@@ -1501,6 +1506,7 @@ def person_update(
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     withholding_tax_enabled: str | None = Form(None),
+    vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     metadata: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -1540,6 +1546,7 @@ def person_update(
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
             withholding_tax_enabled=withholding_tax_enabled,
+            vat_exempt=vat_exempt,
             payment_method=payment_method,
             metadata_json=web_customer_actions_service.parse_json_object(
                 metadata, "metadata"
@@ -1621,6 +1628,7 @@ def business_update(
     captive_redirect_enabled: str | None = Form(None),
     tax_rate_id: str | None = Form(None),
     withholding_tax_enabled: str | None = Form(None),
+    vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -1644,6 +1652,7 @@ def business_update(
             captive_redirect_enabled=captive_redirect_enabled,
             tax_rate_id=tax_rate_id,
             withholding_tax_enabled=withholding_tax_enabled,
+            vat_exempt=vat_exempt,
             payment_method=payment_method,
             actor_id=_get_actor_id(request),
         )

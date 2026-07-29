@@ -5043,7 +5043,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.customer_tax_policies",
                 module="app.services.customer_tax_policies",
-                owns=("customer withholding-tax eligibility policy",),
+                owns=(
+                    "customer withholding-tax eligibility policy",
+                    "customer VAT exemption policy",
+                ),
                 depends_on=("customer.accounts", "events.dispatcher"),
                 notes=(
                     "This owner persists per-customer WHT eligibility as an audited "
@@ -5059,6 +5062,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "customer WHT policy command context",
                                 "canonical customer account",
                                 "canonical customer WHT policy record",
+                            ),
+                            canonical_writer="financial.customer_tax_policies",
+                        ),
+                        ConcernContract(
+                            name="customer VAT exemption policy",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "customer VAT exemption command context",
+                                "canonical customer account",
+                                "canonical customer VAT exemption record",
                             ),
                             canonical_writer="financial.customer_tax_policies",
                         ),
@@ -5088,11 +5101,30 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "updated timestamp"
                             ),
                         ),
+                        AuthorityInput(
+                            name="customer VAT exemption command context",
+                            owner="financial.customer_tax_policies",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed actor, scope, reason, command, correlation, and "
+                                "idempotency evidence for a customer VAT exemption change"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer VAT exemption record",
+                            owner="financial.customer_tax_policies",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "unique per-account VAT exemption flag, shared policy "
+                                "version, actor, and updated timestamp"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "set_customer_withholding_tax_policy enters "
+                            "set_customer_withholding_tax_policy or "
+                            "set_customer_vat_exemption_policy enters "
                             "execute_owner_command once on a transaction-free session, "
                             "locks the target customer and policy row, stages one "
                             "versioned update, and commits or rolls back once."
@@ -5102,7 +5134,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "CustomerTaxPolicy row for that account."
                         ),
                         idempotency=(
-                            "Repeated commands with the same target enabled state replay the "
+                            "Repeated commands with the same target policy state replay the "
                             "existing policy version. State changes increment the policy "
                             "version exactly once."
                         ),
@@ -5132,8 +5164,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 carries account identity, enabled state, policy "
-                            "version, and actor provenance only."
+                            "Version 1 carries account identity, changed policy state, "
+                            "policy version, and actor provenance only."
                         ),
                         replay=(
                             "Replay may refresh projections or audit consumers only; it "

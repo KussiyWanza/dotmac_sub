@@ -26,7 +26,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["441_network_zone_geo_area_binding"]
+    assert script.get_heads() == ["442_customer_vat_exemption_policy"]
+    assert (
+        script.get_revision("442_customer_vat_exemption_policy").down_revision
+        == "441_network_zone_geo_area_binding"
+    )
     assert (
         script.get_revision("441_network_zone_geo_area_binding").down_revision
         == "440_composable_service_teams"

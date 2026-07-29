@@ -8,11 +8,11 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus
+from app.models.billing import Invoice, InvoiceLine, InvoiceStatus, TaxRate
 from app.models.event_store import EventStore
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate
 from app.services import billing as billing_service
-from app.services import invoice_draft_authoring
+from app.services import customer_tax_policies, invoice_draft_authoring
 from app.services.billing.account_credit import eligible_invoices
 from app.services.db_session_adapter import db_session_adapter
 from app.services.events.handlers.notification import NotificationHandler
@@ -102,6 +102,57 @@ def test_create_draft_commits_complete_aggregate_and_replays(
             context=_context("invoice-draft-create-replay"),
         )
     assert mismatched_replay.value.code.endswith(".idempotency_conflict")
+
+
+def test_create_draft_omits_vat_for_exempt_customer(
+    db_session,
+    subscriber,
+) -> None:
+    tax_rate = TaxRate(name="VAT", rate=Decimal("0.075"))
+    db_session.add(tax_rate)
+    db_session.commit()
+    account_id = subscriber.id
+    tax_rate_id = tax_rate.id
+    command = replace(
+        _create_command(subscriber),
+        lines=(
+            replace(
+                _line(),
+                tax_rate_id=tax_rate_id,
+            ),
+        ),
+    )
+    db_session_adapter.release_read_transaction(db_session)
+    customer_tax_policies.set_customer_vat_exemption_policy(
+        db_session,
+        customer_tax_policies.SetCustomerVatExemptionPolicyCommand(
+            account_id=account_id,
+            vat_exempt=True,
+            updated_by="finance-test",
+        ),
+        context=CommandContext.system(
+            actor="finance-test",
+            scope=customer_tax_policies.WRITE_SCOPE,
+            reason="Exempt customer from VAT",
+            idempotency_key=f"invoice-draft-vat-exemption:{account_id}",
+        ),
+    )
+    db_session_adapter.release_read_transaction(db_session)
+
+    created = invoice_draft_authoring.create_invoice_draft(
+        db_session,
+        command,
+        context=_context("invoice-draft-vat-exempt"),
+    )
+
+    line = db_session.scalar(
+        select(InvoiceLine).where(InvoiceLine.invoice_id == created.invoice_id)
+    )
+    invoice = db_session.get(Invoice, created.invoice_id)
+    assert line is not None
+    assert line.tax_rate_id is None
+    assert invoice is not None
+    assert invoice.tax_total == Decimal("0.00")
 
 
 def test_create_draft_rolls_back_header_lines_and_evidence_on_failure(

@@ -544,6 +544,18 @@
                                 <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Uses the billing tax-settings WHT percentage. Card and online payments still collect the full invoice amount.</p>
                             </div>
                         </div>
+                        <div class="mt-4 flex items-start gap-3">
+                            <input type="checkbox" name="vat_exempt" id="vat_exempt" value="true"
+                                   :disabled="customerType !== 'person'"
+                                   {% if billing_form and billing_form.vat_exempt == 'true' %}checked{% endif %}
+                                   class="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700" />
+                            <div>
+                                <label for="vat_exempt" class="text-sm text-slate-700 dark:text-slate-300">
+                                    VAT exempt
+                                </label>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Invoices created for this customer omit VAT until an administrator clears the exemption.</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -706,6 +718,18 @@
                                     Enable customer withholding tax on eligible bank-transfer invoice payments
                                 </label>
                                 <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Uses the billing tax-settings WHT percentage. Card and online payments still collect the full invoice amount.</p>
+                            </div>
+                        </div>
+                        <div class="mt-4 flex items-start gap-3">
+                            <input type="checkbox" name="vat_exempt" id="org_vat_exempt" value="true"
+                                   :disabled="customerType !== 'business'"
+                                   {% if billing_form and billing_form.vat_exempt == 'true' %}checked{% endif %}
+                                   class="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700" />
+                            <div>
+                                <label for="org_vat_exempt" class="text-sm text-slate-700 dark:text-slate-300">
+                                    VAT exempt
+                                </label>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Invoices created for this customer omit VAT until an administrator clears the exemption.</p>
                             </div>
                         </div>
                     </div>
