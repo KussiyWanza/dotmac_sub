@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.network_monitoring import NetworkDevice
+from app.models.gis import GeoArea
+from app.models.network import NetworkZone
+from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.operational_escalation import (
     OperationalDeliveryStatus,
     OperationalEntityType,
@@ -22,6 +24,7 @@ from app.models.service_team import (
     ServiceTeamCapabilityDefinition,
     ServiceTeamCapabilityKey,
     ServiceTeamRoutingPolicy,
+    ServiceTeamScopeBinding,
 )
 from app.models.subscriber import Subscriber
 from app.services import operational_escalation, service_team_composition
@@ -106,6 +109,67 @@ def _node(db_session) -> NetworkDevice:
     return node
 
 
+def _zoned_node(db_session, *, geo_area_id=None) -> NetworkDevice:
+    """A root node whose pop site sits in a zone, optionally bound to a GeoArea."""
+
+    zone = NetworkZone(name="Garki Zone", geo_area_id=geo_area_id, is_active=True)
+    db_session.add(zone)
+    db_session.flush()
+    site = PopSite(name="Garki POP", zone_id=zone.id)
+    db_session.add(site)
+    db_session.flush()
+    node = NetworkDevice(name="Garki OLT", is_active=True, pop_site_id=site.id)
+    db_session.add(node)
+    db_session.flush()
+    return node
+
+
+def _geo_scoped_primary_team(
+    db_session,
+    *,
+    name: str,
+    geo_area_id,
+    priority: int,
+) -> ServiceTeam:
+    """A second incident.primary team whose policy is scoped to one GeoArea.
+
+    ``resolve_routing_team`` refuses priority ties as
+    ``service_team_routing_ambiguous``, so the scoped policy must carry a
+    distinct (lower) priority number than the seeded global policy.
+    """
+
+    team = ServiceTeam(name=name)
+    db_session.add(team)
+    db_session.flush()
+    binding = ServiceTeamScopeBinding(
+        team_id=team.id,
+        scope_type="geo_area",
+        geo_area_id=geo_area_id,
+        is_active=True,
+    )
+    db_session.add(binding)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ServiceTeamCapability(
+                team_id=team.id,
+                capability_key=ServiceTeamCapabilityKey.outage_response.value,
+                is_active=True,
+            ),
+            ServiceTeamRoutingPolicy(
+                domain="network.outage",
+                route_key="incident.primary",
+                team_id=team.id,
+                scope_binding_id=binding.id,
+                priority=priority,
+                is_active=True,
+            ),
+        ]
+    )
+    db_session.flush()
+    return team
+
+
 def _subscriptions(db_session, offer_id, count: int) -> list[Subscription]:
     subscriptions = []
     for index in range(count):
@@ -163,6 +227,78 @@ def test_declare_outage_creates_default_owner_watchers_and_room(db_session):
     assert "GARKI-OLT" in room.room_id
     assert db_session.query(OperationalEscalationEvent).count() == 0
     assert db_session.query(OperationalEscalationDelivery).count() == 0
+
+
+def test_geo_scoped_policy_wins_for_incident_in_bound_zone(db_session):
+    """A pop-site zone bound to GeoArea X routes to the X-scoped policy."""
+
+    teams = _seed_ops_teams(db_session)
+    area = GeoArea(name="Abuja Coverage", is_active=True)
+    db_session.add(area)
+    db_session.flush()
+    node = _zoned_node(db_session, geo_area_id=area.id)
+    abuja_noc = _geo_scoped_primary_team(
+        db_session,
+        name="Abuja NOC",
+        geo_area_id=area.id,
+        priority=10,
+    )
+
+    incident = declare_outage(
+        db_session,
+        node=node,
+        declared_by="noc@dotmac.io",
+        severity="high",
+        impact={"count": 42},
+    )
+    db_session.commit()
+
+    owner = db_session.query(OperationalOwner).one()
+    assert owner.entity_type == OperationalEntityType.outage
+    assert owner.entity_id == str(incident.id)
+    assert owner.service_team_id == abuja_noc.id
+    assert owner.service_team_id != teams["operations"].id
+    # Owner metadata assignment is unchanged by geo-scoped selection.
+    assert owner.metadata_["affected_count"] == 42
+    watcher_teams = {
+        watcher.service_team_id
+        for watcher in db_session.query(OperationalWatcher).all()
+    }
+    assert abuja_noc.id in watcher_teams
+    assert teams["support"].id in watcher_teams
+    assert teams["field"].id in watcher_teams
+
+
+def test_unbound_zone_falls_back_to_global_routing_policy(db_session):
+    """Without a zone -> GeoArea binding the global policy still resolves."""
+
+    teams = _seed_ops_teams(db_session)
+    area = GeoArea(name="Abuja Coverage", is_active=True)
+    db_session.add(area)
+    db_session.flush()
+    # The incident's pop-site zone exists but has no GeoArea binding, so the
+    # geo-scoped policy (priority 10, bound to the area) must not match.
+    node = _zoned_node(db_session, geo_area_id=None)
+    _geo_scoped_primary_team(
+        db_session,
+        name="Abuja NOC",
+        geo_area_id=area.id,
+        priority=10,
+    )
+
+    incident = declare_outage(
+        db_session,
+        node=node,
+        declared_by="noc@dotmac.io",
+        severity="high",
+        impact={"count": 7},
+    )
+    db_session.commit()
+
+    owner = db_session.query(OperationalOwner).one()
+    assert owner.entity_id == str(incident.id)
+    assert owner.service_team_id == teams["operations"].id
+    assert owner.metadata_["affected_count"] == 7
 
 
 def test_classifier_outage_creates_operations_state_only_when_confirmed(db_session):

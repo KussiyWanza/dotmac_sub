@@ -16,6 +16,7 @@ from app.models.operational_escalation import (
     OperationalWatcherRole,
 )
 from app.services import operational_escalation, service_team_composition
+from app.services.network.zones import NetworkZones
 from app.services.topology.affected import affected_customers
 
 SEVERITY_RANK = {
@@ -60,6 +61,36 @@ OUTAGE_SUPPORT_WATCHER_ROUTE = "incident.support_watcher"
 OUTAGE_FIELD_WATCHER_ROUTE = "incident.field_watcher"
 
 
+def _incident_zone_id(session, incident: OutageIncident):
+    """Map this incident's own location handles to a network zone.
+
+    The handles are outage-domain facts; which GeoArea a zone belongs to is the
+    zone owner's concern and is resolved through ``NetworkZones.resolve_geo_area``.
+    Handle precedence mirrors ``_scope_name``: root node, then basestation,
+    then FDH cabinet.
+    """
+
+    if incident.root_node_id is not None:
+        node = session.get(NetworkDevice, incident.root_node_id)
+        if node is not None and node.pop_site_id is not None:
+            site = session.get(PopSite, node.pop_site_id)
+            if site is not None and site.zone_id is not None:
+                return site.zone_id
+    if incident.basestation_id is not None:
+        site = session.get(PopSite, incident.basestation_id)
+        if site is not None and site.zone_id is not None:
+            return site.zone_id
+    if incident.fdh_cabinet_id is not None:
+        cabinet = session.get(FdhCabinet, incident.fdh_cabinet_id)
+        if cabinet is not None and cabinet.zone_id is not None:
+            return cabinet.zone_id
+    return None
+
+
+def _incident_geo_area_id(session, incident: OutageIncident):
+    return NetworkZones.resolve_geo_area(session, _incident_zone_id(session, incident))
+
+
 def _has_active_primary_owner(session, incident: OutageIncident) -> bool:
     return (
         session.query(OperationalOwner)
@@ -81,20 +112,24 @@ def ensure_outage_operations(session, incident: OutageIncident) -> None:
     """
 
     entity_id = str(incident.id)
+    geo_area_id = _incident_geo_area_id(session, incident)
     operations = service_team_composition.resolve_routing_team(
         session,
         domain=OUTAGE_ROUTING_DOMAIN,
         route_key=OUTAGE_PRIMARY_ROUTE,
+        geo_area_id=geo_area_id,
     )
     support = service_team_composition.resolve_routing_team(
         session,
         domain=OUTAGE_ROUTING_DOMAIN,
         route_key=OUTAGE_SUPPORT_WATCHER_ROUTE,
+        geo_area_id=geo_area_id,
     )
     field = service_team_composition.resolve_routing_team(
         session,
         domain=OUTAGE_ROUTING_DOMAIN,
         route_key=OUTAGE_FIELD_WATCHER_ROUTE,
+        geo_area_id=geo_area_id,
     )
 
     if operations is not None and not _has_active_primary_owner(session, incident):

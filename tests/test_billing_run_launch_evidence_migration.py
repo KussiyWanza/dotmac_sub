@@ -14,8 +14,9 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: composable service teams (440) sits on billing rating
-    # provenance (439), Phase 2 verification counts (438), PON port
+    # Single linear head: the network-zone GeoArea binding (441) sits on
+    # composable service teams (440), billing rating
+    # provenance (439) and Phase 2 verification counts (438), PON port
     # administrative state (437), billing shadow verification evidence (436),
     # access invitations (435), and the ADR 0007 billing target chain (434..430),
     # which sits on inbox conversation participants (429), and chains through
@@ -25,7 +26,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["440_composable_service_teams"]
+    assert script.get_heads() == ["441_network_zone_geo_area_binding"]
+    assert (
+        script.get_revision("441_network_zone_geo_area_binding").down_revision
+        == "440_composable_service_teams"
+    )
     assert (
         script.get_revision("440_composable_service_teams").down_revision
         == "439_billing_obligation_rating_provenance"

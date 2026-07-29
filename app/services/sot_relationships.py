@@ -16887,7 +16887,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "grant RBAC; consumers intersect authorized access with the "
                     "returned operational scope. Code-consumed domain route keys "
                     "are registered with a domain owner, version, and required "
-                    "capability."
+                    "capability. Geo-scoped route resolution accepts one "
+                    "caller-derived effective GeoArea and never derives it from "
+                    "topology itself: the network-zone catalog "
+                    "(app.services.network.zones, a legacy-baseline writer) is "
+                    "the single writer of the zone -> GeoArea binding, and "
+                    "consumers such as outage routing derive an incident's "
+                    "effective GeoArea only through NetworkZones.resolve_geo_area "
+                    "(parent-chain inheritance; an inactive GeoArea on the "
+                    "nearest bound zone degrades to global routing rather than "
+                    "rebinding to a wider area)."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -17152,6 +17161,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_team_outbound.py",
                         "tests/test_field_job_chat.py",
                         "tests/services/topology/test_outage_operations.py",
+                        "tests/test_api_network_catalog.py",
                         "tests/test_workqueue_parity.py",
                         ("tests/architecture/test_service_team_lifecycle_boundary.py"),
                     ),

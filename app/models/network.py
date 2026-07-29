@@ -2527,6 +2527,17 @@ class NetworkZone(Base):
     parent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("network_zones.id")
     )
+    # Typed geographic binding: a zone may declare the GeoArea it belongs to.
+    # Child zones without a binding inherit through the parent chain.
+    geo_area_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "geo_areas.id",
+            name="fk_network_zones_geo_area_id_geo_areas",
+            ondelete="RESTRICT",
+        ),
+        index=True,
+    )
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
     geom = mapped_column(Geometry("POINT", srid=4326), nullable=True)
