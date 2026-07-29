@@ -114,6 +114,7 @@ class ActiveDepositPhase(str, Enum):
     awaiting_receipt = "awaiting_receipt"
     awaiting_provider_confirmation = "awaiting_provider_confirmation"
     under_review = "under_review"
+    receipt_rejected = "receipt_rejected"
 
 
 class ActiveDepositNextAction(str, Enum):
@@ -122,6 +123,7 @@ class ActiveDepositNextAction(str, Enum):
     upload_receipt = "upload_receipt"
     wait_for_provider = "wait_for_provider"
     wait_for_review = "wait_for_review"
+    contact_support = "contact_support"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +140,7 @@ class ActiveDepositRequest:
     created_at: datetime
     expires_at: datetime | None
     observed_at: datetime
+    rejection_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +344,38 @@ def _pending_incompatible_intent(
     return None
 
 
+def _rejected_proof_reason(db: Session, intent: TopupIntent) -> str | None:
+    """Return the review note when this intent's receipt was rejected.
+
+    Correlation is by the explicit link the submit path writes; the intent
+    reference is the fallback because the link is missing on older rows. Returns
+    None when no terminal rejection applies, so the caller keeps the normal
+    under-review phase.
+    """
+
+    from app.models.payment_proof import PaymentProof, PaymentProofStatus
+
+    proof: PaymentProof | None = None
+    proof_id = (intent.metadata_ or {}).get("payment_proof_id")
+    if proof_id:
+        try:
+            proof = db.get(PaymentProof, uuid.UUID(str(proof_id)))
+        except (ValueError, TypeError):
+            proof = None
+    if proof is None and intent.reference:
+        proof = db.scalars(
+            select(PaymentProof)
+            .where(PaymentProof.account_id == intent.account_id)
+            .where(PaymentProof.reference == intent.reference)
+            .order_by(PaymentProof.created_at.desc())
+            .limit(1)
+        ).first()
+    if proof is None or proof.status is not PaymentProofStatus.rejected:
+        return None
+    note = (proof.review_notes or "").strip()
+    return note or "Your bank transfer could not be confirmed."
+
+
 def _existing_preview(db: Session, intent: TopupIntent) -> DepositPreview:
     """Return current display facts while preserving the authorized fingerprint."""
     assert intent.account_id is not None
@@ -396,9 +431,19 @@ class AccountCreditDeposits:
         )
         if intent is None:
             return None
+        rejection_reason: str | None = None
         if intent.status == TopupIntentStatus.submitted.value:
-            phase = ActiveDepositPhase.under_review
-            next_action = ActiveDepositNextAction.wait_for_review
+            # A rejected proof used to leave the intent stranded here (fixed by
+            # #1642, but pre-fix rows survive until repaired). Reporting that as
+            # "under review" told the customer to wait for a decision that had
+            # already been made against them, so read the proof before deciding.
+            rejection_reason = _rejected_proof_reason(db, intent)
+            if rejection_reason is not None:
+                phase = ActiveDepositPhase.receipt_rejected
+                next_action = ActiveDepositNextAction.contact_support
+            else:
+                phase = ActiveDepositPhase.under_review
+                next_action = ActiveDepositNextAction.wait_for_review
         elif intent.provider_type == DIRECT_TRANSFER_PROVIDER:
             phase = ActiveDepositPhase.awaiting_receipt
             next_action = ActiveDepositNextAction.upload_receipt
@@ -416,6 +461,7 @@ class AccountCreditDeposits:
             created_at=intent.created_at,
             expires_at=intent.expires_at,
             observed_at=observed,
+            rejection_reason=rejection_reason,
         )
 
     @staticmethod

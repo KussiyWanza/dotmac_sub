@@ -132,6 +132,7 @@ def _serialize_active_deposit_request(
         "created_at": request.created_at,
         "expires_at": request.expires_at,
         "observed_at": request.observed_at,
+        "rejection_reason": request.rejection_reason,
     }
 
 

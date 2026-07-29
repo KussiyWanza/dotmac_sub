@@ -43,6 +43,10 @@
             {% if active_deposit_request.phase == "awaiting_receipt" %}
             <p class="font-semibold">Upload the receipt for your pending deposit.</p>
             <p class="mt-1">Complete the bank-transfer request below. Do not start another deposit for the same payment.</p>
+            {% elif active_deposit_request.phase == "receipt_rejected" %}
+            <p class="font-semibold">Your transfer receipt was not accepted.</p>
+            <p class="mt-1">Reason: {{ active_deposit_request.rejection_reason }}</p>
+            <p class="mt-1">Please contact support to have this request closed so you can submit a new transfer. Do not send the money again until it is closed.</p>
             {% elif active_deposit_request.phase == "under_review" %}
             <p class="font-semibold">Your transfer receipt is under review.</p>
             <p class="mt-1">Your receipt was received successfully. You do not need to upload it again; account credit is recorded only after staff verifies the transfer.</p>
