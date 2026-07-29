@@ -97,6 +97,9 @@ data/olt_samples/
 # local type-check cache
 .mypy_cache/
 
+# Local Git worktrees
+.worktrees/
+
 # Edge-case sweep generated artifacts (screenshots + json)
 docs/testing/results/
 
