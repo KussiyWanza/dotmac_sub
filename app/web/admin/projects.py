@@ -464,6 +464,7 @@ def project_task_delete(request: Request, task_ref: str, db: Session = Depends(g
 def project_templates_list(request: Request, db: Session = Depends(get_db)):
     context = _ctx(request, db, active_page="project-templates")
     context.update(projects_web_service.build_templates_list_context(db))
+    context["can_manage_project_templates"] = can(request, "project:update")
     return templates.TemplateResponse("admin/projects/project_templates.html", context)
 
 
@@ -519,6 +520,7 @@ def project_template_detail(
     context.update(
         projects_web_service.build_template_detail_context(db, template_id=template_id)
     )
+    context["can_manage_project_templates"] = can(request, "project:update")
     return templates.TemplateResponse(
         "admin/projects/project_template_detail.html", context
     )

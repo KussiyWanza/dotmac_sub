@@ -712,6 +712,23 @@ class TestTemplateEditor:
                 tasks_json="not-json",
             )
 
+    def test_editor_rejects_dependency_on_later_task(self, db_session):
+        template = web_projects.create_template_from_form(
+            db_session, name="Ordered dependencies"
+        )
+
+        with pytest.raises(ValueError, match="only on an earlier task"):
+            web_projects.save_template_tasks_from_editor(
+                db_session,
+                template_id=str(template.id),
+                tasks_json=(
+                    '[{"client_id": "first", "title": "First",'
+                    ' "dependencies": ["second"]},'
+                    ' {"client_id": "second", "title": "Second",'
+                    ' "dependencies": []}]'
+                ),
+            )
+
     def test_template_task_cross_template_guard(self, db_session):
         template_a = web_projects.create_template_from_form(db_session, name="A")
         template_b = web_projects.create_template_from_form(db_session, name="B")

@@ -1867,6 +1867,20 @@ def save_template_tasks_from_editor(
             }
         )
 
+    task_order = {
+        str(task_data["client_id"]): index for index, task_data in enumerate(normalized)
+    }
+    for task_data in normalized:
+        task_index = task_order[str(task_data["client_id"])]
+        for dependency_client_id in task_data["dependencies"]:
+            dependency_index = task_order.get(str(dependency_client_id))
+            if dependency_index is None:
+                continue
+            if dependency_index >= task_index:
+                raise ValueError(
+                    f"Task '{task_data['title']}' may depend only on an earlier task."
+                )
+
     template_uuid = template.id
     existing_tasks = (
         db.query(ProjectTemplateTask)
@@ -1918,7 +1932,8 @@ def save_template_tasks_from_editor(
         if not task_id:
             continue
         for depends_on_client_id in task_data["dependencies"]:
-            depends_on_id = client_id_to_task_id.get(str(depends_on_client_id))
+            dependency_client_id = str(depends_on_client_id)
+            depends_on_id = client_id_to_task_id.get(dependency_client_id)
             if not depends_on_id or depends_on_id == task_id:
                 continue
             key = (task_id, depends_on_id)

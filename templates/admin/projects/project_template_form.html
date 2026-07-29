@@ -23,13 +23,13 @@
           class="space-y-5">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <div>
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Name <span class="text-red-500">*</span></label>
-            <input type="text" name="name" required value="{{ prefill.name }}"
+            <label for="template-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Name <span class="text-red-500">*</span></label>
+            <input id="template-name" type="text" name="name" required value="{{ prefill.name }}"
                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
         </div>
         <div>
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project Type</label>
-            <select name="project_type" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            <label for="template-project-type" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Project Type</label>
+            <select id="template-project-type" name="project_type" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 <option value="">— None —</option>
                 {% for t in project_types %}
                 <option value="{{ t }}" {% if prefill.project_type == t %}selected{% endif %}>{{ t|replace('_', ' ')|title }}</option>
@@ -38,8 +38,8 @@
             <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">One template per project type — new projects of this type auto-pick it.</p>
         </div>
         <div>
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</label>
-            <textarea name="description" rows="3"
+            <label for="template-description" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</label>
+            <textarea id="template-description" name="description" rows="3"
                       class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">{{ prefill.description }}</textarea>
         </div>
         <div class="flex items-center justify-between border-t border-slate-200/70 pt-4 dark:border-slate-700/70">

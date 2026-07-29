@@ -173,3 +173,13 @@ def test_all_project_templates_compile():
     """Jinja compile smoke — get_template() parses and compiles each file."""
     for name in PROJECT_TEMPLATES:
         templates.env.get_template(name)
+
+
+def test_template_management_actions_are_permission_aware():
+    list_template = Path("templates/admin/projects/project_templates.html").read_text()
+    detail_template = Path(
+        "templates/admin/projects/project_template_detail.html"
+    ).read_text()
+
+    assert "{% if can_manage_project_templates %}" in list_template
+    assert "{% if can_manage_project_templates %}" in detail_template

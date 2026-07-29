@@ -25,24 +25,24 @@
           class="space-y-5">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <div>
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Title <span class="text-red-500">*</span></label>
-            <input type="text" name="title" required value="{{ prefill.title }}"
+            <label for="template-task-title" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Title <span class="text-red-500">*</span></label>
+            <input id="template-task-title" type="text" name="title" required value="{{ prefill.title }}"
                    class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
         </div>
         <div>
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</label>
-            <textarea name="description" rows="3"
+            <label for="template-task-description" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</label>
+            <textarea id="template-task-description" name="description" rows="3"
                       class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">{{ prefill.description }}</textarea>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
             <div>
-                <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Sort Order</label>
-                <input type="number" name="sort_order" min="0" value="{{ prefill.sort_order }}"
+                <label for="template-task-sort-order" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Sort Order</label>
+                <input id="template-task-sort-order" type="number" name="sort_order" min="0" value="{{ prefill.sort_order }}"
                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
             </div>
             <div>
-                <label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Effort Hours</label>
-                <input type="number" name="effort_hours" min="0" value="{{ prefill.effort_hours }}"
+                <label for="template-task-effort-hours" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Effort Hours</label>
+                <input id="template-task-effort-hours" type="number" name="effort_hours" min="0" value="{{ prefill.effort_hours }}"
                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
             </div>
         </div>
