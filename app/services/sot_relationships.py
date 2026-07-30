@@ -13529,6 +13529,282 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.ont_commissioning",
+                module="app.services.network.ont_commissioning",
+                owns=(
+                    "temporary ONT commissioning intent lifecycle",
+                    "assignment-free management-only commissioning coordination",
+                    "commissioning expiry and assignment reconciliation",
+                ),
+                depends_on=(
+                    "auth.permission_gate",
+                    "network.identity",
+                    "network.ont_assignment_commands",
+                    "network.ont_provisioning_execution",
+                    "network.operation_ledger",
+                    "network.operation_dispatch",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "Owns the explicit alternative to raw assignment-free "
+                    "authorization. Each intent binds one live autofind serial, "
+                    "OLT, and F/S/P, expires after a bounded interval, and permits "
+                    "only OLT registration plus management VLAN/IPHOST/TR-069. "
+                    "It never creates an assignment or applies internet, PPPoE, "
+                    "WAN, LAN, or Wi-Fi intent. Assignment converts a "
+                    "management-ready intent; expiry without assignment stages "
+                    "idempotent return-to-inventory cleanup."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="temporary ONT commissioning intent lifecycle",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated commissioning intent",
+                                "exact live OLT autofind observation",
+                                "canonical ONT inventory identity",
+                                "active ONT service assignment",
+                                "durable network operation lifecycle",
+                                "durable network command dispatch",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "assignment-free management-only commissioning "
+                                "coordination"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "exact live OLT autofind observation",
+                                "canonical ONT inventory identity",
+                                "active ONT service assignment",
+                                "effective OLT management configuration",
+                                "durable network operation lifecycle",
+                                "durable network command dispatch",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="commissioning expiry and assignment reconciliation",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "canonical ONT inventory identity",
+                                "active ONT service assignment",
+                                "durable network operation lifecycle",
+                                "durable network command dispatch",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated commissioning intent",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "network:ont:commission permission plus typed actor, "
+                                "reason, reference, correlation, and exact candidate"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="exact live OLT autofind observation",
+                            owner="external:huawei_olt",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "display ont autofind read immediately before the "
+                                "first commissioning device write"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical ONT inventory identity",
+                            owner="network.identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "OltAutofindCandidate, OLTDevice, PonPort, and "
+                                "OntUnit exact serial/OLT/F/S/P identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active ONT service assignment",
+                            owner="network.ont_assignment_commands",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="the exact active OntAssignment for the ONT",
+                        ),
+                        AuthorityInput(
+                            name="effective OLT management configuration",
+                            owner="network.ont_provisioning_execution",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "effective OLT config pack management VLAN, imported "
+                                "GEM/priority, management IPAM, ACS, and TR-069 profile"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="durable network operation lifecycle",
+                            owner="network.operation_ledger",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="NetworkOperation status and landed-device evidence",
+                        ),
+                        AuthorityInput(
+                            name="durable network command dispatch",
+                            owner="network.operation_dispatch",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="versioned commission, verify, and cleanup dispatches",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "Admission and scheduled reconciliation each enter "
+                            "execute_owner_command once on a transaction-free session; "
+                            "intent, operation, dispatch, audit, and event stage "
+                            "atomically. Device workers commit external-write evidence "
+                            "before subsequent coordination."
+                        ),
+                        locking=(
+                            "Admission locks the exact autofind candidate and active "
+                            "serial intent; reconciliation locks active intents; "
+                            "cleanup and assignment both lock the OntUnit and recheck "
+                            "assignment/commissioning state before mutation."
+                        ),
+                        idempotency=(
+                            "One active intent per canonical serial and operation "
+                            "correlation suppress duplicate admission; versioned "
+                            "dispatch keys make bounded ACS checks and cleanup "
+                            "replay-safe."
+                        ),
+                        retries=(
+                            "Device authorization reuses durable landed-write evidence; "
+                            "ACS checks use five delayed attempts; later reconciliation "
+                            "repairs assignment and expiry drift."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.ont_commissioning.invalid_target",
+                            "network.ont_commissioning.candidate_not_active",
+                            "network.ont_commissioning.stale_target",
+                            "network.ont_commissioning.reason_required",
+                            "network.ont_commissioning.invalid_expiry",
+                            "network.ont_commissioning.assignment_exists",
+                            "network.ont_commissioning.intent_conflict",
+                            "network.ont_commissioning.concurrent_admission",
+                            "network.ont_commissioning.intent_not_found",
+                            "network.ont_commissioning.live_autofind_mismatch",
+                            "network.ont_commissioning.olt_unavailable",
+                            "network.ont_commissioning.local_inventory_failed",
+                            "network.ont_commissioning.authorization_failed",
+                            "network.ont_commissioning.inventory_missing",
+                            "network.ont_commissioning.olt_ont_id_missing",
+                            "network.ont_commissioning.config_pack_missing",
+                            "network.ont_commissioning.management_prerequisite_missing",
+                            "network.ont_commissioning.management_ip_incomplete",
+                            "network.ont_commissioning.management_priority_missing",
+                            "network.ont_commissioning.management_apply_failed",
+                            "network.ont_commissioning.service_config_forbidden",
+                            "network.ont_commissioning.acs_not_ready",
+                            "network.ont_commissioning.cleanup_target_missing",
+                            "network.ont_commissioning.cleanup_identity_mismatch",
+                            "network.ont_commissioning.cleanup_failed",
+                            *owner_command_boundary_error_codes(
+                                "network.ont_commissioning"
+                            ),
+                        ),
+                        mapping_owner=(
+                            "admin ONT commissioning web adapter and "
+                            "app.tasks.ont_commissioning"
+                        ),
+                        retryable_codes=(
+                            "network.ont_commissioning.management_apply_failed",
+                        ),
+                        fail_closed_on=(
+                            "missing permission or reason",
+                            "stale or mismatched live autofind target",
+                            "existing active assignment",
+                            "registration on a different F/S/P",
+                            "missing management prerequisites",
+                            "any internet, WAN, PPPoE, LAN, or Wi-Fi command",
+                            "identity drift before cleanup",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "ont.commissioning_requested",
+                            "ont.commissioning_state_changed",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 payloads evolve additively; the exact intent, "
+                            "OLT, F/S/P, serial, state, and expiry remain stable."
+                        ),
+                        replay=(
+                            "Consumers key side effects by event_id; the intent row "
+                            "remains the authoritative current lifecycle."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="ont_commissioning_intents lifecycle",
+                            input_names=(
+                                "exact live OLT autofind observation",
+                                "canonical ONT inventory identity",
+                                "active ONT service assignment",
+                                "durable network operation lifecycle",
+                            ),
+                            writer="network.ont_commissioning",
+                            freshness=(
+                                "Device workers update after each phase and the "
+                                "permanent reconciler targets a 60-second interval."
+                            ),
+                            stale_behavior=(
+                                "Stale intent state never grants service. Expired "
+                                "unassigned device state is cleanup-eligible only "
+                                "after exact locked revalidation."
+                            ),
+                            drift_signal=(
+                                "last_reconciled_at, expiry, assignment state, "
+                                "operation status, and cleanup failure evidence"
+                            ),
+                            rebuild_operation=(
+                                "reconcile_ont_commissioning recomputes assignment "
+                                "conversion and stages safe expiry cleanup"
+                            ),
+                            repair_owner="network.ont_commissioning",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        new_owner="network.ont_commissioning",
+                        old_owner=(
+                            "raw assignment-free authorize ONT web/task workflow"
+                        ),
+                        verification=(
+                            "Focused behavior and architecture tests prove assigned "
+                            "authorization admission and management-only commissioning."
+                        ),
+                        cutover_gate=(
+                            "Raw authorization rejects requests without an exact "
+                            "active assignment and UI routes those candidates to "
+                            "Commission ONT."
+                        ),
+                        fallback_retirement=(
+                            "No raw assignment-free authorize adapter remains."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/ONT_COMMISSIONING_INTENT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/OLT_ONT_ACS_ARCHITECTURE.md",
+                        "docs/PROVISIONING_OPERATIONS_GUIDE.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ont_commissioning.py",
+                        "tests/architecture/test_ont_commissioning_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.cpe_dialer_credential",
                 module="app.services.cpe_dialer_credential_reconcile",
                 owns=(

@@ -63,6 +63,9 @@ class NetworkOperationCommand(StrEnum):
 
     ont_status_refresh_v1 = "ont_status_refresh.v1"
     ont_authorize_v1 = "ont_authorize.v1"
+    ont_commission_v1 = "ont_commission.v1"
+    ont_commission_verify_v1 = "ont_commission_verify.v1"
+    ont_commission_cleanup_v1 = "ont_commission_cleanup.v1"
     ont_provision_v1 = "ont_provision.v1"
     ont_bootstrap_verify_v1 = "ont_bootstrap_verify.v1"
     ont_firmware_upgrade_v1 = "ont_firmware_upgrade.v1"
@@ -198,6 +201,73 @@ def _ont_authorize_invocation(
             "initiated_by": operation.initiated_by,
             "operation_id": str(operation.id),
         },
+    )
+
+
+def _commissioning_attempt(dispatch_key: str) -> int:
+    prefix, separator, raw_attempt = dispatch_key.partition(":")
+    if prefix != "verify" or not separator:
+        raise NetworkOperationDispatchError(
+            "invalid_dispatch_key",
+            "Commissioning verification dispatch keys must identify an attempt.",
+        )
+    try:
+        attempt = int(raw_attempt)
+    except ValueError as exc:
+        raise NetworkOperationDispatchError(
+            "invalid_dispatch_key",
+            "Commissioning verification attempt must be an integer.",
+        ) from exc
+    if not 0 <= attempt <= 4:
+        raise NetworkOperationDispatchError(
+            "invalid_dispatch_key",
+            "Commissioning verification attempt is outside the supported range.",
+        )
+    return attempt
+
+
+def _ont_commission_invocation(
+    operation: NetworkOperation,
+    _dispatch_key: str,
+) -> DispatchInvocation:
+    intent_id = _required_payload_id(operation, "intent_id")
+    olt_id = _required_payload_id(operation, "olt_id")
+    if (
+        operation.target_type != NetworkOperationTargetType.olt
+        or str(operation.target_id) != olt_id
+    ):
+        raise NetworkOperationDispatchError(
+            "invalid_operation_payload",
+            "Commissioning operation does not match its exact OLT target.",
+        )
+    return DispatchInvocation(
+        args=[intent_id, str(operation.id)],
+        kwargs={},
+        queue="tr069",
+    )
+
+
+def _ont_commission_verify_invocation(
+    operation: NetworkOperation,
+    dispatch_key: str,
+) -> DispatchInvocation:
+    intent_id = _required_payload_id(operation, "intent_id")
+    return DispatchInvocation(
+        args=[intent_id, str(operation.id), _commissioning_attempt(dispatch_key)],
+        kwargs={},
+        queue="tr069",
+    )
+
+
+def _ont_commission_cleanup_invocation(
+    operation: NetworkOperation,
+    _dispatch_key: str,
+) -> DispatchInvocation:
+    intent_id = _required_payload_id(operation, "intent_id")
+    return DispatchInvocation(
+        args=[intent_id, str(operation.id)],
+        kwargs={},
+        queue="tr069",
     )
 
 
@@ -344,6 +414,29 @@ _COMMAND_SPECS: dict[NetworkOperationCommand, _CommandSpec] = {
             }
         ),
         invocation=_ont_authorize_invocation,
+    ),
+    NetworkOperationCommand.ont_commission_v1: _CommandSpec(
+        task_name="app.tasks.ont_commissioning.commission_ont",
+        operation_type=NetworkOperationType.ont_commission,
+        target_types=frozenset({NetworkOperationTargetType.olt}),
+        invocation=_ont_commission_invocation,
+    ),
+    NetworkOperationCommand.ont_commission_verify_v1: _CommandSpec(
+        task_name="app.tasks.ont_commissioning.verify_commissioned_ont",
+        operation_type=NetworkOperationType.ont_commission,
+        target_types=frozenset({NetworkOperationTargetType.olt}),
+        invocation=_ont_commission_verify_invocation,
+    ),
+    NetworkOperationCommand.ont_commission_cleanup_v1: _CommandSpec(
+        task_name="app.tasks.ont_commissioning.cleanup_commissioned_ont",
+        operation_type=NetworkOperationType.ont_commission_cleanup,
+        target_types=frozenset(
+            {
+                NetworkOperationTargetType.olt,
+                NetworkOperationTargetType.ont,
+            }
+        ),
+        invocation=_ont_commission_cleanup_invocation,
     ),
     NetworkOperationCommand.ont_provision_v1: _CommandSpec(
         task_name="app.tasks.ont_provisioning.provision_ont",

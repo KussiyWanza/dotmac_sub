@@ -37,7 +37,7 @@ Provisioning is intentionally staged. Do not authorize ONTs on a new OLT until t
 | 4. Imported state readiness | Verify OLT-local profiles, GEM mappings, ONT registrations, and service-port rows are imported. | Import Live State, Import Dump, Imported Profiles tab, mapping coverage report. | `app/services/network/olt_state_import.py`, `app/services/network/imported_service_ports.py`, `app/services/network/effective_ont_config.py`, `scripts/report_missing_olt_mappings.py` |
 | 5. Inventory and topology sync | Populate operational state from the OLT. | ONT sync, autofind scan, PON repair, Zabbix-backed hardware discovery, monitoring links. | `app/services/network/olt_inventory.py`, `app/services/network/olt_hardware_discovery.py`, `app/services/network/olt_web_topology.py`, `app/web/admin/network_pon_interfaces.py`, `app/web/admin/network_olts_profiles.py`, `app/tasks/olt_hardware_discovery.py` |
 | 6. Customer-service assignment | Bind the exact subscription and modeled PON through the assignment owner. Imported identifiers and MAC matches remain review evidence. | ONT assignment form or field work-order completion with explicit subscription and PON. | `app/services/network/ont_assignment_commands.py`, `app/services/web_network_ont_assignments.py`, `app/services/field_equipment.py` |
-| 7. ONT authorization/provisioning | Register ONTs and apply service configuration only after readiness passes; authorization does not create customer assignments. | Autofind authorization and ONT provisioning tab. | `app/services/network/ont_authorization.py`, `app/services/network/acs_foundation.py`, `app/services/network/ont_provision_steps.py`, `app/services/network/ont_provisioning/orchestrator.py` |
+| 7. ONT authorization/provisioning | **Authorize & provision** requires an exact active assignment. Pre-assignment work uses the separate 24-hour, management-only commissioning intent. | Autofind **Commission ONT**, assigned ONT **Authorize & provision**, and ONT provisioning tab. | `app/services/network/ont_commissioning.py`, `app/services/network/ont_authorization.py`, `app/services/network/ont_provision_steps.py` |
 | 8. Backup, config audit, and drift checks | Keep read-only evidence that live OLT state matches intended state. | Scheduled SSH running-config backups, backup audits, live config-pack audits, compensation retry watchdog. | `app/tasks/olt_config_backup.py`, `app/services/network/olt_config_audit.py`, `app/services/network/olt_config_pack_live_audit.py`, `app/tasks/provisioning.py` |
 
 ## Service-change execution reconciliation
@@ -165,8 +165,21 @@ For unregistered ONTs:
 1. Click **"Autofind Scan"**
 2. Review discovered serial numbers
 3. Confirm config-pack readiness is green
-4. Click **"Authorize"** next to each ONT to add it
-5. Authorization runs synchronously and, when TR-069 is configured, waits for the ONT to become resolvable in ACS before returning success
+4. For a customer-ready device, create the exact subscription/PON assignment,
+   then click **"Authorize & provision"**.
+5. If the device needs ACS management before customer assignment, click
+   **"Commission ONT"**, enter the operational reason and optional work-order or
+   ticket reference, and confirm the exact OLT/F/S/P/serial.
+6. Commissioning configures only ONT registration, management VLAN/IPHOST, and
+   TR-069. It does **not** configure internet, PPPoE, WAN, LAN, or Wi-Fi.
+7. Commissioning expires after 24 hours. Assign a management-ready ONT before
+   expiry; otherwise the reconciler returns it to inventory. A cleanup failure
+   stays visible and blocks assignment until reviewed.
+
+Do not retry a spinning or failed unassigned authorization through the raw
+authorization endpoint. Refresh live autofind and use **Commission ONT**. Normal
+authorization intentionally fails closed when the exact active assignment,
+modeled PON, OLT, or F/S/P is missing or disagrees.
 
 ---
 

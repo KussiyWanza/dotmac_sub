@@ -585,6 +585,10 @@ from app.models.ont_assignment_identity import (  # noqa: F401
     OntAssignmentIdentityDecision,
 )
 from app.models.ont_autofind import OltAutofindCandidate  # noqa: F401
+from app.models.ont_commissioning import (  # noqa: F401
+    OntCommissioningIntent,
+    OntCommissioningState,
+)
 from app.models.ont_observation import OntObservation  # noqa: F401
 from app.models.ont_topology_observation import (  # noqa: F401
     OntTopologyObservationEvidence,

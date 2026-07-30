@@ -34,6 +34,7 @@ TR069_TASK_QUEUE_NAMES = {
     "app.tasks.tr069.wait_for_ont_bootstrap",
     "app.tasks.tr069.apply_saved_ont_service_config",
     "app.tasks.tr069.apply_acs_config",
+    "app.tasks.ont_commissioning.reconcile_intents",
 }
 
 
@@ -1596,6 +1597,13 @@ def build_beat_schedule() -> dict:
             ),
             enabled=True,
             interval_seconds=max(network_operation_dispatch_seconds, 5),
+        )
+        _sync_scheduled_task(
+            session,
+            name="ont_commissioning_reconciliation",
+            task_name="app.tasks.ont_commissioning.reconcile_intents",
+            enabled=True,
+            interval_seconds=60,
         )
         # The redis dashboard stats-summary path was removed (the overview
         # renders from the in-process global context); retire its beat row.

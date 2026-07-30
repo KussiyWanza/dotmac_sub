@@ -49,6 +49,8 @@ class NetworkOperationType(enum.Enum):
     olt_firmware_upgrade = "olt_firmware_upgrade"
     ont_provision = "ont_provision"
     ont_authorize = "ont_authorize"
+    ont_commission = "ont_commission"
+    ont_commission_cleanup = "ont_commission_cleanup"
     ont_reboot = "ont_reboot"
     ont_factory_reset = "ont_factory_reset"
     ont_set_pppoe = "ont_set_pppoe"

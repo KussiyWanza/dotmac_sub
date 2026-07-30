@@ -457,10 +457,10 @@ def test_update_ont_config_persists_static_management_pool_values(db_session) ->
     assert record.is_reserved is True
 
 
-def test_saved_wifi_only_desired_config_qualifies_for_apply_on_inform(
+def test_saved_wifi_only_desired_config_requires_assignment_for_apply_on_inform(
     db_session,
 ) -> None:
-    from app.models.network import OntUnit
+    from app.models.network import OntAssignment, OntUnit
     from app.services.network.ont_desired_config import set_desired_config_values
     from app.services.tr069 import _ont_has_saved_service_intent
 
@@ -473,6 +473,11 @@ def test_saved_wifi_only_desired_config_qualifies_for_apply_on_inform(
         },
     )
     db_session.add(ont)
+    db_session.commit()
+
+    assert _ont_has_saved_service_intent(db_session, ont.id) is False
+
+    db_session.add(OntAssignment(ont_unit_id=ont.id, active=True))
     db_session.commit()
 
     assert _ont_has_saved_service_intent(db_session, ont.id) is True
@@ -529,7 +534,7 @@ def test_pending_delivery_marker_queues_apply_on_recent_inform(
 ) -> None:
     from datetime import UTC, datetime
 
-    from app.models.network import OntUnit
+    from app.models.network import OntAssignment, OntUnit
     from app.services.network.ont_desired_config import set_desired_config_values
     from app.services.tr069 import _queue_saved_service_apply_after_stale_inform
 
@@ -542,6 +547,8 @@ def test_pending_delivery_marker_queues_apply_on_recent_inform(
         },
     )
     db_session.add(ont)
+    db_session.flush()
+    db_session.add(OntAssignment(ont_unit_id=ont.id, active=True))
     db_session.commit()
 
     queued = {}

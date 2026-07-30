@@ -41,6 +41,8 @@ STALE_WAITING_OPERATION_AGE = timedelta(hours=6)
 DEFAULT_STALE_ACTIVE_OPERATION_AGE = timedelta(hours=4)
 STALE_ACTIVE_OPERATION_AGE_BY_TYPE: dict[NetworkOperationType, timedelta] = {
     NetworkOperationType.ont_authorize: timedelta(minutes=15),
+    NetworkOperationType.ont_commission: timedelta(minutes=20),
+    NetworkOperationType.ont_commission_cleanup: timedelta(minutes=30),
     NetworkOperationType.ont_provision: timedelta(minutes=30),
     NetworkOperationType.tr069_bootstrap: timedelta(minutes=15),
 }

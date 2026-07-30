@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.models.network import OLTDevice, OntUnit
+from app.models.network import OLTDevice, OntAssignment, OntUnit, PonPort
 from app.models.network_operation import (
     NetworkOperation,
     NetworkOperationDispatch,
@@ -17,6 +17,7 @@ from app.models.network_operation import (
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.services.network.serial_utils import normalize as normalize_serial
 from app.services.network_operation_dispatch import (
     NetworkOperationCommand,
     NetworkOperationDispatchError,
@@ -135,20 +136,57 @@ def request_ont_authorization(
             "Port and serial number are required for ONT authorization.",
         )
     normalized_ont_id = str(scoped_ont_id or "").strip() or None
-    if normalized_ont_id and db.get(OntUnit, normalized_ont_id) is None:
+    if normalized_ont_id is None:
+        return ProvisioningCommandResult(
+            False,
+            False,
+            "Authorize & provision requires an assigned ONT. "
+            "Assign the device first or use Commission ONT.",
+        )
+    ont = db.get(OntUnit, normalized_ont_id)
+    if ont is None:
         return ProvisioningCommandResult(False, False, "ONT not found.")
+    if normalize_serial(ont.serial_number) != normalize_serial(normalized_serial):
+        return ProvisioningCommandResult(
+            False,
+            False,
+            "The submitted serial does not match the assigned ONT.",
+        )
+    assignment = db.scalars(
+        select(OntAssignment)
+        .where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+        .limit(1)
+    ).first()
+    if assignment is None or assignment.pon_port_id is None:
+        return ProvisioningCommandResult(
+            False,
+            False,
+            "Authorize & provision requires an active assignment on an exact PON. "
+            "Complete assignment first or use Commission ONT.",
+        )
+    pon = db.get(PonPort, assignment.pon_port_id)
+    if (
+        pon is None
+        or not pon.is_active
+        or str(pon.olt_id) != str(olt_id)
+        or str(pon.name or "").strip() != normalized_fsp
+    ):
+        return ProvisioningCommandResult(
+            False,
+            False,
+            "The active assignment does not match the submitted OLT and F/S/P.",
+        )
 
     correlation_key = ont_authorization_correlation_key(
         olt_id=olt_id,
         fsp=normalized_fsp,
         serial_number=normalized_serial,
     )
-    target_type = (
-        NetworkOperationTargetType.ont
-        if normalized_ont_id
-        else NetworkOperationTargetType.olt
-    )
-    target_id = normalized_ont_id or olt_id
+    target_type = NetworkOperationTargetType.ont
+    target_id = normalized_ont_id
     try:
         operation = network_operations.start(
             db,

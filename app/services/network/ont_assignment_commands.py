@@ -125,6 +125,21 @@ class OntAssignmentCommands:
         )
         if ont is None:
             raise OntAssignmentCommandError("ONT unit not found", status_code=404)
+        from app.services.network.ont_commissioning import (
+            assignment_is_blocked_by_commissioning,
+        )
+
+        commissioning = assignment_is_blocked_by_commissioning(
+            db,
+            ont_unit_id=ont.id,
+        )
+        if commissioning is not None:
+            raise OntAssignmentCommandError(
+                "ONT assignment is temporarily blocked while commissioning is "
+                f"{commissioning.state.value}. Wait for management-ready state "
+                "or resolve commissioning cleanup first.",
+                status_code=409,
+            )
         pon = db.scalar(
             select(PonPort).where(PonPort.id == pon_port_id).with_for_update()
         )

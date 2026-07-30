@@ -112,6 +112,14 @@ from app.tasks.olt_mac_harvest import (
     run_single_olt_mac_harvest,
 )
 from app.tasks.ont_bulk import execute_bulk_action as execute_ont_bulk_action
+from app.tasks.ont_commissioning import (
+    cleanup_commissioned_ont,
+    commission_ont,
+    verify_commissioned_ont,
+)
+from app.tasks.ont_commissioning import (
+    reconcile_intents as reconcile_ont_commissioning_intents,
+)
 from app.tasks.ont_firmware import (
     apply_huawei_ont_firmware,
     verify_huawei_ont_firmware,
@@ -237,6 +245,10 @@ __all__ = [
     "run_radius_sync_job",
     "provision_ont",
     "queue_bulk_provisioning",
+    "commission_ont",
+    "verify_commissioned_ont",
+    "cleanup_commissioned_ont",
+    "reconcile_ont_commissioning_intents",
     "record_ont_observations",
     "run_invoice_cycle",
     "charge_due_invoices",

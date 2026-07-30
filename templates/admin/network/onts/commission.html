@@ -1,0 +1,81 @@
+{% extends "layouts/admin.html" %}
+
+{% block title %}Commission ONT - Admin{% endblock %}
+
+{% block content %}
+<div class="mx-auto max-w-3xl space-y-6">
+    <div>
+        <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <a href="/admin/network/onts?view=unconfigured" class="hover:text-primary-600">Unconfigured ONTs</a>
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span aria-current="page" class="text-slate-900 dark:text-white">Commission</span>
+        </nav>
+        <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Commission ONT for management access</h1>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create a temporary, assignment-free management path for this exact discovered device.</p>
+    </div>
+
+    {% if error %}
+    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
+        {{ error }}
+    </div>
+    {% endif %}
+
+    <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <div class="border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+            <h2 class="font-semibold text-slate-900 dark:text-white">Exact target</h2>
+        </div>
+        <dl class="grid gap-4 p-6 sm:grid-cols-2">
+            <div>
+                <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">OLT</dt>
+                <dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ olt.name }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">F/S/P</dt>
+                <dd class="mt-1 font-mono text-sm text-slate-900 dark:text-white">{{ candidate.fsp }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Serial</dt>
+                <dd class="mt-1 font-mono text-sm text-slate-900 dark:text-white">{{ candidate.serial_number }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Model</dt>
+                <dd class="mt-1 text-sm text-slate-900 dark:text-white">{{ candidate.model or 'Unknown' }}</dd>
+            </div>
+        </dl>
+    </div>
+
+    <div class="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+        <h2 class="font-semibold">Management-only boundary</h2>
+        <ul class="mt-2 list-disc space-y-1 pl-5">
+            <li>The worker will re-read live autofind and require this exact OLT, F/S/P, and serial before writing.</li>
+            <li>It may register the ONT and configure only the management VLAN, IPHOST, and TR-069 profile.</li>
+            <li>It will not configure customer internet, PPPoE, WAN, LAN, or Wi-Fi.</li>
+            <li>The intent expires after 24 hours. If no assignment exists, reconciliation returns the device to inventory.</li>
+        </ul>
+    </div>
+
+    <form method="POST" action="/admin/network/olts/{{ olt.id }}/commission-ont" class="space-y-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        {% include "components/forms/csrf_input.html" %}
+        <input type="hidden" name="candidate_id" value="{{ candidate.id }}">
+        <input type="hidden" name="expected_fsp" value="{{ candidate.fsp }}">
+        <input type="hidden" name="expected_serial" value="{{ candidate.serial_number }}">
+
+        <div>
+            <label for="reason" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Operational reason <span class="text-red-500">*</span></label>
+            <textarea id="reason" name="reason" rows="3" required maxlength="1000" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white" placeholder="Why is this ONT being commissioned before subscriber assignment?">{{ reason }}</textarea>
+        </div>
+
+        <div>
+            <label for="reference" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Work order or ticket reference</label>
+            <input id="reference" name="reference" value="{{ reference }}" maxlength="160" class="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white" placeholder="Optional">
+        </div>
+
+        <div class="flex flex-wrap justify-end gap-3">
+            <a href="/admin/network/onts?view=unconfigured" class="inline-flex min-h-[44px] items-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Cancel</a>
+            <button type="submit" data-confirm="Commission this exact ONT for management-only access for up to 24 hours?" data-confirm-variant="warning" class="inline-flex min-h-[44px] items-center rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2">
+                Commission ONT
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

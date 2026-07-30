@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import SQLColumnExpression
 from starlette.requests import Request
 
-from app.models.network import AuthorizationPreset, OLTDevice, OntUnit
+from app.models.network import AuthorizationPreset, OLTDevice, OntAssignment, OntUnit
 from app.models.ont_autofind import OltAutofindCandidate
 from app.services.network._common import normalize_mac_address
 from app.services.network.olt_web_audit import log_olt_audit_event
@@ -507,7 +507,7 @@ def build_unconfigured_onts_page_data(
     if selected_view not in {"active", "history", "all"}:
         selected_view = "active"
     selected_resolution = (resolution or "").strip().lower()
-    if selected_resolution not in {"authorized", "disappeared"}:
+    if selected_resolution not in {"authorized", "commissioned", "disappeared"}:
         selected_resolution = ""
 
     # Build query using SQLAlchemy 2.0 select() pattern
@@ -554,6 +554,24 @@ def build_unconfigured_onts_page_data(
         OltAutofindCandidate.fsp.asc(),
     )
     rows = db.execute(stmt).all()
+    candidate_ids = [candidate.id for candidate, _olt in rows]
+    ont_ids = [
+        candidate.ont_unit_id
+        for candidate, _olt in rows
+        if candidate.ont_unit_id is not None
+    ]
+    assigned_ont_ids = {
+        str(ont_id)
+        for ont_id in db.scalars(
+            select(OntAssignment.ont_unit_id).where(
+                OntAssignment.ont_unit_id.in_(ont_ids),
+                OntAssignment.active.is_(True),
+            )
+        ).all()
+    }
+    from app.services.network.ont_commissioning import latest_intents_for_candidates
+
+    commissioning_by_candidate = latest_intents_for_candidates(db, candidate_ids)
     presets = list(
         db.scalars(
             select(AuthorizationPreset)
@@ -609,6 +627,25 @@ def build_unconfigured_onts_page_data(
             "resolved_at": candidate.resolved_at,
             "notes": candidate.notes,
             "authorization_presets": preset_options_for_olt(olt.id),
+            "has_active_assignment": (
+                str(candidate.ont_unit_id) in assigned_ont_ids
+                if candidate.ont_unit_id is not None
+                else False
+            ),
+            "commissioning": (
+                {
+                    "id": str(commissioning_by_candidate[str(candidate.id)].id),
+                    "state": commissioning_by_candidate[str(candidate.id)].state.value,
+                    "expires_at": commissioning_by_candidate[
+                        str(candidate.id)
+                    ].expires_at,
+                    "failure_message": commissioning_by_candidate[
+                        str(candidate.id)
+                    ].failure_message,
+                }
+                if str(candidate.id) in commissioning_by_candidate
+                else None
+            ),
         }
         for candidate, olt in rows
     ]

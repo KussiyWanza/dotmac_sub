@@ -346,10 +346,23 @@ def _upsert_inform_parameters(
 
 
 def _ont_has_saved_service_intent(db: Session, ont_id: object) -> bool:
-    from app.models.network import OntUnit, OntWanServiceInstance
+    from app.models.network import OntAssignment, OntUnit, OntWanServiceInstance
 
     ont = db.get(OntUnit, ont_id)
     if ont is None or not ont.is_active:
+        return False
+    # Service delivery is assignment-owned. In particular, a temporary
+    # management-only commissioning intent must never make config-pack defaults
+    # look like customer WAN/Wi-Fi intent on Inform.
+    assignment_id = db.scalar(
+        select(OntAssignment.id)
+        .where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+        .limit(1)
+    )
+    if assignment_id is None:
         return False
     effective = resolve_effective_ont_config(db, ont)
     effective_values = (
@@ -1675,6 +1688,27 @@ def receive_inform(
     )
     db.add(session)
     db.commit()
+    commissioning_completed = False
+    if ont_id_for_service_apply is not None:
+        try:
+            from app.services.network.ont_commissioning import (
+                complete_commissioning_after_inform,
+            )
+
+            commissioning_completed = complete_commissioning_after_inform(
+                db,
+                ont_id=str(ont_id_for_service_apply),
+                reason="tr069_inform",
+            )
+            if commissioning_completed:
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Failed to complete commissioning after Inform for ONT %s",
+                ont_id_for_service_apply,
+                exc_info=True,
+            )
     service_apply_queued = False
     try:
         service_apply_queued = _queue_saved_service_apply_after_stale_inform(

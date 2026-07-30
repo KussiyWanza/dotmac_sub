@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.network import OLTDevice, PonPort
+from app.models.ont_autofind import OltAutofindCandidate
 from app.services import network as network_service
 from app.services import web_admin as web_admin_service
 from app.services import web_network_core_devices as web_network_core_devices_service
@@ -22,6 +24,8 @@ from app.services import (
     web_network_pon_interfaces as web_network_pon_interfaces_service,
 )
 from app.services.auth_dependencies import require_permission
+from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
 from app.services.ipam_adapter import ipam_adapter
 from app.services.network import olt_operations as olt_operations_service
 from app.services.network import olt_pon_port_control as olt_pon_port_control_service
@@ -31,6 +35,10 @@ from app.services.network import olt_web_topology as olt_web_topology_service
 from app.services.network.action_logging import actor_label, log_network_action_result
 from app.services.network.olt_inventory import get_olt_or_none
 from app.services.network.olt_lifecycle import get_deletion_impact
+from app.services.network.ont_commissioning import (
+    RequestOntCommissioning,
+    request_ont_commissioning,
+)
 from app.services.network.ont_provisioning_commands import request_ont_authorization
 from app.services.network.ont_scope import (
     can_authorize_ont_from_request,
@@ -38,6 +46,7 @@ from app.services.network.ont_scope import (
     submitted_authorization_ont_matches_scope,
 )
 from app.services.olt_detail_adapter import olt_detail_adapter
+from app.services.owner_commands import CommandContext
 from app.web.request_parsing import parse_form_data_sync
 
 logger = logging.getLogger(__name__)
@@ -94,6 +103,43 @@ def _toast_headers(message: str, toast_type: str) -> dict[str, str]:
             ensure_ascii=True,
         )
     }
+
+
+def _commissioning_form_context(
+    request: Request,
+    db: Session,
+    *,
+    olt_id: str,
+    candidate_id: str,
+    error: str | None = None,
+    reason: str = "",
+    reference: str = "",
+) -> dict[str, object] | None:
+    try:
+        parsed_candidate_id = uuid.UUID(candidate_id)
+        parsed_olt_id = uuid.UUID(olt_id)
+    except ValueError:
+        return None
+    candidate = db.get(OltAutofindCandidate, parsed_candidate_id)
+    olt = db.get(OLTDevice, parsed_olt_id)
+    if (
+        candidate is None
+        or olt is None
+        or candidate.olt_id != olt.id
+        or not candidate.is_active
+    ):
+        return None
+    context = _base_context(request, db, active_page="onts")
+    context.update(
+        {
+            "olt": olt,
+            "candidate": candidate,
+            "error": error,
+            "reason": reason,
+            "reference": reference,
+        }
+    )
+    return context
 
 
 def _authorization_detail_redirect_url(
@@ -1233,6 +1279,114 @@ def refresh_autofind_candidates(
         message=message,
     )
     return RedirectResponse(target, status_code=303)
+
+
+@router.get(
+    "/olts/{olt_id}/commission-ont",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:commission"))],
+)
+def olt_commission_ont_form(
+    request: Request,
+    olt_id: str,
+    candidate_id: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Render explicit confirmation for assignment-free management bootstrap."""
+
+    context = _commissioning_form_context(
+        request,
+        db,
+        olt_id=olt_id,
+        candidate_id=candidate_id,
+    )
+    if context is None:
+        return templates.TemplateResponse(
+            "admin/errors/404.html",
+            {
+                "request": request,
+                "message": "Active autofind candidate not found on this OLT.",
+            },
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        "admin/network/onts/commission.html",
+        context,
+    )
+
+
+@router.post(
+    "/olts/{olt_id}/commission-ont",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:commission"))],
+)
+def olt_commission_ont(
+    request: Request,
+    olt_id: str,
+    candidate_id: str = Form(""),
+    expected_fsp: str = Form(""),
+    expected_serial: str = Form(""),
+    reason: str = Form(""),
+    reference: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Admit one exact, expiring management-only commissioning intent."""
+
+    try:
+        parsed_olt_id = uuid.UUID(olt_id)
+        parsed_candidate_id = uuid.UUID(candidate_id)
+    except ValueError:
+        context = None
+        error = "The commissioning target is invalid. Refresh the autofind list."
+    else:
+        db_session_adapter.release_read_transaction(db)
+        try:
+            outcome = request_ont_commissioning(
+                db,
+                RequestOntCommissioning(
+                    context=CommandContext.system(
+                        actor=actor_label(request),
+                        scope="network:ont:commission",
+                        reason="operator requested management-only ONT commissioning",
+                        idempotency_key=f"ont-commission:{parsed_candidate_id}",
+                    ),
+                    candidate_id=parsed_candidate_id,
+                    expected_olt_id=parsed_olt_id,
+                    expected_fsp=expected_fsp,
+                    expected_serial=expected_serial,
+                    reason=reason,
+                    reference=reference or None,
+                ),
+            )
+        except DomainError as exc:
+            error = exc.message
+            context = _commissioning_form_context(
+                request,
+                db,
+                olt_id=olt_id,
+                candidate_id=candidate_id,
+                error=error,
+                reason=reason,
+                reference=reference,
+            )
+        else:
+            target = (
+                "/admin/network/onts?view=unconfigured"
+                f"&search={quote_plus(expected_serial)}"
+                f"&status=success&message={quote_plus(outcome.message)}"
+            )
+            return RedirectResponse(target, status_code=303)
+    if context is None:
+        return templates.TemplateResponse(
+            "admin/errors/400.html",
+            {"request": request, "message": error},
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "admin/network/onts/commission.html",
+        context,
+        status_code=400,
+    )
 
 
 @router.post(
