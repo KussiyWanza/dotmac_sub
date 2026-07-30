@@ -80,6 +80,39 @@ async def _request_with_retry(
         return response
 
 
+def _request_with_retry_sync(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    data: dict | None = None,
+    params: dict | None = None,
+    timeout: float | None = None,
+    max_retries: int = 1,
+) -> httpx.Response:
+    retries = 0
+    while True:
+        response = client.request(
+            method, url, data=data, params=params, timeout=timeout
+        )
+        if response.status_code == 429 or response.status_code >= 500:
+            if retries >= max_retries:
+                return response
+            retry_after = response.headers.get("Retry-After")
+            delay = 1.0
+            if retry_after:
+                try:
+                    delay = max(0.0, float(retry_after))
+                except ValueError:
+                    delay = 1.0
+            import time
+
+            time.sleep(delay)
+            retries += 1
+            continue
+        return response
+
+
 def _get_meta_graph_base_url(db: Session) -> str:
     version = resolve_value(db, SettingDomain.comms, "meta_graph_api_version")
     if not version:
@@ -292,6 +325,38 @@ async def reply_to_comment(
         result.get("id"),
     )
 
+    return result
+
+
+def reply_to_comment_sync(
+    db: Session,
+    page_id: str,
+    comment_id: str,
+    message: str,
+) -> dict[str, Any]:
+    """Synchronous Meta adapter for transaction-owned inbox comment replies."""
+
+    token = _get_page_token_record(db, page_id)
+    if not token or not token.access_token:
+        raise ValueError(f"No active token found for Page {page_id}")
+    _ensure_token_scopes(token, _PAGE_POST_SCOPES, "facebook_comment_reply")
+    url = f"{_get_meta_graph_base_url(db).rstrip('/')}/{comment_id}/comments"
+    with httpx.Client(timeout=30.0) as client:
+        response = _request_with_retry_sync(
+            client,
+            "POST",
+            url,
+            data={"message": message, "access_token": token.access_token},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        result = cast(dict[str, Any], response.json())
+    logger.info(
+        "fb_comment_reply_created page_id=%s parent_comment=%s reply_id=%s",
+        page_id,
+        comment_id,
+        result.get("id"),
+    )
     return result
 
 
@@ -600,6 +665,38 @@ async def reply_to_instagram_comment(
         result.get("id"),
     )
 
+    return result
+
+
+def reply_to_instagram_comment_sync(
+    db: Session,
+    ig_account_id: str,
+    comment_id: str,
+    message: str,
+) -> dict[str, Any]:
+    """Synchronous Meta adapter for transaction-owned inbox comment replies."""
+
+    token = _get_instagram_token_record(db, ig_account_id)
+    if not token or not token.access_token:
+        raise ValueError(f"No active token found for Instagram account {ig_account_id}")
+    _ensure_token_scopes(token, _IG_COMMENT_SCOPES, "instagram_comment_reply")
+    url = f"{_get_meta_graph_base_url(db).rstrip('/')}/{comment_id}/replies"
+    with httpx.Client(timeout=30.0) as client:
+        response = _request_with_retry_sync(
+            client,
+            "POST",
+            url,
+            data={"message": message, "access_token": token.access_token},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        result = cast(dict[str, Any], response.json())
+    logger.info(
+        "ig_comment_reply_created account_id=%s parent_comment=%s reply_id=%s",
+        ig_account_id,
+        comment_id,
+        result.get("id"),
+    )
     return result
 
 

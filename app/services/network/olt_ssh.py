@@ -320,16 +320,18 @@ def _send_huawei_command(
     *,
     word_delay_sec: float = 0.1,
 ) -> None:
-    """Send a command without overrunning Huawei's interactive line editor."""
-    parts = command.split(" ")
-    for index, part in enumerate(parts):
-        channel.send(part)
-        if index < len(parts) - 1:
-            channel.send(" ")
+    """Send one complete command line to Huawei's interactive CLI.
+
+    Huawei shelves can coalesce separately written space characters while the
+    line editor is active (for example, receiving ``display traffictable...``).
+    Sending the complete line atomically preserves command boundaries; the
+    optional delay remains available for callers that need to yield before the
+    device begins responding.
+    """
+    if command:
+        channel.send(f"{command}\n")
+        if word_delay_sec:
             time.sleep(word_delay_sec)
-    if parts:
-        time.sleep(word_delay_sec)
-    channel.send("\n")
 
 
 def _prepare_huawei_read_shell(channel: Channel, prompt_regex: str) -> str:

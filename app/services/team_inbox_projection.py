@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from html import unescape
 from uuid import UUID
 
 from sqlalchemy import func
@@ -23,6 +25,7 @@ from app.models.team_inbox import (
     InboxConversationTeam,
 )
 from app.services import (
+    conversation_ticket_handoff,
     subscriber_summary,
     team_inbox_contact_links,
     team_inbox_metrics,
@@ -37,6 +40,8 @@ from app.services.list_query import (
     PageMeta,
     request_needs_canonicalization,
 )
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 class InboxListSort(StrEnum):
@@ -126,6 +131,13 @@ class ContactLinkCandidate:
 class ContactLinkCandidateSet:
     subscribers: tuple[ContactLinkCandidate, ...]
     resellers: tuple[ContactLinkCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppContactOption:
+    id: str
+    name: str
+    whatsapp_address: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -641,6 +653,171 @@ def get_conversation_projection(
         ),
         priority_options=INBOX_PRIORITY_OPTIONS,
     )
+
+
+def list_whatsapp_contacts(
+    db: Session,
+    *,
+    search: str,
+    limit: int = 20,
+) -> tuple[WhatsAppContactOption, ...]:
+    """Search canonical active Party contact points for WhatsApp reachability."""
+
+    from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
+
+    term = str(search or "").strip()
+    if len(term) < 2:
+        return ()
+    like = f"%{term}%"
+    matching_contact_party_ids = (
+        db.query(PartyContactPoint.party_id)
+        .filter(PartyContactPoint.is_active.is_(True))
+        .filter(
+            (PartyContactPoint.display_value.ilike(like))
+            | (PartyContactPoint.normalized_value.ilike(like))
+        )
+        .scalar_subquery()
+    )
+    rows = (
+        db.query(Party, PartyContactPoint)
+        .join(PartyContactPoint, PartyContactPoint.party_id == Party.id)
+        .filter(Party.status == PartyIdentityStatus.active.value)
+        .filter(PartyContactPoint.is_active.is_(True))
+        .filter(PartyContactPoint.channel_type.in_(("whatsapp", "phone", "sms")))
+        .filter(
+            (Party.display_name.ilike(like))
+            | (Party.id.in_(matching_contact_party_ids))
+        )
+        .order_by(
+            func.lower(Party.display_name).asc(),
+            PartyContactPoint.is_primary.desc(),
+            PartyContactPoint.created_at.asc(),
+        )
+        .limit(max(1, min(int(limit), 20)) * 4)
+        .all()
+    )
+    by_party: dict[UUID, tuple[Party, list[PartyContactPoint]]] = {}
+    for party, point in rows:
+        current = by_party.setdefault(party.id, (party, []))
+        current[1].append(point)
+    options: list[WhatsAppContactOption] = []
+    channel_rank = {"whatsapp": 0, "phone": 1, "sms": 2}
+    for party, points in by_party.values():
+        selected = sorted(
+            points,
+            key=lambda point: (
+                channel_rank.get(point.channel_type, 9),
+                not point.is_primary,
+                point.created_at,
+            ),
+        )[0]
+        address = str(selected.normalized_value or selected.display_value or "").strip()
+        if not address:
+            continue
+        options.append(
+            WhatsAppContactOption(
+                id=str(party.id),
+                name=party.display_name,
+                whatsapp_address=address,
+            )
+        )
+    return tuple(options[: max(1, min(int(limit), 20))])
+
+
+def _plain_ai_message_body(value: object | None) -> str:
+    """Remove presentation markup before the AI port applies PII redaction."""
+
+    without_tags = _HTML_TAG_RE.sub(" ", str(value or ""))
+    return re.sub(r"\s+", " ", unescape(without_tags)).strip()[:600]
+
+
+def build_ai_reply_projection(
+    db: Session,
+    *,
+    conversation_id: UUID,
+) -> dict[str, object] | None:
+    """Build the bounded, owned context supplied to the inbox AI advisor."""
+
+    timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
+    if timeline is None:
+        return None
+
+    from app.services.brand_profiles import resolve_brand
+
+    active_assignment = next(
+        (
+            assignment
+            for assignment in reversed(timeline.assignments)
+            if assignment.is_active
+        ),
+        None,
+    )
+    assigned_agent_name: str | None = None
+    if active_assignment is not None:
+        agent = db.get(SystemUser, _uuid(active_assignment.person_id))
+        if agent is not None:
+            assigned_agent_name = (
+                agent.display_name
+                or f"{agent.first_name} {agent.last_name}".strip()
+                or agent.email
+            )
+
+    labels = team_inbox_operations.conversation_labels(db, conversation_id)[:8]
+    linked_tickets = conversation_ticket_handoff.list_for_conversation(
+        db, conversation_id
+    )
+    ticket = linked_tickets[0] if linked_tickets else None
+    recent_messages = timeline.messages[-12:]
+    metadata = timeline.metadata if isinstance(timeline.metadata, dict) else {}
+    contact_name = next(
+        (
+            str(metadata.get(key)).strip()
+            for key in ("contact_name", "sender_name", "profile_name")
+            if str(metadata.get(key) or "").strip()
+        ),
+        None,
+    )
+    return {
+        "company_name": resolve_brand(
+            db,
+            subscriber_id=timeline.subscriber_id,
+        ).legal_name,
+        "conversation_id": timeline.id,
+        "channel": recent_messages[-1].channel_type
+        if recent_messages
+        else timeline.channel_type,
+        "status": timeline.status,
+        "priority": timeline.priority,
+        "subject": timeline.subject,
+        "contact_display_name": contact_name,
+        "assigned_agent_name": assigned_agent_name,
+        "tags": [label.name for label in labels],
+        "linked_ticket": (
+            {
+                "number": ticket.number,
+                "title": ticket.title,
+                "status": ticket.status,
+                "type": ticket.ticket_type,
+                "priority": ticket.priority,
+            }
+            if ticket is not None
+            else None
+        ),
+        "messages": [
+            {
+                "direction": (
+                    "customer" if message.direction == "inbound" else "agent"
+                ),
+                "body": _plain_ai_message_body(message.body),
+                "occurred_at": (
+                    message.received_at or message.sent_at or message.created_at
+                ).isoformat(),
+            }
+            for message in recent_messages
+            if message.direction in {"inbound", "outbound"}
+            and str(message.body or "").strip()
+        ],
+    }
 
 
 ACTIVITY_INPUT_FORMAT = "%Y-%m-%dT%H:%M"

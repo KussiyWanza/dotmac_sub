@@ -53,16 +53,18 @@ def test_workspace_frame_fills_the_viewport_below_the_admin_topbar():
     assert "bg-slate-100 bg-noise bg-mesh dark:bg-slate-900" in INDEX
 
 
-def test_crm_replication_surfaces_keep_preview_data_separate_from_live_actions():
+def test_crm_replication_surfaces_keep_remaining_preview_data_separate():
     assert 'href="/static/css/admin-inbox-replica.css' in INDEX
     assert 'data-replica-placeholder="reply-failure"' in FLOATING_SURFACES
     assert 'data-replica-placeholder="incoming-whatsapp-call"' in FLOATING_SURFACES
-    assert 'data-replica-placeholder="social-comment-thread"' in COMMENT_THREAD
     assert 'data-replica-placeholder="rich-crm-contact"' in CONTACT_PREVIEW
-    assert 'data-replica-placeholder="whatsapp-template-parameters"' in OVERLAYS
     assert "Dummy data" in CONTACT_PREVIEW
-    assert "not connected to the backend" in COMMENT_THREAD
     assert "crm_preview" in JAVASCRIPT
+    assert "data-social-comment-thread" in COMMENT_THREAD
+    assert 'action="/admin/inbox/{{ timeline.id }}/reply"' in COMMENT_THREAD
+    assert 'name="whatsapp_template_components"' in OVERLAYS
+    assert "newConversation.templateFields" in OVERLAYS
+    assert "whatsapp-contacts" in JAVASCRIPT
 
     assert "inbox-ticket-panel" in TICKET_PANEL
     assert ':action="`/admin/inbox/${selectedId}/tickets`"' in TICKET_PANEL

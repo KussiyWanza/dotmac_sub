@@ -1313,7 +1313,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "Generic identity and contact edits cannot carry lifecycle state. "
                     "Administrative account overrides require a reviewed, stale-safe "
-                    "confirmation; subscription locks remain independently authoritative."
+                    "confirmation. Unsuspend reverses only same-source administrative "
+                    "suspension consequences; disabled services and unrelated locks "
+                    "remain independently authoritative."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -1367,7 +1369,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
                                 "SHA-256 fingerprint over account, billing approval, "
-                                "override, subscription, target, and projected status"
+                                "override provenance, subscription, lock, target, "
+                                "preservation, blocker, and projected status"
                             ),
                         ),
                         AuthorityInput(
@@ -1384,7 +1387,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="customer.account_status_actions",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed activate, suspend, block, or disable action"
+                                "typed activate, unsuspend, suspend, block, or disable "
+                                "action; unsuspend is provenance-scoped and never aliases "
+                                "broad activation"
                             ),
                         ),
                     ),
@@ -1429,7 +1434,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "customer.account_status_actions.active_caller_transaction",
                             "customer.account_status_actions.nested_transaction_completion",
                         ),
-                        mapping_owner="app.api.subscribers",
+                        mapping_owner=(
+                            "app.api.subscribers and app.web.admin.customers"
+                        ),
                         retryable_codes=(
                             "customer.account_status_actions.idempotency_conflict",
                         ),
@@ -1481,6 +1488,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_account_status_commands.py",
+                        "tests/test_web_customer_details.py",
                         "tests/architecture/test_generic_lifecycle_edit_boundary.py",
                     ),
                 ),
@@ -19160,6 +19168,116 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ai.voice_transcription",
+                module="app.services.ai.voice_transcription",
+                owns=("zero-retention voice transcription provider transport",),
+                depends_on=("auth.permission_gate", "secrets.reference_store"),
+                notes=(
+                    "Transports an authenticated agent's request-scoped audio "
+                    "to one approved transcription processor. It writes no "
+                    "audio, transcript, conversation, message, or insight row; "
+                    "the reviewed transcript becomes Inbox content only through "
+                    "communications.team_inbox_commands."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="zero-retention voice transcription provider transport",
+                            role=OwnerRole.TRANSPORT,
+                            input_names=(
+                                "authenticated bounded audio upload",
+                                "resolved transcription credential",
+                                "observed transcription response",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated bounded audio upload",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Explicit press-and-hold agent recording, "
+                                "allowlisted context and media signature, "
+                                "25 MiB upload bound, rate limit and one "
+                                "in-flight request per agent."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="resolved transcription credential",
+                            owner="secrets.reference_store",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="OpenBao-backed provider API-key reference.",
+                        ),
+                        AuthorityInput(
+                            name="observed transcription response",
+                            owner="external:voice_transcription_provider",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "Provider HTTP status and transcript returned "
+                                "without retaining the source audio."
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Holds no database transaction and writes no row; "
+                            "audio exists only for the request lifetime."
+                        ),
+                        locking="One process-local active slot per agent.",
+                        idempotency=(
+                            "None: every explicit recording is a new provider call."
+                        ),
+                        retries=(
+                            "At most three configured retries for network "
+                            "failure, HTTP 408/409/425/429, or 5xx only."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "ai.voice_transcription.disabled",
+                            "ai.voice_transcription.not_configured",
+                            "ai.voice_transcription.invalid_context",
+                            "ai.voice_transcription.empty_audio",
+                            "ai.voice_transcription.audio_too_large",
+                            "ai.voice_transcription.unsupported_audio",
+                            "ai.voice_transcription.invalid_audio_signature",
+                            "ai.voice_transcription.provider_unavailable",
+                            "ai.voice_transcription.provider_rejected",
+                        ),
+                        mapping_owner="app.web.admin.inbox",
+                        retryable_codes=(
+                            "ai.voice_transcription.provider_unavailable",
+                        ),
+                        fail_closed_on=(
+                            "ai.voice_transcription.disabled",
+                            "ai.voice_transcription.not_configured",
+                            "ai.voice_transcription.invalid_context",
+                            "ai.voice_transcription.invalid_audio_signature",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ai.voice_transcription",
+                        verification=(
+                            "Focused voice transport and AI architecture tests "
+                            "prove zero domain writes and safe validation."
+                        ),
+                    ),
+                    steward="customer experience platform",
+                    design_refs=(
+                        "docs/designs/VOICE_TRANSCRIPTION_DATA_PROTECTION.md",
+                        "docs/designs/AI_SOT.md",
+                        "docs/runbooks/VOICE_TRANSCRIPTION.md",
+                    ),
+                    test_refs=(
+                        "tests/test_admin_inbox_implemented_features.py",
+                        "tests/architecture/test_ai_boundaries.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ai.insights",
                 module="app.services.ai_operations",
                 owns=(
@@ -19198,6 +19316,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             "app.api.ai_operations",
             "app.tasks.ai_operations",
             "app.web.admin.reports",
+            "app.web.admin.inbox",
         ),
         rule=(
             "AI advises ON an owned projection and never re-derives one: the "

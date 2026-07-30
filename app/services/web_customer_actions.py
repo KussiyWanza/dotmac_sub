@@ -1964,6 +1964,44 @@ def change_customer_account_active_state(
     )
 
 
+def unsuspend_customer_account(
+    db: Session,
+    customer_id: str,
+    *,
+    preview_fingerprint: str,
+    actor_id: str | None,
+) -> account_status_commands.AccountStatusOutcome:
+    """Confirm the reviewed, provenance-scoped account unsuspension."""
+    account_id = coerce_uuid(customer_id)
+    command_id = uuid4()
+    db_session_adapter.release_read_transaction(db)
+    return account_status_commands.confirm_account_status_change(
+        db,
+        account_status_commands.ConfirmAccountStatusCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=(
+                    f"user:{actor_id}"
+                    if actor_id
+                    else "system:admin_customer_unsuspend"
+                ),
+                scope=account_status_commands.ACCOUNT_STATUS_WRITE_SCOPE,
+                reason="Administrative account unsuspension",
+                idempotency_key=(
+                    "admin-unsuspend:"
+                    + hashlib.sha256(
+                        f"{account_id}:{preview_fingerprint}".encode()
+                    ).hexdigest()
+                ),
+            ),
+            account_id=account_id,
+            action=account_status_commands.AccountStatusAction.unsuspend,
+            expected_preview_fingerprint=preview_fingerprint,
+        ),
+    )
+
+
 def _create_subscriber(db: Session, payload: dict[str, Any]) -> Subscriber:
     data = dict(payload)
     if not data.get("email"):

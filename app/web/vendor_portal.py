@@ -520,7 +520,7 @@ def vendor_create_route_revision(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     payload = _route_revision_payload(geojson, length_meters)
     command_context = _command_context(
@@ -553,7 +553,7 @@ def vendor_submit_route_revision(
     auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ):
-    context = _context(auth, db)
+    context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
     vendor_id = str(context["native_vendor_id"])
     command_context = _command_context(
         auth,

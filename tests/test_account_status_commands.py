@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from app.models.catalog import SubscriptionStatus
+from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.enforcement_lock import EnforcementReason
 from app.models.event_store import EventStore
 from app.models.subscriber import SubscriberStatus
@@ -174,3 +174,139 @@ def test_account_restore_runs_through_explicit_subscription_lifecycle(
     assert restored.status == SubscriberStatus.active
     assert refreshed.lifecycle_override_status is None
     assert locks == []
+
+
+def test_unsuspend_restores_only_same_source_suspension(
+    db_session, subscriber, subscription
+):
+    subscriber.billing_enabled = True
+    subscription.status = SubscriptionStatus.active
+    db_session.commit()
+
+    _confirm(
+        db_session,
+        account_id=subscriber.id,
+        action=status_service.AccountStatusAction.suspend,
+    )
+    preview = status_service.preview_account_status_change(
+        db_session,
+        status_service.PreviewAccountStatusRequest(
+            account_id=subscriber.id,
+            action=status_service.AccountStatusAction.unsuspend,
+        ),
+    )
+
+    assert preview.allowed is True
+    assert preview.affected_subscription_ids == (subscription.id,)
+    assert len(preview.matching_lock_ids) == 1
+
+    outcome = _confirm(
+        db_session,
+        account_id=subscriber.id,
+        action=status_service.AccountStatusAction.unsuspend,
+    )
+
+    db_session.refresh(subscriber)
+    db_session.refresh(subscription)
+    assert outcome.status == SubscriberStatus.active
+    assert subscriber.lifecycle_override_status is None
+    assert subscription.status == SubscriptionStatus.active
+    assert get_active_locks(db_session, subscription_id=str(subscription.id)) == []
+
+
+def test_unsuspend_legacy_override_preserves_disabled_subscription(
+    db_session, subscriber, subscription
+):
+    subscriber.billing_enabled = True
+    subscriber.status = SubscriberStatus.suspended
+    subscriber.lifecycle_override_status = SubscriberStatus.suspended
+    subscriber.lifecycle_override_reason = "Legacy administrative suspension"
+    subscriber.lifecycle_override_source = "subscriber_service:update"
+    subscription.status = SubscriptionStatus.active
+    disabled = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=subscription.offer_id,
+        status=SubscriptionStatus.disabled,
+        billing_mode=subscription.billing_mode,
+        unit_price=subscription.unit_price,
+    )
+    db_session.add(disabled)
+    db_session.commit()
+
+    preview = status_service.preview_account_status_change(
+        db_session,
+        status_service.PreviewAccountStatusRequest(
+            account_id=subscriber.id,
+            action=status_service.AccountStatusAction.unsuspend,
+        ),
+    )
+    assert preview.allowed is True
+    assert preview.projected_status == SubscriberStatus.active
+    assert preview.affected_subscription_ids == ()
+    assert preview.preserved_disabled_subscription_ids == (disabled.id,)
+
+    _confirm(
+        db_session,
+        account_id=subscriber.id,
+        action=status_service.AccountStatusAction.unsuspend,
+    )
+
+    db_session.refresh(subscriber)
+    db_session.refresh(subscription)
+    db_session.refresh(disabled)
+    assert subscriber.status == SubscriberStatus.active
+    assert subscriber.lifecycle_override_status is None
+    assert subscription.status == SubscriptionStatus.active
+    assert disabled.status == SubscriptionStatus.disabled
+
+
+def test_unsuspend_preserves_unrelated_lock(
+    db_session, subscriber, subscription, catalog_offer
+):
+    subscriber.billing_enabled = True
+    subscription.status = SubscriptionStatus.active
+    db_session.commit()
+    _confirm(
+        db_session,
+        account_id=subscriber.id,
+        action=status_service.AccountStatusAction.suspend,
+    )
+    unrelated = suspend_subscription(
+        db_session,
+        str(subscription.id),
+        reason=EnforcementReason.fraud,
+        source="fraud:pytest",
+        emit=False,
+    )
+    active_sibling = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=catalog_offer.id,
+        status=SubscriptionStatus.active,
+        billing_mode=subscription.billing_mode,
+        unit_price=subscription.unit_price,
+    )
+    db_session.add(active_sibling)
+    db_session.commit()
+
+    preview = status_service.preview_account_status_change(
+        db_session,
+        status_service.PreviewAccountStatusRequest(
+            account_id=subscriber.id,
+            action=status_service.AccountStatusAction.unsuspend,
+        ),
+    )
+    assert preview.allowed is True
+    assert "fraud" in preview.remaining_blockers
+
+    _confirm(
+        db_session,
+        account_id=subscriber.id,
+        action=status_service.AccountStatusAction.unsuspend,
+    )
+
+    db_session.refresh(subscription)
+    db_session.refresh(active_sibling)
+    db_session.refresh(unrelated)
+    assert subscription.status == SubscriptionStatus.suspended
+    assert active_sibling.status == SubscriptionStatus.active
+    assert unrelated.is_active is True

@@ -252,8 +252,26 @@ genieacs-build: ## Rebuild the GenieACS image locally (CI publishes it; this is 
 GHCR_IMAGE ?= ghcr.io/michaelayoade/dotmac_sub
 GHCR_TAG ?= latest
 
-prod-ghcr-pin: ## Point .env APP_IMAGE at the GHCR image (GHCR_IMAGE:GHCR_TAG)
-	@img="$(GHCR_IMAGE):$(GHCR_TAG)"; \
+# prod-ghcr-pin / prod-ghcr-deploy predate scripts/deploy.sh and skip its DB
+# backup, OCI revision validation, warm-candidate handoff, health gates and
+# rollback — and GHCR_TAG defaults to the moving `latest` tag. They are kept
+# only as a manual escape hatch and refuse to run unless the operator states
+# the intent explicitly, same contract as require-host-build above.
+define require-legacy-ghcr-deploy
+	if [ "$${ALLOW_LEGACY_GHCR_DEPLOY:-0}" != "1" ]; then \
+		echo "REFUSING LEGACY GHCR PATH: this skips scripts/deploy.sh's backup, revision validation, health gates and rollback." >&2; \
+		echo "Supported path:  make deploy TAG=sha-<shortsha>   (runs the hardened scripts/deploy.sh)" >&2; \
+		echo "" >&2; \
+		echo "If you accept an unguarded pin/deploy:" >&2; \
+		echo "  ALLOW_LEGACY_GHCR_DEPLOY=1 make $@" >&2; \
+		exit 1; \
+	fi
+endef
+
+prod-ghcr-pin: ## [FALLBACK] Point .env APP_IMAGE at GHCR_IMAGE:GHCR_TAG. Requires ALLOW_LEGACY_GHCR_DEPLOY=1 — prefer `make deploy TAG=...`
+	@set -eu; \
+	$(require-legacy-ghcr-deploy); \
+	img="$(GHCR_IMAGE):$(GHCR_TAG)"; \
 	if grep -q '^APP_IMAGE=' .env 2>/dev/null; then \
 		sed -i.bak "s#^APP_IMAGE=.*#APP_IMAGE=$$img#" .env && rm -f .env.bak; \
 	else \
@@ -261,7 +279,8 @@ prod-ghcr-pin: ## Point .env APP_IMAGE at the GHCR image (GHCR_IMAGE:GHCR_TAG)
 	fi; \
 	echo "Pinned APP_IMAGE=$$img in .env (compose now runs the CI-built image)"
 
-prod-ghcr-deploy: ## Deploy from the CI-built GHCR image (pull + migrate + restart; no host build)
+prod-ghcr-deploy: ## [FALLBACK] Unguarded GHCR deploy. Requires ALLOW_LEGACY_GHCR_DEPLOY=1 — prefer `make deploy TAG=...`
+	@set -eu; $(require-legacy-ghcr-deploy)
 	$(MAKE) prod-ghcr-pin
 	$(PROD_COMPOSE) pull app
 	$(MAKE) prod-migrate

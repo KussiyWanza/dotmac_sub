@@ -780,6 +780,9 @@ def send_email_with_config(
     subject: str,
     body_html: str,
     body_text: str | None = None,
+    *,
+    cc_addresses: list[str] | tuple[str, ...] | None = None,
+    bcc_addresses: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -787,6 +790,10 @@ def send_email_with_config(
         f"{config.get('from_name') or get_brand()['from_name']} <{config.get('from_email') or get_brand()['from_email']}>"
     )
     msg["To"] = to_email
+    cc_recipients = list(dict.fromkeys(cc_addresses or ()))
+    bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
 
     if body_text:
         msg.attach(MIMEText(body_text, "plain"))
@@ -812,7 +819,10 @@ def send_email_with_config(
         if username and password:
             server.login(username, password)
 
-        server.sendmail(config.get("from_email"), to_email, msg.as_string())
+        envelope_recipients = list(
+            dict.fromkeys([to_email, *cc_recipients, *bcc_recipients])
+        )
+        server.sendmail(config.get("from_email"), envelope_recipients, msg.as_string())
         server.quit()
         return True
     except smtplib.SMTPAuthenticationError as exc:
@@ -835,6 +845,8 @@ def send_email(
     notification_id: str | None = None,
     headers: dict[str, str] | None = None,
     sensitive_content: bool = False,
+    cc_addresses: list[str] | tuple[str, ...] | None = None,
+    bcc_addresses: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
     """
     Send an email via SMTP.
@@ -846,7 +858,8 @@ def send_email(
         body_html: HTML body content
         body_text: Plain text body (optional, derived from HTML if not provided)
         track: Whether to create a Notification record for tracking
-        headers: Optional transport headers; From, To, and Subject are reserved
+        headers: Optional transport headers; From, To, Cc, Bcc, and Subject are
+            reserved
 
     Returns:
         True if email was sent successfully, False otherwise
@@ -874,6 +887,8 @@ def send_email(
                     "sender_key": sender_key,
                     "activity": activity or "notification_queue",
                     "source": "email_service",
+                    "cc": list(dict.fromkeys(cc_addresses or ())),
+                    "bcc": list(dict.fromkeys(bcc_addresses or ())),
                 },
             ),
         )
@@ -885,9 +900,13 @@ def send_email(
     msg["Subject"] = subject
     msg["From"] = f"{config['from_name']} <{config['from_email']}>"
     msg["To"] = to_email
+    cc_recipients = list(dict.fromkeys(cc_addresses or ()))
+    bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
     for name, value in (headers or {}).items():
         normalized_name = str(name).strip()
-        if normalized_name.lower() in {"from", "to", "subject"}:
+        if normalized_name.lower() in {"from", "to", "cc", "bcc", "subject"}:
             raise ValueError(f"Reserved email header cannot be overridden: {name}")
         msg[normalized_name] = str(value)
 
@@ -925,7 +944,10 @@ def send_email(
         if config["username"] and config["password"]:
             server.login(config["username"], config["password"])
 
-        server.sendmail(config["from_email"], to_email, msg.as_string())
+        envelope_recipients = list(
+            dict.fromkeys([to_email, *cc_recipients, *bcc_recipients])
+        )
+        server.sendmail(config["from_email"], envelope_recipients, msg.as_string())
         server.quit()
 
         if notification and db is not None:

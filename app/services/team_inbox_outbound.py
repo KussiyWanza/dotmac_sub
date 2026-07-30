@@ -62,6 +62,8 @@ class InboxReplyPayload:
     body_text: str | None = None
     subject: str | None = None
     to_email: str | None = None
+    cc_addresses: tuple[str, ...] = ()
+    bcc_addresses: tuple[str, ...] = ()
     sent_by_person_id: str | UUID | None = None
     metadata: dict | None = None
 
@@ -155,6 +157,8 @@ def _queue_outbox_reply(
             "sent_by_person_id": str(payload.sent_by_person_id)
             if payload.sent_by_person_id
             else None,
+            "cc": list(payload.cc_addresses),
+            "bcc": list(payload.bcc_addresses),
         }
     )
     result = submit(
@@ -193,12 +197,19 @@ def _queue_outbox_reply(
     message.direction = InboxMessageDirection.outbound.value
     message.subject = subject
     message.body = (
-        body if channel == NotificationChannel.whatsapp else payload.body_html or body
+        body
+        if channel
+        in {
+            NotificationChannel.whatsapp,
+            NotificationChannel.facebook_comment,
+            NotificationChannel.instagram_comment,
+        }
+        else payload.body_html or body
     )
     message.external_thread_id = conversation.external_thread_id
     message.from_address = from_address
     message.to_addresses = [recipient]
-    message.cc_addresses = []
+    message.cc_addresses = list(payload.cc_addresses)
     message.sent_at = queued_at
     message.metadata_ = {**intent_metadata, "delivery_status": "queued"}
     if existing_message is None:
@@ -350,6 +361,118 @@ def _send_field_job_reply(
     )
 
 
+_SOCIAL_COMMENT_CHANNELS = {
+    InboxChannelType.facebook_comment.value,
+    InboxChannelType.instagram_comment.value,
+}
+
+
+def _social_value(
+    conversation: InboxConversation,
+    messages: list[InboxMessage],
+    *keys: str,
+) -> str:
+    sources = [message.metadata_ or {} for message in reversed(messages)]
+    sources.append(conversation.metadata_ or {})
+    for source in sources:
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _send_social_comment_reply(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    payload: InboxReplyPayload,
+    now: datetime | None,
+) -> InboxReplyResult:
+    body_text = _plain_text_reply(payload)
+    limit = (
+        2_200
+        if conversation.channel_type == InboxChannelType.instagram_comment.value
+        else 8_000
+    )
+    if not body_text:
+        return InboxReplyResult(
+            kind="empty_body",
+            conversation_id=str(conversation.id),
+            reason="Reply body is required.",
+        )
+    if len(body_text) > limit:
+        return InboxReplyResult(
+            kind="invalid_body",
+            conversation_id=str(conversation.id),
+            reason=f"Reply must be {limit:,} characters or fewer.",
+        )
+
+    messages = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .order_by(InboxMessage.created_at.asc())
+        .all()
+    )
+    inbound = next(
+        (
+            message
+            for message in reversed(messages)
+            if message.direction == InboxMessageDirection.inbound.value
+        ),
+        None,
+    )
+    provider_comment_id = (
+        str(inbound.external_message_id or "").strip() if inbound is not None else ""
+    ) or _social_value(
+        conversation,
+        messages,
+        "provider_comment_id",
+        "comment_id",
+        "external_comment_id",
+    )
+    account_id = _social_value(
+        conversation,
+        messages,
+        "source_account_id",
+        "provider_account_id",
+        "provider_account_scope",
+        "page_id",
+        "instagram_account_id",
+        "ig_account_id",
+    )
+    if not provider_comment_id or not account_id:
+        return InboxReplyResult(
+            kind="missing_provider_context",
+            conversation_id=str(conversation.id),
+            reason="This comment is missing its Meta reply details.",
+        )
+
+    channel = (
+        NotificationChannel.facebook_comment
+        if conversation.channel_type == InboxChannelType.facebook_comment.value
+        else NotificationChannel.instagram_comment
+    )
+    return _queue_outbox_reply(
+        db,
+        conversation=conversation,
+        payload=payload,
+        channel=channel,
+        recipient=provider_comment_id,
+        subject=None,
+        body=body_text,
+        now=now,
+        from_address="Support",
+        metadata={
+            "channel_type": conversation.channel_type,
+            "message_kind": "social_comment_reply",
+            "provider": "meta",
+            "provider_account_id": account_id,
+            "parent_provider_comment_id": provider_comment_id,
+        },
+    )
+
+
 def send_inbox_reply(
     db: Session,
     *,
@@ -389,6 +512,14 @@ def send_inbox_reply(
             payload=payload,
             now=now,
             existing_message=existing_message,
+        )
+
+    if conversation.channel_type in _SOCIAL_COMMENT_CHANNELS:
+        return _send_social_comment_reply(
+            db,
+            conversation=conversation,
+            payload=payload,
+            now=now,
         )
 
     to_email = _reply_to_address(conversation, payload.to_email)
@@ -529,6 +660,8 @@ def _record_failed_outbound(
             "sent_by_person_id": str(payload.sent_by_person_id)
             if payload.sent_by_person_id
             else None,
+            "cc": list(payload.cc_addresses),
+            "bcc": list(payload.bcc_addresses),
         }
     )
     if provider_result:
@@ -542,7 +675,7 @@ def _record_failed_outbound(
         external_thread_id=conversation.external_thread_id,
         from_address=from_address,
         to_addresses=to_addresses,
-        cc_addresses=[],
+        cc_addresses=list(payload.cc_addresses),
         sent_at=attempted_at,
         metadata_=combined_metadata,
     )
@@ -584,6 +717,14 @@ def retry_outbound_message(
             body_text=message.body,
             subject=message.subject,
             to_email=(message.to_addresses or [None])[0],
+            cc_addresses=tuple(message.cc_addresses or ()),
+            bcc_addresses=tuple(
+                str(value)
+                for value in metadata.get("bcc", ())
+                if isinstance(value, str)
+            )
+            if isinstance(metadata.get("bcc"), list)
+            else (),
             sent_by_person_id=sent_by_person_id,
             metadata={
                 "source_route": "team_inbox_retry",
@@ -641,6 +782,8 @@ def schedule_inbox_reply(
             "sent_by_person_id": str(payload.sent_by_person_id)
             if payload.sent_by_person_id
             else None,
+            "cc": list(payload.cc_addresses),
+            "bcc": list(payload.bcc_addresses),
         }
     )
     message = InboxMessage(
@@ -650,6 +793,7 @@ def schedule_inbox_reply(
         subject=_reply_subject(conversation, payload.subject),
         body=payload.body_text,
         from_address=None,
+        cc_addresses=list(payload.cc_addresses),
         sent_at=None,
         metadata_=metadata,
     )
@@ -711,6 +855,18 @@ def send_scheduled_reply(db: Session, *, message: InboxMessage) -> InboxReplyRes
             body_text=str(metadata.get("body_text") or message.body or ""),
             subject=message.subject,
             sent_by_person_id=metadata.get("sent_by_person_id"),
+            cc_addresses=tuple(
+                str(value) for value in metadata.get("cc", ()) if isinstance(value, str)
+            )
+            if isinstance(metadata.get("cc"), list)
+            else (),
+            bcc_addresses=tuple(
+                str(value)
+                for value in metadata.get("bcc", ())
+                if isinstance(value, str)
+            )
+            if isinstance(metadata.get("bcc"), list)
+            else (),
             metadata=release_metadata,
         ),
         record_failure=True,

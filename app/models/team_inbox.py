@@ -27,6 +27,8 @@ class InboxChannelType(enum.Enum):
     whatsapp = "whatsapp"
     facebook_messenger = "facebook_messenger"
     instagram_dm = "instagram_dm"
+    facebook_comment = "facebook_comment"
+    instagram_comment = "instagram_comment"
     chat_widget = "chat_widget"
     note = "note"
     # A customer talking to the technician on their way, in the portal. It has

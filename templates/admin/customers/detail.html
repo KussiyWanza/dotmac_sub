@@ -534,6 +534,68 @@
                         <span class="text-xs text-slate-500 dark:text-slate-400">Login, impersonation & PPPoE</span>
                     </div>
                     <div class="p-5 space-y-4">
+                        {% set account_unsuspend_action = account_unsuspend_action|default({'visible': false, 'allowed': false}) %}
+                        {% if can_unsuspend_account and account_unsuspend_action.visible %}
+                        <div class="rounded-xl border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-900/50 dark:bg-amber-900/20">
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <p class="text-sm font-semibold text-amber-950 dark:text-amber-200">Account suspension</p>
+                                        <span class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-300">
+                                            {{ account_unsuspend_action.current_status|title }}
+                                            →
+                                            {{ account_unsuspend_action.projected_status|title }}
+                                        </span>
+                                    </div>
+                                    <p class="mt-1 text-xs text-amber-900/80 dark:text-amber-300/90">
+                                        {{ account_unsuspend_action.override_reason or 'Administrative suspension' }}
+                                        {% if account_unsuspend_action.override_at %}
+                                        · {{ account_unsuspend_action.override_at | app_datetime('%b %d, %Y %H:%M', '') }}
+                                        {% endif %}
+                                    </p>
+                                    {% if account_unsuspend_action.override_source %}
+                                    <p class="mt-1 break-all text-[11px] text-amber-800/70 dark:text-amber-400/80">
+                                        Source: {{ account_unsuspend_action.override_source }}
+                                    </p>
+                                    {% endif %}
+                                    <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                                        <span class="rounded-lg bg-white/80 px-2 py-1 font-medium text-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+                                            {{ account_unsuspend_action.affected_subscription_count }} service(s) restored
+                                        </span>
+                                        <span class="rounded-lg bg-white/80 px-2 py-1 font-medium text-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+                                            {{ account_unsuspend_action.preserved_disabled_count }} disabled preserved
+                                        </span>
+                                        <span class="rounded-lg bg-white/80 px-2 py-1 font-medium text-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
+                                            Unrelated locks preserved
+                                        </span>
+                                    </div>
+                                    {% if account_unsuspend_action.remaining_blockers %}
+                                    <p class="mt-2 text-xs font-medium text-amber-900 dark:text-amber-300">
+                                        Remaining blockers: {{ account_unsuspend_action.remaining_blockers | join(', ') }}
+                                    </p>
+                                    {% endif %}
+                                    {% if account_unsuspend_action.reason %}
+                                    <p class="mt-2 text-xs font-medium text-rose-700 dark:text-rose-300">
+                                        {{ account_unsuspend_action.reason }}
+                                    </p>
+                                    {% endif %}
+                                </div>
+                                <form method="post"
+                                      action="/admin/customers/{{ customer_type }}/{{ customer.id }}/unsuspend"
+                                      onsubmit="return confirm({{ account_unsuspend_action.confirmation | tojson | forceescape }})"
+                                      class="shrink-0">
+                                    {% include "components/forms/csrf_input.html" %}
+                                    <input type="hidden" name="preview_fingerprint" value="{{ account_unsuspend_action.fingerprint }}">
+                                    <button type="submit"
+                                            {% if not account_unsuspend_action.allowed %}disabled title="{{ account_unsuspend_action.reason or 'Unsuspension is not currently safe.' }}"{% endif %}
+                                            class="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+                                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.031 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                                        Unsuspend Account
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                        {% endif %}
                         {% if accounts %}
                         <form method="post" action="/admin/customers/{{ customer_type }}/{{ customer.id }}/impersonate" class="rounded-xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/50 dark:bg-amber-900/20">
                             {% include "components/forms/csrf_input.html" %}

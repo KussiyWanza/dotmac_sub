@@ -100,11 +100,22 @@
       newConversation: {
         channel: "email",
         contactName: "",
+        contactId: "",
+        contactQuery: "",
+        contactResults: [],
+        contactLoading: false,
+        contactError: "",
         recipient: "",
+        countryCode: "NG",
         subject: "",
         cc: "",
         bcc: "",
         template: "",
+        selectedTemplate: null,
+        whatsappTemplates: [],
+        templateFields: [],
+        templateLoading: false,
+        templateError: "",
         templateValues: "",
         body: "",
         files: [],
@@ -322,6 +333,18 @@
       },
 
       selectConversation(id) {
+        const current = new URL(window.location.href);
+        const returnUrl =
+          current.pathname === "/admin/inbox"
+            ? current
+            : new URL(
+                window.__inboxReturnUrl || "/admin/inbox",
+                window.location.origin,
+              );
+        returnUrl.pathname = "/admin/inbox";
+        returnUrl.searchParams.delete("conversation_id");
+        returnUrl.searchParams.set("c", id);
+        window.__inboxReturnUrl = `${returnUrl.pathname}${returnUrl.search}`;
         this.selectedId = id;
         this.mode = "detail";
         this.newMessagesAvailable = false;
@@ -614,6 +637,9 @@
         this.managerDashboardOpen = false;
         this.newConversationSubmitting = false;
         this.newConversationOpen = true;
+        if (this.newConversation.channel === "whatsapp") {
+          this.loadWhatsAppTemplates();
+        }
         this.$nextTick(() =>
           this.$refs.newConversationDialog?.querySelector("select, input")?.focus(),
         );
@@ -625,15 +651,191 @@
       prepareNewConversation() {
         this.newConversationSubmitting = true;
       },
-      selectNewConversationTemplate(event) {
-        const option = event.target.selectedOptions?.[0];
-        if (!option) return;
-        const body = option.dataset.body || "";
-        if (body) this.newConversation.body = body;
-        const subject = option.dataset.subject || "";
-        if (subject && !this.newConversation.subject) {
-          this.newConversation.subject = subject;
+      newConversationChannelChanged() {
+        this.newConversation.contactId = "";
+        this.newConversation.contactResults = [];
+        this.newConversation.contactError = "";
+        if (this.newConversation.channel === "whatsapp") {
+          this.loadWhatsAppTemplates();
         }
+      },
+      async searchWhatsAppContacts() {
+        const term = this.newConversation.contactQuery.trim();
+        this.newConversation.contactId = "";
+        this.newConversation.contactName = term;
+        if (term.length < 2) {
+          this.newConversation.contactResults = [];
+          return;
+        }
+        this.newConversation.contactLoading = true;
+        this.newConversation.contactError = "";
+        try {
+          const response = await fetch(
+            `/admin/inbox/whatsapp-contacts?search=${encodeURIComponent(term)}`,
+          );
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error("Contact search failed.");
+          this.newConversation.contactResults = payload.contacts || [];
+        } catch (error) {
+          this.newConversation.contactResults = [];
+          this.newConversation.contactError =
+            error.message || "Contact search failed.";
+        } finally {
+          this.newConversation.contactLoading = false;
+        }
+      },
+      selectWhatsAppContact(contact) {
+        this.newConversation.contactId = contact.id || "";
+        this.newConversation.contactName = contact.name || "";
+        this.newConversation.contactQuery = contact.name || "";
+        this.newConversation.recipient = contact.whatsapp_address || "";
+        this.newConversation.contactResults = [];
+      },
+      clearWhatsAppContactSelection() {
+        this.newConversation.contactId = "";
+      },
+      async loadWhatsAppTemplates() {
+        if (this.newConversation.templateLoading) return;
+        this.newConversation.templateLoading = true;
+        this.newConversation.templateError = "";
+        try {
+          const response = await fetch("/admin/inbox/whatsapp-templates");
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || "WhatsApp templates are unavailable.");
+          }
+          this.newConversation.whatsappTemplates = (payload.templates || []).filter(
+            (item) => String(item.status || "").toLowerCase() === "approved",
+          );
+        } catch (error) {
+          this.newConversation.whatsappTemplates = [];
+          this.newConversation.templateError =
+            error.message || "WhatsApp templates are unavailable.";
+        } finally {
+          this.newConversation.templateLoading = false;
+        }
+      },
+      selectNewConversationTemplate(event) {
+        const key = event.target.value;
+        const selected = this.newConversation.whatsappTemplates.find(
+          (item) => `${item.name}::${item.language}` === key,
+        );
+        this.newConversation.selectedTemplate = selected || null;
+        this.newConversation.templateFields = this.whatsappTemplateFields(selected);
+        this.refreshWhatsAppPreview();
+      },
+      whatsappTemplateFields(template) {
+        if (!template) return [];
+        const fields = [];
+        const variables = (text) =>
+          [...new Set(
+            Array.from(String(text || "").matchAll(/\{\{\s*(\d+)\s*\}\}/g))
+              .map((match) => Number(match[1])),
+          )].sort((left, right) => left - right);
+        (template.components || []).forEach((component) => {
+          const type = String(component.type || "").toUpperCase();
+          if (type === "HEADER") {
+            const format = String(component.format || "TEXT").toUpperCase();
+            if (format === "TEXT") {
+              variables(component.text).forEach((index) => fields.push({
+                key: `header-text-${index}`,
+                section: "header",
+                kind: "text",
+                index,
+                label: `Header value ${index}`,
+                value: "",
+              }));
+            } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(format)) {
+              fields.push({
+                key: "header-media",
+                section: "header",
+                kind: format.toLowerCase(),
+                index: 1,
+                label: `${format[0]}${format.slice(1).toLowerCase()} URL`,
+                value: "",
+              });
+            }
+          }
+          if (type === "BODY") {
+            variables(component.text).forEach((index) => fields.push({
+              key: `body-text-${index}`,
+              section: "body",
+              kind: "text",
+              index,
+              label: `Body value ${index}`,
+              value: "",
+            }));
+          }
+          if (type === "BUTTONS") {
+            (component.buttons || []).forEach((button, buttonIndex) => {
+              if (
+                String(button.type || "").toUpperCase() === "URL" &&
+                String(button.url || "").includes("{{1}}")
+              ) {
+                fields.push({
+                  key: `button-url-${buttonIndex}`,
+                  section: "button",
+                  kind: "text",
+                  index: 1,
+                  buttonIndex,
+                  label: `URL button ${buttonIndex + 1} value`,
+                  value: "",
+                });
+              }
+            });
+          }
+        });
+        return fields;
+      },
+      whatsappTemplateComponents() {
+        const fields = this.newConversation.templateFields;
+        const components = [];
+        ["header", "body"].forEach((section) => {
+          const sectionFields = fields
+            .filter((field) => field.section === section)
+            .sort((left, right) => left.index - right.index);
+          if (!sectionFields.length) return;
+          components.push({
+            type: section,
+            parameters: sectionFields.map((field) =>
+              field.kind === "text"
+                ? { type: "text", text: field.value }
+                : {
+                    type: field.kind,
+                    [field.kind]: { link: field.value },
+                  },
+            ),
+          });
+        });
+        fields
+          .filter((field) => field.section === "button")
+          .forEach((field) => components.push({
+            type: "button",
+            sub_type: "url",
+            index: String(field.buttonIndex),
+            parameters: [{ type: "text", text: field.value }],
+          }));
+        return components;
+      },
+      whatsappTemplateComponentsJson() {
+        return JSON.stringify(this.whatsappTemplateComponents());
+      },
+      refreshWhatsAppPreview() {
+        const selected = this.newConversation.selectedTemplate;
+        if (!selected) return;
+        const bodyComponent = (selected.components || []).find(
+          (item) => String(item.type || "").toUpperCase() === "BODY",
+        );
+        let preview = String(bodyComponent?.text || "");
+        this.newConversation.templateFields
+          .filter((field) => field.section === "body")
+          .forEach((field) => {
+            preview = preview.replace(
+              new RegExp(`\\{\\{\\s*${field.index}\\s*\\}\\}`, "g"),
+              field.value || `{{${field.index}}}`,
+            );
+          });
+        this.newConversation.body = preview;
       },
       toggleManagerDashboard() {
         this.managerDashboardOpen = !this.managerDashboardOpen;
@@ -988,6 +1190,11 @@
       macroId: "",
       templateId: "",
       identityBody: "",
+      aiDraftLoading: false,
+      aiDraftResult: null,
+      aiDraftError: "",
+      polishLoading: false,
+      polishSuggestion: null,
 
       init() {
         this.draft = localStorage.getItem(`${KEYS.draftPrefix}${conversationId}`) || "";
@@ -1089,18 +1296,76 @@
       resolvedTemplateId() {
         return this.draft === this.identityBody ? this.templateId : "";
       },
-      draftWithAI() {
-        this.workspace()?.showDemoNotice?.("AI Draft");
-        if (!this.draft) {
-          this.draft =
-            "Hello, thanks for contacting Dotmac. I’m reviewing your request and will update you shortly.";
-          this.releaseIdentity();
+      async draftWithAI() {
+        if (this.aiDraftLoading) return;
+        this.aiDraftLoading = true;
+        this.aiDraftError = "";
+        this.aiDraftResult = null;
+        try {
+          const response = await fetch(
+            `/admin/inbox/${this.conversationId}/ai-draft`,
+            { method: "POST", headers: { "X-CSRF-Token": csrfToken() } },
+          );
+          const payload = await response.json().catch(() => ({}));
+          if (!payload.ok) {
+            throw new Error(payload.error || "AI Draft Unavailable");
+          }
+          this.aiDraftResult = payload;
+        } catch (error) {
+          this.aiDraftError = error.message || "AI Draft Unavailable";
+        } finally {
+          this.aiDraftLoading = false;
         }
       },
-      startVoicePreview() {
-        this.workspace()?.showDemoNotice?.("Voice input");
+      insertAiDraft() {
+        const text = this.aiDraftResult?.draft || "";
+        if (!text) return;
+        this.draft = text;
+        this.releaseIdentity();
+        this.$nextTick(() => {
+          this.$refs.textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+          this.$refs.textarea?.focus();
+        });
       },
-
+      async polishDraft() {
+        if (this.polishLoading || !this.draft.trim()) return;
+        this.polishLoading = true;
+        this.polishSuggestion = null;
+        try {
+          const response = await fetch(
+            `/admin/inbox/${this.conversationId}/ai-polish`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrfToken(),
+              },
+              body: JSON.stringify({ text: this.draft, context: "crm_reply" }),
+            },
+          );
+          const payload = await response.json().catch(() => ({}));
+          if (!payload.ok) {
+            throw new Error(payload.error || "Suggestion unavailable.");
+          }
+          this.polishSuggestion = payload;
+        } catch (error) {
+          this.workspace()?.showToast?.(
+            error.message || "Suggestion unavailable.",
+          );
+        } finally {
+          this.polishLoading = false;
+        }
+      },
+      acceptPolish(text) {
+        if (!text) return;
+        this.draft = text;
+        this.releaseIdentity();
+        this.polishSuggestion = null;
+        this.$nextTick(() => {
+          this.$refs.textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+          this.$refs.textarea?.focus();
+        });
+      },
       // Uploads are staged server-side immediately and bound to the reply when
       // it sends, so an abandoned composer never leaves an attachment claiming
       // to belong to a message.

@@ -69,6 +69,7 @@ def build_template_payload(
     template_name: str,
     language: str,
     variables: Mapping[str, Any],
+    components: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if provider == WHATSAPP_PROVIDER_META:
         payload: dict[str, Any] = {
@@ -81,7 +82,9 @@ def build_template_payload(
             },
         }
         parameters = _ordered_template_parameters(variables)
-        if parameters:
+        if components:
+            payload["template"]["components"] = components
+        elif parameters:
             payload["template"]["components"] = [
                 {
                     "type": "body",
@@ -301,13 +304,14 @@ class WhatsAppRuntimeRunner:
     ) -> OperationResult:
         if _provider(config) != WHATSAPP_PROVIDER_META:
             return self._rejected(envelope, "template_read_provider_unsupported")
-        if envelope.payload.get("action") != "get_template":
+        action = str(envelope.payload.get("action") or "")
+        if action not in {"get_template", "list_templates"}:
             return self._rejected(envelope, "action_unsupported")
         params = envelope.payload.get("params")
         if not isinstance(params, dict):
             return self._rejected(envelope, "params_invalid")
         name = str(params.get("template_name") or "").strip()
-        if not name:
+        if action == "get_template" and not name:
             return self._rejected(envelope, "template_name_required")
         waba_id = str(config.get("waba_id") or "").strip()
         credential = str(secret_material.get("service_credentials") or "").strip()
@@ -328,8 +332,8 @@ class WhatsAppRuntimeRunner:
                 url,
                 params={
                     "fields": "name,status,language,category,components",
-                    "name": name,
-                    "limit": 100,
+                    "limit": 200,
+                    **({"name": name} if name else {}),
                 },
                 headers={"Authorization": f"Bearer {credential}"},
                 timeout=timeout,
@@ -349,28 +353,50 @@ class WhatsAppRuntimeRunner:
         except (AttributeError, ValueError, json.JSONDecodeError):
             return self._rejected(envelope, "template_response_invalid")
         language = str(params.get("language") or "").strip()
+        templates: list[dict[str, Any]] = []
         for row in rows:
-            if not isinstance(row, dict) or str(row.get("name") or "") != name:
+            if not isinstance(row, dict):
+                continue
+            if action == "get_template" and str(row.get("name") or "") != name:
                 continue
             if language and str(row.get("language") or "") != language:
                 continue
             components = row.get("components") or []
             if not isinstance(components, list):
                 components = []
+            body = next(
+                (
+                    str(component.get("text") or "")
+                    for component in components
+                    if isinstance(component, dict)
+                    and str(component.get("type") or "").upper() == "BODY"
+                ),
+                "",
+            )
             template = {
                 "name": row.get("name"),
                 "status": row.get("status"),
                 "language": row.get("language"),
                 "category": row.get("category"),
                 "components": components,
+                "body": body,
                 "variables": _template_variables(
                     [item for item in components if isinstance(item, dict)]
                 ),
             }
+            templates.append(template)
+            if action == "list_templates":
+                continue
             return OperationResult(
                 operation_id=envelope.operation_id,
                 status=OperationStatus.succeeded,
                 output={"ok": True, "template": template},
+            )
+        if action == "list_templates":
+            return OperationResult(
+                operation_id=envelope.operation_id,
+                status=OperationStatus.succeeded,
+                output={"ok": True, "templates": templates},
             )
         return self._rejected(envelope, "template_not_found")
 
@@ -414,12 +440,18 @@ class WhatsAppRuntimeRunner:
             variables = params.get("variables") or {}
             if not isinstance(variables, dict):
                 raise ValueError("template_variables_invalid")
+            components = params.get("components") or []
+            if not isinstance(components, list) or any(
+                not isinstance(item, dict) for item in components
+            ):
+                raise ValueError("template_components_invalid")
             return build_template_payload(
                 provider=provider,
                 recipient=recipient,
                 template_name=template_name,
                 language=str(params.get("language") or "en"),
                 variables=variables,
+                components=components,
             )
         raise ValueError("action_unsupported")
 

@@ -1,43 +1,91 @@
-{# Social comment transport is not available in the admin inbox yet. This
-   replica keeps the intended layout visible only in explicit preview mode. #}
+{% set social = namespace(parent=none) %}
+{% for message in timeline.messages %}
+    {% if message.direction == 'inbound' %}{% set social.parent = message %}{% endif %}
+{% endfor %}
+{% set conversation_meta = timeline.metadata or {} %}
+{% set parent_meta = social.parent.metadata if social.parent and social.parent.metadata else {} %}
+{% set platform = 'Instagram' if timeline.channel_type == 'instagram_comment' else 'Facebook' %}
+{% set author_name = parent_meta.get('author_name') or parent_meta.get('from_name') or (social.parent.from_address if social.parent else none) or timeline.contact_address or 'Social customer' %}
+{% set permalink = parent_meta.get('permalink') or parent_meta.get('permalink_url') or conversation_meta.get('permalink') or conversation_meta.get('permalink_url') %}
+
 <div x-show="commentMode"
      x-cloak
      class="flex min-h-0 flex-1 flex-col bg-slate-50 dark:bg-slate-950"
-     data-replica-placeholder="social-comment-thread">
-    <div class="border-b border-fuchsia-200 bg-fuchsia-50 px-5 py-2 text-[11px] font-semibold text-fuchsia-800 dark:border-fuchsia-900 dark:bg-fuchsia-950/30 dark:text-fuchsia-200">
-        Preview data · social comment replies are not connected to the backend
-    </div>
+     data-social-comment-thread>
     <div class="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6" data-thread-scroll>
         <article class="mx-auto max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
-            <div class="aspect-[16/7] bg-gradient-to-br from-fuchsia-500 via-violet-500 to-cyan-500 p-6 text-white">
-                <p class="text-[11px] font-semibold uppercase tracking-wider text-white/75">Original social post · preview</p>
-                <p class="mt-4 max-w-md text-xl font-bold">Fast, reliable internet for the moments that matter.</p>
-            </div>
-            <div class="p-4">
+            {% if social.parent %}
+            <div class="p-4 sm:p-5">
                 <div class="flex items-start gap-3">
-                    <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">AC</span>
-                    <div class="min-w-0 flex-1 rounded-2xl bg-slate-100 px-4 py-3 dark:bg-slate-800">
-                        <div class="flex items-center justify-between gap-3">
-                            <p class="text-xs font-bold text-slate-900 dark:text-white">Ada Customer</p>
-                            <time class="text-[10px] text-slate-400">2 min</time>
+                    <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">
+                        {{ author_name[:2] | upper }}
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <p class="text-sm font-bold text-slate-900 dark:text-white">{{ author_name }}</p>
+                            <span class="rounded-full px-2 py-0.5 text-[10px] font-bold {{ 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/40 dark:text-fuchsia-300' if timeline.channel_type == 'instagram_comment' else 'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' }}">{{ platform }}</span>
+                            <time class="text-[10px] text-slate-400">{{ social.parent.received_at.strftime('%b %d, %Y %H:%M') if social.parent.received_at else social.parent.created_at.strftime('%b %d, %Y %H:%M') }}</time>
+                            {% if permalink and (permalink.startswith('https://') or permalink.startswith('http://')) %}
+                            <a href="{{ permalink }}" target="_blank" rel="noopener noreferrer" class="ml-auto min-h-8 rounded-lg px-2 py-1.5 text-xs font-semibold text-cyan-700 hover:bg-cyan-50 dark:text-cyan-300 dark:hover:bg-cyan-950/20">View Post</a>
+                            {% endif %}
                         </div>
-                        <p class="mt-1 text-sm text-slate-700 dark:text-slate-200">Is this service available in my area?</p>
+                        <p class="mt-2 whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">{{ social.parent.body }}</p>
                     </div>
                 </div>
-                <div class="ml-12 mt-3 border-l-2 border-slate-200 pl-4 dark:border-slate-700">
-                    <p class="text-[11px] font-semibold text-cyan-700 dark:text-cyan-300">Dotmac Support</p>
-                    <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">We can check coverage for you. Please send your address by direct message.</p>
+
+                {% set replies = timeline.messages | selectattr('direction', 'equalto', 'outbound') | list %}
+                {% if replies %}
+                <div class="ml-5 mt-5 space-y-3 border-l-2 border-slate-200 pl-5 dark:border-slate-700">
+                    {% for reply in replies %}
+                    <div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <p class="text-[11px] font-semibold text-cyan-700 dark:text-cyan-300">{{ reply.from_address or 'Support' }}</p>
+                            <time class="text-[10px] text-slate-400">{{ reply.sent_at.strftime('%b %d, %Y %H:%M') if reply.sent_at else reply.created_at.strftime('%b %d, %Y %H:%M') }}</time>
+                            {% if reply.metadata and reply.metadata.get('delivery_status') %}
+                            <span class="text-[9px] font-semibold uppercase text-emerald-600">{{ reply.metadata.get('delivery_status') }}</span>
+                            {% endif %}
+                        </div>
+                        <p class="mt-1 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">{{ reply.body }}</p>
+                    </div>
+                    {% endfor %}
                 </div>
+                {% endif %}
             </div>
+            {% else %}
+            <div class="p-8 text-center">
+                <p class="text-sm font-semibold text-slate-700 dark:text-slate-200">Comment details unavailable</p>
+                <p class="mt-1 text-xs text-slate-500">The provider comment has not been synchronized into this conversation.</p>
+            </div>
+            {% endif %}
         </article>
     </div>
+
     <div class="shrink-0 border-t border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <div class="mx-auto max-w-3xl rounded-2xl border border-slate-300 bg-white p-2 dark:border-slate-700 dark:bg-slate-950">
-            <textarea disabled rows="3" placeholder="Reply to this comment…" class="w-full resize-none border-0 bg-transparent text-sm focus:ring-0 disabled:cursor-not-allowed"></textarea>
+        {% if social.parent and action_eligibility.can_reply %}
+        <form method="post"
+              action="/admin/inbox/{{ timeline.id }}/reply"
+              x-data="{ sending: false, idempotencyKey: window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}` }"
+              @submit="sending = true"
+              class="mx-auto max-w-3xl rounded-2xl border border-slate-300 bg-white p-2 dark:border-slate-700 dark:bg-slate-950">
+            {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="idempotency_key" :value="idempotencyKey">
+            <input type="hidden" name="next_url" :value="window.__inboxReturnUrl || (window.location.pathname === '/admin/inbox' ? window.location.pathname + window.location.search : '/admin/inbox?c={{ timeline.id }}')">
+            <textarea name="body_text"
+                      required
+                      maxlength="2200"
+                      rows="3"
+                      placeholder="Reply publicly to this comment…"
+                      class="w-full resize-none border-0 bg-transparent text-sm focus:ring-0 dark:text-white"></textarea>
             <div class="flex items-center justify-between border-t border-slate-100 pt-2 dark:border-slate-800">
-                <span class="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-600 dark:text-fuchsia-300">Preview only</span>
-                <button type="button" disabled class="min-h-10 rounded-xl bg-gradient-to-r from-[#06B6D4] to-[#0891B2] px-5 text-sm font-semibold text-white opacity-50">Reply publicly</button>
+                <span class="text-[10px] text-slate-500">Maximum 2,200 characters</span>
+                <button type="submit"
+                        :disabled="sending"
+                        class="min-h-10 rounded-xl bg-gradient-to-r from-[#06B6D4] to-[#0891B2] px-5 text-sm font-semibold text-white disabled:opacity-50"
+                        x-text="sending ? 'Replying…' : 'Reply publicly'">Reply publicly</button>
             </div>
-        </div>
+        </form>
+        {% elif social.parent %}
+        <p class="mx-auto max-w-3xl rounded-xl bg-slate-100 p-3 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ action_eligibility.reason or 'You do not have permission to reply.' }}</p>
+        {% endif %}
     </div>
 </div>

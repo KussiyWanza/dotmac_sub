@@ -1597,6 +1597,7 @@ def reconcile_payment_settlement_evidence_with_audit(
     log_audit_event(
         db=db,
         request=request,
+        actor_id=_actor_id(request),
         action="reconcile_settlement_evidence",
         entity_type="payment",
         entity_id=payment_id,
