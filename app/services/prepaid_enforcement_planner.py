@@ -517,7 +517,7 @@ def plan_prepaid_account(
             reason = "effective_billing_mode_not_prepaid"
     elif funding.unresolved_projection_subscription_ids:
         action = PrepaidEnforcementAction.coverage_unresolved
-        reason = "future_billing_anchor_without_current_coverage_evidence"
+        reason = "prepaid_coverage_evidence_requires_reconciliation"
         reason_source = PrepaidEnforcementReasonSource.COVERAGE
     elif funding.unresolved_renewal_subscription_ids:
         action = PrepaidEnforcementAction.renewal_terms_unresolved

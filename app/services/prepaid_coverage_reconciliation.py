@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,7 +21,7 @@ from enum import StrEnum
 from typing import NoReturn
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models.billing import (
@@ -168,6 +169,14 @@ class PrepaidCoverageReconciliationPreview:
     @property
     def blocker_count(self) -> int:
         return sum(item.blocks_enforcement for item in self.items)
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidCoverageEnforcementBlocker:
+    """Exact financial evidence that makes suspension unsafe."""
+
+    subscription_id: UUID
+    reason: CoverageReconciliationReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,6 +490,144 @@ def _adjustment_evidence(
                 )
             )
     return grouped, malformed_accounts
+
+
+def resolve_prepaid_coverage_enforcement_blockers(
+    db: Session,
+    subscriptions: Sequence[Subscription],
+    *,
+    as_of: datetime,
+) -> tuple[PrepaidCoverageEnforcementBlocker, ...]:
+    """Return uncovered services whose financial evidence requires reconciliation.
+
+    This is the enforcement-safe, batched query surface of the reconciliation
+    owner. The caller remains responsible for canonical coverage resolution;
+    this query only identifies exact or malformed financial source evidence
+    that makes an uncovered classification unsafe for adverse action.
+    """
+    candidates = list(subscriptions)
+    subscription_ids = tuple(subscription.id for subscription in candidates)
+    if not subscription_ids:
+        return ()
+
+    observed_at = _utc(as_of)
+    account_ids = {subscription.subscriber_id for subscription in candidates}
+    invoice_sources = (
+        select(
+            literal("invoice").label("source_kind"),
+            cast(InvoiceLine.subscription_id, String).label("subscription_id"),
+            cast(Invoice.account_id, String).label("account_id"),
+            literal(None).label("origin_ref"),
+            Invoice.billing_period_start.label("starts_at"),
+            Invoice.billing_period_end.label("ends_at"),
+            InvoiceLine.amount.label("source_amount"),
+            Invoice.currency.label("source_currency"),
+            literal(None).label("ledger_account_id"),
+            literal(None).label("ledger_amount"),
+            literal(None).label("ledger_currency"),
+        )
+        .join(Invoice, Invoice.id == InvoiceLine.invoice_id)
+        .where(
+            InvoiceLine.subscription_id.in_(subscription_ids),
+            InvoiceLine.is_active.is_(True),
+            InvoiceLine.amount > Decimal("0.00"),
+            Invoice.is_active.is_(True),
+            Invoice.status == InvoiceStatus.paid,
+            Invoice.balance_due <= Decimal("0.00"),
+        )
+    )
+    adjustment_sources = (
+        select(
+            literal("adjustment").label("source_kind"),
+            literal(None).label("subscription_id"),
+            cast(AccountAdjustment.account_id, String).label("account_id"),
+            AccountAdjustment.origin_ref.label("origin_ref"),
+            literal(None).label("starts_at"),
+            literal(None).label("ends_at"),
+            AccountAdjustment.amount.label("source_amount"),
+            AccountAdjustment.currency.label("source_currency"),
+            cast(LedgerEntry.account_id, String).label("ledger_account_id"),
+            LedgerEntry.amount.label("ledger_amount"),
+            LedgerEntry.currency.label("ledger_currency"),
+        )
+        .join(
+            LedgerEntry,
+            LedgerEntry.id == AccountAdjustment.ledger_entry_id,
+        )
+        .where(
+            AccountAdjustment.account_id.in_(account_ids),
+            AccountAdjustment.origin == _ADJUSTMENT_ORIGIN,
+            AccountAdjustment.reversed_at.is_(None),
+            AccountAdjustment.category == LedgerCategory.internet_service,
+            LedgerEntry.is_active.is_(True),
+            LedgerEntry.entry_type == LedgerEntryType.debit,
+        )
+    )
+    rows = db.execute(union_all(invoice_sources, adjustment_sources)).all()
+
+    candidate_ids = set(subscription_ids)
+    invoice_counts: dict[UUID, int] = defaultdict(int)
+    adjustment_counts: dict[UUID, int] = defaultdict(int)
+    malformed_invoice_subscriptions: set[UUID] = set()
+    malformed_adjustment_accounts: set[UUID] = set()
+    for row in rows:
+        if row.source_kind == "invoice":
+            subscription_id = UUID(row.subscription_id)
+            starts_at = row.starts_at
+            ends_at = row.ends_at
+            if starts_at is None or ends_at is None or _utc(ends_at) <= _utc(starts_at):
+                malformed_invoice_subscriptions.add(subscription_id)
+            elif _utc(starts_at) <= observed_at < _utc(ends_at):
+                invoice_counts[subscription_id] += 1
+            continue
+
+        account_id = UUID(row.account_id)
+        parsed = _parse_adjustment_origin(row.origin_ref)
+        if parsed is None:
+            malformed_adjustment_accounts.add(account_id)
+            continue
+        subscription_id, starts_at, ends_at = parsed
+        if subscription_id not in candidate_ids:
+            continue
+        if (
+            row.account_id != row.ledger_account_id
+            or round_money(to_decimal(row.source_amount))
+            != round_money(to_decimal(row.ledger_amount))
+            or row.source_currency != row.ledger_currency
+        ):
+            malformed_adjustment_accounts.add(account_id)
+            continue
+        if starts_at <= observed_at < ends_at:
+            adjustment_counts[subscription_id] += 1
+
+    blockers: list[PrepaidCoverageEnforcementBlocker] = []
+    for subscription in candidates:
+        invoice_count = invoice_counts[subscription.id]
+        adjustment_count = adjustment_counts[subscription.id]
+        if subscription.id in malformed_invoice_subscriptions:
+            reason = CoverageReconciliationReason.malformed_paid_invoice_period
+        elif subscription.subscriber_id in malformed_adjustment_accounts:
+            reason = CoverageReconciliationReason.malformed_renewal_origin
+        elif invoice_count and adjustment_count:
+            reason = CoverageReconciliationReason.conflicting_financial_sources
+        elif invoice_count > 1:
+            reason = CoverageReconciliationReason.ambiguous_paid_invoice_lines
+        elif adjustment_count > 1:
+            reason = CoverageReconciliationReason.ambiguous_renewal_adjustments
+        elif invoice_count:
+            reason = CoverageReconciliationReason.exact_paid_invoice_line
+        elif adjustment_count:
+            reason = CoverageReconciliationReason.exact_renewal_adjustment
+        else:
+            continue
+        blockers.append(
+            PrepaidCoverageEnforcementBlocker(
+                subscription_id=subscription.id,
+                reason=reason,
+            )
+        )
+
+    return tuple(sorted(blockers, key=lambda item: str(item.subscription_id)))
 
 
 def preview_prepaid_coverage_reconciliation(

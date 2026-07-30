@@ -178,7 +178,9 @@ The planner and executor consume the same decision in this order:
    `access.subscription_lifecycle`.
 3. Exclude signed-quarantine or missing-baseline accounts from money action.
 4. Protect `unresolved_projection` coverage and `renewal_terms_unresolved`
-   contract evidence from adverse action.
+   contract evidence from adverse action. An uncovered service with exact or
+   malformed paid-invoice/renewal evidence is an unresolved projection until
+   the reviewed coverage reconciler creates or verifies the exact entitlement.
 5. Treat current covered/non-billable services as requiring no new funding.
 6. For each due uncovered service, sum the shared exact renewal charges. The
    required balance is the greater of that sum and the configured minimum.

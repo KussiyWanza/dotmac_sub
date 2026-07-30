@@ -2156,12 +2156,29 @@ def d12_enforcement_mismatch(
     # Restrict the detector to accounts that actually have a current prepaid
     # service. A non-prepaid account below the configured prepaid threshold is
     # not an enforcement mismatch.
-    # DISTINCT the IDs, not the entities. Subscriber carries a `json` metadata
-    # column and Postgres has no equality operator for json, so SELECT DISTINCT
-    # subscribers.* fails outright ("could not identify an equality operator for
-    # type json"). Select the distinct ids first, then load those rows.
-    prepaid_ids = db.scalars(
-        select(Subscriber.id)
+    # Group by the identifier, not the entity. Subscriber carries a `json`
+    # metadata column and Postgres has no equality operator for json. Derive the
+    # served projection in this cohort query so D12 does not pay for a second
+    # subscription scan.
+    prepaid_rows = db.execute(
+        select(
+            Subscriber.id,
+            func.max(
+                case(
+                    (
+                        or_(
+                            Subscription.access_state == AccessState.active.value,
+                            and_(
+                                Subscription.access_state.is_(None),
+                                Subscription.status == SubscriptionStatus.active,
+                            ),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("is_served"),
+        )
         .join(Subscription, Subscription.subscriber_id == Subscriber.id)
         .where(
             Subscriber.is_active.is_(True),
@@ -2171,30 +2188,13 @@ def d12_enforcement_mismatch(
             ),
             Subscription.status.in_(COLLECTIBLE_SERVICE_STATUSES),
         )
-        .distinct()
+        .group_by(Subscriber.id)
         .order_by(Subscriber.id)
     ).all()
     if limit:
-        prepaid_ids = prepaid_ids[:limit]
-
-    served_accounts = {
-        str(account_id)
-        for account_id in db.scalars(
-            select(Subscription.subscriber_id)
-            .where(
-                Subscription.subscriber_id.in_(prepaid_ids),
-                Subscription.status.in_(COLLECTIBLE_SERVICE_STATUSES),
-                or_(
-                    Subscription.access_state == AccessState.active.value,
-                    and_(
-                        Subscription.access_state.is_(None),
-                        Subscription.status == SubscriptionStatus.active,
-                    ),
-                ),
-            )
-            .distinct()
-        ).all()
-    }
+        prepaid_rows = prepaid_rows[:limit]
+    prepaid_ids = [row.id for row in prepaid_rows]
+    served_accounts = {str(row.id) for row in prepaid_rows if bool(row.is_served)}
 
     source_replay_available = all(
         inspect(db.get_bind()).has_table(name)

@@ -8393,14 +8393,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "customer.accounts",
                     "financial.prepaid_currency",
                     "financial.prepaid_service_coverage",
+                    "financial.prepaid_service_coverage_reconciliation",
                     "financial.prepaid_service_renewals",
                     "financial.subscription_billing_treatments",
                 ),
                 notes=(
                     "Returns typed minimum and unfunded-renewal provenance. Renewal "
-                    "and enforcement consume one exact taxed contract charge. Missing "
-                    "renewal terms produce a typed protected outcome; missing accounts, "
-                    "invalid minimums, and cross-currency evidence fail closed."
+                    "and enforcement consume one exact taxed contract charge. Uncovered "
+                    "services with exact or malformed financial coverage evidence and "
+                    "services with missing renewal terms produce typed protected outcomes; "
+                    "missing accounts, invalid minimums, and cross-currency evidence fail "
+                    "closed."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -8420,6 +8423,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "canonical collectible prepaid subscriptions",
                                 "canonical current service coverage",
+                                "prepaid financial coverage evidence guard",
                                 "effective subscription billing treatment",
                                 "exact taxed contracted renewal charge",
                                 "canonical prepaid currency",
@@ -8459,6 +8463,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="prepaid financial coverage evidence guard",
+                            owner=("financial.prepaid_service_coverage_reconciliation"),
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed exact or malformed invoice/renewal evidence blocker "
+                                "for each uncovered collectible prepaid subscription"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="effective subscription billing treatment",
                             owner="financial.subscription_billing_treatments",
                             kind=AuthorityKind.DERIVED_PROJECTION,
@@ -8487,9 +8500,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_threshold",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "collectible status set, coverage precedence, typed missing-"
-                                "renewal protection, current-coverage precedence, and due-"
-                                "only max(minimum, renewal) rule"
+                                "collectible status set, coverage and financial-evidence "
+                                "guard precedence, typed missing-renewal protection, current-"
+                                "coverage precedence, and due-only max(minimum, renewal) rule"
                             ),
                         ),
                     ),
@@ -8527,6 +8540,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "missing requested account",
                             "negative, non-finite, or malformed minimum balance",
+                            "exact or malformed financial coverage evidence without a "
+                            "current coverage projection",
                             "unfunded collectible subscription without exact renewal terms",
                             "price and enforcement currency mismatch",
                             "missing or invalid canonical prepaid currency",
@@ -8542,8 +8557,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.prepaid_threshold",
                         verification=(
                             "Scalar/batch parity, query budget, renewal-charge/tax parity, "
-                            "missing-term protection, paid coverage, provenance, caller, "
-                            "and architecture tests."
+                            "missing-term protection, paid coverage, financial-evidence "
+                            "guard, provenance, caller, and architecture tests."
                         ),
                         cutover_gate=(
                             "Access consumes the typed threshold decision; service status "

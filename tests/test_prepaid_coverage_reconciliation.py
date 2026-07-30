@@ -27,6 +27,7 @@ from app.services.prepaid_coverage_reconciliation import (
     ReconcilePrepaidCoverageCommand,
     preview_prepaid_coverage_reconciliation,
     reconcile_prepaid_service_coverage,
+    resolve_prepaid_coverage_enforcement_blockers,
 )
 
 NOW = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
@@ -107,6 +108,14 @@ def test_paid_invoice_requires_projection_before_it_covers_service(
         CoverageReconciliationReason.exact_paid_invoice_line
     )
     assert preview.items[0].source_id == line.id
+    blockers = resolve_prepaid_coverage_enforcement_blockers(
+        db_session,
+        [subscription],
+        as_of=NOW,
+    )
+    assert len(blockers) == 1
+    assert blockers[0].subscription_id == subscription.id
+    assert blockers[0].reason == CoverageReconciliationReason.exact_paid_invoice_line
 
 
 def test_reconciliation_creates_exact_entitlement_and_immutable_evidence(

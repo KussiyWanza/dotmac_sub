@@ -180,7 +180,7 @@ def test_prepaid_insufficient_wallet_without_paid_coverage_is_low_balance(
     assert resp.services[0].action.restores_service is False
 
 
-def test_prepaid_low_wallet_with_paid_invoice_still_requires_projection(
+def test_prepaid_low_wallet_with_paid_invoice_is_protected_pending_projection(
     db_session, subscriber_account, subscription
 ):
     subscriber_account.billing_mode = BillingMode.prepaid
@@ -218,9 +218,9 @@ def test_prepaid_low_wallet_with_paid_invoice_still_requires_projection(
     resp = build_service_status(db_session, str(subscriber_account.id))
 
     assert resp.balance == Decimal("0.00")
-    assert resp.min_balance == Decimal("17500.00")
-    assert resp.low_balance is True
-    assert resp.services[0].reason == "low_balance"
+    assert resp.min_balance == Decimal("0.00")
+    assert resp.low_balance is False
+    assert resp.services[0].reason == "ok"
 
 
 def test_prepaid_low_wallet_with_active_entitlement_is_ok(

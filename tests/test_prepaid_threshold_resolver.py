@@ -196,6 +196,7 @@ def _paid_invoice_without_entitlement(db, account, subscription) -> None:
             description="prepaid period",
             quantity=Decimal("1"),
             unit_price=Decimal("1000.00"),
+            amount=Decimal("1000.00"),
             is_active=True,
         )
     )
@@ -235,14 +236,20 @@ def test_paid_entitlement_means_no_renewal_requirement(db_session):
     assert scalar == batch == Decimal("0.00")
 
 
-def test_paid_invoice_without_entitlement_is_not_coverage(db_session):
+def test_paid_invoice_without_entitlement_blocks_enforcement_until_reconciled(
+    db_session,
+):
     account = _account(db_session, min_balance="1000.00")
     offer = _offer(db_session, "17500.00")
     subscription = _subscription(db_session, account, offer)
     _paid_invoice_without_entitlement(db_session, account, subscription)
 
-    scalar, batch = _both(db_session, account)
-    assert scalar == batch == Decimal("17500.00")
+    decision = resolve_prepaid_threshold_decision(db_session, account, now=NOW)
+
+    assert decision.threshold == Decimal("0.00")
+    assert decision.covered_subscription_ids == ()
+    assert decision.actionable_uncovered_subscription_ids == ()
+    assert decision.unresolved_projection_subscription_ids == (subscription.id,)
 
 
 def test_future_anchor_without_coverage_is_unresolved_not_funded(db_session):
