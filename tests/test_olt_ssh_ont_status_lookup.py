@@ -123,6 +123,33 @@ def test_find_ont_by_serial_accepts_only_explicit_ont_absence(monkeypatch) -> No
     closed: list[bool] = []
     _stub_lookup(
         monkeypatch,
+        output=(
+            "display ont info by-sn 485754431234ABCD\r\n"
+            "  The required ONT does not exist\r\n\r\n"
+            "legacy-olt#"
+        ),
+        commands=commands,
+        closed=closed,
+    )
+
+    ok, message, registration = status.find_ont_by_serial(
+        SimpleNamespace(name="Legacy MA5608T"),
+        "HWTC1234ABCD",
+    )
+
+    assert ok is True
+    assert registration is None
+    assert "not registered" in message
+    assert closed == [True]
+
+
+def test_find_ont_by_serial_accepts_absence_without_required_wording(
+    monkeypatch,
+) -> None:
+    commands: list[str] = []
+    closed: list[bool] = []
+    _stub_lookup(
+        monkeypatch,
         output="Failure: The ONT does not exist",
         commands=commands,
         closed=closed,
