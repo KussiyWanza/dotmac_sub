@@ -1313,7 +1313,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "Generic identity and contact edits cannot carry lifecycle state. "
                     "Administrative account overrides require a reviewed, stale-safe "
-                    "confirmation; subscription locks remain independently authoritative."
+                    "confirmation. Unsuspend reverses only same-source administrative "
+                    "suspension consequences; disabled services and unrelated locks "
+                    "remain independently authoritative."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -1367,7 +1369,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
                                 "SHA-256 fingerprint over account, billing approval, "
-                                "override, subscription, target, and projected status"
+                                "override provenance, subscription, lock, target, "
+                                "preservation, blocker, and projected status"
                             ),
                         ),
                         AuthorityInput(
@@ -1384,7 +1387,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="customer.account_status_actions",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed activate, suspend, block, or disable action"
+                                "typed activate, unsuspend, suspend, block, or disable "
+                                "action; unsuspend is provenance-scoped and never aliases "
+                                "broad activation"
                             ),
                         ),
                     ),
@@ -1429,7 +1434,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "customer.account_status_actions.active_caller_transaction",
                             "customer.account_status_actions.nested_transaction_completion",
                         ),
-                        mapping_owner="app.api.subscribers",
+                        mapping_owner=(
+                            "app.api.subscribers and app.web.admin.customers"
+                        ),
                         retryable_codes=(
                             "customer.account_status_actions.idempotency_conflict",
                         ),
@@ -1481,6 +1488,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_account_status_commands.py",
+                        "tests/test_web_customer_details.py",
                         "tests/architecture/test_generic_lifecycle_edit_boundary.py",
                     ),
                 ),

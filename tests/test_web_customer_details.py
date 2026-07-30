@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.routing import APIRoute
 from starlette.requests import Request
 
 
@@ -273,6 +274,73 @@ def test_customer_360_restore_action_is_permission_gated_and_reviewed() -> None:
     assert "body.set('expected_head', preview.expected_head)" in template
     assert "'Idempotency-Key': idempotencyKey" in template
     assert "`${lifecycleUrl}/execute`" in template
+
+
+def test_customer_360_unsuspend_action_is_permission_gated_and_reviewed() -> None:
+    template = Path("templates/admin/customers/detail.html").read_text(encoding="utf-8")
+
+    assert (
+        "{% if can_unsuspend_account and account_unsuspend_action.visible %}"
+        in template
+    )
+    assert (
+        'action="/admin/customers/{{ customer_type }}/{{ customer.id }}/unsuspend"'
+        in template
+    )
+    assert 'name="preview_fingerprint"' in template
+    assert "Unsuspend Account" in template
+    assert "disabled preserved" in template
+    assert "Unrelated locks preserved" in template
+
+
+def test_customer_unsuspend_route_requires_customer_update() -> None:
+    path = "/customers/{customer_type}/{customer_id}/unsuspend"
+    route = next(
+        item
+        for item in customer_routes.router.routes
+        if isinstance(item, APIRoute) and item.path == path
+    )
+
+    assert route.methods == {"POST"}
+    assert any(
+        "customer:update"
+        in " ".join(
+            str(cell.cell_contents)
+            for cell in (getattr(dependency.call, "__closure__", None) or ())
+        )
+        for dependency in route.dependant.dependencies
+    )
+
+
+def test_customer_detail_projects_safe_legacy_unsuspend(
+    db_session, subscriber, subscription
+):
+    subscriber.user_type = UserType.customer
+    subscriber.billing_enabled = True
+    subscriber.status = SubscriberStatus.suspended
+    subscriber.lifecycle_override_status = SubscriberStatus.suspended
+    subscriber.lifecycle_override_reason = "Legacy administrative suspension"
+    subscriber.lifecycle_override_source = "subscriber_service:update"
+    subscription.status = SubscriptionStatus.active
+    disabled = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=subscription.offer_id,
+        status=SubscriptionStatus.disabled,
+        billing_mode=subscription.billing_mode,
+    )
+    db_session.add(disabled)
+    db_session.commit()
+
+    context = build_customer_detail_snapshot(db_session, str(subscriber.id))
+    action = context["account_unsuspend_action"]
+
+    assert action["visible"] is True
+    assert action["allowed"] is True
+    assert action["current_status"] == "suspended"
+    assert action["projected_status"] == "active"
+    assert action["affected_subscription_count"] == 0
+    assert action["preserved_disabled_count"] == 1
+    assert len(action["fingerprint"]) == 64
 
 
 def test_customer_dashboard_welcome_card_keeps_content_inset() -> None:
@@ -621,6 +689,7 @@ def test_person_detail_normalizes_usage_period(monkeypatch, db_session):
     assert captured["context"]["bulk_notification_templates"] == []
     assert captured["context"]["can_activate_subscriptions"] is False
     assert captured["context"]["can_suspend_subscriptions"] is False
+    assert captured["context"]["can_unsuspend_account"] is False
     assert captured["context"]["detail_config"] == {
         "statsUrl": (
             "/admin/customers/person/cust-123/stats"

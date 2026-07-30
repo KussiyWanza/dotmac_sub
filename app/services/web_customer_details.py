@@ -62,6 +62,7 @@ from app.models.subscriber import (
 )
 from app.models.support import Ticket
 from app.schemas.geocoding import GeocodePreviewRequest
+from app.services import account_status_commands
 from app.services import catalog as catalog_service
 from app.services import geocoding as geocoding_service
 from app.services import notification as notification_service
@@ -1755,6 +1756,53 @@ def _build_access_repair_state(
     }
 
 
+def _build_account_unsuspend_action(
+    db: Session,
+    customer: Subscriber,
+) -> dict[str, object]:
+    """Project the reviewed single-account unsuspend action for the admin UI."""
+    visible = customer.lifecycle_override_status == SubscriberStatus.suspended
+    if not visible:
+        return {
+            "visible": False,
+            "allowed": False,
+            "reason": "The account is not explicitly suspended.",
+        }
+
+    preview = account_status_commands.preview_account_status_change(
+        db,
+        account_status_commands.PreviewAccountStatusRequest(
+            account_id=customer.id,
+            action=account_status_commands.AccountStatusAction.unsuspend,
+        ),
+    )
+    affected_count = len(preview.affected_subscription_ids)
+    preserved_disabled_count = len(preview.preserved_disabled_subscription_ids)
+    blocker_names = tuple(item.replace("_", " ") for item in preview.remaining_blockers)
+    return {
+        "visible": True,
+        "allowed": preview.allowed,
+        "fingerprint": preview.fingerprint,
+        "current_status": preview.current_status.value,
+        "projected_status": preview.projected_status.value,
+        "override_reason": customer.lifecycle_override_reason,
+        "override_source": customer.lifecycle_override_source,
+        "override_at": customer.lifecycle_override_at,
+        "affected_subscription_count": affected_count,
+        "matching_lock_count": len(preview.matching_lock_ids),
+        "preserved_disabled_count": preserved_disabled_count,
+        "remaining_blockers": blocker_names,
+        "reason": preview.eligibility_reason,
+        "confirmation": (
+            "Unsuspend this customer account? This clears the explicit account "
+            f"suspension, restores {affected_count} service(s) held by that "
+            "suspension, preserves "
+            f"{preserved_disabled_count} disabled service(s), and leaves "
+            "unrelated enforcement locks in place."
+        ),
+    }
+
+
 def build_customer_detail_snapshot(
     db: Session,
     customer_id: str,
@@ -2082,6 +2130,7 @@ def build_customer_detail_snapshot(
             customer,
             subscriptions,
         ),
+        "account_unsuspend_action": _build_account_unsuspend_action(db, customer),
         "pending_location_request": pending_location_request,
         "subscriber_summary": subscriber_summary_service.subscriber_summary(
             db, customer_id

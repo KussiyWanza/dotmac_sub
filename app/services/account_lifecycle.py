@@ -125,6 +125,16 @@ ACCOUNT_OVERRIDE_STATUSES = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class AccountUnsuspendResult:
+    """Exact administrative suspension consequences reversed by one command."""
+
+    account_id: UUID
+    status: SubscriberStatus
+    resolved_lock_ids: tuple[UUID, ...]
+    restored_subscription_ids: tuple[UUID, ...]
+
+
 def is_terminal_status(status: SubscriptionStatus | None) -> bool:
     """True if ``status`` is a terminal (sink) subscription status."""
     return status in _TERMINAL
@@ -1429,6 +1439,134 @@ def transition_account_status(
                     emit=emit,
                 )
     return compute_account_status(db, subscriber_id)
+
+
+def unsuspend_account_override(
+    db: Session,
+    subscriber_id: str,
+    *,
+    reason: str,
+    source: str,
+    emit: bool = True,
+) -> AccountUnsuspendResult:
+    """Reverse only the consequences owned by one account suspension.
+
+    The broad ``active`` transition is intentionally not used here: it may
+    enable disabled historical subscriptions and clear unrelated locks. This
+    operation clears an explicit suspended account override, resolves only
+    same-source administrative locks, and restores only services held by those
+    exact locks when no independent blocker remains.
+    """
+
+    subscriber = db.get(Subscriber, subscriber_id)
+    if subscriber is None:
+        raise ValueError(f"Subscriber {subscriber_id} not found")
+    if subscriber.lifecycle_override_status != SubscriberStatus.suspended:
+        raise ValueError("Account does not have an explicit suspended override")
+    _require_billing_approval(db, subscriber_id=subscriber_id)
+
+    recorded_source = str(subscriber.lifecycle_override_source or "").strip()
+    subscriptions = list(
+        db.scalars(
+            select(Subscription)
+            .where(Subscription.subscriber_id == subscriber.id)
+            .order_by(Subscription.id)
+        ).all()
+    )
+    now = datetime.now(UTC)
+    resolved_lock_ids: list[UUID] = []
+    restored_subscription_ids: list[UUID] = []
+
+    for subscription in subscriptions:
+        active_locks = list(
+            db.scalars(
+                select(EnforcementLock)
+                .where(
+                    EnforcementLock.subscription_id == subscription.id,
+                    EnforcementLock.is_active.is_(True),
+                )
+                .order_by(EnforcementLock.id)
+            ).all()
+        )
+        matching = [
+            lock
+            for lock in active_locks
+            if recorded_source
+            and lock.reason == EnforcementReason.admin
+            and lock.source == recorded_source
+        ]
+        if not matching:
+            continue
+
+        independent = [lock for lock in active_locks if lock not in matching]
+        would_restore = subscription.status in SUSPENDED_EQUIVALENT and not independent
+        if would_restore and reactivation_blocked_by_active_login(db, subscription):
+            # Keep the owned lock active when restoring the corresponding
+            # service would violate the one-active-service-per-login invariant.
+            continue
+
+        for lock in matching:
+            lock.is_active = False
+            lock.resolved_at = now
+            lock.resolved_by = source
+            existing_notes = lock.notes or ""
+            resolution_note = f"Resolved: {reason}"
+            lock.notes = (
+                f"{existing_notes}\n{resolution_note}"
+                if existing_notes
+                else resolution_note
+            )
+            resolved_lock_ids.append(lock.id)
+            if emit:
+                emit_event(
+                    db,
+                    EventType.enforcement_lock_resolved,
+                    {
+                        "lock_id": str(lock.id),
+                        "subscription_id": str(subscription.id),
+                        "reason": lock.reason.value,
+                        "trigger": "account_unsuspend",
+                        "resolved_by": source,
+                    },
+                    subscription_id=subscription.id,
+                    account_id=subscription.subscriber_id,
+                )
+
+        if would_restore:
+            previous = subscription.status
+            subscription.status = SubscriptionStatus.active
+            restored_subscription_ids.append(subscription.id)
+            if emit:
+                emit_event(
+                    db,
+                    EventType.subscription_resumed,
+                    {
+                        "subscription_id": str(subscription.id),
+                        "trigger": "account_unsuspend",
+                        "resolved_by": source,
+                        "from_status": previous.value,
+                        "to_status": SubscriptionStatus.active.value,
+                        "offer_name": (
+                            subscription.offer.name if subscription.offer else None
+                        ),
+                    },
+                    subscription_id=subscription.id,
+                    account_id=subscription.subscriber_id,
+                )
+
+    db.flush()
+    status = clear_account_lifecycle_override(
+        db,
+        subscriber_id,
+        reason=reason,
+        source=source,
+    )
+    return AccountUnsuspendResult(
+        account_id=subscriber.id,
+        status=status,
+        resolved_lock_ids=tuple(resolved_lock_ids),
+        restored_subscription_ids=tuple(restored_subscription_ids),
+    )
 
 
 # ---------------------------------------------------------------------------

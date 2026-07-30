@@ -217,8 +217,8 @@ do not hand-edit these rows.
 | `customer.financial_position` | customer-visible financial position | `resolver` | reviewed prepaid opening position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
 | `customer.financial_position` | bounded cohort financial projections | `resolver` | reviewed prepaid opening position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
 | `customer.financial_position` | currency-typed complete billing headline projection | `resolver` | canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
-| `customer.account_status_actions` | administrative account-status impact preview | `resolver` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
-| `customer.account_status_actions` | administrative account-bound idempotent status confirmation | `application_coordinator` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>signed account-status preview evidence ← `customer.account_status_actions`<br>account-bound status idempotency evidence ← `customer.account_status_actions`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
+| `customer.account_status_actions` | administrative account-status impact preview | `resolver` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/test_web_customer_details.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
+| `customer.account_status_actions` | administrative account-bound idempotent status confirmation | `application_coordinator` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>signed account-status preview evidence ← `customer.account_status_actions`<br>account-bound status idempotency evidence ← `customer.account_status_actions`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/test_web_customer_details.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
 | `customer.reseller_status_actions` | reseller-scoped account-action impact preview | `resolver` | canonical reseller account scope ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>reseller account-status action protocol ← `customer.reseller_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_reseller_gaps.py`<br>`tests/test_reseller_portal_services.py`<br>`tests/architecture/test_reseller_status_action_boundary.py` |
 | `customer.reseller_status_actions` | lock-aware account-action eligibility | `policy` | canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical enforcement lock and login-conflict state ← `access.subscription_lifecycle`<br>reseller account-status action protocol ← `customer.reseller_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_reseller_gaps.py`<br>`tests/test_reseller_portal_services.py`<br>`tests/architecture/test_reseller_status_action_boundary.py` |
 | `customer.reseller_status_actions` | account-action stale-preview fingerprint | `resolver` | canonical reseller account scope ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical enforcement lock and login-conflict state ← `access.subscription_lifecycle`<br>reseller account-status action protocol ← `customer.reseller_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_reseller_gaps.py`<br>`tests/test_reseller_portal_services.py`<br>`tests/architecture/test_reseller_status_action_boundary.py` |
@@ -2051,13 +2051,20 @@ network summary composition.
    validation and audit trail. `customer.name_repairs` separately owns exact,
    audit-evidenced legacy Subscriber name remediation until Party name
    projection cutover; no webhook, CLI, or generic profile helper writes it.
-6. `customer.service_status` owns customer-visible service health and action
+6. `customer.account_status_actions` owns reviewed administrative account
+   lifecycle previews and confirmations. Its `unsuspend` action is distinct
+   from broad activation: it clears only an explicit suspended override,
+   resolves same-source administrative locks, restores only services held by
+   those exact locks when no independent blocker remains, and preserves
+   disabled or terminal services and unrelated enforcement locks.
+   `access.subscription_lifecycle` remains the sole lifecycle writer.
+7. `customer.service_status` owns customer-visible service health and action
    hints, including whether payment can restore every active service hold and
    the authoritative amount required by financial policy.
-7. `customer.usage_summary` owns customer usage windows, headline totals, and
+8. `customer.usage_summary` owns customer usage windows, headline totals, and
    total provenance. An authoritative zero is a valid value, not a missing-data
    sentinel.
-8. `customer.reseller_status_actions` (`app/services/reseller_portal.py`) owns
+9. `customer.reseller_status_actions` (`app/services/reseller_portal.py`) owns
    the reseller-scoped impact preview for deactivate, restore, and disable. It
    evaluates current subscription state, active enforcement locks, duplicate-
    login restore conflicts, account overrides, and accounts with no services,
@@ -2067,18 +2074,18 @@ network summary composition.
    locking, commits the lifecycle mutation and replay result once, and returns
    the original result on retry. Lifecycle mutation is still delegated to
    `access.subscription_lifecycle`.
-9. `customer.experience_lifecycle`
+10. `customer.experience_lifecycle`
    (`app/services/customer_experience_lifecycle.py`) owns the read-only typed
    composition of native `Project -> ProjectTask -> WorkOrder -> Ticket` state,
    the customer experience-state projection, and server-owned self-care action
    availability. It never mutates any of those roots. Customer, reseller,
    field, web, and mobile adapters consume it without a CRM mirror fallback.
-10. `customer.work_order_selfcare`
+11. `customer.work_order_selfcare`
     (`app/services/customer_work_order_selfcare.py`) owns subscriber-scoped live
     technician-location reads and the canonical, audited customer technician
     rating. It reads native dispatch assignment and field-presence facts and
     writes no work-order lifecycle state.
-11. `subscriber.growth_reports` (`app/services/subscriber_growth.py`) owns the
+12. `subscriber.growth_reports` (`app/services/subscriber_growth.py`) owns the
    admin subscriber growth and churn report reads: monthly growth/churn series,
    month-over-month new counts, churn/at-risk summaries, status counts, and
    cumulative signups. The derived-cancelled rule (explicit `canceled`, or NULL

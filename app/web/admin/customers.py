@@ -54,6 +54,7 @@ from app.services.auth_dependencies import (
 )
 from app.services.bandwidth import bandwidth_samples
 from app.services.customer_portal_context import resolve_customer_subscription
+from app.services.domain_errors import DomainError
 from app.services.queue_adapter import enqueue_task
 from app.services.subscription_change_execution import (
     SubscriptionChangeExecutionError,
@@ -750,6 +751,7 @@ def person_detail(
     from app.services import location_capture
 
     can_confirm_location = bool(auth) and has_permission(auth, db, "customer:write")
+    can_unsuspend_account = bool(auth) and has_permission(auth, db, "customer:update")
     location_capture_enabled = can_confirm_location and location_capture.prompt_enabled(
         db
     )
@@ -800,6 +802,7 @@ def person_detail(
             **_subscription_action_permission_context(request, db),
             "current_user": current_user,
             "location_capture_enabled": location_capture_enabled,
+            "can_unsuspend_account": can_unsuspend_account,
             "sidebar_stats": sidebar_stats,
         },
     )
@@ -1948,6 +1951,57 @@ def customer_activate_suspended_services(
         ok=changed > 0,
         title="Services activated" if changed else "No services activated",
         message=str(result.get("message") or "Activation completed."),
+    )
+
+
+@router.post(
+    "/{customer_type}/{customer_id}/unsuspend",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("customer:update"))],
+)
+def customer_unsuspend_account(
+    request: Request,
+    customer_type: Literal["person", "business"],
+    customer_id: str,
+    preview_fingerprint: str = Form(..., min_length=64, max_length=64),
+    db: Session = Depends(get_db),
+):
+    """Unsuspend one account without enabling disabled historical services."""
+    redirect_url = f"/admin/customers/{customer_type}/{customer_id}"
+    try:
+        outcome = web_customer_actions_service.unsuspend_customer_account(
+            db,
+            customer_id,
+            preview_fingerprint=preview_fingerprint,
+            actor_id=_get_actor_id(request),
+        )
+    except (DomainError, ValueError) as exc:
+        return _toast_response(
+            request=request,
+            redirect_url=redirect_url,
+            ok=False,
+            title="Account not unsuspended",
+            message=str(exc),
+        )
+    except Exception:
+        logger.exception("Failed to unsuspend customer account %s", customer_id)
+        return _toast_response(
+            request=request,
+            redirect_url=redirect_url,
+            ok=False,
+            title="Account not unsuspended",
+            message="The account could not be unsuspended. Review its access state.",
+        )
+
+    return _toast_response(
+        request=request,
+        redirect_url=redirect_url,
+        ok=True,
+        title="Account unsuspended",
+        message=(
+            f"The account is now {outcome.status.value}. Disabled services and "
+            "unrelated enforcement locks were preserved."
+        ),
     )
 
 

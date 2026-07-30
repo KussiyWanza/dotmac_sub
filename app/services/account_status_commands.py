@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.enforcement_lock import EnforcementLock
+from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.idempotency import IdempotencyKey
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.services.account_lifecycle import (
@@ -23,6 +23,7 @@ from app.services.account_lifecycle import (
     derive_account_status_without_override,
     reactivation_blocked_by_active_login,
     transition_account_status,
+    unsuspend_account_override,
 )
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
@@ -45,6 +46,7 @@ _CONFIRM_COMMAND = OwnerCommandDefinition(
 
 class AccountStatusAction(StrEnum):
     activate = "activate"
+    unsuspend = "unsuspend"
     suspend = "suspend"
     block = "block"
     disable = "disable"
@@ -52,6 +54,7 @@ class AccountStatusAction(StrEnum):
 
 _TARGET_STATUS = {
     AccountStatusAction.activate: SubscriberStatus.active,
+    AccountStatusAction.unsuspend: SubscriberStatus.active,
     AccountStatusAction.suspend: SubscriberStatus.suspended,
     AccountStatusAction.block: SubscriberStatus.blocked,
     AccountStatusAction.disable: SubscriberStatus.disabled,
@@ -86,6 +89,11 @@ class AccountStatusPreview:
     clears_override: bool
     allowed: bool
     fingerprint: str
+    affected_subscription_ids: tuple[UUID, ...] = ()
+    matching_lock_ids: tuple[UUID, ...] = ()
+    preserved_disabled_subscription_ids: tuple[UUID, ...] = ()
+    remaining_blockers: tuple[str, ...] = ()
+    eligibility_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,31 +162,70 @@ def _preview(
             .order_by(EnforcementLock.id)
         ).all()
     )
-    clears_override = action is AccountStatusAction.activate and bool(subscriptions)
-    if clears_override:
+    affected_subscription_ids: tuple[UUID, ...] = ()
+    matching_lock_ids: tuple[UUID, ...] = ()
+    preserved_disabled_subscription_ids = tuple(
+        item.id for item in subscriptions if item.status == SubscriptionStatus.disabled
+    )
+    remaining_blockers: tuple[str, ...] = ()
+    eligibility_reason: str | None = None
+    clears_override = action in {
+        AccountStatusAction.activate,
+        AccountStatusAction.unsuspend,
+    } and bool(subscriptions)
+    if action is AccountStatusAction.unsuspend:
+        recorded_source = str(account.lifecycle_override_source or "").strip()
         locks_by_subscription: dict[UUID, list[EnforcementLock]] = {}
         for lock in locks:
             locks_by_subscription.setdefault(lock.subscription_id, []).append(lock)
+
         projected_subscription_statuses: list[SubscriptionStatus] = []
+        affected: list[UUID] = []
+        matching_ids: list[UUID] = []
+        blocker_names: set[str] = set()
         for subscription in subscriptions:
             projected = subscription.status
-            if subscription.status in {
-                SubscriptionStatus.pending,
-                SubscriptionStatus.suspended,
-                SubscriptionStatus.blocked,
-                SubscriptionStatus.stopped,
-                SubscriptionStatus.disabled,
-            }:
-                active_locks = locks_by_subscription.get(subscription.id, [])
-                locks_allow_admin = all(
-                    "admin" in ALLOWED_RESTORERS.get(lock.reason, set())
-                    for lock in active_locks
-                )
-                if locks_allow_admin and not reactivation_blocked_by_active_login(
-                    db, subscription
-                ):
-                    projected = SubscriptionStatus.active
+            subscription_locks = locks_by_subscription.get(subscription.id, [])
+            matching = [
+                lock
+                for lock in subscription_locks
+                if recorded_source
+                and lock.reason == EnforcementReason.admin
+                and lock.source == recorded_source
+            ]
+            independent = [lock for lock in subscription_locks if lock not in matching]
+            can_restore = (
+                bool(matching)
+                and subscription.status
+                in {
+                    SubscriptionStatus.suspended,
+                    SubscriptionStatus.blocked,
+                    SubscriptionStatus.stopped,
+                }
+                and not independent
+                and not reactivation_blocked_by_active_login(db, subscription)
+            )
+            if can_restore:
+                projected = SubscriptionStatus.active
+                affected.append(subscription.id)
+                matching_ids.extend(lock.id for lock in matching)
+            elif (
+                matching
+                and subscription.status
+                in {
+                    SubscriptionStatus.suspended,
+                    SubscriptionStatus.blocked,
+                    SubscriptionStatus.stopped,
+                }
+                and not independent
+            ):
+                blocker_names.add("active_login")
+            elif matching:
+                matching_ids.extend(lock.id for lock in matching)
+            for lock in independent:
+                blocker_names.add(lock.reason.value)
             projected_subscription_statuses.append(projected)
+
         if any(
             status == SubscriptionStatus.active
             for status in projected_subscription_statuses
@@ -194,7 +241,7 @@ def _preview(
             for status in projected_subscription_statuses
         ):
             projected_status = SubscriberStatus.blocked
-        elif all(
+        elif projected_subscription_statuses and all(
             status == SubscriptionStatus.disabled
             for status in projected_subscription_statuses
         ):
@@ -203,14 +250,80 @@ def _preview(
             projected_status = derive_account_status_without_override(
                 db, str(account.id)
             )
+
+        affected_subscription_ids = tuple(affected)
+        matching_lock_ids = tuple(matching_ids)
+        remaining_blockers = tuple(sorted(blocker_names))
+        if account.lifecycle_override_status != SubscriberStatus.suspended:
+            eligibility_reason = (
+                "Account does not have an explicit administrative suspension."
+            )
+        elif not account.billing_enabled:
+            eligibility_reason = (
+                "Billing approval is required before the account can be unsuspended."
+            )
+        elif projected_status != SubscriberStatus.active:
+            eligibility_reason = (
+                "Clearing the account suspension would not restore an active service."
+            )
+        allowed = eligibility_reason is None
+    elif clears_override:
+        activation_locks_by_subscription: dict[UUID, list[EnforcementLock]] = {}
+        for lock in locks:
+            activation_locks_by_subscription.setdefault(
+                lock.subscription_id, []
+            ).append(lock)
+        activation_projected_statuses: list[SubscriptionStatus] = []
+        for subscription in subscriptions:
+            projected = subscription.status
+            if subscription.status in {
+                SubscriptionStatus.pending,
+                SubscriptionStatus.suspended,
+                SubscriptionStatus.blocked,
+                SubscriptionStatus.stopped,
+                SubscriptionStatus.disabled,
+            }:
+                active_locks = activation_locks_by_subscription.get(subscription.id, [])
+                locks_allow_admin = all(
+                    "admin" in ALLOWED_RESTORERS.get(lock.reason, set())
+                    for lock in active_locks
+                )
+                if locks_allow_admin and not reactivation_blocked_by_active_login(
+                    db, subscription
+                ):
+                    projected = SubscriptionStatus.active
+            activation_projected_statuses.append(projected)
+        if any(
+            status == SubscriptionStatus.active
+            for status in activation_projected_statuses
+        ):
+            projected_status = SubscriberStatus.active
+        elif any(
+            status == SubscriptionStatus.suspended
+            for status in activation_projected_statuses
+        ):
+            projected_status = SubscriberStatus.suspended
+        elif any(
+            status in {SubscriptionStatus.blocked, SubscriptionStatus.stopped}
+            for status in activation_projected_statuses
+        ):
+            projected_status = SubscriberStatus.blocked
+        elif all(
+            status == SubscriptionStatus.disabled
+            for status in activation_projected_statuses
+        ):
+            projected_status = SubscriberStatus.disabled
+        else:
+            projected_status = derive_account_status_without_override(
+                db, str(account.id)
+            )
+        allowed = account.lifecycle_override_status is not None
     else:
         projected_status = target
-    allowed = (
-        account.lifecycle_override_status is not None
-        if clears_override
-        else account.lifecycle_override_status != target
-        or account.status != projected_status
-    )
+        allowed = (
+            account.lifecycle_override_status != target
+            or account.status != projected_status
+        )
     snapshot = {
         "account_id": str(account.id),
         "action": action.value,
@@ -223,6 +336,13 @@ def _preview(
         ),
         "projected_status": projected_status.value,
         "clears_override": clears_override,
+        "affected_subscription_ids": [str(item) for item in affected_subscription_ids],
+        "matching_lock_ids": [str(item) for item in matching_lock_ids],
+        "preserved_disabled_subscription_ids": [
+            str(item) for item in preserved_disabled_subscription_ids
+        ],
+        "remaining_blockers": list(remaining_blockers),
+        "eligibility_reason": eligibility_reason,
         "subscriptions": [
             {"id": str(item.id), "status": item.status.value} for item in subscriptions
         ],
@@ -248,6 +368,11 @@ def _preview(
         clears_override=clears_override,
         allowed=allowed,
         fingerprint=fingerprint,
+        affected_subscription_ids=affected_subscription_ids,
+        matching_lock_ids=matching_lock_ids,
+        preserved_disabled_subscription_ids=preserved_disabled_subscription_ids,
+        remaining_blockers=remaining_blockers,
+        eligibility_reason=eligibility_reason,
     )
 
 
@@ -370,6 +495,7 @@ def _stage_evidence(
     command: ConfirmAccountStatusCommand,
     prior_status: SubscriberStatus,
     prior_override: SubscriberStatus | None,
+    preview: AccountStatusPreview,
 ) -> None:
     actor_type, actor_id = _actor(command.context)
     metadata: dict[str, object] = {
@@ -388,6 +514,14 @@ def _stage_evidence(
         "command_id": str(command.context.command_id),
         "correlation_id": str(command.context.correlation_id),
         "preview_fingerprint": command.expected_preview_fingerprint,
+        "affected_subscription_ids": [
+            str(item) for item in preview.affected_subscription_ids
+        ],
+        "matching_lock_ids": [str(item) for item in preview.matching_lock_ids],
+        "preserved_disabled_subscription_ids": [
+            str(item) for item in preview.preserved_disabled_subscription_ids
+        ],
+        "remaining_blockers": list(preview.remaining_blockers),
     }
     stage_audit_event(
         db,
@@ -436,26 +570,40 @@ def confirm_account_status_change(
         if not preview.allowed:
             raise _error(
                 "action_not_allowed",
-                "The account-status action would not change the account.",
+                preview.eligibility_reason
+                or "The account-status action would not change the account.",
             )
         if (
-            command.action is AccountStatusAction.activate
+            command.action
+            in {
+                AccountStatusAction.activate,
+                AccountStatusAction.unsuspend,
+            }
             and not account.billing_enabled
         ):
             raise _error(
                 "billing_approval_required",
-                "Billing approval is required before the account can be activated.",
+                "Billing approval is required before the account can receive service.",
             )
 
         prior_status = account.status
         prior_override = account.lifecycle_override_status
-        transition_account_status(
-            db,
-            str(account.id),
-            _TARGET_STATUS[command.action],
-            reason=command.context.reason,
-            source=f"account_status_command:{command.context.command_id}",
-        )
+        command_source = f"account_status_command:{command.context.command_id}"
+        if command.action is AccountStatusAction.unsuspend:
+            unsuspend_account_override(
+                db,
+                str(account.id),
+                reason=command.context.reason,
+                source=command_source,
+            )
+        else:
+            transition_account_status(
+                db,
+                str(account.id),
+                _TARGET_STATUS[command.action],
+                reason=command.context.reason,
+                source=command_source,
+            )
         db.flush()
         _stage_evidence(
             db,
@@ -463,6 +611,7 @@ def confirm_account_status_change(
             command=command,
             prior_status=prior_status,
             prior_override=prior_override,
+            preview=preview,
         )
         reservation.ref_id = "|".join(
             (
