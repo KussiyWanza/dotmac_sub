@@ -292,6 +292,54 @@ def test_preview_applies_partial_deposit_to_existing_invoice(db_session, subscri
     )
 
 
+def test_account_credit_ignores_non_position_adjustments_but_counts_consumption(
+    db_session, subscriber
+):
+    db_session.add_all(
+        [
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.payment,
+                amount=Decimal("10000.00"),
+                currency="NGN",
+                memo="Reusable payment credit",
+                affects_customer_position=True,
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.credit,
+                source=LedgerSource.adjustment,
+                amount=Decimal("90000.00"),
+                currency="NGN",
+                memo="Historical credit projection evidence",
+                affects_customer_position=False,
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.debit,
+                source=LedgerSource.adjustment,
+                amount=Decimal("50000.00"),
+                currency="NGN",
+                memo="Historical debit projection evidence",
+                affects_customer_position=False,
+            ),
+            LedgerEntry(
+                account_id=subscriber.id,
+                entry_type=LedgerEntryType.debit,
+                source=LedgerSource.other,
+                amount=Decimal("10000.00"),
+                currency="NGN",
+                memo="Account-credit consumption evidence",
+                affects_customer_position=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert get_account_credit_balance(db_session, str(subscriber.id)) == Decimal("0.00")
+
+
 def test_confirmed_deposit_is_credit_only_and_grants_no_service(db_session, subscriber):
     provider = _provider(db_session)
     intent = _intent(db_session, subscriber, provider)
