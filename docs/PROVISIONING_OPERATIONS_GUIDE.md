@@ -570,6 +570,15 @@ Pick an online ONT and test:
 4. Check TR-069: did the ONT register in GenieACS?
 5. Try OMCI reboot from the ONT detail page (works without TR-069)
 
+Huawei serial lookup normalizes compatible display serials such as
+`HWTC1234ABCD` to the full OLT hex form before issuing
+`display ont info by-sn`. Only an explicit ONT-absent response proves that a
+registration does not exist. A parameter error, rejected command, empty
+response, or unrecognized detail block is an unavailable observation and must
+fail closed. Do not force reauthorization or delete the suspected registration
+until a successful lookup or registered-ONT inventory read identifies its
+current F/S/P and ONT-ID; investigate physical/offline state separately.
+
 ### TR-069 Bootstrap Timeout (Step 9 Fails)
 
 1. Verify the ACS URL is reachable from the ONT's management VLAN

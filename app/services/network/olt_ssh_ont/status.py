@@ -10,6 +10,12 @@ from collections.abc import Iterable
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
+from app.services.network._common import encode_to_hex_serial
+from app.services.network.huawei_cli_response import (
+    HuaweiCliResource,
+    classify_huawei_cli_response,
+    is_huawei_resource_absent,
+)
 from app.services.network.olt_ssh_ont._common import (
     _SSH_CONNECTION_ERRORS,
     OntStatusEntry,
@@ -391,8 +397,12 @@ def find_ont_by_serial(
     """
     from app.services.network import olt_ssh as core
 
-    # Normalize serial (remove dashes, uppercase)
+    # The full hex representation is the safe direct-lookup form for compatible
+    # Huawei serials. Some older shelves reject the display form (for example
+    # ``HWTC1234ABCD``) with ``Parameter error`` even though the same ONT is
+    # registered as ``485754431234ABCD``.
     normalized_serial = serial_number.replace("-", "").strip().upper()
+    lookup_serial = encode_to_hex_serial(normalized_serial) or normalized_serial
 
     try:
         transport, channel, policy = core._open_shell(olt)
@@ -405,18 +415,33 @@ def find_ont_by_serial(
         # Use direct serial lookup - much more reliable than parsing all ONTs
         output = core._run_huawei_cmd(
             channel,
-            f"display ont info by-sn {normalized_serial}",
+            f"display ont info by-sn {lookup_serial}",
             prompt=prompt,
         )
 
-        # Check for "not exist" or similar error
-        if "not exist" in output.lower() or "failure" in output.lower():
+        # Absence is authoritative only when Huawei explicitly reports that
+        # the ONT does not exist. A rejected command, parameter error, empty
+        # response, or unfamiliar response is an unavailable observation and
+        # must fail closed rather than authorizing a duplicate registration.
+        response = classify_huawei_cli_response(output)
+        if is_huawei_resource_absent(output, HuaweiCliResource.ONT):
             logger.info(
                 "ONT serial %s not found on OLT %s",
                 serial_number,
                 olt.name,
             )
             return True, f"ONT {serial_number} is not registered on {olt.name}", None
+        if response.has_error_marker:
+            logger.warning(
+                "OLT rejected ONT serial lookup on %s: %s",
+                olt.name,
+                response.error_code.value,
+            )
+            return (
+                False,
+                (f"OLT rejected ONT serial lookup ({response.error_code.value})."),
+                None,
+            )
 
         # Parse the output for F/S/P, ONT-ID, and Run state
         fsp_match = re.search(r"F/S/P\s*:\s*(\d+/\d+/\d+)", output)
@@ -451,12 +476,14 @@ def find_ont_by_serial(
 
         # If we got output but couldn't parse it, log for debugging
         logger.warning(
-            "Could not parse ONT info output for serial %s on OLT %s: %s",
-            serial_number,
+            "Could not parse ONT info output on OLT %s",
             olt.name,
-            output[:500],
         )
-        return True, f"ONT {serial_number} is not registered on {olt.name}", None
+        return (
+            False,
+            f"Huawei ONT serial lookup response was not recognized on {olt.name}.",
+            None,
+        )
 
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
         logger.error(
