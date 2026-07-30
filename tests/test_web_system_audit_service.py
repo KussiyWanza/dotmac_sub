@@ -31,7 +31,10 @@ def test_audit_page_resolves_system_user_actor_names(db_session):
 
     page = web_system_audit.get_audit_page_data(
         db_session,
-        web_system_audit.build_audit_list_query(page=1),
+        web_system_audit.build_audit_list_query(
+            entity_type="support_ticket",
+            page=1,
+        ),
     )
 
     assert page["events"][0]["actor_name"] == "Admin Operator"
@@ -112,7 +115,15 @@ def test_log_audit_event_derives_system_user_actor_name_when_id_missing(db_sessi
         actor_id="",
     )
 
-    event = db_session.query(AuditEvent).one()
+    event = (
+        db_session.query(AuditEvent)
+        .filter(
+            AuditEvent.entity_type == "invoice",
+            AuditEvent.entity_id == "inv-1",
+            AuditEvent.action == "update",
+        )
+        .one()
+    )
     assert event.actor_type == AuditActorType.user
     assert event.actor_id == str(user.id)
     assert event.metadata_["actor_name"] == "NOC Admin"

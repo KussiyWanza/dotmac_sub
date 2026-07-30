@@ -6,7 +6,7 @@
      x-transition:leave="transition-opacity duration-200"
      x-transition:leave-start="opacity-100"
      x-transition:leave-end="opacity-0"
-     class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 px-4 py-8 backdrop-blur-sm"
+     class="inbox-blocking-overlay fixed inset-0 flex items-center justify-center bg-slate-950/70 px-4 py-8 backdrop-blur-sm"
      @click.self="closeNewConversation()"
      role="presentation">
     <section x-ref="newConversationDialog"
@@ -154,6 +154,21 @@
                               placeholder="Enter one value per line when the approved template requires variables"
                               class="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500"></textarea>
                 </label>
+                <div class="rounded-xl border border-fuchsia-200 bg-fuchsia-50/70 p-3 dark:border-fuchsia-900 dark:bg-fuchsia-950/20"
+                     data-replica-placeholder="whatsapp-template-parameters">
+                    <div class="flex items-center justify-between gap-3">
+                        <p class="text-[11px] font-bold text-fuchsia-800 dark:text-fuchsia-200">Template parameter preview</p>
+                        <span class="text-[9px] font-semibold uppercase text-fuchsia-600">Dummy fields · not submitted</span>
+                    </div>
+                    <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <label class="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Customer name
+                            <input type="text" value="Ada" disabled class="mt-1 h-10 w-full rounded-lg border-fuchsia-200 bg-white text-xs disabled:opacity-80 dark:border-fuchsia-900 dark:bg-slate-900">
+                        </label>
+                        <label class="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Appointment date
+                            <input type="text" value="30 July 2026" disabled class="mt-1 h-10 w-full rounded-lg border-fuchsia-200 bg-white text-xs disabled:opacity-80 dark:border-fuchsia-900 dark:bg-slate-900">
+                        </label>
+                    </div>
+                </div>
             </div>
 
             <div x-show="['facebook_messenger', 'instagram_dm'].includes(newConversation.channel)" x-cloak>
@@ -353,42 +368,26 @@
 </aside>
 {% endif %}
 
-<div x-show="ticketPanelOpen" x-cloak class="fixed inset-0 z-[55] bg-slate-950/40" @click.self="ticketPanelOpen = false">
-    <section x-trap.noscroll="ticketPanelOpen" role="dialog" aria-modal="true" aria-labelledby="ticket-panel-title" class="absolute inset-y-0 right-0 flex w-[min(100vw,480px)] flex-col bg-white shadow-2xl dark:bg-slate-900">
-        <header class="flex items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
-            <div><h2 id="ticket-panel-title" class="font-display text-base font-semibold text-slate-950 dark:text-white">Create support ticket</h2><p class="text-xs text-slate-500">Conversation remains visible behind this panel.</p></div>
-            <button type="button" @click="ticketPanelOpen = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close ticket panel">✕</button>
-        </header>
-        {# Real issuance through communications.conversation_ticket_handoff. A
-           plain form post so it works without JS. The owner derives its replay
-           key from conversation + actor + title, so a double submit replays
-           instead of opening a second ticket. #}
-        <form method="post" :action="`/admin/inbox/${selectedId}/tickets`" class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-            {% include "components/forms/csrf_input.html" %}
-            <label class="block text-xs font-semibold">Title<input name="title" x-model.trim="ticketDraft.title" required maxlength="255" class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
-            <label class="block text-xs font-semibold">Priority<select name="priority" x-model="ticketDraft.priority" class="mt-1 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
-            <label class="block text-xs font-semibold">Description<textarea name="description" x-model.trim="ticketDraft.description" rows="8" class="mt-1 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></textarea></label>
-            <input type="hidden" name="reason" value="Issued from inbox conversation">
-            <p class="text-xs text-slate-500">The ticket inherits this conversation's customer and assigned team. Resolving the conversation stays a separate action.</p>
-            <button type="submit" class="min-h-11 w-full rounded-lg bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600">Create ticket</button>
-        </form>
-    </section>
-</div>
-
-<div x-show="commandPaletteOpen" x-cloak class="fixed inset-0 z-[65] flex items-start justify-center bg-slate-950/55 p-4 pt-[12vh]" @click.self="commandPaletteOpen = false">
-    <section x-trap.noscroll="commandPaletteOpen" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" class="w-full max-w-xl overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+<div x-show="commandPaletteOpen" x-cloak class="inbox-command-overlay fixed inset-0 flex items-start justify-center bg-slate-950/55 p-4" @click.self="commandPaletteOpen = false">
+    <section x-trap.noscroll="commandPaletteOpen" role="dialog" aria-modal="true" aria-labelledby="command-palette-title" class="inbox-command-palette w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
         <h2 id="command-palette-title" class="sr-only">Inbox command palette</h2>
         <label class="flex items-center gap-3 border-b border-slate-200 px-4 dark:border-slate-800"><span aria-hidden="true">⌘</span><input x-ref="commandSearch" x-model="commandQuery" placeholder="Search inbox commands…" class="h-14 w-full border-0 bg-transparent text-sm focus:ring-0 dark:text-white"></label>
-        <div class="max-h-80 overflow-y-auto p-2">
+        <div class="inbox-command-list overflow-y-auto p-2">
             <template x-for="command in filteredCommands()" :key="command.id">
-                <button type="button" @click="runCommand(command.id)" class="flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm font-medium text-slate-700 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-200 dark:hover:bg-slate-800"><span x-text="command.label"></span><kbd class="text-xs text-slate-400" x-text="command.shortcut"></kbd></button>
+                <button type="button" @click="runCommand(command.id)" class="flex min-h-11 w-full items-center justify-between gap-4 rounded-lg px-3 text-left text-sm font-medium text-slate-700 hover:bg-amber-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-200 dark:hover:bg-slate-800">
+                    <span class="min-w-0">
+                        <span class="block truncate" x-text="command.label"></span>
+                        <span class="block truncate text-[11px] font-normal text-slate-400" x-text="command.hint"></span>
+                    </span>
+                    <kbd class="shrink-0 text-xs text-slate-400" x-text="command.shortcut"></kbd>
+                </button>
             </template>
         </div>
     </section>
 </div>
 
-<div x-show="shortcutHelpOpen" x-cloak class="fixed inset-0 z-[65] flex items-center justify-center bg-slate-950/55 p-4" @click.self="shortcutHelpOpen = false">
-    <section x-trap.noscroll="shortcutHelpOpen" role="dialog" aria-modal="true" aria-labelledby="shortcut-help-title" class="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+<div x-show="shortcutHelpOpen" x-cloak class="inbox-shortcut-overlay fixed inset-0 flex items-center justify-center bg-slate-950/55 p-4" @click.self="shortcutHelpOpen = false">
+    <section x-trap.noscroll="shortcutHelpOpen" role="dialog" aria-modal="true" aria-labelledby="shortcut-help-title" class="inbox-shortcut-dialog w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
         <div class="flex items-center justify-between"><h2 id="shortcut-help-title" class="font-display text-lg font-semibold">Keyboard shortcuts</h2><button type="button" @click="shortcutHelpOpen = false" class="h-10 w-10 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close shortcut help">✕</button></div>
         <dl class="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
             <dt><kbd>r</kbd></dt><dd>Focus reply composer</dd><dt><kbd>e</kbd></dt><dd>Resolve conversation</dd><dt><kbd>j / k</kbd></dt><dd>Next / previous conversation</dd><dt><kbd>Ctrl/⌘ K</kbd></dt><dd>Command palette</dd><dt><kbd>?</kbd></dt><dd>Show this help</dd><dt><kbd>Esc</kbd></dt><dd>Close current overlay</dd>

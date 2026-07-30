@@ -211,7 +211,8 @@
         window.__adminSidebarResizeHandler = updateSidebar;
         window.addEventListener('resize', window.__adminSidebarResizeHandler);
      "
-     class="flex h-screen overflow-hidden bg-slate-100 dark:bg-slate-950">
+     class="flex h-dvh overflow-hidden bg-slate-100 dark:bg-slate-950"
+     style="height: 100vh; height: 100dvh;">
     {% set unread_notifications = sidebar_stats.notifications_unread if sidebar_stats is defined and sidebar_stats and sidebar_stats.notifications_unread is defined else 0 %}
 
     <!-- Sidebar -->
@@ -316,7 +317,7 @@
          x-cloak></div>
 
     <!-- Main Content Area -->
-    <div class="flex flex-1 flex-col overflow-hidden">
+    <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
         <!-- Top Navigation -->
         <header x-data="{
                     showTopbarTooltip: false,
@@ -334,7 +335,7 @@
                         this.showTopbarTooltip = false;
                     }
                  }"
-                 class="relative z-40 flex h-16 items-center justify-between border-b border-slate-200/80 bg-white/85 px-4 backdrop-blur-md pointer-events-auto dark:border-slate-700/80 dark:bg-slate-900/80">
+                 class="relative z-40 flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-4 backdrop-blur-md pointer-events-auto dark:border-slate-700/80 dark:bg-slate-900/80">
             <!-- Mobile menu button -->
             <button x-on:click="sidebarOpen = !sidebarOpen"
                     @mouseenter="openTopbarTooltip($el, sidebarOpen ? 'Close navigation' : 'Open navigation')"
@@ -737,7 +738,7 @@
         </header>
 
         <!-- Page Content -->
-        <main class="relative flex-1 {% block main_class %}overflow-y-auto bg-slate-100 dark:bg-slate-950 bg-noise bg-mesh{% endblock %}">
+        <main class="relative min-h-0 flex-1 {% block main_class %}overflow-y-auto bg-slate-100 dark:bg-slate-950 bg-noise bg-mesh{% endblock %}">
             {% block main_body %}
             <div class="pointer-events-none absolute inset-0 overflow-hidden">
                 <div class="absolute -top-24 right-0 h-[420px] w-[420px] rounded-full bg-gradient-to-br from-amber-400/5 to-orange-500/5 blur-3xl dark:from-amber-500/5 dark:to-orange-500/5"></div>

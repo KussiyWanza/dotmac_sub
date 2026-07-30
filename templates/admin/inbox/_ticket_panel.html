@@ -1,0 +1,43 @@
+<section x-show="ticketPanelOpen"
+         x-cloak
+         x-transition:enter="transition duration-200 ease-out"
+         x-transition:enter-start="translate-x-full"
+         x-transition:enter-end="translate-x-0"
+         x-transition:leave="transition duration-150 ease-in"
+         x-transition:leave-start="translate-x-0"
+         x-transition:leave-end="translate-x-full"
+         class="inbox-ticket-panel min-h-0 flex-col border-l border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950"
+         aria-labelledby="ticket-panel-title">
+    <header class="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div>
+            <h2 id="ticket-panel-title" class="font-display text-base font-semibold text-slate-950 dark:text-white">Create support ticket</h2>
+            <p class="text-xs text-slate-500">Keep the conversation visible while recording the issue.</p>
+        </div>
+        <button type="button" @click="ticketPanelOpen = false" class="inline-flex h-10 w-10 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Close ticket panel">×</button>
+    </header>
+    <form method="post" :action="`/admin/inbox/${selectedId}/tickets`" class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+        {% include "components/forms/csrf_input.html" %}
+        <label class="block text-xs font-semibold">Title
+            <input name="title" x-model.trim="ticketDraft.title" required maxlength="255" class="mt-1 h-11 w-full rounded-xl border-slate-300 dark:border-slate-700 dark:bg-slate-900">
+        </label>
+        <label class="block text-xs font-semibold">Priority
+            <select name="priority" x-model="ticketDraft.priority" class="mt-1 h-11 w-full rounded-xl border-slate-300 dark:border-slate-700 dark:bg-slate-900">
+                <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option>
+            </select>
+        </label>
+        <label class="block text-xs font-semibold">Description
+            <textarea name="description" x-model.trim="ticketDraft.description" rows="8" class="mt-1 w-full rounded-xl border-slate-300 dark:border-slate-700 dark:bg-slate-900"></textarea>
+        </label>
+        <input type="hidden" name="reason" value="Issued from inbox conversation">
+        <p class="text-xs leading-5 text-slate-500">The ticket inherits this conversation’s customer and assigned team. Resolving the conversation remains a separate action.</p>
+    </form>
+    <footer class="flex shrink-0 justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-4 dark:border-slate-800 dark:bg-slate-950">
+        <button type="button" @click="ticketPanelOpen = false" class="min-h-11 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">Cancel</button>
+        <button type="button"
+                :disabled="!selectedId || !ticketDraft.title.trim()"
+                @click="$el.closest('section').querySelector('form').requestSubmit()"
+                class="min-h-11 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50">
+            Create ticket
+        </button>
+    </footer>
+</section>

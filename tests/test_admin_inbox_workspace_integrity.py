@@ -15,13 +15,70 @@ from pathlib import Path
 from app.services import team_inbox_projection
 
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
+COMMENT_THREAD = Path("templates/admin/inbox/_comment_thread.html").read_text()
 DRAWER = Path("templates/admin/inbox/_contact_drawer.html").read_text()
+CONTACT_PREVIEW = Path("templates/admin/inbox/_contact_preview.html").read_text()
+FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
+LAYOUT = Path("templates/layouts/admin.html").read_text()
 OVERLAYS = Path("templates/admin/inbox/_overlays.html").read_text()
 QUEUE = Path("templates/admin/inbox/_queue_macros.html").read_text()
 SIDEBAR = Path("templates/admin/inbox/_sidebar.html").read_text()
+TICKET_PANEL = Path("templates/admin/inbox/_ticket_panel.html").read_text()
 JAVASCRIPT = Path("static/js/admin-inbox.js").read_text()
+REPLICA_CSS = Path("static/css/admin-inbox-replica.css").read_text()
 ROUTES = Path("app/web/admin/inbox.py").read_text()
+
+
+# --- Workspace frame -----------------------------------------------------
+
+
+def test_workspace_frame_fills_the_viewport_below_the_admin_topbar():
+    assert 'class="flex h-dvh overflow-hidden' in LAYOUT
+    assert 'style="height: 100vh; height: 100dvh;"' in LAYOUT
+    assert 'class="flex min-w-0 flex-1 flex-col overflow-hidden"' in LAYOUT
+    assert "flex h-16 shrink-0 items-center" in LAYOUT
+    assert '<main class="relative min-h-0 flex-1' in LAYOUT
+
+    wrapper = INDEX.index('id="inbox-content-wrapper"')
+    alpine = INDEX.index('x-data="inboxWorkspace')
+    frame = INDEX.index("flex h-full min-h-0 w-full overflow-hidden rounded-2xl border")
+
+    assert wrapper < alpine < frame
+    assert "inbox-content-wrapper mx-auto h-full min-h-0 w-full max-w-none" in INDEX
+    assert "box-border px-4 py-6 sm:px-6 lg:px-8" in INDEX
+    assert 'class="relative h-full min-h-0 w-full"' in INDEX
+    assert "border-slate-200/60 bg-white" in INDEX
+    assert "dark:border-slate-700/60 dark:bg-slate-900" in INDEX
+    assert "bg-slate-100 bg-noise bg-mesh dark:bg-slate-900" in INDEX
+
+
+def test_crm_replication_surfaces_keep_preview_data_separate_from_live_actions():
+    assert 'href="/static/css/admin-inbox-replica.css' in INDEX
+    assert 'data-replica-placeholder="reply-failure"' in FLOATING_SURFACES
+    assert 'data-replica-placeholder="incoming-whatsapp-call"' in FLOATING_SURFACES
+    assert 'data-replica-placeholder="social-comment-thread"' in COMMENT_THREAD
+    assert 'data-replica-placeholder="rich-crm-contact"' in CONTACT_PREVIEW
+    assert 'data-replica-placeholder="whatsapp-template-parameters"' in OVERLAYS
+    assert "Dummy data" in CONTACT_PREVIEW
+    assert "not connected to the backend" in COMMENT_THREAD
+    assert "crm_preview" in JAVASCRIPT
+
+    assert "inbox-ticket-panel" in TICKET_PANEL
+    assert ':action="`/admin/inbox/${selectedId}/tickets`"' in TICKET_PANEL
+    assert "ticketPanelOpen" not in OVERLAYS
+
+    for contract in (
+        "padding-block: 1.5rem",
+        "padding-inline: 1rem",
+        "@media (min-width: 640px)",
+        "@media (min-width: 1024px)",
+        "width: 30rem",
+        "max-width: 42rem",
+        "max-height: 22rem",
+        "z-index: 200",
+    ):
+        assert contract in REPLICA_CSS
 
 
 # --- Slice 1: read state -------------------------------------------------
