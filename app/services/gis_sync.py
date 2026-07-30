@@ -233,6 +233,9 @@ class GeoSync(ListResponseMixin):
                 existing.location_type = GeoLocationType.pop
                 existing.latitude = pop.latitude
                 existing.longitude = pop.longitude
+                # Spatial reads filter on geom, so a projection carrying only
+                # lat/lon is invisible to the nearby and in-area endpoints.
+                existing.geom = _point_wkt(float(pop.latitude), float(pop.longitude))
                 existing.is_active = pop.is_active
                 result.updated += 1
             else:
@@ -242,6 +245,7 @@ class GeoSync(ListResponseMixin):
                         location_type=GeoLocationType.pop,
                         latitude=pop.latitude,
                         longitude=pop.longitude,
+                        geom=_point_wkt(float(pop.latitude), float(pop.longitude)),
                         pop_site_id=pop.id,
                         is_active=pop.is_active,
                     )
