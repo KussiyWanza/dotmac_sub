@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.sql.elements import ColumnElement
 from starlette.datastructures import FormData
 
+from app.models.gis import GeoArea
 from app.models.network import FdhCabinet, NetworkZone, OntUnit, Splitter
 from app.services import network as network_service
 
@@ -154,10 +155,23 @@ def detail_page_data(db: Session, zone_id: str) -> dict[str, object] | None:
         or 0
     )
 
+    geo_area = (
+        db.get(GeoArea, zone.geo_area_id) if zone.geo_area_id is not None else None
+    )
+    effective = network_service.network_zones.resolve_geo_area(db, zone.id)
+    effective_geo_area = (
+        db.get(GeoArea, effective.geo_area_id)
+        if effective.geo_area_id is not None
+        else None
+    )
+
     return {
         "zone": zone,
         "parent": parent,
         "children": children,
+        "geo_area": geo_area,
+        "effective_geo_resolution": effective,
+        "effective_geo_area": effective_geo_area,
         "infra_stats": {
             "ont_count": ont_count,
             "splitter_count": splitter_count,
@@ -179,9 +193,14 @@ def build_form_context(
     if zone:
         parent_zones = [z for z in parent_zones if z.id != zone.id]
 
+    geo_areas = db.scalars(
+        select(GeoArea).where(GeoArea.is_active.is_(True)).order_by(GeoArea.name)
+    ).all()
+
     context: dict[str, object] = {
         "zone": zone,
         "parent_zones": parent_zones,
+        "geo_areas": geo_areas,
         "action_url": action_url,
     }
     if error:
@@ -218,6 +237,7 @@ def parse_form_values(form: FormData) -> dict[str, object]:
         "name": _form_str(form, "name"),
         "description": _form_str(form, "description") or None,
         "parent_id": _form_str(form, "parent_id") or None,
+        "geo_area_id": _form_str(form, "geo_area_id") or None,
         "latitude": latitude,
         "longitude": longitude,
         "is_active": _form_str(form, "is_active") == "true",
@@ -239,6 +259,7 @@ def create_zone(db: Session, values: dict[str, object]) -> NetworkZone:
         name=str(values["name"]),
         description=str(values["description"]) if values.get("description") else None,
         parent_id=str(values["parent_id"]) if values.get("parent_id") else None,
+        geo_area_id=str(values["geo_area_id"]) if values.get("geo_area_id") else None,
         latitude=values.get("latitude"),  # type: ignore[arg-type]
         longitude=values.get("longitude"),  # type: ignore[arg-type]
         is_active=bool(values.get("is_active", True)),
@@ -255,6 +276,8 @@ def update_zone(db: Session, zone_id: str, values: dict[str, object]) -> Network
         description=str(values["description"]) if values.get("description") else None,
         parent_id=str(parent_id) if parent_id else None,
         clear_parent=not parent_id,
+        geo_area_id=(str(values["geo_area_id"]) if values.get("geo_area_id") else None),
+        clear_geo_area=not values.get("geo_area_id"),
         latitude=values.get("latitude"),  # type: ignore[arg-type]
         longitude=values.get("longitude"),  # type: ignore[arg-type]
         is_active=bool(values.get("is_active", True)),

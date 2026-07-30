@@ -74,6 +74,20 @@
                             {% endif %}
                         </dd>
                     </div>
+                    <div>
+                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Geographic Area</dt>
+                        <dd class="mt-1 text-sm">
+                            {% if geo_area %}
+                            <span class="text-slate-900 dark:text-white">{{ geo_area.name }}</span>
+                            {% elif effective_geo_area %}
+                            <span class="text-slate-900 dark:text-white">{{ effective_geo_area.name }}</span> <span class="text-xs text-slate-400">(inherited)</span>
+                            {% elif effective_geo_resolution and effective_geo_resolution.kind.value == "unavailable" %}
+                            <span class="text-amber-600">Unavailable (stale binding to a retired area)</span>
+                            {% else %}
+                            <span class="text-slate-400">Unbound (global routing applies)</span>
+                            {% endif %}
+                        </dd>
+                    </div>
                     {% if zone.description %}
                     <div class="sm:col-span-2">
                         <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Description</dt>

@@ -58,6 +58,18 @@
                     </div>
 
                     <div>
+                        <label for="geo_area_id" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Geographic Area</label>
+                        <select name="geo_area_id" id="geo_area_id"
+                            class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            <option value="">None (inherit from parent zone)</option>
+                            {% for area in geo_areas %}
+                            <option value="{{ area.id }}" {% if zone and zone.geo_area_id and zone.geo_area_id == area.id %}selected{% endif %}>{{ area.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Typed GeoArea binding used by geo-scoped routing (e.g. outage teams); child zones inherit through the parent chain</p>
+                    </div>
+
+                    <div>
                         <label class="flex items-center gap-2 mt-7">
                             <input type="checkbox" name="is_active" value="true" {% if not zone or zone.is_active %}checked{% endif %}
                                 class="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500">

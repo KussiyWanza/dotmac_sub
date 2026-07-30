@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.project import Project
+from app.models.project import Project, ProjectTask
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
 from app.models.sales import (
     SalesOrderPaymentStatus,
@@ -435,6 +435,109 @@ def test_closed_sales_line_stages_one_bound_provisioning_order(
     # Provisioning consumes this only after implementation verification.
     assert desired_config(ont) == {}
     assert ont.sync_status == OntSyncStatus.synced
+
+
+def test_staged_order_binds_seeded_fiber_activation_gate_task(
+    db_session, catalog_offer
+):
+    subscriber = _make_subscriber(db_session)
+    order = sales_order_service.sales_orders.create(
+        db_session, SalesOrderCreate(subscriber_id=subscriber.id)
+    )
+    line = sales_order_service.sales_order_lines.create(
+        db_session,
+        SalesOrderLineCreate(
+            sales_order_id=order.id,
+            description="Fiber service",
+            metadata_={"sub_offer_id": str(catalog_offer.id)},
+        ),
+    )
+    subscription = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=catalog_offer.id,
+        status=SubscriptionStatus.pending,
+    )
+    order.status = SalesOrderStatus.paid.value
+    db_session.add(subscription)
+    db_session.commit()
+
+    sales_order_service._ensure_provisioning_order_for_sales_line(
+        db_session,
+        sales_order=order,
+        line=line,
+        subscription=subscription,
+    )
+
+    staged = (
+        db_session.query(ServiceOrder)
+        .filter(ServiceOrder.sales_order_line_id == line.id)
+        .one()
+    )
+    project = db_session.get(Project, staged.project_id)
+    assert project.project_type == "fiber_optics_installation"
+    gate_tasks = [
+        task
+        for task in db_session.query(ProjectTask)
+        .filter(
+            ProjectTask.project_id == staged.project_id,
+            ProjectTask.is_active.is_(True),
+        )
+        .all()
+        if (task.metadata_ or {}).get("fiber_stage_key") == "power_splicing_activation"
+    ]
+    assert len(gate_tasks) == 1
+    assert staged.activation_project_task_id == gate_tasks[0].id
+
+
+def test_staged_order_without_stage_tasks_leaves_activation_gate_unbound(
+    db_session, catalog_offer
+):
+    subscriber = _make_subscriber(db_session)
+    order = sales_order_service.sales_orders.create(
+        db_session,
+        SalesOrderCreate(
+            subscriber_id=subscriber.id,
+            metadata_={"project_type": "cross_connect"},
+        ),
+    )
+    line = sales_order_service.sales_order_lines.create(
+        db_session,
+        SalesOrderLineCreate(
+            sales_order_id=order.id,
+            description="Cross connect service",
+            metadata_={"sub_offer_id": str(catalog_offer.id)},
+        ),
+    )
+    subscription = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=catalog_offer.id,
+        status=SubscriptionStatus.pending,
+    )
+    order.status = SalesOrderStatus.paid.value
+    db_session.add(subscription)
+    db_session.commit()
+
+    sales_order_service._ensure_provisioning_order_for_sales_line(
+        db_session,
+        sales_order=order,
+        line=line,
+        subscription=subscription,
+    )
+
+    staged = (
+        db_session.query(ServiceOrder)
+        .filter(ServiceOrder.sales_order_line_id == line.id)
+        .one()
+    )
+    project = db_session.get(Project, staged.project_id)
+    assert project.project_type == "cross_connect"
+    assert (
+        db_session.query(ProjectTask)
+        .filter(ProjectTask.project_id == staged.project_id)
+        .count()
+        == 0
+    )
+    assert staged.activation_project_task_id is None
 
 
 def test_sales_ip_addon_allocates_subscription_scoped_route(
