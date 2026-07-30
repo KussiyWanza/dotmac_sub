@@ -1,0 +1,16 @@
+{% extends "layouts/admin.html" %}
+{% block title %}{{ "Edit" if survey else "New" }} survey{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-3xl space-y-6">
+  <div><a href="/admin/surveys" class="text-sm text-teal-600">← Surveys</a><h1 class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ "Edit survey" if survey else "New survey" }}</h1></div>
+  {% if error %}<div class="rounded-lg bg-rose-50 p-4 text-sm text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ '/admin/surveys/' ~ survey.id if survey else '/admin/surveys' }}" class="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Name</span><input required maxlength="160" name="name" value="{{ survey.name if survey else '' }}" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-white"></label>
+    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Description</span><textarea name="description" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-white">{{ survey.description if survey and survey.description else '' }}</textarea></label>
+    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Questions (JSON)</span><textarea name="questions_json" rows="10" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">{{ survey.questions|tojson if survey and survey.questions else '[{"key":"feedback","label":"How can we improve?","type":"textarea","required":true}]' }}</textarea><span class="mt-1 block text-xs text-slate-500">Supported types: text, textarea, select, radio and checkbox. Select options use an options array.</span></label>
+    {% if survey %}<label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200"><input type="checkbox" name="is_active" {% if survey.is_active %}checked{% endif %}> Accept responses</label>{% endif %}
+    <div class="flex justify-end gap-3"><a href="/admin/surveys" class="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-600 dark:text-slate-200">Cancel</a><button class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">Save survey</button></div>
+  </form>
+</div>
+{% endblock %}

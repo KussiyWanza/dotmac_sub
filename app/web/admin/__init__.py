@@ -40,10 +40,12 @@ from app.web.admin.dispatch_work_orders import router as dispatch_work_orders_ro
 from app.web.admin.drift import router as drift_router
 from app.web.admin.field_maps import router as field_maps_router
 from app.web.admin.gis import router as gis_router
+from app.web.admin.help_center import router as help_center_router
 from app.web.admin.inbox import router as inbox_router
 from app.web.admin.inbox import settings_router as inbox_settings_router
 from app.web.admin.integrations import router as integrations_router
 from app.web.admin.legal import router as legal_router
+from app.web.admin.meta_connection import router as meta_connection_router
 from app.web.admin.nas import router as nas_router
 from app.web.admin.network import router as network_router
 from app.web.admin.network_authorization_presets import (
@@ -104,6 +106,7 @@ from app.web.admin.support_assignment_rules import (
 )
 from app.web.admin.support_automation import router as support_automation_router
 from app.web.admin.support_tickets import router as support_tickets_router
+from app.web.admin.surveys import router as surveys_router
 from app.web.admin.system import router as system_router
 from app.web.admin.system_whats_new import router as system_whats_new_router
 from app.web.admin.usage import legacy_router as usage_legacy_router
@@ -180,6 +183,9 @@ def admin_nas_legacy_path_redirect(path: str):
 
 # Include all admin sub-routers
 router.include_router(dashboard_router)
+router.include_router(help_center_router)
+router.include_router(meta_connection_router)
+router.include_router(surveys_router)
 router.include_router(service_change_reconciliation_router)
 router.include_router(design_system_router)
 router.include_router(dispatch_work_orders_router)

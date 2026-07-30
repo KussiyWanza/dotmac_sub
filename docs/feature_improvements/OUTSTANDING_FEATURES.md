@@ -874,13 +874,13 @@ Unchecked items: 221
 - [ ] Add an in-app help/documentation link from the admin sidebar that opens contextual help for the current page
   - context: `Section 4: legacy BSS Administration | 4.23 Documentation / Knowledge Base`
   - source: `/root/projects/dotmac_sub/docs/feature_improvements/04_administration.md:368`
-- [ ] Create a searchable knowledge base or help center integrated into the admin UI
+- [x] Create a searchable knowledge base or help center integrated into the admin UI
   - context: `Section 4: legacy BSS Administration | 4.23 Documentation / Knowledge Base`
   - source: `/root/projects/dotmac_sub/docs/feature_improvements/04_administration.md:369`
 - [ ] Add "Getting Started" guided setup wizard for new deployments
   - context: `Section 4: legacy BSS Administration | 4.23 Documentation / Knowledge Base`
   - source: `/root/projects/dotmac_sub/docs/feature_improvements/04_administration.md:370`
-- [ ] Include FAQ section accessible from the admin help menu
+- [x] Include FAQ section accessible from the admin help menu
   - context: `Section 4: legacy BSS Administration | 4.23 Documentation / Knowledge Base`
   - source: `/root/projects/dotmac_sub/docs/feature_improvements/04_administration.md:371`
 - [ ] Add contextual help tooltips on complex form fields referencing relevant documentation
