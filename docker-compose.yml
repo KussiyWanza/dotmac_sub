@@ -514,10 +514,12 @@ services:
     # /radius service=login entry must use the same value.
     - ADMIN_RADIUS_SECRET=${ADMIN_RADIUS_SECRET:?ADMIN_RADIUS_SECRET must be set}
   genieacs:
-    build:
-      context: .
-      dockerfile: docker/genieacs/Dockerfile
-    image: dotmac_sub-genieacs:1.2.13
+    # CI-built and pushed by .github/workflows/ghcr.yml — the host pulls it like
+    # every other service. It used to carry `build: context: .`, which was the
+    # last thing on a prod box that needed the application source tree present
+    # (and rebuilt from whatever the host's git tree happened to contain).
+    # Rebuild locally with: make genieacs-build
+    image: ${GENIEACS_IMAGE:-ghcr.io/michaelayoade/dotmac_sub-genieacs:1.2.13}
     container_name: dotmac_sub_genieacs
     restart: unless-stopped
     mem_limit: 2g

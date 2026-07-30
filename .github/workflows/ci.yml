@@ -384,6 +384,27 @@ jobs:
           cache: pip
       - uses: pre-commit/action@v3.0.1
 
+  # Deliberately NOT part of the pre-commit job above.
+  #
+  # pre-commit's detect-private-key hook already existed when a real OpenVPN
+  # server key was committed on 2026-01-26 — the hook fired, and the file was
+  # added to its `exclude:` list rather than the key being removed. The key was
+  # public until 2026-07-27.
+  #
+  # This job re-checks the same property with no path allowlist, keyed on
+  # content instead: a PEM header with no encoded body is a placeholder and
+  # passes; a header with real key material fails. There is no exclude list to
+  # edit, so the only way to green it is to remove the key. Separate job so a
+  # change to .pre-commit-config.yaml cannot disable it.
+  secret-scan:
+    name: Private Key Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan tracked files for private key material
+        run: bash scripts/ci/scan_private_keys.sh
+
   integration-run:
     name: PostgreSQL Gate
     needs: [changes, python-environment]
