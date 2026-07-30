@@ -110,6 +110,7 @@ class PaymentRefundOrigin(enum.Enum):
 
 class PaymentReversalOrigin(enum.Enum):
     manual = "manual"
+    administrative_correction = "administrative_correction"
     provider_event = "provider_event"
 
 
@@ -1285,7 +1286,7 @@ class PaymentRefund(Base):
 
 
 class PaymentReversal(Base):
-    """One completed chargeback/bank reversal with exact monetary evidence."""
+    """One completed removal of settled payment value with exact evidence."""
 
     __tablename__ = "payment_reversals"
     __table_args__ = (

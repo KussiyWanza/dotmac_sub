@@ -12,6 +12,8 @@ request closes only after verification or rejection.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid as uuid_mod
 from collections.abc import Mapping
@@ -30,12 +32,14 @@ from app.models.billing import (
     BillingAccount,
     Invoice,
     InvoiceStatus,
+    Payment,
     PaymentSettlementOrigin,
     PaymentStatus,
     TopupIntent,
 )
 from app.models.payment_proof import (
     PaymentProof,
+    PaymentProofCorrection,
     PaymentProofStatus,
 )
 from app.schemas.audit import AuditEventCreate
@@ -96,6 +100,11 @@ _REJECT_COMMAND = OwnerCommandDefinition(
     owner="financial.payment_proofs",
     concern="payment-proof review lifecycle",
     name="reject_payment_proof",
+)
+_CORRECT_DUPLICATE_COMMAND = OwnerCommandDefinition(
+    owner="financial.payment_proofs",
+    concern="duplicate payment-proof correction lifecycle",
+    name="correct_duplicate_payment_proof",
 )
 
 
@@ -234,6 +243,67 @@ class PaymentProofReviewEligibility:
 
 
 @dataclass(frozen=True, slots=True)
+class DuplicateProofCorrectionCandidate:
+    """Verified proof that can remain as the original settlement evidence."""
+
+    proof_id: UUID
+    payment_id: UUID
+    amount: Decimal
+    currency: str
+    reference: str | None
+    verified_by: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateProofCorrectionPreview:
+    """Exact proof and payment effects requiring operator confirmation."""
+
+    duplicate_proof_id: UUID
+    original_proof_id: UUID
+    duplicate_payment_id: UUID
+    original_payment_id: UUID
+    amount: Decimal
+    currency: str
+    reason: str
+    prepaid_funding_before: Decimal
+    prepaid_funding_after: Decimal
+    account_credit_before: Decimal
+    account_credit_after: Decimal
+    invoice_effect_count: int
+    payment_reversal_fingerprint: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectDuplicatePaymentProofCommand:
+    """Typed administrative evidence for correcting one duplicate verification."""
+
+    duplicate_proof_id: UUID
+    original_proof_id: UUID
+    actor_id: str
+    reason: str
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateProofCorrectionResult:
+    """Durable correction and delegated financial reversal identifiers."""
+
+    correction_id: UUID
+    duplicate_proof_id: UUID
+    original_proof_id: UUID
+    duplicate_payment_id: UUID
+    payment_reversal_id: UUID
+    ledger_entry_id: UUID
+    amount: Decimal
+    currency: str
+    reason: str
+    created_at: datetime
+    idempotent_replay: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DirectTransferProofSubmissionCommand:
     """Typed evidence for one customer direct-transfer proof submission."""
 
@@ -345,6 +415,442 @@ def review_eligibility(
         reject_allowed=True,
         reject_unavailable_reason=None,
     )
+
+
+def get_duplicate_correction(
+    db: Session, proof_id: UUID | str
+) -> PaymentProofCorrection | None:
+    """Return durable correction evidence for a duplicate proof, when present."""
+
+    try:
+        resolved_id = coerce_uuid(str(proof_id))
+    except (TypeError, ValueError):
+        return None
+    return db.scalar(
+        select(PaymentProofCorrection).where(
+            PaymentProofCorrection.duplicate_proof_id == resolved_id
+        )
+    )
+
+
+def duplicate_correction_candidates(
+    db: Session, proof_id: UUID | str
+) -> tuple[DuplicateProofCorrectionCandidate, ...]:
+    """Return plausible original proofs without deciding that receipts match."""
+
+    proof = get_proof(db, str(proof_id))
+    if (
+        proof is None
+        or proof.status is not PaymentProofStatus.verified
+        or proof.account_id is None
+        or proof.billing_account_id is not None
+        or proof.payment_id is None
+        or get_duplicate_correction(db, proof.id) is not None
+    ):
+        return ()
+    amount = round_money(to_decimal(proof.verified_amount or proof.amount))
+    rows = db.scalars(
+        select(PaymentProof)
+        .join(Payment, Payment.id == PaymentProof.payment_id)
+        .where(
+            PaymentProof.id != proof.id,
+            PaymentProof.account_id == proof.account_id,
+            PaymentProof.billing_account_id.is_(None),
+            PaymentProof.status == PaymentProofStatus.verified,
+            PaymentProof.currency == proof.currency,
+            PaymentProof.created_at < proof.created_at,
+            Payment.status.in_(
+                (PaymentStatus.succeeded, PaymentStatus.partially_refunded)
+            ),
+            ~select(PaymentProofCorrection.id)
+            .where(PaymentProofCorrection.duplicate_proof_id == PaymentProof.id)
+            .exists(),
+        )
+        .order_by(PaymentProof.created_at.desc(), PaymentProof.id.desc())
+    ).all()
+    candidates: list[DuplicateProofCorrectionCandidate] = []
+    for candidate in rows:
+        if candidate.payment_id is None:
+            continue
+        candidate_amount = round_money(
+            to_decimal(candidate.verified_amount or candidate.amount)
+        )
+        if candidate_amount != amount:
+            continue
+        candidates.append(
+            DuplicateProofCorrectionCandidate(
+                proof_id=candidate.id,
+                payment_id=candidate.payment_id,
+                amount=candidate_amount,
+                currency=candidate.currency,
+                reference=candidate.reference,
+                verified_by=candidate.verified_by,
+                created_at=candidate.created_at,
+            )
+        )
+    return tuple(candidates)
+
+
+def _normalize_correction_reason(reason: str) -> str:
+    normalized = reason.strip()
+    if len(normalized) < 10:
+        raise _error(
+            "correction_reason_required",
+            "Explain why this verified proof duplicates an earlier payment.",
+            field="reason",
+        )
+    if len(normalized) > 500:
+        raise _error(
+            "correction_reason_too_long",
+            "Correction reason cannot exceed 500 characters.",
+            field="reason",
+        )
+    return normalized
+
+
+def _correction_proofs(
+    db: Session,
+    *,
+    duplicate_proof_id: UUID,
+    original_proof_id: UUID,
+    lock: bool,
+) -> tuple[PaymentProof, PaymentProof]:
+    if duplicate_proof_id == original_proof_id:
+        raise _error(
+            "correction_same_proof",
+            "Select a different verified proof as the original payment evidence.",
+            field="original_proof_id",
+        )
+    statement = (
+        select(PaymentProof)
+        .where(PaymentProof.id.in_((duplicate_proof_id, original_proof_id)))
+        .order_by(PaymentProof.id)
+    )
+    if lock:
+        statement = statement.with_for_update()
+    rows = {proof.id: proof for proof in db.scalars(statement).all()}
+    duplicate = rows.get(duplicate_proof_id)
+    original = rows.get(original_proof_id)
+    if duplicate is None:
+        raise _error(
+            "not_found",
+            "Duplicate payment proof not found.",
+            proof_id=str(duplicate_proof_id),
+        )
+    if original is None:
+        raise _error(
+            "correction_original_not_found",
+            "Original payment proof not found.",
+            field="original_proof_id",
+            proof_id=str(original_proof_id),
+        )
+    return duplicate, original
+
+
+def _validate_correction_pair(
+    db: Session,
+    *,
+    duplicate: PaymentProof,
+    original: PaymentProof,
+) -> tuple[Payment, Payment, Decimal]:
+    existing = get_duplicate_correction(db, duplicate.id)
+    if existing is not None:
+        raise _error(
+            "already_corrected",
+            "This duplicate proof has already been corrected.",
+            correction_id=str(existing.id),
+        )
+    original_correction = get_duplicate_correction(db, original.id)
+    if original_correction is not None:
+        raise _error(
+            "correction_original_was_corrected",
+            "The selected original proof was itself corrected as a duplicate.",
+            field="original_proof_id",
+            correction_id=str(original_correction.id),
+        )
+    for role, proof in (("duplicate", duplicate), ("original", original)):
+        if proof.status is not PaymentProofStatus.verified or proof.payment_id is None:
+            raise _error(
+                f"correction_{role}_not_verified",
+                f"The selected {role} proof must have a linked verified payment.",
+                field="original_proof_id" if role == "original" else None,
+            )
+        if proof.account_id is None or proof.billing_account_id is not None:
+            raise _error(
+                "correction_unsupported_target",
+                "Duplicate correction currently supports subscriber payments only.",
+            )
+    if duplicate.account_id != original.account_id:
+        raise _error(
+            "correction_account_mismatch",
+            "Both proofs must belong to the same subscriber account.",
+            field="original_proof_id",
+        )
+    if duplicate.currency != original.currency:
+        raise _error(
+            "correction_currency_mismatch",
+            "Both proofs must use the same currency.",
+            field="original_proof_id",
+        )
+    duplicate_amount = round_money(
+        to_decimal(duplicate.verified_amount or duplicate.amount)
+    )
+    original_amount = round_money(
+        to_decimal(original.verified_amount or original.amount)
+    )
+    if duplicate_amount != original_amount:
+        raise _error(
+            "correction_amount_mismatch",
+            "Both verified proofs must have the same amount.",
+            field="original_proof_id",
+        )
+    duplicate_payment = db.get(Payment, duplicate.payment_id)
+    original_payment = db.get(Payment, original.payment_id)
+    if duplicate_payment is None or original_payment is None:
+        raise _error(
+            "correction_payment_missing",
+            "Both proofs must retain their linked payment evidence.",
+        )
+    if original_payment.status not in (
+        PaymentStatus.succeeded,
+        PaymentStatus.partially_refunded,
+    ):
+        raise _error(
+            "correction_original_payment_inactive",
+            "The original proof must retain settled payment value.",
+            field="original_proof_id",
+        )
+    from app.services.billing.payments import PaymentReversals
+
+    capability = PaymentReversals.capability(db, str(duplicate_payment.id))
+    if not capability.allowed:
+        raise _error(
+            "correction_reversal_unavailable",
+            capability.reason or "The duplicate payment cannot be reversed.",
+        )
+    return duplicate_payment, original_payment, duplicate_amount
+
+
+def preview_duplicate_correction(
+    db: Session,
+    *,
+    duplicate_proof_id: UUID,
+    original_proof_id: UUID,
+    reason: str,
+) -> DuplicateProofCorrectionPreview:
+    """Preview the exact correction without mutating proof or financial state."""
+
+    normalized_reason = _normalize_correction_reason(reason)
+    duplicate, original = _correction_proofs(
+        db,
+        duplicate_proof_id=duplicate_proof_id,
+        original_proof_id=original_proof_id,
+        lock=False,
+    )
+    duplicate_payment, original_payment, amount = _validate_correction_pair(
+        db,
+        duplicate=duplicate,
+        original=original,
+    )
+    from app.schemas.billing import PaymentReversalPreviewRequest
+    from app.services.billing.payments import PaymentReversals
+
+    reversal = PaymentReversals.preview_administrative_correction(
+        db,
+        str(duplicate_payment.id),
+        PaymentReversalPreviewRequest(reason=normalized_reason),
+    )
+    material = {
+        "duplicate_proof_id": str(duplicate.id),
+        "original_proof_id": str(original.id),
+        "duplicate_payment_id": str(duplicate_payment.id),
+        "original_payment_id": str(original_payment.id),
+        "amount": str(amount),
+        "currency": duplicate.currency,
+        "reason": normalized_reason,
+        "payment_reversal_fingerprint": reversal.fingerprint,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return DuplicateProofCorrectionPreview(
+        duplicate_proof_id=duplicate.id,
+        original_proof_id=original.id,
+        duplicate_payment_id=duplicate_payment.id,
+        original_payment_id=original_payment.id,
+        amount=amount,
+        currency=duplicate.currency,
+        reason=normalized_reason,
+        prepaid_funding_before=reversal.prepaid_funding_before,
+        prepaid_funding_after=reversal.prepaid_funding_after,
+        account_credit_before=reversal.account_credit_before,
+        account_credit_after=reversal.account_credit_after,
+        invoice_effect_count=len(reversal.invoice_effects),
+        payment_reversal_fingerprint=reversal.fingerprint,
+        fingerprint=fingerprint,
+    )
+
+
+def _correction_result(
+    correction: PaymentProofCorrection, *, idempotent_replay: bool
+) -> DuplicateProofCorrectionResult:
+    return DuplicateProofCorrectionResult(
+        correction_id=correction.id,
+        duplicate_proof_id=correction.duplicate_proof_id,
+        original_proof_id=correction.original_proof_id,
+        duplicate_payment_id=correction.duplicate_payment_id,
+        payment_reversal_id=correction.payment_reversal_id,
+        ledger_entry_id=correction.ledger_entry_id,
+        amount=correction.payment_reversal.amount,
+        currency=correction.payment_reversal.currency,
+        reason=correction.reason,
+        created_at=correction.created_at,
+        idempotent_replay=idempotent_replay,
+    )
+
+
+def correct_duplicate_payment_proof(
+    db: Session,
+    *,
+    context: CommandContext,
+    command: CorrectDuplicatePaymentProofCommand,
+) -> DuplicateProofCorrectionResult:
+    """Correct a duplicate verification and delegate money effects atomically."""
+
+    return execute_owner_command(
+        db,
+        definition=_CORRECT_DUPLICATE_COMMAND,
+        context=context,
+        operation=lambda: _correct_duplicate_payment_proof(
+            db,
+            context=context,
+            command=command,
+        ),
+    )
+
+
+def _correct_duplicate_payment_proof(
+    db: Session,
+    *,
+    context: CommandContext,
+    command: CorrectDuplicatePaymentProofCommand,
+) -> DuplicateProofCorrectionResult:
+    idempotency_key = (context.idempotency_key or "").strip()
+    if len(idempotency_key) < 16 or len(idempotency_key) > 120:
+        raise _error(
+            "correction_idempotency_key_required",
+            "Correction idempotency key must contain 16 to 120 characters.",
+        )
+    actor_id = command.actor_id.strip()
+    if not actor_id:
+        raise _error(
+            "correction_actor_required",
+            "Correction actor identity is required.",
+        )
+    replay = db.scalar(
+        select(PaymentProofCorrection).where(
+            PaymentProofCorrection.idempotency_key == idempotency_key
+        )
+    )
+    if replay is not None:
+        if (
+            replay.duplicate_proof_id != command.duplicate_proof_id
+            or replay.original_proof_id != command.original_proof_id
+            or replay.preview_fingerprint != command.preview_fingerprint
+        ):
+            raise _error(
+                "correction_idempotency_conflict",
+                "This idempotency key belongs to different correction evidence.",
+            )
+        return _correction_result(replay, idempotent_replay=True)
+
+    duplicate, original = _correction_proofs(
+        db,
+        duplicate_proof_id=command.duplicate_proof_id,
+        original_proof_id=command.original_proof_id,
+        lock=True,
+    )
+    preview = preview_duplicate_correction(
+        db,
+        duplicate_proof_id=duplicate.id,
+        original_proof_id=original.id,
+        reason=command.reason,
+    )
+    if preview.fingerprint != command.preview_fingerprint:
+        raise _error(
+            "correction_stale_preview",
+            "Proof or financial state changed after preview; review the correction again.",
+        )
+
+    from app.schemas.billing import PaymentReversalRequest
+    from app.services.billing.payments import PaymentReversals
+
+    reversal_result = PaymentReversals.stage_administrative_correction(
+        db,
+        str(preview.duplicate_payment_id),
+        PaymentReversalRequest(
+            reason=preview.reason,
+            preview_fingerprint=preview.payment_reversal_fingerprint,
+            idempotency_key=f"proof-correction-{duplicate.id}",
+        ),
+    )
+    if reversal_result.ledger_entry.id is None:
+        raise _error(
+            "correction_reversal_evidence_missing",
+            "The payment reversal did not produce exact ledger evidence.",
+        )
+    correction = PaymentProofCorrection(
+        duplicate_proof_id=duplicate.id,
+        original_proof_id=original.id,
+        duplicate_payment_id=preview.duplicate_payment_id,
+        payment_reversal_id=reversal_result.reversal.id,
+        ledger_entry_id=reversal_result.ledger_entry.id,
+        actor_id=actor_id,
+        reason=preview.reason,
+        preview_fingerprint=preview.fingerprint,
+        idempotency_key=idempotency_key,
+    )
+    db.add(correction)
+    db.flush()
+    _audit(
+        db,
+        context,
+        action="correct_duplicate_verification",
+        proof=duplicate,
+        actor_id=command.actor_id,
+        metadata={
+            "original_proof_id": str(original.id),
+            "duplicate_payment_id": str(preview.duplicate_payment_id),
+            "original_payment_id": str(preview.original_payment_id),
+            "payment_reversal_id": str(reversal_result.reversal.id),
+            "ledger_entry_id": str(reversal_result.ledger_entry.id),
+            "amount": str(preview.amount),
+            "currency": preview.currency,
+            "reason": preview.reason,
+            "preview_fingerprint": preview.fingerprint,
+        },
+    )
+    emit_event(
+        db,
+        EventType.payment_proof_corrected,
+        {
+            "schema_version": 1,
+            "payment_proof_id": str(duplicate.id),
+            "original_proof_id": str(original.id),
+            "duplicate_payment_id": str(preview.duplicate_payment_id),
+            "payment_reversal_id": str(reversal_result.reversal.id),
+            "ledger_entry_id": str(reversal_result.ledger_entry.id),
+            "amount": str(preview.amount),
+            "currency": preview.currency,
+            "reason": preview.reason,
+            "command_id": str(context.command_id),
+            "correlation_id": str(context.correlation_id),
+        },
+        actor=context.actor,
+        subscriber_id=duplicate.account_id,
+        account_id=duplicate.account_id,
+    )
+    return _correction_result(correction, idempotent_replay=False)
 
 
 def resolve_proof_file(proof: PaymentProof) -> tuple[Path, str]:

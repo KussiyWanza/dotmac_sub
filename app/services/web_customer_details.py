@@ -48,7 +48,11 @@ from app.models.network import (
     OntAssignment,
     SubscriberAdditionalRoute,
 )
-from app.models.payment_proof import PaymentProof, PaymentProofStatus
+from app.models.payment_proof import (
+    PaymentProof,
+    PaymentProofCorrection,
+    PaymentProofStatus,
+)
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
 from app.models.service_extension import ServiceExtensionEntry
 from app.models.subscriber import (
@@ -776,6 +780,7 @@ def _build_admin_billing_workspace(
     if not account_ids:
         return {
             "payment_proofs": [],
+            "payment_proof_corrections_by_proof": {},
             "credit_notes": [],
             "credit_applications": [],
             "service_extensions": [],
@@ -793,6 +798,14 @@ def _build_admin_billing_workspace(
         .order_by(PaymentProof.created_at.desc())
         .limit(10)
         .all()
+    )
+    payment_proof_ids = [proof.id for proof in payment_proofs]
+    payment_proof_corrections = (
+        db.query(PaymentProofCorrection)
+        .filter(PaymentProofCorrection.duplicate_proof_id.in_(payment_proof_ids))
+        .all()
+        if payment_proof_ids
+        else []
     )
     credit_notes = (
         db.query(CreditNote)
@@ -837,6 +850,10 @@ def _build_admin_billing_workspace(
 
     return {
         "payment_proofs": payment_proofs,
+        "payment_proof_corrections_by_proof": {
+            correction.duplicate_proof_id: correction
+            for correction in payment_proof_corrections
+        },
         "credit_notes": credit_notes,
         "credit_applications": credit_applications,
         "service_extensions": service_extensions,

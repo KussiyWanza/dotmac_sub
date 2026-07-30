@@ -6464,6 +6464,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "payment-proof review lifecycle",
                     "proof-backed payment request",
+                    "duplicate payment-proof correction lifecycle",
                     "payment-proof reviewer notification request lifecycle",
                 ),
                 depends_on=(
@@ -6520,6 +6521,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             canonical_writer="financial.payment_proofs",
                         ),
                         ConcernContract(
+                            name="duplicate payment-proof correction lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "payment-proof command context",
+                                "canonical payment-proof record",
+                                "canonical duplicate-proof correction evidence",
+                                "canonical subscriber payment reversal protocol",
+                            ),
+                            canonical_writer="financial.payment_proofs",
+                        ),
+                        ConcernContract(
                             name=(
                                 "payment-proof reviewer notification request lifecycle"
                             ),
@@ -6558,6 +6570,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "locked PaymentProof identity, target, evidence, status, "
                                 "review result, and resulting Payment link"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical duplicate-proof correction evidence",
+                            owner="financial.payment_proofs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "append-only PaymentProofCorrection linking the duplicate "
+                                "and retained original proofs to the exact payment reversal, "
+                                "ledger evidence, actor, reason, preview fingerprint, and "
+                                "idempotency key"
                             ),
                         ),
                         AuthorityInput(
@@ -6610,6 +6633,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical subscriber payment reversal protocol",
+                            owner="financial.payments",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "locked reversal eligibility, exact preview fingerprint, "
+                                "idempotent payment status transition, ledger evidence, "
+                                "invoice consequences, audit, and funding-change event"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="canonical consolidated settlement protocol",
                             owner="financial.consolidated_payments",
                             kind=AuthorityKind.CONTROL_INPUT,
@@ -6649,19 +6682,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Each submit, verify, or reject command starts on a clean "
+                            "Each submit, verify, reject, or duplicate-correction command "
+                            "starts on a clean "
                             "adapter session and commits proof state, any direct-transfer "
                             "intent link or terminal resolution, canonical payment, "
                             "tax-owner WHT source evidence, review work items, audit rows, "
-                            "customer delivery intents, and outbox events exactly once at "
-                            "the public owner boundary."
+                            "customer delivery intents, correction/reversal evidence, and "
+                            "outbox events exactly once at the public owner boundary."
                         ),
                         locking=(
                             "Direct-transfer submission locks the exact TopupIntent before "
                             "creating proof evidence. Review commands select the "
                             "PaymentProof FOR UPDATE before rechecking submitted state, "
                             "then lock the credited subscriber or billing account through "
-                            "its canonical settlement owner."
+                            "its canonical settlement owner. Duplicate correction locks "
+                            "both proof identities in UUID order before the payment owner "
+                            "locks the subscriber and duplicate payment."
                         ),
                         idempotency=(
                             "A locked pending direct-transfer intent accepts one proof "
@@ -6669,6 +6705,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "consolidated-settlement provenance keys bind the resulting "
                             "money movement to the proof identity. Duplicate submitted "
                             "references remain explicit review evidence, not silent replay."
+                            " One correction row is permitted per duplicate proof and per "
+                            "payment reversal; a stable idempotency key replays only the "
+                            "same proof pair and preview fingerprint."
                         ),
                         retries=(
                             "Adapters may retry only after a transient transaction failure. "
@@ -6698,6 +6737,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.payment_proofs.verified_amount_conflict",
                             "financial.payment_proofs.verified_net_exceeds_gross",
                             "financial.payment_proofs.rejection_reason_required",
+                            "financial.payment_proofs.correction_reason_required",
+                            "financial.payment_proofs.correction_reason_too_long",
+                            "financial.payment_proofs.correction_same_proof",
+                            "financial.payment_proofs.correction_original_not_found",
+                            "financial.payment_proofs.already_corrected",
+                            "financial.payment_proofs.correction_original_was_corrected",
+                            "financial.payment_proofs.correction_duplicate_not_verified",
+                            "financial.payment_proofs.correction_original_not_verified",
+                            "financial.payment_proofs.correction_unsupported_target",
+                            "financial.payment_proofs.correction_account_mismatch",
+                            "financial.payment_proofs.correction_currency_mismatch",
+                            "financial.payment_proofs.correction_amount_mismatch",
+                            "financial.payment_proofs.correction_payment_missing",
+                            "financial.payment_proofs.correction_original_payment_inactive",
+                            "financial.payment_proofs.correction_reversal_unavailable",
+                            "financial.payment_proofs.correction_idempotency_key_required",
+                            "financial.payment_proofs.correction_actor_required",
+                            "financial.payment_proofs.correction_idempotency_conflict",
+                            "financial.payment_proofs.correction_stale_preview",
+                            "financial.payment_proofs.correction_reversal_evidence_missing",
                             "financial.payment_proofs.invalid_command_context",
                             "financial.payment_proofs.command_contract_violation",
                             "financial.payment_proofs.nested_owner_command",
@@ -6724,6 +6783,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "payment_proof.submitted",
                             "payment_proof.verified",
                             "payment_proof.rejected",
+                            "payment_proof.corrected",
                             "withholding_tax.receivable_recorded",
                         ),
                         schema_version=1,
@@ -6749,8 +6809,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         verification=(
                             "Submission, direct-transfer intent linkage and terminal "
                             "resolution, duplicate, subscriber settlement, consolidated/WHT, "
-                            "reviewer notification, customer notification, route, locking, "
-                            "rollback, typed-result, and architecture tests."
+                            "reviewer notification, duplicate-correction reversal evidence, "
+                            "customer notification, route, locking, rollback, typed-result, "
+                            "and architecture tests."
                         ),
                         cutover_gate=(
                             "Every API, admin web, customer portal, reseller portal, and "
@@ -6769,6 +6830,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     design_refs=(
                         "docs/SOT_RELATIONSHIP_MAP.md",
                         "docs/designs/SOT_CODING_STANDARDS_REFACTOR.md",
+                        "docs/designs/PAYMENT_PROOF_DUPLICATE_CORRECTION.md",
                     ),
                     test_refs=(
                         "tests/test_payment_proofs.py",
@@ -6776,6 +6838,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_payment_proof_reviewer_notifications.py",
                         "tests/test_reseller_proof_double_credit.py",
                         "tests/test_payment_proof_admin_routes.py",
+                        "tests/test_payment_proof_duplicate_correction.py",
                         "tests/architecture/test_payment_proof_reviewer_notification_ownership.py",
                     ),
                 ),
@@ -30030,6 +30093,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "payment-proof review action visibility",
                     "payment-proof verify and reject form projection",
+                    "payment-proof duplicate-correction action projection",
                     "payment-proof failed-submission presentation",
                     "payment-proof reviewer identity display projection",
                 ),

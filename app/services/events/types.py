@@ -78,6 +78,7 @@ class EventType(enum.Enum):
     payment_proof_submitted = "payment_proof.submitted"
     payment_proof_verified = "payment_proof.verified"
     payment_proof_rejected = "payment_proof.rejected"
+    payment_proof_corrected = "payment_proof.corrected"
     topup_intent_direct_transfer_created = "topup_intent.direct_transfer_created"
     topup_intent_direct_transfer_canceled = "topup_intent.direct_transfer_canceled"
     topup_intent_direct_transfer_submitted = "topup_intent.direct_transfer_submitted"

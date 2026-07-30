@@ -13,13 +13,28 @@
 <div class="relative space-y-8">
 
     {# Header #}
-    {% set st = proof.status.value if proof.status else 'submitted' %}
+    {% set st = 'corrected duplicate' if correction else (proof.status.value if proof.status else 'submitted') %}
     {% if st == 'verified' %}
         {% set badge_variant = "success" %}
-    {% elif st == 'rejected' %}
+    {% elif st in ['rejected', 'corrected duplicate'] %}
         {% set badge_variant = "error" %}
     {% else %}
         {% set badge_variant = "pending" %}
+    {% endif %}
+
+    {% if correction %}
+    <div class="rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900 dark:border-rose-700 dark:bg-rose-900/30 dark:text-rose-200">
+        <p class="font-semibold">Duplicate verification corrected</p>
+        <p class="mt-1">
+            The payment created by this proof was reversed. Original proof
+            <a class="underline" href="/admin/billing/payment-proofs/{{ correction.original_proof_id }}">{{ correction.original_proof_id }}</a>
+            remains the settlement evidence.
+        </p>
+        <p class="mt-1">{{ correction.reason }}</p>
+        <p class="mt-2 font-mono text-xs">
+            Correction {{ correction.id }} · reversal {{ correction.payment_reversal_id }} · ledger {{ correction.ledger_entry_id }}
+        </p>
+    </div>
     {% endif %}
 
     {{ detail_header(
@@ -143,6 +158,14 @@
             {% endif %}
         {% endcall %}
     {% endcall %}
+    {% endif %}
+
+    {% if correction_actions %}
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {% for correction_action in correction_actions %}
+            {{ action_form(correction_action) }}
+        {% endfor %}
+    </div>
     {% endif %}
 
 </div>

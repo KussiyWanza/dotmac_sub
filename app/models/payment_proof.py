@@ -108,6 +108,77 @@ class PaymentProof(Base):
     payment = relationship("Payment")
 
 
+class PaymentProofCorrection(Base):
+    """Append-only evidence that one verified proof duplicated another payment."""
+
+    __tablename__ = "payment_proof_corrections"
+    __table_args__ = (
+        CheckConstraint(
+            "duplicate_proof_id <> original_proof_id",
+            name="ck_payment_proof_corrections_distinct_proofs",
+        ),
+        Index(
+            "uq_payment_proof_corrections_duplicate_proof_id",
+            "duplicate_proof_id",
+            unique=True,
+        ),
+        Index(
+            "uq_payment_proof_corrections_payment_reversal_id",
+            "payment_reversal_id",
+            unique=True,
+        ),
+        Index(
+            "uq_payment_proof_corrections_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    duplicate_proof_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_proofs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    original_proof_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_proofs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    duplicate_payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    payment_reversal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_reversals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ledger_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ledger_entries.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    actor_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    duplicate_proof = relationship("PaymentProof", foreign_keys=[duplicate_proof_id])
+    original_proof = relationship("PaymentProof", foreign_keys=[original_proof_id])
+    duplicate_payment = relationship("Payment", foreign_keys=[duplicate_payment_id])
+    payment_reversal = relationship(
+        "PaymentReversal", foreign_keys=[payment_reversal_id]
+    )
+    ledger_entry = relationship("LedgerEntry", foreign_keys=[ledger_entry_id])
+
+
 class WithholdingTaxRecord(Base):
     """A withholding-tax receivable raised when a reseller pays net of WHT.
 

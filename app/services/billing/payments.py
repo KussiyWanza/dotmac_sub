@@ -5752,7 +5752,14 @@ def _reversal_capability(
             False,
             "Only settled payment value can be reversed",
         )
-    if origin == PaymentReversalOrigin.manual and payment.provider_id is not None:
+    if (
+        origin
+        in (
+            PaymentReversalOrigin.manual,
+            PaymentReversalOrigin.administrative_correction,
+        )
+        and payment.provider_id is not None
+    ):
         return ReversalCapability(
             False,
             "Provider-backed payments require a confirmed provider reversal event",
@@ -5767,7 +5774,10 @@ def _validate_reversal_provider_event(
     origin: PaymentReversalOrigin,
     provider_event_id: UUID | None,
 ) -> PaymentProviderEvent | None:
-    if origin == PaymentReversalOrigin.manual:
+    if origin in (
+        PaymentReversalOrigin.manual,
+        PaymentReversalOrigin.administrative_correction,
+    ):
         if provider_event_id is not None:
             raise HTTPException(
                 status_code=400,
@@ -5982,7 +5992,7 @@ def _stage_reversal_audit(
 
 
 class PaymentReversals:
-    """Canonical chargeback and bank-reversal projection owner."""
+    """Canonical owner for removing settled payment value."""
 
     @staticmethod
     def capability(db: Session, payment_id: str) -> ReversalCapability:
@@ -6002,6 +6012,41 @@ class PaymentReversals:
             raise HTTPException(status_code=404, detail="Payment not found")
         return _build_reversal_preview(
             db, payment, payload, origin=PaymentReversalOrigin.manual
+        )
+
+    @staticmethod
+    def preview_administrative_correction(
+        db: Session,
+        payment_id: str,
+        payload: PaymentReversalPreviewRequest,
+    ) -> PaymentReversalPreview:
+        """Preview a proof-owner correction without claiming a bank reversal."""
+
+        payment = get_by_id(db, Payment, payment_id)
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+        return _build_reversal_preview(
+            db,
+            payment,
+            payload,
+            origin=PaymentReversalOrigin.administrative_correction,
+        )
+
+    @staticmethod
+    def stage_administrative_correction(
+        db: Session,
+        payment_id: str,
+        payload: PaymentReversalRequest,
+    ) -> PaymentReversalResult:
+        """Stage exact correction evidence for a registered coordinator."""
+
+        return PaymentReversals.process_with_evidence(
+            db,
+            payment_id,
+            payload,
+            origin=PaymentReversalOrigin.administrative_correction,
+            commit=False,
+            stage_audit=True,
         )
 
     @staticmethod

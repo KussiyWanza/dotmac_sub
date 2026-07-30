@@ -653,6 +653,7 @@ from app.models.payment_arrangement import (  # noqa: F401
 )
 from app.models.payment_proof import (  # noqa: F401
     PaymentProof,
+    PaymentProofCorrection,
     PaymentProofStatus,
     WithholdingTaxRecord,
     WithholdingTaxStatus,

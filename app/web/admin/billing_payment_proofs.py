@@ -110,10 +110,12 @@ def _detail_response(
     status_code: int = 200,
 ) -> HTMLResponse:
     can_review = has_permission(auth, db, "billing:proof:verify")
+    can_correct = can_review and has_permission(auth, db, "billing:payment:update")
     state = web_payment_proofs_service.detail_data(
         db,
         proof_id=str(proof_id),
         can_review=can_review,
+        can_correct=can_correct,
         submission=submission,
     )
     if not state:
@@ -257,6 +259,112 @@ def payment_proofs_reject(
             status_code=payment_proof_http_status(exc),
         )
     return _redirect(proof_id, message="Proof rejected")
+
+
+def _require_correction_permissions(auth: dict, db: Session) -> None:
+    if not has_permission(auth, db, "billing:payment:update"):
+        raise HTTPException(
+            status_code=403,
+            detail="Payment update permission is required for proof correction.",
+        )
+
+
+@router.post(
+    "/payment-proofs/{proof_id}/duplicate-correction/preview",
+    response_class=HTMLResponse,
+)
+def payment_proof_duplicate_correction_preview(
+    request: Request,
+    proof_id: UUID,
+    original_proof_id: UUID = Form(...),
+    reason: str = Form(..., min_length=10, max_length=500),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:proof:verify")),
+):
+    _require_correction_permissions(auth, db)
+    try:
+        preview = web_payment_proofs_service.preview_duplicate_correction(
+            db,
+            proof_id=proof_id,
+            original_proof_id=original_proof_id,
+            reason=reason,
+        )
+    except DomainError as exc:
+        return _detail_response(
+            request,
+            proof_id,
+            db=db,
+            auth=auth,
+            error=exc.message,
+            status_code=payment_proof_http_status(exc),
+        )
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/billing/payment_proof_duplicate_correction_confirm.html",
+        {
+            "request": request,
+            "preview": preview,
+            "idempotency_key": (
+                f"proof-correction:{proof_id}:{preview.fingerprint[:16]}"
+            ),
+            "active_page": "payment_proofs",
+            "active_menu": "billing",
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+        },
+    )
+
+
+@router.post(
+    "/payment-proofs/{proof_id}/duplicate-correction",
+    response_class=HTMLResponse,
+)
+def payment_proof_duplicate_correction(
+    request: Request,
+    proof_id: UUID,
+    original_proof_id: UUID = Form(...),
+    reason: str = Form(..., min_length=10, max_length=500),
+    preview_fingerprint: str = Form(..., min_length=64, max_length=64),
+    idempotency_key: str = Form(..., min_length=16, max_length=120),
+    db: Session = Depends(get_db),
+    auth: dict = Depends(require_permission("billing:proof:verify")),
+):
+    _require_correction_permissions(auth, db)
+    try:
+        from app.services import payment_proofs
+
+        db_session_adapter.release_read_transaction(db)
+        result = web_payment_proofs_service.correct_duplicate_payment_proof(
+            db,
+            context=_command_context(
+                auth,
+                scope=payment_proofs.REVIEW_SCOPE,
+                reason="Staff corrected a duplicate payment-proof verification",
+                idempotency_key=idempotency_key,
+            ),
+            proof_id=proof_id,
+            original_proof_id=original_proof_id,
+            actor_id=str(auth.get("principal_id")),
+            reason=reason,
+            preview_fingerprint=preview_fingerprint,
+        )
+    except DomainError as exc:
+        return _detail_response(
+            request,
+            proof_id,
+            db=db,
+            auth=auth,
+            error=exc.message,
+            status_code=payment_proof_http_status(exc),
+        )
+    return _redirect(
+        proof_id,
+        message=(
+            "Duplicate verification corrected; payment reversal "
+            f"{result.payment_reversal_id} recorded"
+        ),
+    )
 
 
 def _redirect(

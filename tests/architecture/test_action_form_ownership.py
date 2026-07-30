@@ -15,6 +15,8 @@ def test_payment_proof_template_only_renders_declared_action_forms() -> None:
     assert 'components/forms/action_form.html" import action_form' in template
     assert "{% for review_action in review_actions %}" in template
     assert "{{ action_form(review_action) }}" in template
+    assert "{% for correction_action in correction_actions %}" in template
+    assert "{{ action_form(correction_action) }}" in template
     assert "if st == 'submitted'" not in template
     assert 'name="amount"' not in template
     assert 'name="auto_allocate"' not in template
@@ -65,6 +67,33 @@ def test_payment_proof_projection_delegates_eligibility_to_command_owner() -> No
     assert "PaymentProofStatus" not in route
     assert "proof.verified_by" not in template
     assert "reviewer.display_name" in template
+
+
+def test_duplicate_proof_correction_composes_canonical_financial_owner() -> None:
+    projection = _read("app/services/web_billing_payment_proofs.py")
+    command_owner = _read("app/services/payment_proofs.py")
+    route = _read("app/web/admin/billing_payment_proofs.py")
+    confirmation = _read(
+        "templates/admin/billing/payment_proof_duplicate_correction_confirm.html"
+    )
+    model = _read("app/models/payment_proof.py")
+
+    assert "duplicate_correction_candidates(" in projection
+    assert "preview_duplicate_correction(" in projection
+    assert "correct_duplicate_payment_proof(" in projection
+    assert "execute_owner_command(" in command_owner
+    assert "PaymentReversals.stage_administrative_correction(" in command_owner
+    assert "PaymentReversals.process_with_evidence(" not in command_owner
+    assert "PaymentProofCorrection(" in command_owner
+    assert "class PaymentProofCorrection" in model
+    assert 'has_permission(auth, db, "billing:payment:update")' in route
+    assert "preview_fingerprint" in route
+    assert "idempotency_key" in route
+    assert "Exact financial impact" in confirmation
+    assert "account_credit_before" in confirmation
+    assert "account_credit_after" in confirmation
+    assert "payment.status =" not in route
+    assert "LedgerEntry(" not in route
 
 
 def test_checked_in_sources_name_action_form_owner_and_migration() -> None:

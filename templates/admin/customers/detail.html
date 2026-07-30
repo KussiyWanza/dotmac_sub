@@ -896,6 +896,7 @@
         {% set billing_workspace = billing_workspace | default({}) %}
         {% set billing_counts = billing_workspace.billing_workspace_counts | default({}) %}
         {% set payment_proofs = billing_workspace.payment_proofs | default([]) %}
+        {% set payment_proof_corrections = billing_workspace.payment_proof_corrections_by_proof | default({}) %}
         {% set credit_notes = billing_workspace.credit_notes | default([]) %}
         {% set credit_applications = billing_workspace.credit_applications | default([]) %}
         {% set service_extension_entries = billing_workspace.service_extensions | default([]) %}
@@ -1109,7 +1110,8 @@
                     </thead>
                     <tbody class="divide-y divide-slate-100 dark:divide-slate-700">
                         {% for proof in payment_proofs %}
-                        {% set proof_status = proof.status.value if proof.status else 'submitted' %}
+                        {% set proof_correction = payment_proof_corrections.get(proof.id) %}
+                        {% set proof_status = 'corrected duplicate' if proof_correction else (proof.status.value if proof.status else 'submitted') %}
                         <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/30">
                             <td class="px-5 py-3">
                                 <a href="/admin/billing/payment-proofs/{{ proof.id }}" class="text-sm font-semibold text-slate-900 hover:text-amber-600 dark:text-white dark:hover:text-amber-400">{{ proof.reference or (proof.id|string)[:8]|upper }}</a>
@@ -1117,7 +1119,10 @@
                             </td>
                             <td class="px-5 py-3 text-sm text-slate-600 dark:text-slate-300">{{ proof.bank_name or 'N/A' }}</td>
                             <td class="px-5 py-3 text-sm text-slate-500 dark:text-slate-400">{{ proof.created_at | app_datetime('%b %d, %Y', 'N/A', include_tz=False) }}</td>
-                            <td class="px-5 py-3 text-sm text-slate-600 dark:text-slate-300">{{ proof_status | title }}</td>
+                            <td class="px-5 py-3 text-sm text-slate-600 dark:text-slate-300">
+                                {{ proof_status | title }}
+                                {% if proof_correction %}<p class="text-xs text-rose-600 dark:text-rose-400">Payment reversed</p>{% endif %}
+                            </td>
                             <td class="px-5 py-3 text-right text-sm font-bold tabular-nums text-slate-900 dark:text-white">{{ proof.currency }} {{ '{:,.2f}'.format(proof.amount | default(0)) }}</td>
                         </tr>
                         {% endfor %}
