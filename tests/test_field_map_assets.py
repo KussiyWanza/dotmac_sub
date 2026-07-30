@@ -250,6 +250,16 @@ def test_update_map_asset_location_force_and_revert(db_session):
 
 def test_map_assets_api(db_session):
     user = _user(db_session)
+    # Plant writes are field work: the caller must resolve to a technician.
+    db_session.add(
+        TechnicianProfile(
+            person_id=user.id,
+            system_user_id=user.id,
+            title="Installer",
+            is_active=True,
+        )
+    )
+    db_session.flush()
     fdh, *_ = _seed_assets(db_session)
 
     app = FastAPI()
@@ -290,6 +300,36 @@ def test_map_assets_api(db_session):
     )
     assert reverted.status_code == 200
     assert reverted.json()["latitude"] == 9.071
+
+
+def test_plant_relocation_refuses_a_principal_who_is_not_field_staff(db_session):
+    """A merely authenticated principal must not move shared plant.
+
+    The caller here has no technician profile and no vendor membership, which
+    is what an ordinary portal or reseller session looks like.
+    """
+
+    user = _user(db_session)
+    fdh, *_ = _seed_assets(db_session)
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[get_db] = lambda: db_session
+    app.dependency_overrides[require_user_auth] = lambda: _auth(user)
+    client = TestClient(app)
+
+    refused = client.patch(
+        f"/api/v1/field/map-assets/fdh_cabinet/{fdh.id}/location",
+        json={"latitude": 9.081, "longitude": 7.462, "source": "manual"},
+    )
+    reverted = client.post(
+        f"/api/v1/field/map-assets/fdh_cabinet/{fdh.id}/revert-location"
+    )
+
+    assert refused.status_code == 403
+    assert reverted.status_code == 403
+    db_session.refresh(fdh)
+    assert float(fdh.latitude) == 9.071
 
 
 def test_map_search_finds_scoped_jobs_then_assets(db_session):
