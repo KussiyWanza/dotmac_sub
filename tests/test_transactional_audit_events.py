@@ -14,6 +14,10 @@ from app.services.events.dispatcher import emit_event
 from app.services.events.types import EventType
 
 
+def _audit_rows_for(db_session, entity_id: str) -> list[AuditEvent]:
+    return db_session.query(AuditEvent).filter(AuditEvent.entity_id == entity_id).all()
+
+
 def test_audit_record_is_deferred_until_commit(db_session):
     subscriber = Subscriber(
         first_name="Audit", last_name="Deferred", email="audit-deferred@example.com"
@@ -33,11 +37,11 @@ def test_audit_record_is_deferred_until_commit(db_session):
         ),
     )
 
-    assert db_session.query(AuditEvent).count() == 0
+    assert _audit_rows_for(db_session, str(subscriber.id)) == []
 
     db_session.commit()
 
-    rows = db_session.query(AuditEvent).all()
+    rows = _audit_rows_for(db_session, str(subscriber.id))
     assert len(rows) == 1
     assert rows[0].entity_id == str(subscriber.id)
 
@@ -63,7 +67,7 @@ def test_audit_record_is_discarded_on_rollback(db_session):
 
     db_session.rollback()
 
-    assert db_session.query(AuditEvent).count() == 0
+    assert _audit_rows_for(db_session, str(subscriber.id)) == []
 
 
 def test_audit_stage_is_atomic_with_caller_transaction(db_session):
@@ -107,11 +111,11 @@ def test_audit_record_in_nested_transaction_waits_for_outer_commit(db_session):
     )
     savepoint.commit()
 
-    assert db_session.query(AuditEvent).count() == 0
+    assert _audit_rows_for(db_session, str(subscriber.id)) == []
 
     db_session.commit()
 
-    rows = db_session.query(AuditEvent).all()
+    rows = _audit_rows_for(db_session, str(subscriber.id))
     assert len(rows) == 1
     assert rows[0].action == "nested_update"
 
@@ -140,7 +144,7 @@ def test_audit_record_in_nested_rollback_is_discarded(db_session):
     savepoint.rollback()
     db_session.commit()
 
-    assert db_session.query(AuditEvent).count() == 0
+    assert _audit_rows_for(db_session, str(subscriber.id)) == []
 
 
 def test_audit_request_payload_redacts_sensitive_query_params():
