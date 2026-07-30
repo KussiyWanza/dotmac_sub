@@ -6,6 +6,8 @@ import ast
 import re
 from pathlib import Path
 
+from tests.architecture.source_index import python_ast, python_files, source_text
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = PROJECT_ROOT / "app"
 
@@ -60,7 +62,7 @@ BULK_STATUS_POLL_ORIGINATORS = {
 
 
 def _iter_app_python_files() -> list[Path]:
-    return sorted(path for path in APP_DIR.rglob("*.py") if path.is_file())
+    return list(python_files(APP_DIR))
 
 
 def _violations(pattern: re.Pattern[str], approved: set[Path]) -> list[str]:
@@ -69,7 +71,7 @@ def _violations(pattern: re.Pattern[str], approved: set[Path]) -> list[str]:
         rel = path.relative_to(PROJECT_ROOT)
         if rel in approved:
             continue
-        text = path.read_text(encoding="utf-8")
+        text = source_text(path)
         for match in pattern.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
             violations.append(f"{rel}:{line}")
@@ -82,7 +84,7 @@ def _attribute_violations(attr_name: str, approved: set[Path]) -> list[str]:
         rel = path.relative_to(PROJECT_ROOT)
         if rel in approved:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(rel))
+        tree = python_ast(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr == attr_name:
                 violations.append(f"{rel}:{node.lineno}")
@@ -95,7 +97,7 @@ def _call_violations(function_name: str, approved: set[Path]) -> list[str]:
         rel = path.relative_to(PROJECT_ROOT)
         if rel in approved:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(rel))
+        tree = python_ast(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -149,10 +151,7 @@ def test_bulk_ont_status_poll_originators_use_runtime_status_owner() -> None:
     forbidden = {"enqueue_task", "delay", "apply_async", "send_task"}
     violations: list[str] = []
     for relative in BULK_STATUS_POLL_ORIGINATORS:
-        tree = ast.parse(
-            (PROJECT_ROOT / relative).read_text(encoding="utf-8"),
-            filename=str(relative),
-        )
+        tree = python_ast(PROJECT_ROOT / relative)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

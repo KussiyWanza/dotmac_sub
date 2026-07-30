@@ -45,6 +45,39 @@ USER_TYPE_LABELS = {key: label for key, label in USER_LIST_TYPE_OPTIONS}
 USER_DOCTYPE = "User"
 
 
+def customer_experience_user_options(db: Session) -> list[dict[str, str]]:
+    """Return active users granted the canonical Customer Experience role."""
+
+    normalized_role = func.replace(
+        func.replace(func.lower(func.trim(Role.name)), "_", " "), "-", " "
+    )
+    rows = (
+        db.query(SystemUser)
+        .join(SystemUserRole, SystemUserRole.system_user_id == SystemUser.id)
+        .join(Role, Role.id == SystemUserRole.role_id)
+        .filter(
+            SystemUser.is_active.is_(True),
+            Role.is_active.is_(True),
+            normalized_role == "customer experience",
+        )
+        .distinct()
+        .order_by(SystemUser.first_name.asc(), SystemUser.last_name.asc())
+        .all()
+    )
+    return [
+        {
+            "id": str(user.id),
+            "name": (
+                (user.display_name or "").strip()
+                or f"{user.first_name} {user.last_name}".strip()
+                or user.email
+            ),
+            "email": user.email or "",
+        }
+        for user in rows
+    ]
+
+
 def _labels_by_uuid(db: Session, model, label_attr: str, ids: set[str]) -> list[str]:
     values: list[UUID] = []
     for item in ids:

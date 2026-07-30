@@ -1,9 +1,9 @@
 """Native sales kanban API ported from CRM (``/leads/kanban…``).
 
-Ported from ``dotmac_crm/app/api/sales.py``. Only the kanban endpoints move
-in this capability: the reporting endpoints (pipeline-summary / forecast /
-agent-performance) depend on ``services/crm/reports.py`` and the future
-native agent model, so they remain outside this API's ownership boundary.
+Ported from ``dotmac_crm/app/api/sales.py``. Only the kanban endpoints are
+public API operations in this capability. Native dashboard reporting is owned
+by ``app.services.sales.reports`` and consumed by the server-rendered admin
+surface; no CRM reporting fallback or parallel API calculation exists.
 """
 
 from fastapi import APIRouter, Depends, Query

@@ -92,11 +92,13 @@ def test_force_authorize_route_runs_synchronously(
 
     captured: dict[str, object] = {}
 
-    def _fake_enqueue(_task_name, *, kwargs, **_dispatch_kwargs):
+    def _fake_request(_db, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(queued=True)
+        return SimpleNamespace(accepted=True)
 
-    monkeypatch.setattr(network_olts_inventory, "enqueue_task", _fake_enqueue)
+    monkeypatch.setattr(
+        network_olts_inventory, "request_ont_authorization", _fake_request
+    )
     monkeypatch.setattr(
         network_olts_inventory,
         "_authorization_detail_redirect_url",
@@ -155,11 +157,13 @@ def test_normal_authorize_route_runs_synchronously(
 
     captured: dict[str, object] = {}
 
-    def _fake_enqueue(_task_name, *, kwargs, **_dispatch_kwargs):
+    def _fake_request(_db, **kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(queued=True)
+        return SimpleNamespace(accepted=True)
 
-    monkeypatch.setattr(network_olts_inventory, "enqueue_task", _fake_enqueue)
+    monkeypatch.setattr(
+        network_olts_inventory, "request_ont_authorization", _fake_request
+    )
     monkeypatch.setattr(
         network_olts_inventory,
         "_authorization_detail_redirect_url",

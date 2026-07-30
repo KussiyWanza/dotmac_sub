@@ -3,33 +3,35 @@
 Native admin-sales port: the context builders behind
 ``app/web/admin/sales.py``, adapted from the CRM's
 ``services/crm/web_{leads,sales,quotes}.py`` and the sales-order slices of
-``web/admin/operations.py`` onto sub's context-builder idiom
-(``web_support_tickets`` pattern). Everything reads/writes through the merged
-native managers in ``app.services.sales`` / ``app.services.sales_orders`` —
-no queries in the routes.
+``web/admin/operations.py`` onto Sub's context-builder idiom
+(``web_support_tickets`` pattern). Everything reads/writes through the native
+owners in ``app.services.sales`` / ``app.services.sales_orders``; routes remain
+transport adapters.
 
-CRM → sub adaptations:
+CRM-compatible Selfcare adaptations:
 
-* ``person_id`` contacts become ``subscriber_id`` subscribers (§1.3–§1.5);
-  contact labels resolve from the batched subscriber map.
+* Person/contact searches select existing ``subscriber_id`` identity records;
+  contact labels resolve from batched Party and Subscriber projections.
 * Status columns are plain strings in Sub, so
   no ``.value`` handling anywhere.
-* CRM agents are not native — owner columns render as raw UUID
-  short-codes until the agent model lands.
-* List totals come from count queries instead of the CRM's
-  ``limit=10000`` re-list trick.
+* Lead owners are native active service-team agents.
+* List totals and KPI values come from the authoritative sales query owner.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 from uuid import UUID
 
 from sqlalchemy import String, case, cast, func, or_
 from sqlalchemy.orm import Session
 
+from app.models.field_material import FieldInventoryItem
+from app.models.party import Party, PartyContactPoint
+from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
     LeadStatus,
@@ -43,6 +45,8 @@ from app.models.sales import (
 )
 from app.models.subscriber import Subscriber
 from app.schemas.sales import (
+    LeadCreate,
+    LeadUpdate,
     PipelineCreate,
     PipelineStageCreate,
     PipelineStageUpdate,
@@ -51,8 +55,15 @@ from app.schemas.sales import (
     QuoteLineItemCreate,
     QuoteUpdate,
 )
+from app.schemas.sales_order import (
+    SalesOrderCreate,
+    SalesOrderLineCreate,
+    SalesOrderLineUpdate,
+    SalesOrderUpdate,
+)
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_orders_service
+from app.services import web_catalog_subscriptions, web_system_users
 from app.services.common import coerce_uuid
 from app.services.list_query import (
     ListDefinition,
@@ -60,21 +71,152 @@ from app.services.list_query import (
     PageMeta,
     request_needs_canonicalization,
 )
+from app.services.sales import pipeline_configuration
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
+from app.services.team_inbox_projection import list_agent_options
 
 # The CRM's recommended default stage set, seeded when "create default
 # stages" is ticked on the new-pipeline form (web_sales.py port).
 DEFAULT_PIPELINE_STAGES: list[dict[str, int | str]] = [
-    {"name": "Lead Identified", "probability": 10},
-    {"name": "Qualification Call Completed", "probability": 20},
-    {"name": "Needs Assessment / Demo", "probability": 35},
-    {"name": "Proposal Sent", "probability": 50},
-    {"name": "Commercial Negotiation", "probability": 70},
-    {"name": "Decision Pending", "probability": 85},
-    {"name": "Closed Won", "probability": 100},
-    {"name": "Closed Lost", "probability": 0},
+    {
+        "name": "Lead Identified",
+        "probability": 10,
+        "stage_type": "standard",
+        "color": "#0EA5E9",
+        "icon": "target",
+    },
+    {
+        "name": "Qualification Call Completed",
+        "probability": 20,
+        "stage_type": "standard",
+        "color": "#6366F1",
+        "icon": "circle",
+    },
+    {
+        "name": "Needs Assessment / Demo",
+        "probability": 35,
+        "stage_type": "standard",
+        "color": "#8B5CF6",
+        "icon": "document",
+    },
+    {
+        "name": "Proposal Sent",
+        "probability": 50,
+        "stage_type": "standard",
+        "color": "#D946EF",
+        "icon": "document",
+    },
+    {
+        "name": "Commercial Negotiation",
+        "probability": 70,
+        "stage_type": "standard",
+        "color": "#F59E0B",
+        "icon": "handshake",
+    },
+    {
+        "name": "Decision Pending",
+        "probability": 85,
+        "stage_type": "standard",
+        "color": "#F97316",
+        "icon": "clock",
+    },
+    {
+        "name": "Closed Won",
+        "probability": 100,
+        "stage_type": "closed_won",
+        "color": "#10B981",
+        "icon": "check",
+    },
+    {
+        "name": "Closed Lost",
+        "probability": 0,
+        "stage_type": "closed_lost",
+        "color": "#EF4444",
+        "icon": "close",
+    },
 ]
+
+LOST_REASON_OPTIONS = (
+    "Price too high",
+    "Competitor chosen",
+    "No budget",
+    "Project cancelled",
+    "No response",
+    "Timing not right",
+    "Other",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class LeadContactView:
+    name: str
+    email: str
+    phone: str
+    subscriber_id: UUID | None
+    party_id: UUID | None
+    detail_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LeadFormFields:
+    title: str
+    status: str
+    subscriber_id: str
+    contact_label: str
+    owner_agent_id: str
+    pipeline_id: str
+    stage_id: str
+    lead_source: str
+    region: str
+    estimated_value: str
+    currency: str
+    address: str
+    probability: str
+    expected_close_date: str
+    lost_reason: str
+    notes: str
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedLeadForm:
+    title: str
+    status: LeadStatus
+    subscriber_id: UUID | None
+    owner_agent_id: UUID | None
+    pipeline_id: UUID | None
+    stage_id: UUID | None
+    lead_source: str | None
+    region: str | None
+    estimated_value: Decimal | None
+    currency: str | None
+    address: str | None
+    probability: int | None
+    expected_close_date: date | None
+    lost_reason: str | None
+    notes: str | None
+    is_active: bool
+
+
+class LeadFormValidationError(ValueError):
+    def __init__(self, field_errors: dict[str, str]):
+        super().__init__("Please correct the highlighted fields.")
+        self.field_errors = field_errors
+
+
+PIPELINE_SETTINGS_NOTICES: dict[str, tuple[str, str]] = {
+    "pipeline_updated": ("Pipeline updated.", "success"),
+    "pipeline_activated": ("Pipeline activated.", "success"),
+    "pipeline_deactivated": ("Pipeline deactivated.", "success"),
+    "stage_created": ("Stage created.", "success"),
+    "stage_updated": ("Stage updated.", "success"),
+    "stage_activated": ("Stage activated.", "success"),
+    "stage_deactivated": ("Stage deactivated.", "success"),
+    "stages_reordered": ("Stage order updated.", "success"),
+    "bulk_assigned": ("Bulk assignment complete.", "success"),
+    "operation_failed": ("Operation failed. Please try again.", "error"),
+}
 
 _OPEN_LEAD_STATUSES = {
     LeadStatus.new.value,
@@ -106,6 +248,7 @@ LEAD_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("lead_source", "Source", filterable=True),
         ListFieldDefinition("pipeline_id", "Pipeline", filterable=True),
         ListFieldDefinition("stage_id", "Stage", filterable=True),
+        ListFieldDefinition("owner_agent_id", "Owner", filterable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
         ListFieldDefinition("updated_at", "Updated", sortable=True),
     ),
@@ -137,6 +280,11 @@ SALES_ORDER_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("payment_status", "Payment", filterable=True),
         ListFieldDefinition("source_type", "Source", filterable=True),
+        ListFieldDefinition("owner_agent_id", "Sales agent", filterable=True),
+        ListFieldDefinition("lead_source", "Lead source", filterable=True),
+        ListFieldDefinition("period", "Period", filterable=True),
+        ListFieldDefinition("from_date", "From date", filterable=True),
+        ListFieldDefinition("to_date", "To date", filterable=True),
         ListFieldDefinition("total", "Total", sortable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
@@ -221,11 +369,14 @@ def _sales_options(db: Session) -> dict[str, Any]:
         limit=1000,
         offset=0,
     )
+    agents = list_agent_options(db)
     return {
         "pipelines": pipelines,
         "stages": stages,
+        "agents": agents,
         "pipeline_map": {str(item.id): item for item in pipelines},
         "stage_map": {str(item.id): item for item in stages},
+        "agent_map": {str(item.id): item for item in agents},
     }
 
 
@@ -234,84 +385,96 @@ def _sales_options(db: Session) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _apply_lead_search(query, search: str):
-    pattern = f"%{search.strip()}%"
-    if pattern == "%%":
-        return query
-    full_name = func.trim(
-        func.coalesce(Subscriber.first_name, "")
-        + " "
-        + func.coalesce(Subscriber.last_name, "")
-    )
-    return query.outerjoin(Subscriber, Subscriber.id == Lead.subscriber_id).filter(
-        or_(
-            Lead.title.ilike(pattern),
-            Subscriber.display_name.ilike(pattern),
-            full_name.ilike(pattern),
-            Subscriber.first_name.ilike(pattern),
-            Subscriber.last_name.ilike(pattern),
-            Subscriber.email.ilike(pattern),
-            Subscriber.phone.ilike(pattern),
-        )
-    )
-
-
 def _count_leads(
     db: Session,
     *,
     status: str | None,
     pipeline_id: str | None,
     stage_id: str | None,
+    owner_agent_id: str | None,
     lead_source: str | None,
     search: str | None,
 ) -> int:
-    query = db.query(func.count(Lead.id)).select_from(Lead)
-    query = query.filter(Lead.is_active.is_(True))
-    if status:
-        query = query.filter(Lead.status == status)
-    if pipeline_id:
-        query = query.filter(Lead.pipeline_id == coerce_uuid(pipeline_id))
-    if stage_id:
-        query = query.filter(Lead.stage_id == coerce_uuid(stage_id))
-    if lead_source:
-        query = query.filter(
-            func.lower(Lead.lead_source) == lead_source.strip().lower()
-        )
-    if search:
-        query = _apply_lead_search(query, search)
-    return int(query.scalar() or 0)
+    return sales_service.leads.count(
+        db,
+        status=status,
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        owner_agent_id=owner_agent_id,
+        lead_source=lead_source,
+        search=search,
+    )
 
 
 def _lead_stats(db: Session) -> dict[str, Any]:
-    """Status counts + open-pipeline value across all active leads. Won/lost
-    leads are excluded from the pipeline value (CRM BUG-030 fix carried)."""
-    rows = (
-        db.query(
-            Lead.status,
-            func.count(Lead.id),
-            func.coalesce(func.sum(Lead.estimated_value), 0),
-        )
-        .filter(Lead.is_active.is_(True))
-        .group_by(Lead.status)
-        .all()
-    )
-    by_status: dict[str, int] = {}
-    total = 0
-    total_value = Decimal("0")
-    for status_value, count, value_sum in rows:
-        key = status_value or LeadStatus.new.value
-        by_status[key] = by_status.get(key, 0) + int(count)
-        total += int(count)
-        if key in _OPEN_LEAD_STATUSES:
-            total_value += Decimal(str(value_sum or 0))
-    open_count = sum(by_status.get(key, 0) for key in _OPEN_LEAD_STATUSES)
+    summary = sales_service.leads.summary(db)
     return {
-        "total": total,
-        "by_status": by_status,
-        "open": open_count,
-        "won": by_status.get(LeadStatus.won.value, 0),
-        "total_value": total_value,
+        "total": summary.total_leads,
+        "open": summary.open_leads,
+        "won": summary.won_leads,
+        "total_value": summary.pipeline_value,
+        "currency": summary.currency,
     }
+
+
+def _lead_contact_views(
+    db: Session, leads: list[Lead]
+) -> tuple[dict[str, LeadContactView], dict[str, Subscriber]]:
+    subscriber_map = _subscriber_map(db, [lead.subscriber_id for lead in leads])
+    party_ids = {lead.party_id for lead in leads if lead.party_id is not None}
+    parties = db.query(Party).filter(Party.id.in_(party_ids)).all() if party_ids else []
+    party_map = {party.id: party for party in parties}
+    contact_points = (
+        db.query(PartyContactPoint)
+        .filter(PartyContactPoint.party_id.in_(party_ids))
+        .filter(PartyContactPoint.is_active.is_(True))
+        .filter(PartyContactPoint.channel_type.in_(("email", "phone")))
+        .order_by(
+            PartyContactPoint.is_primary.desc(),
+            PartyContactPoint.created_at.asc(),
+        )
+        .all()
+        if party_ids
+        else []
+    )
+    points_by_party: dict[UUID, dict[str, str]] = {}
+    for point in contact_points:
+        party_points = points_by_party.setdefault(point.party_id, {})
+        party_points.setdefault(
+            point.channel_type, point.display_value or point.normalized_value
+        )
+
+    views: dict[str, LeadContactView] = {}
+    for lead in leads:
+        subscriber = subscriber_map.get(str(lead.subscriber_id))
+        party = party_map.get(lead.party_id) if lead.party_id else None
+        party_points = points_by_party.get(lead.party_id, {}) if lead.party_id else {}
+        name = (
+            party.display_name
+            if party is not None
+            else subscriber_label(subscriber) or "Contact unavailable"
+        )
+        views[str(lead.id)] = LeadContactView(
+            name=name,
+            email=(
+                party_points.get("email")
+                or (subscriber.email if subscriber else "")
+                or ""
+            ),
+            phone=(
+                party_points.get("phone")
+                or (subscriber.phone if subscriber else "")
+                or ""
+            ),
+            subscriber_id=subscriber.id if subscriber is not None else None,
+            party_id=lead.party_id,
+            detail_url=(
+                f"/admin/customers/person/{subscriber.id}"
+                if subscriber is not None
+                else None
+            ),
+        )
+    return views, subscriber_map
 
 
 def build_leads_list_context(
@@ -326,16 +489,32 @@ def build_leads_list_context(
     sort_dir: str | None = None,
     page: int,
     per_page: int,
+    owner_agent_id: str | None = None,
 ) -> dict[str, Any]:
     requested_status = status
     requested_pipeline_id = pipeline_id
     requested_stage_id = stage_id
+    requested_owner_agent_id = owner_agent_id
     requested_lead_source = lead_source
     status = _clean_choice(status, lead_status_values())
     pipeline_id = _clean_uuid(pipeline_id)
     stage_id = _clean_uuid(stage_id)
+    owner_agent_id = _clean_uuid(owner_agent_id)
     lead_source_options = list(sales_service.LEAD_SOURCE_OPTIONS)
     lead_source = _clean_choice(lead_source, lead_source_options)
+    options = _sales_options(db)
+    selected_stage = options["stage_map"].get(stage_id or "")
+    if (
+        pipeline_id
+        and selected_stage is not None
+        and str(selected_stage.pipeline_id) != pipeline_id
+    ):
+        stage_id = None
+    visible_stages = [
+        stage
+        for stage in options["stages"]
+        if not pipeline_id or str(stage.pipeline_id) == pipeline_id
+    ]
 
     # Stale sort/page-size params degrade to the default view rather than 500.
     safe_sort = (
@@ -355,6 +534,7 @@ def build_leads_list_context(
             "status": status,
             "pipeline_id": pipeline_id,
             "stage_id": stage_id,
+            "owner_agent_id": owner_agent_id,
             "lead_source": lead_source,
         },
         sort_by=safe_sort,
@@ -368,6 +548,7 @@ def build_leads_list_context(
         status=status,
         pipeline_id=pipeline_id or None,
         stage_id=stage_id or None,
+        owner_agent_id=owner_agent_id or None,
         lead_source=lead_source,
         search=requested_query.search,
     )
@@ -377,7 +558,7 @@ def build_leads_list_context(
         db,
         pipeline_id=pipeline_id or None,
         stage_id=stage_id or None,
-        owner_agent_id=None,
+        owner_agent_id=owner_agent_id or None,
         status=status,
         is_active=None,
         order_by=list_query.sort_by,
@@ -388,8 +569,7 @@ def build_leads_list_context(
         search=list_query.search,
     )
 
-    options = _sales_options(db)
-    subscriber_map = _subscriber_map(db, [lead.subscriber_id for lead in leads])
+    contact_map, subscriber_map = _lead_contact_views(db, leads)
 
     return {
         "leads": leads,
@@ -401,6 +581,7 @@ def build_leads_list_context(
                 "status": requested_status,
                 "pipeline_id": requested_pipeline_id,
                 "stage_id": requested_stage_id,
+                "owner_agent_id": requested_owner_agent_id,
                 "lead_source": requested_lead_source,
             },
             sort_by=sort_by,
@@ -416,16 +597,78 @@ def build_leads_list_context(
         "status": status or "",
         "pipeline_id": pipeline_id or "",
         "stage_id": stage_id or "",
+        "owner_agent_id": owner_agent_id or "",
         "lead_source": lead_source or "",
         "search": list_query.search or "",
         "lead_statuses": lead_status_values(),
         "lead_sources": lead_source_options,
         "pipelines": options["pipelines"],
-        "stages": options["stages"],
+        "stages": visible_stages,
+        "all_stages": options["stages"],
+        "agents": options["agents"],
         "pipeline_map": options["pipeline_map"],
         "stage_map": options["stage_map"],
+        "agent_map": options["agent_map"],
         "subscriber_map": subscriber_map,
+        "contact_map": contact_map,
         "lead_stats": _lead_stats(db),
+        "api_error": None,
+    }
+
+
+def build_leads_failure_context(
+    *,
+    search: str | None,
+    page: int,
+    per_page: int,
+) -> dict[str, Any]:
+    safe_per_page = (
+        per_page
+        if per_page in LEAD_LIST_DEFINITION.per_page_options
+        else LEAD_LIST_DEFINITION.default_per_page
+    )
+    list_query = LEAD_LIST_DEFINITION.build_query(
+        search=search,
+        filters={},
+        page=max(1, page),
+        per_page=safe_per_page,
+    )
+    page_meta = PageMeta.from_query(list_query, 0)
+    return {
+        "leads": [],
+        "list_query": list_query,
+        "canonicalization_needed": False,
+        "page_meta": page_meta,
+        "page": 1,
+        "per_page": safe_per_page,
+        "total": 0,
+        "total_pages": 1,
+        "status": "",
+        "pipeline_id": "",
+        "stage_id": "",
+        "owner_agent_id": "",
+        "lead_source": "",
+        "search": list_query.search or "",
+        "lead_statuses": lead_status_values(),
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "pipelines": [],
+        "stages": [],
+        "all_stages": [],
+        "agents": [],
+        "pipeline_map": {},
+        "stage_map": {},
+        "agent_map": {},
+        "subscriber_map": {},
+        "contact_map": {},
+        "lead_stats": {
+            "total": None,
+            "open": None,
+            "won": None,
+            "total_value": None,
+            "currency": "",
+        },
+        "api_error": "Leads could not be loaded. No CRM data was changed.",
+        "retry_url": list_query.url("/admin/sales/leads"),
     }
 
 
@@ -441,15 +684,449 @@ def build_lead_detail_context(db: Session, *, lead_id: str) -> dict[str, Any]:
         limit=50,
         offset=0,
     )
+    contact_map, _ = _lead_contact_views(db, [lead])
+    agents = list_agent_options(db)
     return {
         "lead": lead,
         "subscriber": lead.subscriber,
         "subscriber_label": subscriber_label(lead.subscriber),
+        "contact": contact_map.get(str(lead.id)),
         "pipeline": lead.pipeline,
         "stage": lead.stage,
+        "owner": next(
+            (agent for agent in agents if agent.id == lead.owner_agent_id),
+            None,
+        ),
         "quotes": quotes,
+        "can_create_quote": lead.subscriber_id is not None,
         "status_val": lead.status or LeadStatus.new.value,
+        "lead_statuses": lead_status_values(),
+        "api_error": None,
+        "success": None,
     }
+
+
+def _lead_form_fields(
+    *,
+    title: str | None,
+    status: str | None,
+    subscriber_id: str | None,
+    contact_label: str | None,
+    owner_agent_id: str | None,
+    pipeline_id: str | None,
+    stage_id: str | None,
+    lead_source: str | None,
+    region: str | None,
+    estimated_value: str | None,
+    currency: str | None,
+    address: str | None,
+    probability: str | None,
+    expected_close_date: str | None,
+    lost_reason: str | None,
+    notes: str | None,
+    is_active: bool,
+) -> LeadFormFields:
+    return LeadFormFields(
+        title=(title or "").strip(),
+        status=(status or LeadStatus.new.value).strip(),
+        subscriber_id=(subscriber_id or "").strip(),
+        contact_label=(contact_label or "").strip(),
+        owner_agent_id=(owner_agent_id or "").strip(),
+        pipeline_id=(pipeline_id or "").strip(),
+        stage_id=(stage_id or "").strip(),
+        lead_source=(lead_source or "").strip(),
+        region=(region or "").strip(),
+        estimated_value=(estimated_value or "").strip(),
+        currency=(currency or "NGN").strip().upper(),
+        address=(address or "").strip(),
+        probability=(probability or "0").strip(),
+        expected_close_date=(expected_close_date or "").strip(),
+        lost_reason=(lost_reason or "").strip(),
+        notes=(notes or "").strip(),
+        is_active=is_active,
+    )
+
+
+def _lead_form_context(
+    db: Session,
+    *,
+    lead_form: LeadFormFields,
+    mode: str,
+    lead_id: str | None,
+) -> dict[str, Any]:
+    options = _sales_options(db)
+    return {
+        "lead_form": lead_form,
+        "lead": sales_service.leads.get(db, lead_id) if lead_id else None,
+        "form_title": "Edit Lead" if mode == "update" else "New Lead",
+        "submit_label": "Update Lead" if mode == "update" else "Create Lead",
+        "action_url": (
+            f"/admin/sales/leads/{lead_id}/edit"
+            if mode == "update"
+            else "/admin/sales/leads"
+        ),
+        "lead_statuses": lead_status_values(),
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "lost_reasons": LOST_REASON_OPTIONS,
+        "pipelines": options["pipelines"],
+        "stages": options["stages"],
+        "agents": options["agents"],
+        "field_errors": {},
+        "error": None,
+    }
+
+
+def build_lead_new_context(db: Session) -> dict[str, Any]:
+    return _lead_form_context(
+        db,
+        lead_form=_lead_form_fields(
+            title=None,
+            status=LeadStatus.new.value,
+            subscriber_id=None,
+            contact_label=None,
+            owner_agent_id=None,
+            pipeline_id=None,
+            stage_id=None,
+            lead_source=None,
+            region=None,
+            estimated_value=None,
+            currency="NGN",
+            address=None,
+            probability="0",
+            expected_close_date=None,
+            lost_reason=None,
+            notes=None,
+            is_active=True,
+        ),
+        mode="create",
+        lead_id=None,
+    )
+
+
+def build_lead_edit_context(db: Session, *, lead_id: str) -> dict[str, Any]:
+    lead = sales_service.leads.get(db, lead_id)
+    contact_map, _ = _lead_contact_views(db, [lead])
+    contact = contact_map.get(str(lead.id))
+    return _lead_form_context(
+        db,
+        lead_form=_lead_form_fields(
+            title=lead.title,
+            status=lead.status,
+            subscriber_id=str(lead.subscriber_id) if lead.subscriber_id else None,
+            contact_label=contact.name if contact else None,
+            owner_agent_id=(str(lead.owner_agent_id) if lead.owner_agent_id else None),
+            pipeline_id=str(lead.pipeline_id) if lead.pipeline_id else None,
+            stage_id=str(lead.stage_id) if lead.stage_id else None,
+            lead_source=lead.lead_source,
+            region=lead.region,
+            estimated_value=(
+                str(lead.estimated_value) if lead.estimated_value is not None else None
+            ),
+            currency=lead.currency,
+            address=lead.address,
+            probability=(
+                str(lead.probability) if lead.probability is not None else "0"
+            ),
+            expected_close_date=(
+                lead.expected_close_date.isoformat()
+                if lead.expected_close_date
+                else None
+            ),
+            lost_reason=lead.lost_reason,
+            notes=lead.notes,
+            is_active=lead.is_active,
+        ),
+        mode="update",
+        lead_id=lead_id,
+    )
+
+
+def build_lead_form_error_context(
+    db: Session,
+    *,
+    mode: str,
+    lead_id: str | None,
+    field_errors: dict[str, str],
+    **fields: str | bool | None,
+) -> dict[str, Any]:
+    context = _lead_form_context(
+        db,
+        lead_form=_lead_form_fields(
+            title=str(fields.get("title") or ""),
+            status=str(fields.get("status") or ""),
+            subscriber_id=str(fields.get("subscriber_id") or ""),
+            contact_label=str(fields.get("contact_label") or ""),
+            owner_agent_id=str(fields.get("owner_agent_id") or ""),
+            pipeline_id=str(fields.get("pipeline_id") or ""),
+            stage_id=str(fields.get("stage_id") or ""),
+            lead_source=str(fields.get("lead_source") or ""),
+            region=str(fields.get("region") or ""),
+            estimated_value=str(fields.get("estimated_value") or ""),
+            currency=str(fields.get("currency") or ""),
+            address=str(fields.get("address") or ""),
+            probability=str(fields.get("probability") or ""),
+            expected_close_date=str(fields.get("expected_close_date") or ""),
+            lost_reason=str(fields.get("lost_reason") or ""),
+            notes=str(fields.get("notes") or ""),
+            is_active=bool(fields.get("is_active")),
+        ),
+        mode=mode,
+        lead_id=lead_id,
+    )
+    context["field_errors"] = field_errors
+    context["error"] = "Please correct the highlighted fields."
+    return context
+
+
+def _validate_lead_form(
+    *,
+    title: str | None,
+    status: str | None,
+    subscriber_id: str | None,
+    owner_agent_id: str | None,
+    pipeline_id: str | None,
+    stage_id: str | None,
+    lead_source: str | None,
+    region: str | None,
+    estimated_value: str | None,
+    currency: str | None,
+    address: str | None,
+    probability: str | None,
+    expected_close_date: str | None,
+    lost_reason: str | None,
+    notes: str | None,
+    is_active: bool,
+    contact_required: bool,
+) -> ValidatedLeadForm:
+    errors: dict[str, str] = {}
+    clean_title = (title or "").strip()
+    if not clean_title:
+        errors["title"] = "Lead Name is required."
+
+    try:
+        clean_status = LeadStatus((status or LeadStatus.new.value).strip())
+    except ValueError:
+        errors["status"] = "Select a valid lead status."
+        clean_status = LeadStatus.new
+
+    def optional_uuid(value: str | None, field: str) -> UUID | None:
+        clean = (value or "").strip()
+        if not clean:
+            return None
+        try:
+            return UUID(clean)
+        except ValueError:
+            errors[field] = "Select a valid option."
+            return None
+
+    clean_subscriber_id = optional_uuid(subscriber_id, "subscriber_id")
+    if contact_required and clean_subscriber_id is None:
+        errors["subscriber_id"] = "Person/Contact is required."
+    clean_owner_id = optional_uuid(owner_agent_id, "owner_agent_id")
+    clean_pipeline_id = optional_uuid(pipeline_id, "pipeline_id")
+    clean_stage_id = optional_uuid(stage_id, "stage_id")
+
+    clean_estimated_value: Decimal | None = None
+    if (estimated_value or "").strip():
+        try:
+            clean_estimated_value = Decimal((estimated_value or "").strip())
+        except (ArithmeticError, ValueError):
+            errors["estimated_value"] = "Estimated Value must be a number."
+
+    clean_probability: int | None = None
+    if (probability or "").strip():
+        try:
+            clean_probability = int((probability or "").strip())
+        except ValueError:
+            errors["probability"] = "Probability must be a whole number."
+        else:
+            if not 0 <= clean_probability <= 100:
+                errors["probability"] = "Probability must be between 0 and 100."
+
+    clean_close_date: date | None = None
+    if (expected_close_date or "").strip():
+        try:
+            clean_close_date = date.fromisoformat((expected_close_date or "").strip())
+        except ValueError:
+            errors["expected_close_date"] = "Enter a valid expected close date."
+
+    clean_currency = (currency or "").strip().upper() or None
+    if clean_currency is not None and len(clean_currency) != 3:
+        errors["currency"] = "Currency must be a three-letter code."
+
+    if errors:
+        raise LeadFormValidationError(errors)
+    return ValidatedLeadForm(
+        title=clean_title,
+        status=clean_status,
+        subscriber_id=clean_subscriber_id,
+        owner_agent_id=clean_owner_id,
+        pipeline_id=clean_pipeline_id,
+        stage_id=clean_stage_id,
+        lead_source=(lead_source or "").strip() or None,
+        region=(region or "").strip() or None,
+        estimated_value=clean_estimated_value,
+        currency=clean_currency,
+        address=(address or "").strip() or None,
+        probability=clean_probability,
+        expected_close_date=clean_close_date,
+        lost_reason=(
+            (lost_reason or "").strip() or None
+            if clean_status == LeadStatus.lost
+            else None
+        ),
+        notes=(notes or "").strip() or None,
+        is_active=is_active,
+    )
+
+
+def create_lead_from_form(
+    db: Session,
+    *,
+    title: str | None,
+    status: str | None,
+    subscriber_id: str | None,
+    owner_agent_id: str | None,
+    pipeline_id: str | None,
+    stage_id: str | None,
+    lead_source: str | None,
+    region: str | None,
+    estimated_value: str | None,
+    currency: str | None,
+    address: str | None,
+    probability: str | None,
+    expected_close_date: str | None,
+    lost_reason: str | None,
+    notes: str | None,
+    is_active: bool,
+) -> tuple[str, bool]:
+    values = _validate_lead_form(
+        title=title,
+        status=status,
+        subscriber_id=subscriber_id,
+        owner_agent_id=owner_agent_id,
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        lead_source=lead_source,
+        region=region,
+        estimated_value=estimated_value,
+        currency=currency,
+        address=address,
+        probability=probability,
+        expected_close_date=expected_close_date,
+        lost_reason=lost_reason,
+        notes=notes,
+        is_active=is_active,
+        contact_required=True,
+    )
+    payload = LeadCreate(
+        subscriber_id=values.subscriber_id,
+        owner_agent_id=values.owner_agent_id,
+        pipeline_id=values.pipeline_id,
+        stage_id=values.stage_id,
+        title=values.title,
+        status=values.status,
+        lead_source=values.lead_source,
+        region=values.region,
+        estimated_value=values.estimated_value,
+        currency=values.currency,
+        address=values.address,
+        probability=values.probability,
+        expected_close_date=values.expected_close_date,
+        lost_reason=values.lost_reason,
+        notes=values.notes,
+        is_active=values.is_active,
+    )
+    lead = sales_service.leads.create(db, payload)
+    return str(lead.id), bool(lead.dedup_returned_existing)
+
+
+def update_lead_from_form(
+    db: Session,
+    *,
+    lead_id: str,
+    title: str | None,
+    status: str | None,
+    subscriber_id: str | None,
+    contact_label: str | None,
+    owner_agent_id: str | None,
+    pipeline_id: str | None,
+    stage_id: str | None,
+    lead_source: str | None,
+    region: str | None,
+    estimated_value: str | None,
+    currency: str | None,
+    address: str | None,
+    probability: str | None,
+    expected_close_date: str | None,
+    lost_reason: str | None,
+    notes: str | None,
+    is_active: bool,
+) -> None:
+    lead = sales_service.leads.get(db, lead_id)
+    contact_map, _ = _lead_contact_views(db, [lead])
+    current_contact = contact_map.get(str(lead.id))
+    if (
+        not (subscriber_id or "").strip()
+        and current_contact is not None
+        and (contact_label or "").strip() != current_contact.name
+    ):
+        raise LeadFormValidationError(
+            {"subscriber_id": "Select a Person/Contact from the search results."}
+        )
+    values = _validate_lead_form(
+        title=title,
+        status=status,
+        subscriber_id=subscriber_id,
+        owner_agent_id=owner_agent_id,
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        lead_source=lead_source,
+        region=region,
+        estimated_value=estimated_value,
+        currency=currency,
+        address=address,
+        probability=probability,
+        expected_close_date=expected_close_date,
+        lost_reason=lost_reason,
+        notes=notes,
+        is_active=is_active,
+        contact_required=lead.party_id is None and lead.subscriber_id is None,
+    )
+    payload = LeadUpdate(
+        owner_agent_id=values.owner_agent_id,
+        pipeline_id=values.pipeline_id,
+        stage_id=values.stage_id,
+        title=values.title,
+        status=values.status,
+        lead_source=values.lead_source,
+        region=values.region,
+        estimated_value=values.estimated_value,
+        currency=values.currency,
+        address=values.address,
+        probability=values.probability,
+        expected_close_date=values.expected_close_date,
+        lost_reason=values.lost_reason,
+        notes=values.notes,
+        is_active=values.is_active,
+    )
+    if values.subscriber_id is not None:
+        payload = payload.model_copy(update={"subscriber_id": values.subscriber_id})
+    sales_service.leads.update(db, lead_id, payload)
+
+
+def set_lead_status(db: Session, *, lead_id: str, status: str | None) -> None:
+    try:
+        selected = LeadStatus((status or "").strip())
+    except ValueError:
+        raise LeadFormValidationError(
+            {"status": "Select a valid lead status."}
+        ) from None
+    sales_service.leads.update(db, lead_id, LeadUpdate(status=selected))
+
+
+def deactivate_lead(db: Session, *, lead_id: str) -> None:
+    sales_service.leads.delete(db, lead_id)
 
 
 def build_leads_board_context(
@@ -478,7 +1155,11 @@ def build_leads_board_context(
 
 
 def build_pipeline_settings_context(
-    db: Session, *, bulk_result: str, bulk_count: str
+    db: Session,
+    *,
+    notice: str = "",
+    bulk_count: str = "",
+    bulk_result: str = "",
 ) -> dict[str, Any]:
     pipelines = (
         db.query(Pipeline)
@@ -499,10 +1180,46 @@ def build_pipeline_settings_context(
     stage_map: dict[str, list[PipelineStage]] = {}
     for stage in stages:
         stage_map.setdefault(str(stage.pipeline_id), []).append(stage)
+    pipeline_lead_counts = {
+        str(pipeline_id): int(count)
+        for pipeline_id, count in (
+            db.query(Lead.pipeline_id, func.count(Lead.id))
+            .filter(Lead.is_active.is_(True), Lead.pipeline_id.is_not(None))
+            .group_by(Lead.pipeline_id)
+            .all()
+        )
+    }
+    stage_lead_counts = {
+        str(stage_id): int(count)
+        for stage_id, count in (
+            db.query(Lead.stage_id, func.count(Lead.id))
+            .filter(Lead.is_active.is_(True), Lead.stage_id.is_not(None))
+            .group_by(Lead.stage_id)
+            .all()
+        )
+    }
+    stage_presentations = {
+        str(stage.id): pipeline_configuration.stage_presentation(
+            stage_name=stage.name,
+            metadata=stage.metadata_,
+        )
+        for stage in stages
+    }
+    resolved_notice = "bulk_assigned" if bulk_result == "ok" and not notice else notice
+    toast = PIPELINE_SETTINGS_NOTICES.get(resolved_notice)
+    toast_message = toast[0] if toast else ""
+    if resolved_notice == "bulk_assigned" and bulk_count:
+        toast_message = f"Bulk assignment complete. Updated {bulk_count} lead(s)."
     return {
         "pipelines": pipelines,
         "stage_map": stage_map,
-        "bulk_result": bulk_result,
+        "pipeline_lead_counts": pipeline_lead_counts,
+        "stage_lead_counts": stage_lead_counts,
+        "stage_presentations": stage_presentations,
+        "stage_type_options": tuple(pipeline_configuration.PipelineStageType),
+        "stage_icon_options": pipeline_configuration.STAGE_ICON_OPTIONS,
+        "toast_message": toast_message,
+        "toast_type": toast[1] if toast else "",
         "bulk_count": bulk_count,
         "default_pipeline_stages": DEFAULT_PIPELINE_STAGES,
     }
@@ -513,7 +1230,8 @@ def build_pipeline_new_context() -> dict[str, Any]:
         "pipeline": {"name": "", "is_active": True, "create_default_stages": True},
         "form_title": "New Pipeline",
         "submit_label": "Create Pipeline",
-        "action_url": "/admin/sales/pipelines",
+        "action_url": "/admin/sales/pipelines-settings",
+        "is_editing": False,
         "error": None,
     }
 
@@ -524,7 +1242,8 @@ def build_pipeline_edit_context(db: Session, *, pipeline_id: str) -> dict[str, A
         "pipeline": pipeline,
         "form_title": "Edit Pipeline",
         "submit_label": "Update Pipeline",
-        "action_url": f"/admin/sales/pipelines/{pipeline_id}",
+        "action_url": f"/admin/sales/pipelines-settings/{pipeline_id}",
+        "is_editing": True,
         "error": None,
     }
 
@@ -548,10 +1267,11 @@ def build_pipeline_form_error_context(
         "form_title": "Edit Pipeline" if editing else "New Pipeline",
         "submit_label": "Update Pipeline" if editing else "Create Pipeline",
         "action_url": (
-            f"/admin/sales/pipelines/{pipeline_id}"
+            f"/admin/sales/pipelines-settings/{pipeline_id}"
             if editing
-            else "/admin/sales/pipelines"
+            else "/admin/sales/pipelines-settings"
         ),
+        "is_editing": editing,
     }
 
 
@@ -572,14 +1292,22 @@ def create_pipeline_from_form(
     pipeline = sales_service.pipelines.create(db, payload)
     if _as_bool(create_default_stages):
         for index, stage in enumerate(DEFAULT_PIPELINE_STAGES):
+            stage_name = str(stage["name"])
             sales_service.pipeline_stages.create(
                 db,
                 PipelineStageCreate(
                     pipeline_id=pipeline.id,
-                    name=str(stage["name"]),
+                    name=stage_name,
                     order_index=index,
                     default_probability=int(stage["probability"]),
                     is_active=True,
+                    metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                        None,
+                        stage_name=stage_name,
+                        stage_type=stage["stage_type"],
+                        color=stage["color"],
+                        icon=stage["icon"],
+                    ),
                 ),
             )
     return str(pipeline.id)
@@ -599,6 +1327,14 @@ def deactivate_pipeline(db: Session, pipeline_id: str) -> None:
     sales_service.pipelines.delete(db, pipeline_id)
 
 
+def set_pipeline_active(db: Session, *, pipeline_id: str, is_active: bool) -> None:
+    sales_service.pipelines.update(
+        db,
+        pipeline_id,
+        PipelineUpdate(is_active=is_active),
+    )
+
+
 def create_stage_from_form(
     db: Session,
     *,
@@ -606,15 +1342,26 @@ def create_stage_from_form(
     name: str,
     order_index: int,
     default_probability: int,
+    stage_type: str = "standard",
+    color: str = pipeline_configuration.DEFAULT_STAGE_COLOR,
+    icon: str | None = None,
 ) -> None:
+    stage_name = name.strip()
     sales_service.pipeline_stages.create(
         db,
         PipelineStageCreate(
             pipeline_id=coerce_uuid(pipeline_id),
-            name=name.strip(),
+            name=stage_name,
             order_index=order_index,
             default_probability=default_probability,
             is_active=True,
+            metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                None,
+                stage_name=stage_name,
+                stage_type=stage_type,
+                color=color,
+                icon=icon,
+            ),
         ),
     )
 
@@ -627,15 +1374,27 @@ def update_stage_from_form(
     order_index: int,
     default_probability: int,
     is_active: str | None,
+    stage_type: str = "standard",
+    color: str = pipeline_configuration.DEFAULT_STAGE_COLOR,
+    icon: str | None = None,
 ) -> None:
+    stage = sales_service.pipeline_stages.get(db, stage_id)
+    stage_name = name.strip()
     sales_service.pipeline_stages.update(
         db,
         stage_id,
         PipelineStageUpdate(
-            name=name.strip(),
+            name=stage_name,
             order_index=order_index,
             default_probability=default_probability,
-            is_active=_as_bool(is_active) if is_active is not None else False,
+            is_active=_as_bool(is_active) if is_active is not None else None,
+            metadata_=pipeline_configuration.metadata_with_stage_presentation(
+                stage.metadata_,
+                stage_name=stage_name,
+                stage_type=stage_type,
+                color=color,
+                icon=icon,
+            ),
         ),
     )
 
@@ -644,6 +1403,33 @@ def deactivate_stage(db: Session, *, stage_id: str) -> None:
     sales_service.pipeline_stages.update(
         db, stage_id, PipelineStageUpdate(is_active=False)
     )
+
+
+def set_stage_active(db: Session, *, stage_id: str, is_active: bool) -> None:
+    sales_service.pipeline_stages.update(
+        db,
+        stage_id,
+        PipelineStageUpdate(is_active=is_active),
+    )
+
+
+def reorder_stages(
+    db: Session,
+    *,
+    pipeline_id: str,
+    stage_ids: str,
+) -> tuple[str, ...]:
+    ordered_ids = tuple(
+        coerce_uuid(stage_id.strip())
+        for stage_id in stage_ids.split(",")
+        if stage_id.strip()
+    )
+    result = sales_service.pipeline_stages.reorder(
+        db,
+        coerce_uuid(pipeline_id),
+        ordered_ids,
+    )
+    return tuple(str(stage_id) for stage_id in result)
 
 
 def bulk_assign_leads(
@@ -819,11 +1605,23 @@ def creatable_quote_status_values() -> list[str]:
     ]
 
 
-def build_quote_new_context() -> dict[str, Any]:
+def build_quote_new_context(
+    db: Session | None = None, *, lead_id: str | None = None
+) -> dict[str, Any]:
+    normalized_lead_id = (lead_id or "").strip()
+    selected_lead = (
+        sales_service.leads.get(db, normalized_lead_id)
+        if db is not None and normalized_lead_id
+        else None
+    )
     return {
         "quote_form": _quote_form_fields(
-            subscriber_id=None,
-            lead_id=None,
+            subscriber_id=(
+                str(selected_lead.subscriber_id)
+                if selected_lead is not None and selected_lead.subscriber_id
+                else None
+            ),
+            lead_id=str(selected_lead.id) if selected_lead is not None else None,
             status=QuoteStatus.draft.value,
             currency="NGN",
             tax_rate=None,
@@ -1207,7 +2005,11 @@ def _sales_orders_query(
     status: str | None,
     payment_status: str | None,
     source_type: str | None,
-    search: str | None,
+    owner_agent_id: str | None,
+    lead_source: str | None,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    search: str | None = None,
 ):
     query = db.query(SalesOrder).filter(SalesOrder.is_active.is_(True))
     if status:
@@ -1218,6 +2020,14 @@ def _sales_orders_query(
         query = query.filter(SalesOrder.quote_id.isnot(None))
     elif source_type == "manual":
         query = query.filter(SalesOrder.quote_id.is_(None))
+    if owner_agent_id:
+        query = query.filter(SalesOrder.owner_agent_id == coerce_uuid(owner_agent_id))
+    if lead_source:
+        query = query.filter(SalesOrder.source == lead_source)
+    if start_at:
+        query = query.filter(SalesOrder.created_at >= start_at)
+    if end_at:
+        query = query.filter(SalesOrder.created_at < end_at)
     if search:
         like = f"%{search.strip()}%"
         query = query.outerjoin(
@@ -1235,25 +2045,91 @@ def _sales_orders_query(
     return query
 
 
+class _SalesOrderFilterArgs(TypedDict):
+    status: str | None
+    payment_status: str | None
+    source_type: str | None
+    owner_agent_id: str | None
+    lead_source: str | None
+    start_at: datetime | None
+    end_at: datetime | None
+    search: str | None
+
+
+def sales_agent_options(db: Session) -> list[dict[str, str]]:
+    """Active system users granted the canonical Customer Experience role.
+
+    Imported/mapped role grants land in ``SystemUserRole`` too, so this query
+    includes both locally assigned and externally mapped Customer Experience
+    users without creating a second sales-agent directory.
+    """
+
+    return web_system_users.customer_experience_user_options(db)
+
+
+def _sales_order_period(
+    period: str | None, from_date: str | None, to_date: str | None
+) -> tuple[str, str, str, datetime | None, datetime | None]:
+    allowed = {"all", "7", "30", "90", "180", "365", "custom"}
+    safe_period = period if period in allowed else "all"
+    now = datetime.now(UTC)
+    safe_from = (from_date or "").strip()
+    safe_to = (to_date or "").strip()
+    if safe_period == "all":
+        return safe_period, "", "", None, None
+    if safe_period != "custom":
+        return safe_period, "", "", now - timedelta(days=int(safe_period)), now
+    try:
+        start_at = datetime.strptime(safe_from, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        safe_from, start_at = "", None
+    try:
+        end_at = datetime.strptime(safe_to, "%Y-%m-%d").replace(tzinfo=UTC) + timedelta(
+            days=1
+        )
+    except ValueError:
+        safe_to, end_at = "", None
+    return safe_period, safe_from, safe_to, start_at, end_at
+
+
 def build_sales_orders_list_context(
     db: Session,
     *,
     status: str | None,
     payment_status: str | None,
     source_type: str | None,
-    search: str | None,
+    owner_agent_id: str | None = None,
+    lead_source: str | None = None,
+    period: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    search: str | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
-    page: int,
-    per_page: int,
+    page: int = 1,
+    per_page: int = 25,
 ) -> dict[str, Any]:
     requested_status = status
     requested_payment_status = payment_status
     requested_source_type = source_type
+    requested_owner_agent_id = owner_agent_id
+    requested_lead_source = lead_source
+    requested_period = period
+    requested_from_date = from_date
+    requested_to_date = to_date
     status = _clean_choice(status, sales_order_status_values())
     payment_status = _clean_choice(payment_status, sales_order_payment_status_values())
     if source_type not in {"quote", "manual"}:
         source_type = None
+    owner_agent_id = _clean_uuid(owner_agent_id)
+    lead_source = (lead_source or "").strip() or None
+    (
+        period,
+        from_date,
+        to_date,
+        start_at,
+        end_at,
+    ) = _sales_order_period(period, from_date, to_date)
 
     safe_sort = (
         sort_by
@@ -1272,16 +2148,25 @@ def build_sales_orders_list_context(
             "status": status,
             "payment_status": payment_status,
             "source_type": source_type,
+            "owner_agent_id": owner_agent_id,
+            "lead_source": lead_source,
+            "period": period,
+            "from_date": from_date,
+            "to_date": to_date,
         },
         sort_by=safe_sort,
         sort_dir=safe_dir,
         page=max(1, page),
         per_page=safe_per_page,
     )
-    filters = {
+    filters: _SalesOrderFilterArgs = {
         "status": status,
         "payment_status": payment_status,
         "source_type": source_type,
+        "owner_agent_id": owner_agent_id,
+        "lead_source": lead_source,
+        "start_at": start_at,
+        "end_at": end_at,
         "search": requested_query.search,
     }
 
@@ -1353,9 +2238,75 @@ def build_sales_orders_list_context(
         "quote_backed": int(totals.quote_backed or 0),
         "manual": int(totals.manual or 0),
         "paid_rate": round((paid / total) * 100, 1) if total else 0,
+        "average_order": (
+            Decimal(str(totals.gross_sales or 0)) / total if total else Decimal("0")
+        ),
     }
 
     subscriber_map = _subscriber_map(db, [order.subscriber_id for order in orders])
+    agents = sales_agent_options(db)
+    agent_map = {agent["id"]: agent for agent in agents}
+    agent_rows = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.owner_agent_id,
+            func.count(SalesOrder.id).label("orders"),
+            func.sum(
+                case(
+                    (
+                        SalesOrder.payment_status == SalesOrderPaymentStatus.paid.value,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("paid_orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("gross"),
+            func.coalesce(func.sum(SalesOrder.amount_paid), 0).label("collected"),
+            func.coalesce(func.sum(SalesOrder.balance_due), 0).label("outstanding"),
+        )
+        .group_by(SalesOrder.owner_agent_id)
+        .order_by(func.coalesce(func.sum(SalesOrder.total), 0).desc())
+        .all()
+    )
+    agent_performance = []
+    for row in agent_rows:
+        key = str(row.owner_agent_id) if row.owner_agent_id else ""
+        agent = agent_map.get(key)
+        agent_performance.append(
+            {
+                "name": agent["name"]
+                if agent
+                else ("Unassigned" if not key else key[:8]),
+                "email": agent["email"] if agent else "",
+                "orders": int(row.orders or 0),
+                "paid_orders": int(row.paid_orders or 0),
+                "gross": Decimal(str(row.gross or 0)),
+                "collected": Decimal(str(row.collected or 0)),
+                "outstanding": Decimal(str(row.outstanding or 0)),
+            }
+        )
+    payment_mix = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.payment_status.label("name"),
+            func.count(SalesOrder.id).label("orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("value"),
+        )
+        .group_by(SalesOrder.payment_status)
+        .order_by(func.count(SalesOrder.id).desc())
+        .all()
+    )
+    source_mix = (
+        _sales_orders_query(db, **filters)
+        .with_entities(
+            SalesOrder.source.label("name"),
+            func.count(SalesOrder.id).label("orders"),
+            func.coalesce(func.sum(SalesOrder.total), 0).label("value"),
+        )
+        .group_by(SalesOrder.source)
+        .order_by(func.count(SalesOrder.id).desc())
+        .all()
+    )
 
     return {
         "orders": orders,
@@ -1368,6 +2319,11 @@ def build_sales_orders_list_context(
                 "status": requested_status,
                 "payment_status": requested_payment_status,
                 "source_type": requested_source_type,
+                "owner_agent_id": requested_owner_agent_id,
+                "lead_source": requested_lead_source,
+                "period": requested_period,
+                "from_date": requested_from_date,
+                "to_date": requested_to_date,
             },
             sort_by=sort_by,
             sort_dir=sort_dir,
@@ -1382,10 +2338,21 @@ def build_sales_orders_list_context(
         "status": status or "",
         "payment_status": payment_status or "",
         "source_type": source_type or "",
+        "owner_agent_id": owner_agent_id or "",
+        "lead_source": lead_source or "",
+        "period": period,
+        "from_date": from_date,
+        "to_date": to_date,
         "search": list_query.search or "",
         "statuses": sales_order_status_values(),
         "payment_statuses": sales_order_payment_status_values(),
         "subscriber_map": subscriber_map,
+        "agents": agents,
+        "agent_map": agent_map,
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "agent_performance": agent_performance,
+        "payment_mix": payment_mix,
+        "source_mix": source_mix,
     }
 
 
@@ -1402,6 +2369,14 @@ def build_sales_order_detail_context(
         offset=0,
     )
     project = _resolve_project_for_sales_order(db, order.id)
+    agent = next(
+        (
+            item
+            for item in sales_agent_options(db)
+            if item["id"] == str(order.owner_agent_id)
+        ),
+        None,
+    )
     return {
         "order": order,
         "lines": lines,
@@ -1409,4 +2384,233 @@ def build_sales_order_detail_context(
         "subscriber_label": subscriber_label(order.subscriber),
         "quote": order.quote,
         "project": project,
+        "agent": agent,
     }
+
+
+def build_sales_order_form_context(
+    db: Session, *, sales_order_id: str | None = None
+) -> dict[str, Any]:
+    order = (
+        sales_orders_service.sales_orders.get(db, sales_order_id)
+        if sales_order_id
+        else None
+    )
+    lines = (
+        sales_orders_service.sales_order_lines.list(
+            db,
+            sales_order_id=str(order.id),
+            order_by="created_at",
+            order_dir="asc",
+            limit=500,
+            offset=0,
+        )
+        if order
+        else []
+    )
+    inventory_items = (
+        db.query(FieldInventoryItem)
+        .filter(FieldInventoryItem.is_active.is_(True))
+        .order_by(FieldInventoryItem.name.asc())
+        .limit(500)
+        .all()
+    )
+    return {
+        "order": order,
+        "lines": lines,
+        "subscriber": order.subscriber if order else None,
+        "subscriber_label": subscriber_label(order.subscriber) if order else "",
+        "agents": sales_agent_options(db),
+        "offers": web_catalog_subscriptions.active_offer_options(db),
+        "inventory_items": inventory_items,
+        "statuses": sales_order_status_values(),
+        "payment_statuses": sales_order_payment_status_values(),
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "project_types": [item.value for item in ProjectType],
+        "vat_rate": sales_orders_service.SALES_ORDER_VAT_RATE * 100,
+    }
+
+
+def _validated_sales_agent_id(db: Session, value: str | None) -> UUID | None:
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+    allowed = {item["id"] for item in sales_agent_options(db)}
+    if candidate not in allowed:
+        raise ValueError(
+            "Sales agent must be an active Customer Experience system user."
+        )
+    return coerce_uuid(candidate)
+
+
+def _manual_line_inputs(
+    *,
+    descriptions: list[str],
+    quantities: list[str],
+    unit_prices: list[str],
+    inventory_item_ids: list[str],
+    subscription_plan_ids: list[str],
+    line_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, description in enumerate(descriptions):
+        clean_description = description.strip()
+        if not clean_description:
+            continue
+        try:
+            quantity = Decimal(quantities[index])
+            unit_price = Decimal(unit_prices[index])
+        except (IndexError, ArithmeticError) as exc:
+            raise ValueError(
+                "Every line needs a valid quantity and unit price."
+            ) from exc
+        if quantity <= 0 or unit_price < 0:
+            raise ValueError(
+                "Quantity must be positive and unit price cannot be negative."
+            )
+        inventory_id = (
+            inventory_item_ids[index].strip() if index < len(inventory_item_ids) else ""
+        )
+        plan_id = (
+            subscription_plan_ids[index].strip()
+            if index < len(subscription_plan_ids)
+            else ""
+        )
+        result.append(
+            {
+                "line_id": (
+                    line_ids[index].strip()
+                    if line_ids and index < len(line_ids)
+                    else ""
+                ),
+                "description": clean_description,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "inventory_item_id": coerce_uuid(inventory_id)
+                if inventory_id
+                else None,
+                "metadata_": {"sub_offer_id": plan_id} if plan_id else None,
+            }
+        )
+    if not result:
+        raise ValueError("Add at least one line item.")
+    return result
+
+
+def save_manual_sales_order(
+    db: Session,
+    *,
+    sales_order_id: str | None,
+    subscriber_id: str,
+    owner_agent_id: str | None,
+    source: str | None,
+    project_type: str,
+    status: str,
+    payment_status: str,
+    amount_paid: str,
+    paid_at: str | None,
+    notes: str | None,
+    descriptions: list[str],
+    quantities: list[str],
+    unit_prices: list[str],
+    inventory_item_ids: list[str],
+    subscription_plan_ids: list[str],
+    line_ids: list[str] | None = None,
+) -> SalesOrder:
+    """Adapt an admin form into native sales-order owner commands."""
+
+    lines = _manual_line_inputs(
+        descriptions=descriptions,
+        quantities=quantities,
+        unit_prices=unit_prices,
+        inventory_item_ids=inventory_item_ids,
+        subscription_plan_ids=subscription_plan_ids,
+        line_ids=line_ids,
+    )
+    totals = sales_orders_service.calculate_manual_order_totals(
+        [(line["quantity"], line["unit_price"]) for line in lines]
+    )
+    try:
+        paid = Decimal((amount_paid or "0").strip() or "0")
+    except ArithmeticError as exc:
+        raise ValueError("Amount paid must be a valid amount.") from exc
+    paid = sales_orders_service.validate_manual_payment_amount(
+        amount_paid=paid, total=totals.total
+    )
+    if project_type not in {item.value for item in ProjectType}:
+        raise ValueError("Select a valid project type.")
+    paid_at_value = None
+    if paid_at:
+        paid_at_value = datetime.fromisoformat(paid_at).replace(tzinfo=UTC)
+    if payment_status == SalesOrderPaymentStatus.paid.value and paid_at_value is None:
+        paid_at_value = datetime.now(UTC)
+    agent_id = _validated_sales_agent_id(db, owner_agent_id)
+
+    if sales_order_id:
+        order = sales_orders_service.sales_orders.get(db, sales_order_id)
+        metadata = dict(order.metadata_) if isinstance(order.metadata_, dict) else {}
+        metadata["project_type"] = project_type
+        update_payload = SalesOrderUpdate(
+            subscriber_id=coerce_uuid(subscriber_id),
+            owner_agent_id=agent_id,
+            source=(source or "").strip() or None,
+            status=SalesOrderStatus(status),
+            payment_status=SalesOrderPaymentStatus(payment_status),
+            subtotal=totals.subtotal,
+            tax_total=totals.tax_total,
+            total=totals.total,
+            amount_paid=paid,
+            balance_due=totals.total - paid,
+            paid_at=paid_at_value,
+            notes=(notes or "").strip() or None,
+            metadata_=metadata,
+        )
+        order = sales_orders_service.sales_orders.update(
+            db, sales_order_id, update_payload
+        )
+        existing = {str(line.id): line for line in order.lines}
+        submitted_ids: set[str] = set()
+        for line in lines:
+            line_id = line.pop("line_id")
+            if line_id and line_id in existing:
+                submitted_ids.add(line_id)
+                sales_orders_service.sales_order_lines.update(
+                    db, line_id, SalesOrderLineUpdate(**line)
+                )
+            else:
+                sales_orders_service.sales_order_lines.create(
+                    db,
+                    SalesOrderLineCreate(sales_order_id=order.id, **line),
+                )
+        for existing_id in existing.keys() - submitted_ids:
+            sales_orders_service.sales_order_lines.update(
+                db, existing_id, SalesOrderLineUpdate(is_active=False)
+            )
+        return sales_orders_service.sales_orders.get(db, str(order.id))
+
+    create_payload = SalesOrderCreate(
+        subscriber_id=coerce_uuid(subscriber_id),
+        owner_agent_id=agent_id,
+        source=(source or "").strip() or None,
+        status=SalesOrderStatus(status),
+        payment_status=SalesOrderPaymentStatus(payment_status),
+        subtotal=totals.subtotal,
+        tax_total=totals.tax_total,
+        total=totals.total,
+        amount_paid=paid,
+        balance_due=totals.total - paid,
+        paid_at=paid_at_value,
+        notes=(notes or "").strip() or None,
+        metadata_={"project_type": project_type},
+    )
+    order = sales_orders_service.sales_orders.create(db, create_payload)
+    for line in lines:
+        line.pop("line_id")
+        sales_orders_service.sales_order_lines.create(
+            db, SalesOrderLineCreate(sales_order_id=order.id, **line)
+        )
+    return sales_orders_service.sales_orders.get(db, str(order.id))
+
+
+def delete_sales_order(db: Session, sales_order_id: str) -> None:
+    sales_orders_service.sales_orders.delete(db, sales_order_id)

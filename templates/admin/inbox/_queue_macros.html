@@ -155,11 +155,17 @@
 
 {% macro inbox_pagination(list_query, page_meta, base_url, active_id="") %}
 {% if page_meta.total_items > 0 %}
+{% if page_meta.has_previous %}
 {% set previous_url = list_query.url(base_url, page=page_meta.page - 1) %}
-{% set next_url = list_query.url(base_url, page=page_meta.page + 1) %}
 {% if active_id %}
     {% set previous_url = previous_url ~ ('&' if '?' in previous_url else '?') ~ 'conversation_id=' ~ active_id %}
+{% endif %}
+{% endif %}
+{% if page_meta.has_next %}
+{% set next_url = list_query.url(base_url, page=page_meta.page + 1) %}
+{% if active_id %}
     {% set next_url = next_url ~ ('&' if '?' in next_url else '?') ~ 'conversation_id=' ~ active_id %}
+{% endif %}
 {% endif %}
 <div class="shrink-0 border-t border-slate-200 px-4 py-2.5 dark:border-slate-800/50">
     <nav class="flex items-center justify-center gap-2" aria-label="Conversation pagination">

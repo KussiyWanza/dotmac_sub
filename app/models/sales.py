@@ -588,7 +588,8 @@ class SalesOrder(Base):
     subscriber_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subscribers.id"), nullable=False
     )
-    # CrmAgent UUID carried verbatim — no FK.
+    # Native SystemUser UUID selected from the Customer Experience directory.
+    # Kept without an FK so imported historical CRM owner provenance remains readable.
     owner_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     source: Mapped[str | None] = mapped_column(String(80))
     # SO-%06d via document_sequences key "sales_order_number".

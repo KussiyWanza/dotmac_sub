@@ -14,9 +14,10 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: the device projection lifecycle state (443) sits on
-    # the customer VAT exemption policy (442), the network-zone GeoArea
-    # binding (441), composable service teams (440), billing rating
+    # Single linear head: CRM Lead delete permission (444) sits on device
+    # projection lifecycle state (443), customer VAT exemption policy (442),
+    # network-zone GeoArea binding (441), composable service teams (440), billing
+    # rating
     # provenance (439) and Phase 2 verification counts (438), PON port
     # administrative state (437), billing shadow verification evidence (436),
     # access invitations (435), and the ADR 0007 billing target chain (434..430),
@@ -27,7 +28,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["443_device_projection_lifecycle_state"]
+    assert script.get_heads() == ["444_crm_lead_delete_permission"]
+    assert (
+        script.get_revision("444_crm_lead_delete_permission").down_revision
+        == "443_device_projection_lifecycle_state"
+    )
     assert (
         script.get_revision("443_device_projection_lifecycle_state").down_revision
         == "442_customer_vat_exemption_policy"

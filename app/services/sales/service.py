@@ -29,6 +29,7 @@ native models (``app/models/sales.py``), with the deltas applied:
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -38,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
-from app.models.party import Party
+from app.models.party import Party, PartyContactPoint
 from app.models.sales import (
     Lead,
     LeadStatus,
@@ -60,6 +61,7 @@ from app.services.common import (
 from app.services.events import EventType, emit_event
 from app.services.response import ListResponseMixin
 from app.services.sales import lifecycle as lead_lifecycle
+from app.services.sales import pipeline_configuration
 
 _logger = logging.getLogger(__name__)
 
@@ -126,6 +128,17 @@ _OPEN_LEAD_STATUSES = (
 _CLOSED_LEAD_STATUSES = (LeadStatus.won.value, LeadStatus.lost.value)
 
 
+@dataclass(frozen=True, slots=True)
+class LeadPipelineSummary:
+    """Authoritative lead KPI projection shared by API and admin UI."""
+
+    total_leads: int
+    open_leads: int
+    won_leads: int
+    pipeline_value: Decimal
+    currency: str
+
+
 def _enum_str(value, enum_cls, label: str) -> str | None:
     """Validate ``value`` against ``enum_cls`` and return its string value.
 
@@ -146,6 +159,27 @@ def _resolve_owner_agent_id(db: Session, subscriber_id) -> uuid.UUID | None:
     land unowned (visible as "unassigned" in the kanban).
     """
     return None
+
+
+def _validate_lead_pipeline_stage(
+    db: Session,
+    *,
+    pipeline_id: uuid.UUID | None,
+    stage_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Validate one pipeline/stage pair and infer the pipeline from a stage."""
+
+    if stage_id is None:
+        return pipeline_id
+    stage = db.get(PipelineStage, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Pipeline stage not found")
+    if pipeline_id is not None and stage.pipeline_id != pipeline_id:
+        raise HTTPException(
+            status_code=400,
+            detail="The selected stage does not belong to the selected pipeline",
+        )
+    return stage.pipeline_id
 
 
 def _lead_title_from_subscriber(subscriber: Subscriber | None) -> str | None:
@@ -654,6 +688,13 @@ class PipelineStages(ListResponseMixin):
         return stage
 
     @staticmethod
+    def get(db: Session, stage_id: str):
+        stage = db.get(PipelineStage, coerce_uuid(stage_id))
+        if not stage:
+            raise HTTPException(status_code=404, detail="Pipeline stage not found")
+        return stage
+
+    @staticmethod
     def list(
         db: Session,
         pipeline_id: str | None,
@@ -693,6 +734,36 @@ class PipelineStages(ListResponseMixin):
         db.refresh(stage)
         return stage
 
+    @staticmethod
+    def reorder(
+        db: Session,
+        pipeline_id: uuid.UUID,
+        stage_ids: tuple[uuid.UUID, ...],
+    ) -> tuple[uuid.UUID, ...]:
+        """Atomically apply one complete, stale-safe stage order."""
+
+        if len(stage_ids) != len(set(stage_ids)):
+            raise HTTPException(
+                status_code=400,
+                detail="Stage order contains duplicate stage identifiers",
+            )
+        stages = (
+            db.query(PipelineStage)
+            .filter(PipelineStage.pipeline_id == pipeline_id)
+            .with_for_update()
+            .all()
+        )
+        stage_map = {stage.id: stage for stage in stages}
+        if set(stage_map) != set(stage_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="Stage order is stale; reload Pipeline Settings and try again",
+            )
+        for order_index, stage_id in enumerate(stage_ids):
+            stage_map[stage_id].order_index = order_index
+        db.commit()
+        return stage_ids
+
 
 class Leads(ListResponseMixin):
     @staticmethod
@@ -706,6 +777,11 @@ class Leads(ListResponseMixin):
             data["status"] = _enum_str(data["status"], LeadStatus, "status")
         if "lead_source" in data:
             data["lead_source"] = _normalize_lead_source_or_400(data.get("lead_source"))
+        data["pipeline_id"] = _validate_lead_pipeline_stage(
+            db,
+            pipeline_id=data.get("pipeline_id"),
+            stage_id=data.get("stage_id"),
+        )
 
         legacy_campaign_id = data.get("campaign_id")
         legacy_recipient_id = data.get("campaign_recipient_id")
@@ -950,18 +1026,29 @@ class Leads(ListResponseMixin):
                     + " "
                     + func.coalesce(Subscriber.last_name, "")
                 )
-                query = query.outerjoin(
-                    Subscriber, Subscriber.id == Lead.subscriber_id
-                ).filter(
-                    or_(
-                        Lead.title.ilike(pattern),
-                        Subscriber.display_name.ilike(pattern),
-                        full_name.ilike(pattern),
-                        Subscriber.first_name.ilike(pattern),
-                        Subscriber.last_name.ilike(pattern),
-                        Subscriber.email.ilike(pattern),
-                        Subscriber.phone.ilike(pattern),
+                query = (
+                    query.outerjoin(Subscriber, Subscriber.id == Lead.subscriber_id)
+                    .outerjoin(Party, Party.id == Lead.party_id)
+                    .outerjoin(
+                        PartyContactPoint,
+                        (PartyContactPoint.party_id == Lead.party_id)
+                        & PartyContactPoint.is_active.is_(True),
                     )
+                    .filter(
+                        or_(
+                            Lead.title.ilike(pattern),
+                            Party.display_name.ilike(pattern),
+                            PartyContactPoint.display_value.ilike(pattern),
+                            PartyContactPoint.normalized_value.ilike(pattern),
+                            Subscriber.display_name.ilike(pattern),
+                            full_name.ilike(pattern),
+                            Subscriber.first_name.ilike(pattern),
+                            Subscriber.last_name.ilike(pattern),
+                            Subscriber.email.ilike(pattern),
+                            Subscriber.phone.ilike(pattern),
+                        )
+                    )
+                    .distinct()
                 )
         if is_active is None:
             query = query.filter(Lead.is_active.is_(True))
@@ -976,6 +1063,102 @@ class Leads(ListResponseMixin):
         return apply_pagination(query, limit, offset).all()
 
     @staticmethod
+    def count(
+        db: Session,
+        *,
+        pipeline_id: str | None,
+        stage_id: str | None,
+        owner_agent_id: str | None,
+        status: str | None,
+        lead_source: str | None,
+        search: str | None,
+        is_active: bool | None = None,
+    ) -> int:
+        query = db.query(func.count(func.distinct(Lead.id))).select_from(Lead)
+        if pipeline_id:
+            query = query.filter(Lead.pipeline_id == coerce_uuid(pipeline_id))
+        if stage_id:
+            query = query.filter(Lead.stage_id == coerce_uuid(stage_id))
+        if owner_agent_id:
+            query = query.filter(Lead.owner_agent_id == coerce_uuid(owner_agent_id))
+        if status:
+            query = query.filter(Lead.status == _enum_str(status, LeadStatus, "status"))
+        if lead_source:
+            query = query.filter(
+                func.lower(Lead.lead_source) == lead_source.strip().lower()
+            )
+        if search:
+            pattern = f"%{search.strip()}%"
+            if pattern != "%%":
+                full_name = func.trim(
+                    func.coalesce(Subscriber.first_name, "")
+                    + " "
+                    + func.coalesce(Subscriber.last_name, "")
+                )
+                query = (
+                    query.outerjoin(Subscriber, Subscriber.id == Lead.subscriber_id)
+                    .outerjoin(Party, Party.id == Lead.party_id)
+                    .outerjoin(
+                        PartyContactPoint,
+                        (PartyContactPoint.party_id == Lead.party_id)
+                        & PartyContactPoint.is_active.is_(True),
+                    )
+                    .filter(
+                        or_(
+                            Lead.title.ilike(pattern),
+                            Party.display_name.ilike(pattern),
+                            PartyContactPoint.display_value.ilike(pattern),
+                            PartyContactPoint.normalized_value.ilike(pattern),
+                            Subscriber.display_name.ilike(pattern),
+                            full_name.ilike(pattern),
+                            Subscriber.first_name.ilike(pattern),
+                            Subscriber.last_name.ilike(pattern),
+                            Subscriber.email.ilike(pattern),
+                            Subscriber.phone.ilike(pattern),
+                        )
+                    )
+                )
+        if is_active is None:
+            query = query.filter(Lead.is_active.is_(True))
+        else:
+            query = query.filter(Lead.is_active == is_active)
+        return int(query.scalar() or 0)
+
+    @staticmethod
+    def summary(db: Session) -> LeadPipelineSummary:
+        """Return CRM-compatible KPI values without UI-side derivation."""
+
+        rows = (
+            db.query(
+                Lead.status,
+                func.count(Lead.id),
+                func.coalesce(func.sum(Lead.estimated_value), 0),
+            )
+            .filter(Lead.is_active.is_(True))
+            .group_by(Lead.status)
+            .all()
+        )
+        by_status: dict[str, int] = {}
+        total = 0
+        pipeline_value = Decimal("0")
+        for status_value, count, value_sum in rows:
+            status_key = status_value or LeadStatus.new.value
+            status_count = int(count)
+            by_status[status_key] = by_status.get(status_key, 0) + status_count
+            total += status_count
+            if status_key in _OPEN_LEAD_STATUSES:
+                pipeline_value += Decimal(str(value_sum or 0))
+        return LeadPipelineSummary(
+            total_leads=total,
+            open_leads=sum(
+                by_status.get(status_key, 0) for status_key in _OPEN_LEAD_STATUSES
+            ),
+            won_leads=by_status.get(LeadStatus.won.value, 0),
+            pipeline_value=pipeline_value,
+            currency=_default_currency(db) or "NGN",
+        )
+
+    @staticmethod
     def update(db: Session, lead_id: str, payload):
         lead = db.get(Lead, coerce_uuid(lead_id))
         if not lead:
@@ -986,6 +1169,17 @@ class Leads(ListResponseMixin):
             data["status"] = _enum_str(data["status"], LeadStatus, "status")
         if "lead_source" in data:
             data["lead_source"] = _normalize_lead_source_or_400(data.get("lead_source"))
+        prospective_stage_id = data["stage_id"] if "stage_id" in data else lead.stage_id
+        prospective_pipeline_id = (
+            data["pipeline_id"] if "pipeline_id" in data else lead.pipeline_id
+        )
+        resolved_pipeline_id = _validate_lead_pipeline_stage(
+            db,
+            pipeline_id=prospective_pipeline_id,
+            stage_id=prospective_stage_id,
+        )
+        if prospective_stage_id is not None:
+            data["pipeline_id"] = resolved_pipeline_id
 
         if "lead_source" in data and lead.origin_capture is not None:
             if data["lead_source"] != lead.origin_capture.lead_source:
@@ -1091,15 +1285,23 @@ class Leads(ListResponseMixin):
             )
             leads_rows = db.query(Lead).filter(Lead.is_active.is_(True)).all()
 
-        columns = [
-            {
-                "id": str(stage.id),
-                "title": stage.name,
-                "order_index": stage.order_index,
-                "default_probability": stage.default_probability,
-            }
-            for stage in stages
-        ]
+        columns = []
+        for stage in stages:
+            presentation = pipeline_configuration.stage_presentation(
+                stage_name=stage.name,
+                metadata=stage.metadata_,
+            )
+            columns.append(
+                {
+                    "id": str(stage.id),
+                    "title": stage.name,
+                    "order_index": stage.order_index,
+                    "default_probability": stage.default_probability,
+                    "stage_type": presentation.stage_type.value,
+                    "color": presentation.color,
+                    "icon": presentation.icon,
+                }
+            )
 
         # Batch load subscribers to avoid N+1 queries.
         subscriber_ids = [

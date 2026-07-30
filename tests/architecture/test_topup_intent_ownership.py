@@ -7,13 +7,19 @@ from pathlib import Path
 
 from app.services import sot_relationships
 from app.services.sot_manifest import TransactionMode, contract_validation_errors
+from tests.architecture.source_index import (
+    call_lines,
+    python_ast,
+    python_files,
+    source_text,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _function(path: str, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     source_path = ROOT / path
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    tree = python_ast(source_path)
     return next(
         node
         for node in ast.walk(tree)
@@ -32,9 +38,8 @@ def _attribute_calls(node: ast.AST) -> set[str]:
 
 def _intent_assignment_paths(attributes: set[str]) -> set[str]:
     paths: set[str] = set()
-    for path in (ROOT / "app/services").rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
+    for path in python_files(ROOT / "app/services"):
+        tree = python_ast(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Attribute) or node.attr not in attributes:
                 continue
@@ -50,14 +55,8 @@ def _intent_assignment_paths(attributes: set[str]) -> set[str]:
 
 def _topup_intent_constructor_paths() -> set[str]:
     paths: set[str] = set()
-    for path in (ROOT / "app/services").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        if any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "TopupIntent"
-            for node in ast.walk(tree)
-        ):
+    for path in python_files(ROOT / "app/services"):
+        if "TopupIntent" in call_lines(path):
             paths.add(path.relative_to(ROOT).as_posix())
     return paths
 
@@ -222,13 +221,9 @@ def test_customer_portal_creation_delegates_without_policy_or_record_writes() ->
 
 
 def test_direct_transfer_configuration_has_one_domain_resolver() -> None:
-    portal_source = (ROOT / "app/services/customer_portal_flow_payments.py").read_text(
-        encoding="utf-8"
-    )
-    owner_source = (ROOT / "app/services/topup_intents.py").read_text(encoding="utf-8")
-    settings_source = (ROOT / "app/services/settings_spec.py").read_text(
-        encoding="utf-8"
-    )
+    portal_source = source_text(ROOT / "app/services/customer_portal_flow_payments.py")
+    owner_source = source_text(ROOT / "app/services/topup_intents.py")
+    settings_source = source_text(ROOT / "app/services/settings_spec.py")
 
     assert "def direct_transfer_configuration(" in owner_source
     assert "resolve_values_atomic(" in owner_source
@@ -245,8 +240,8 @@ def test_creation_coordinator_and_deposit_participant_complete_no_transactions()
     None
 ):
     coordinator = ROOT / "app/services/direct_transfer_intents.py"
-    coordinator_source = coordinator.read_text(encoding="utf-8")
-    coordinator_tree = ast.parse(coordinator_source, filename=str(coordinator))
+    coordinator_source = source_text(coordinator)
+    coordinator_tree = python_ast(coordinator)
     stage = _function("app/services/account_credit_deposits.py", "stage_intent")
 
     assert coordinator_source.count("execute_owner_command(") == 1
@@ -270,20 +265,14 @@ def test_gateway_creation_has_only_canonical_record_writers() -> None:
 
 
 def test_gateway_adapters_delegate_without_lifecycle_policy_or_writes() -> None:
-    customer_source = (
+    customer_source = source_text(
         ROOT / "app/services/customer_portal_flow_payments.py"
-    ).read_text(encoding="utf-8")
-    reseller_source = (ROOT / "app/services/reseller_portal_billing.py").read_text(
-        encoding="utf-8"
     )
+    reseller_source = source_text(ROOT / "app/services/reseller_portal_billing.py")
     coordinator_path = ROOT / "app/services/gateway_topup_intents.py"
-    coordinator_source = coordinator_path.read_text(encoding="utf-8")
-    settings_source = (ROOT / "app/services/settings_spec.py").read_text(
-        encoding="utf-8"
-    )
-    coordinator_calls = _attribute_calls(
-        ast.parse(coordinator_source, filename=str(coordinator_path))
-    )
+    coordinator_source = source_text(coordinator_path)
+    settings_source = source_text(ROOT / "app/services/settings_spec.py")
+    coordinator_calls = _attribute_calls(python_ast(coordinator_path))
 
     assert "create_customer_gateway_topup_intent(" in customer_source
     assert "create_reseller_gateway_topup_intent(" in reseller_source
@@ -312,10 +301,8 @@ def test_completion_and_expiry_callers_delegate_to_intent_participant() -> None:
         "app/services/reseller_portal_billing.py": "stage_topup_intent_completion",
     }
     for path, call in expected_calls.items():
-        assert call in (ROOT / path).read_text(encoding="utf-8")
-    reconciliation = (ROOT / "app/services/payment_reconciliation.py").read_text(
-        encoding="utf-8"
-    )
+        assert call in source_text(ROOT / path)
+    reconciliation = source_text(ROOT / "app/services/payment_reconciliation.py")
     assert "stage_topup_intent_expiry" in reconciliation
     assert "_EXPIRE_GRACE" not in reconciliation
     assert "DEFAULT_EXPIRY_GRACE_HOURS" not in reconciliation
@@ -323,23 +310,16 @@ def test_completion_and_expiry_callers_delegate_to_intent_participant() -> None:
 
 def test_topup_intent_participant_never_completes_its_transaction() -> None:
     path = ROOT / "app/services/topup_intents.py"
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(path))
+    source = source_text(path)
+    tree = python_ast(path)
     calls = _attribute_calls(tree)
 
     assert "commit" not in calls
     assert "rollback" not in calls
     assert "begin_nested" not in calls
     assert "HTTPException" not in source
-    assert "topup_intent.direct_transfer_submitted" in (
-        ROOT / "app/services/events/types.py"
-    ).read_text(encoding="utf-8")
-    assert "topup_intent.direct_transfer_proof_rejected" in (
-        ROOT / "app/services/events/types.py"
-    ).read_text(encoding="utf-8")
-    assert "topup_intent.completed" in (
-        ROOT / "app/services/events/types.py"
-    ).read_text(encoding="utf-8")
-    assert "topup_intent.expired" in (ROOT / "app/services/events/types.py").read_text(
-        encoding="utf-8"
-    )
+    event_types = source_text(ROOT / "app/services/events/types.py")
+    assert "topup_intent.direct_transfer_submitted" in event_types
+    assert "topup_intent.direct_transfer_proof_rejected" in event_types
+    assert "topup_intent.completed" in event_types
+    assert "topup_intent.expired" in event_types

@@ -69,16 +69,54 @@
         return card;
     }
 
+    function createStageIcon(icon) {
+        const symbols = {
+            circle: "●",
+            target: "◎",
+            document: "▤",
+            handshake: "◇",
+            clock: "◷",
+            check: "✓",
+            close: "×",
+        };
+        if (!icon || !symbols[icon]) return null;
+        const element = document.createElement("span");
+        element.className = "text-sm";
+        element.textContent = symbols[icon];
+        element.setAttribute("aria-hidden", "true");
+        return element;
+    }
+
     function renderColumn(column, records, config) {
         const wrapper = document.createElement("div");
-        wrapper.className = "flex min-w-[220px] flex-1 flex-col rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/20";
+        wrapper.className = "flex min-w-[220px] flex-1 flex-col rounded-lg border border-t-4 border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/20";
+        if (/^#[0-9A-Fa-f]{6}$/.test(column.color || "")) {
+            wrapper.style.borderTopColor = column.color;
+        }
 
         const header = document.createElement("div");
         header.className = "mb-3 flex items-center justify-between";
-        header.innerHTML = `
-            <h3 class="text-sm font-semibold text-slate-900 dark:text-white">${column.title}</h3>
-            <span class="text-xs text-slate-500 dark:text-slate-400">${records.length}</span>
-        `;
+        const heading = document.createElement("div");
+        heading.className = "flex min-w-0 items-center gap-2";
+        const icon = createStageIcon(column.icon);
+        if (icon) heading.appendChild(icon);
+        const title = document.createElement("h3");
+        title.className = "truncate text-sm font-semibold text-slate-900 dark:text-white";
+        title.textContent = formatValue(column.title);
+        heading.appendChild(title);
+        if (column.stage_type && column.stage_type !== "standard") {
+            const stageType = document.createElement("span");
+            stageType.className =
+                "rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-300";
+            stageType.textContent =
+                column.stage_type === "closed_won" ? "Won" : "Lost";
+            heading.appendChild(stageType);
+        }
+        const count = document.createElement("span");
+        count.className = "text-xs text-slate-500 dark:text-slate-400";
+        count.textContent = String(records.length);
+        header.appendChild(heading);
+        header.appendChild(count);
 
         const body = document.createElement("div");
         body.className = "flex min-h-[80px] flex-col gap-3";

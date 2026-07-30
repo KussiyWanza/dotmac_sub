@@ -7,8 +7,10 @@ resolve a zone's effective GeoArea only through ``resolve_geo_area``.
 
 from __future__ import annotations
 
+import enum
 import logging
 import uuid
+from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -19,6 +21,23 @@ from app.models.network import NetworkZone
 from app.services.common import coerce_uuid
 
 logger = logging.getLogger(__name__)
+
+
+class ZoneGeoAreaResolutionKind(str, enum.Enum):
+    #: An active binding resolved to an active GeoArea.
+    bound = "bound"
+    #: No binding anywhere on the active parent chain; global routing may apply.
+    unbound = "unbound"
+    #: A stale binding (retired or missing GeoArea) on the nearest bound active
+    #: zone. Per the approved fail-closed rule this must surface as unavailable
+    #: and deny scoped consequences — never masquerade as unbound.
+    unavailable = "unavailable"
+
+
+@dataclass(frozen=True)
+class ZoneGeoAreaResolution:
+    kind: ZoneGeoAreaResolutionKind
+    geo_area_id: uuid.UUID | None = None
 
 
 def _validated_geo_area_id(db: Session, geo_area_id: str) -> uuid.UUID:
@@ -77,14 +96,14 @@ class NetworkZones:
     @staticmethod
     def resolve_geo_area(
         db: Session, zone_id: str | uuid.UUID | None
-    ) -> uuid.UUID | None:
+    ) -> ZoneGeoAreaResolution:
         """Owner query: the GeoArea this zone belongs to.
 
         A zone without its own binding inherits through the parent chain. An
-        explicit binding on the nearest bound active zone is authoritative; if
-        its GeoArea has been retired the resolution degrades to ``None`` rather
-        than skipping upward, so routing falls back to global policies instead
-        of silently rebinding to a wider area.
+        explicit binding on the nearest bound active zone is authoritative: a
+        binding to a retired GeoArea is *stale*, and per the approved
+        fail-closed rule it resolves ``unavailable`` — never skipping upward,
+        never masquerading as ``unbound`` global routing.
         """
 
         current = coerce_uuid(str(zone_id)) if zone_id else None
@@ -93,14 +112,17 @@ class NetworkZones:
             seen.add(current)
             zone = db.get(NetworkZone, current)
             if zone is None:
-                return None
+                return ZoneGeoAreaResolution(ZoneGeoAreaResolutionKind.unbound)
             if zone.is_active and zone.geo_area_id is not None:
                 area = db.get(GeoArea, zone.geo_area_id)
                 if area is not None and area.is_active:
-                    return zone.geo_area_id
-                return None
+                    return ZoneGeoAreaResolution(
+                        ZoneGeoAreaResolutionKind.bound,
+                        geo_area_id=zone.geo_area_id,
+                    )
+                return ZoneGeoAreaResolution(ZoneGeoAreaResolutionKind.unavailable)
             current = zone.parent_id
-        return None
+        return ZoneGeoAreaResolution(ZoneGeoAreaResolutionKind.unbound)
 
     @staticmethod
     def create(

@@ -21,7 +21,7 @@ from app.models.sales import SalesOrderPaymentStatus, SalesOrderStatus
 class SalesOrderBase(BaseModel):
     subscriber_id: UUID
     quote_id: UUID | None = None
-    # CRM agent UUID carried verbatim until the native agent model owns it.
+    # Native SystemUser UUID; historical imported CRM owner UUIDs remain readable.
     owner_agent_id: UUID | None = None
     source: str | None = Field(default=None, max_length=80)
     order_number: str | None = Field(default=None, max_length=80)

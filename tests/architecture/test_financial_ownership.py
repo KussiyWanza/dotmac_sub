@@ -8,7 +8,15 @@ debt; they are not authorization for new writers and should only shrink.
 from __future__ import annotations
 
 import ast
+from functools import cache
 from pathlib import Path
+
+from tests.architecture.source_index import (
+    call_lines,
+    identifier_names,
+    python_files,
+    python_nodes,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = PROJECT_ROOT / "app"
@@ -111,33 +119,17 @@ APPROVED_INVOICE_LIFECYCLE_WRITERS = {
 
 
 def _python_files() -> list[Path]:
-    return sorted(
-        path
-        for path in APP_DIR.rglob("*.py")
-        if path.is_file() and "__pycache__" not in path.parts
-    )
+    return list(python_files(APP_DIR))
 
 
 def _constructor_lines(path: Path, class_name: str) -> list[int]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    lines: list[int] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = None
-        if isinstance(node.func, ast.Name):
-            name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            name = node.func.attr
-        if name == class_name:
-            lines.append(node.lineno)
-    return lines
+    return list(call_lines(path).get(class_name, ()))
 
 
+@cache
 def _enum_status_write_lines(path: Path, enum_name: str) -> list[int]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     lines: list[int] = []
-    for node in ast.walk(tree):
+    for node in python_nodes(path):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -160,16 +152,13 @@ def _invoice_status_write_lines(path: Path) -> list[int]:
     return _enum_status_write_lines(path, "InvoiceStatus")
 
 
+@cache
 def _billing_account_balance_write_lines(path: Path) -> list[int]:
     """Find balance assignments in modules that depend on BillingAccount."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    if not any(
-        isinstance(node, ast.Name) and node.id == "BillingAccount"
-        for node in ast.walk(tree)
-    ):
+    if "BillingAccount" not in identifier_names(path):
         return []
     lines: list[int] = []
-    for node in ast.walk(tree):
+    for node in python_nodes(path):
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         elif isinstance(node, ast.AugAssign):
@@ -184,10 +173,10 @@ def _billing_account_balance_write_lines(path: Path) -> list[int]:
     return lines
 
 
+@cache
 def _invoice_terminal_status_write_lines(path: Path) -> list[int]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     lines: list[int] = []
-    for node in ast.walk(tree):
+    for node in python_nodes(path):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]

@@ -18,6 +18,7 @@ def test_lead_list_definition_declares_its_capabilities():
         "lead_source",
         "pipeline_id",
         "stage_id",
+        "owner_agent_id",
     }
     assert definition.default_sort == "created_at"
 
@@ -62,6 +63,7 @@ def test_build_leads_list_context_normalizes_stale_params(db_session):
     assert query.filter_value("lead_source") is None
     assert query.filter_value("pipeline_id") is None
     assert query.filter_value("stage_id") is None
+    assert query.filter_value("owner_agent_id") is None
     assert ctx["canonicalization_needed"] is True
 
 

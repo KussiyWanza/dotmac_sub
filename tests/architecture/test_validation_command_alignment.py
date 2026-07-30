@@ -21,8 +21,11 @@ def test_makefile_owns_parallel_non_integration_suite() -> None:
 def test_ci_and_agent_guidance_call_makefile_validation_owners() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-    assert "run: make test-ci" in workflow
+    assert "make test-ci-shard" in workflow
+    assert "scripts/ci/select_test_shard.py" in makefile
+    assert "make test-architecture" in workflow
     assert "run: make test-integration" in workflow
     assert "make test-architecture" in guidance
     assert "make test\n" in guidance

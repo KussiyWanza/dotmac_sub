@@ -5,7 +5,9 @@
 {% set usage_period_query_key = usage_period_query_key | default('period') %}
 {% set usage_page_query_key = usage_page_query_key | default('page') %}
 {% set usage_per_page_query_key = usage_per_page_query_key | default('per_page') %}
+{% set usage_view_query_key = usage_view_query_key | default('view') %}
 {% set usage_anchor = usage_anchor | default('') %}
+{% set usage_partial_navigation_url = usage_partial_navigation_url | default(none) %}
 {% set bandwidth_chart_api_base = bandwidth_chart_api_base | default('/portal/bandwidth') %}
 {% set bandwidth_chart_use_my_endpoints = bandwidth_chart_use_my_endpoints if bandwidth_chart_use_my_endpoints is defined else true %}
 {% set bandwidth_chart_direct_live_endpoint = bandwidth_chart_direct_live_endpoint | default(none) %}
@@ -17,6 +19,8 @@
 {% set usage_enable_records_chart = usage_enable_records_chart | default(false) %}
 {% set usage_records_default_view = usage_records_default_view | default('table') %}
 {% set usage_records_chart_id = usage_records_chart_id | default('usage-records-chart') %}
+{% set usage_records_panel_id = usage_records_panel_id | default('usage-records-panel') %}
+{% set usage_records_loading_id = usage_records_panel_id ~ '-loading' %}
 {% set usage_records_chart_label = usage_records_chart_label | default('Usage (GB)') %}
 {% set show_fup_panel = show_fup_panel if show_fup_panel is defined else usage_theme == 'admin' %}
 {% set bandwidth_chart_initial_stats = bandwidth_chart_initial_stats | default(None) %}
@@ -289,7 +293,7 @@
     </div>
     {% endif %}
 
-    <div class="{{ usage_panel_class }}"
+    <div id="{{ usage_records_panel_id }}" class="{{ usage_panel_class }}"
          {% if usage_enable_records_chart %}
          x-data='window.DotmacCharts && typeof window.DotmacCharts.createUsageRecordsPanel === "function" ? DotmacCharts.createUsageRecordsPanel({
              defaultView: {{ usage_records_default_view | tojson }},
@@ -400,16 +404,44 @@
              {% if usage_enable_records_chart %}
              x-show="recordsView === 'table'"
              {% endif %}>
-            <p class="text-sm font-medium text-stone-500 dark:text-stone-400">Page <span class="text-stone-900 dark:text-white">{{ page }}</span> of <span class="text-stone-900 dark:text-white">{{ total_pages }}</span></p>
+            <div class="flex items-center gap-3">
+                <p aria-live="polite" class="text-sm font-medium text-stone-500 dark:text-stone-400">Page <span class="text-stone-900 dark:text-white">{{ page }}</span> of <span class="text-stone-900 dark:text-white">{{ total_pages }}</span></p>
+                {% if usage_partial_navigation_url %}
+                <span id="{{ usage_records_loading_id }}" class="htmx-indicator inline-flex items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
+                    <svg class="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    Loading records
+                </span>
+                {% endif %}
+            </div>
             <div class="flex items-center gap-2">
                 {% if page > 1 %}
-                <a href="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page - 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}{{ usage_anchor }}" class="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition-all duration-200 hover:bg-stone-50 hover:border-stone-400 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-300 dark:hover:bg-stone-600">
+                <a href="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page - 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table{{ usage_anchor }}"
+                   {% if usage_partial_navigation_url %}
+                   hx-get="{{ usage_partial_navigation_url }}?{{ usage_page_query_key }}={{ page - 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table"
+                   hx-target="#{{ usage_records_panel_id }}"
+                   hx-select="#{{ usage_records_panel_id }}"
+                   hx-swap="outerHTML"
+                   hx-push-url="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page - 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table{{ usage_anchor }}"
+                   hx-indicator="#{{ usage_records_loading_id }}"
+                   hx-disabled-elt="this"
+                   {% endif %}
+                   class="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition-all duration-200 hover:bg-stone-50 hover:border-stone-400 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-300 dark:hover:bg-stone-600">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
                     Previous
                 </a>
                 {% endif %}
                 {% if page < total_pages %}
-                <a href="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page + 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}{{ usage_anchor }}" class="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition-all duration-200 hover:bg-stone-50 hover:border-stone-400 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-300 dark:hover:bg-stone-600">
+                <a href="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page + 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table{{ usage_anchor }}"
+                   {% if usage_partial_navigation_url %}
+                   hx-get="{{ usage_partial_navigation_url }}?{{ usage_page_query_key }}={{ page + 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table"
+                   hx-target="#{{ usage_records_panel_id }}"
+                   hx-select="#{{ usage_records_panel_id }}"
+                   hx-swap="outerHTML"
+                   hx-push-url="{{ usage_navigation_base_url }}?{{ usage_page_query_key }}={{ page + 1 }}&{{ usage_per_page_query_key }}={{ per_page }}&{{ usage_period_query_key }}={{ period }}&{{ usage_view_query_key }}=table{{ usage_anchor }}"
+                   hx-indicator="#{{ usage_records_loading_id }}"
+                   hx-disabled-elt="this"
+                   {% endif %}
+                   class="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition-all duration-200 hover:bg-stone-50 hover:border-stone-400 dark:border-stone-600 dark:bg-stone-700 dark:text-stone-300 dark:hover:bg-stone-600">
                     Next
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 </a>

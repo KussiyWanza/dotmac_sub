@@ -264,6 +264,7 @@ def list_leads(
     owner_agent_id: str | None = None,
     status: str | None = None,
     lead_source: str | None = None,
+    search: str | None = Query(default=None, max_length=200),
     is_active: bool | None = None,
     order_by: str = Query(default="updated_at"),
     order_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -278,6 +279,7 @@ def list_leads(
         owner_agent_id=owner_agent_id,
         status=status,
         lead_source=lead_source,
+        search=search,
         is_active=is_active,
         order_by=order_by,
         order_dir=order_dir,
@@ -307,7 +309,7 @@ def update_lead(lead_id: str, payload: LeadUpdate, db: Session = Depends(get_db)
 @router.delete(
     "/leads/{lead_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("crm:lead:write"))],
+    dependencies=[Depends(require_permission("crm:lead:delete"))],
 )
 def delete_lead(lead_id: str, db: Session = Depends(get_db)):
     sales_service.leads.delete(db, lead_id)

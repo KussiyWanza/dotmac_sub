@@ -16,7 +16,7 @@ from app.models.operational_escalation import (
     OperationalWatcherRole,
 )
 from app.services import operational_escalation, service_team_composition
-from app.services.network.zones import NetworkZones
+from app.services.network.zones import NetworkZones, ZoneGeoAreaResolutionKind
 from app.services.topology.affected import affected_customers
 
 SEVERITY_RANK = {
@@ -87,7 +87,7 @@ def _incident_zone_id(session, incident: OutageIncident):
     return None
 
 
-def _incident_geo_area_id(session, incident: OutageIncident):
+def _incident_geo_resolution(session, incident: OutageIncident):
     return NetworkZones.resolve_geo_area(session, _incident_zone_id(session, incident))
 
 
@@ -112,25 +112,32 @@ def ensure_outage_operations(session, incident: OutageIncident) -> None:
     """
 
     entity_id = str(incident.id)
-    geo_area_id = _incident_geo_area_id(session, incident)
-    operations = service_team_composition.resolve_routing_team(
-        session,
-        domain=OUTAGE_ROUTING_DOMAIN,
-        route_key=OUTAGE_PRIMARY_ROUTE,
-        geo_area_id=geo_area_id,
-    )
-    support = service_team_composition.resolve_routing_team(
-        session,
-        domain=OUTAGE_ROUTING_DOMAIN,
-        route_key=OUTAGE_SUPPORT_WATCHER_ROUTE,
-        geo_area_id=geo_area_id,
-    )
-    field = service_team_composition.resolve_routing_team(
-        session,
-        domain=OUTAGE_ROUTING_DOMAIN,
-        route_key=OUTAGE_FIELD_WATCHER_ROUTE,
-        geo_area_id=geo_area_id,
-    )
+    geography = _incident_geo_resolution(session, incident)
+    if geography.kind is ZoneGeoAreaResolutionKind.unavailable:
+        # Approved fail-closed rule: a stale zone binding must deny the scoped
+        # routing consequence rather than masquerade as unbound global routing.
+        # The incident stays unrouted and loudly visible until the binding is
+        # repaired; the coordination room below is still linked.
+        operations = support = field = None
+    else:
+        operations = service_team_composition.resolve_routing_team(
+            session,
+            domain=OUTAGE_ROUTING_DOMAIN,
+            route_key=OUTAGE_PRIMARY_ROUTE,
+            geo_area_id=geography.geo_area_id,
+        )
+        support = service_team_composition.resolve_routing_team(
+            session,
+            domain=OUTAGE_ROUTING_DOMAIN,
+            route_key=OUTAGE_SUPPORT_WATCHER_ROUTE,
+            geo_area_id=geography.geo_area_id,
+        )
+        field = service_team_composition.resolve_routing_team(
+            session,
+            domain=OUTAGE_ROUTING_DOMAIN,
+            route_key=OUTAGE_FIELD_WATCHER_ROUTE,
+            geo_area_id=geography.geo_area_id,
+        )
 
     if operations is not None and not _has_active_primary_owner(session, incident):
         operational_escalation.set_owner(

@@ -14,6 +14,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.architecture.source_index import python_ast, python_files, source_text
+
 ROOT = Path(__file__).resolve().parents[2]
 
 #: The ONE module allowed to decide contact eligibility.
@@ -71,7 +73,7 @@ KNOWN_DIRECT_SENDERS = TRANSPORT_MODULES | LEDGER_BYPASS_BACKLOG
 
 
 def _py_files() -> list[Path]:
-    return [p for p in (ROOT / "app").rglob("*.py") if "__pycache__" not in p.parts]
+    return list(python_files(ROOT / "app"))
 
 
 def test_the_consent_rule_has_exactly_one_implementation() -> None:
@@ -80,7 +82,7 @@ def test_the_consent_rule_has_exactly_one_implementation() -> None:
 
     for path in _py_files():
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = python_ast(path)
         except SyntaxError:  # pragma: no cover
             continue
         rel = str(path.relative_to(ROOT))
@@ -111,7 +113,7 @@ def test_no_new_module_calls_a_transport_directly() -> None:
         if rel in KNOWN_DIRECT_SENDERS or rel == DELIVERY_POINT:
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = python_ast(path)
         except SyntaxError:  # pragma: no cover
             continue
         for node in ast.walk(tree):
@@ -140,7 +142,7 @@ def test_no_new_module_calls_a_transport_directly() -> None:
 
 def test_the_delivery_point_actually_consults_the_ledger() -> None:
     """A gate that is not wired in is worse than no gate: it looks safe."""
-    source = (ROOT / DELIVERY_POINT).read_text(encoding="utf-8")
+    source = source_text(ROOT / DELIVERY_POINT)
     assert "communication_eligibility" in source, (
         f"{DELIVERY_POINT} must import the eligibility owner"
     )
@@ -165,7 +167,7 @@ def test_the_bypass_backlog_only_shrinks() -> None:
             stale.append(f"{rel} (module deleted)")
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = python_ast(path)
         except SyntaxError:  # pragma: no cover
             continue
         calls_transport = any(

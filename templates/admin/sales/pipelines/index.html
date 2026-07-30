@@ -2,149 +2,284 @@
 {% block title %}Pipeline Settings - Admin{% endblock %}
 
 {% block content %}
-<div class="space-y-4">
-    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+<div class="space-y-6" data-pipeline-settings>
+    <header class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
             <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                <a href="/admin/sales/leads" class="hover:text-cyan-600">Leads</a>
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                <a href="/admin/sales" class="hover:text-cyan-600">Sales Dashboard</a>
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                 <span class="text-slate-900 dark:text-white">Pipeline Settings</span>
             </nav>
-            <h1 class="font-display text-xl font-bold tracking-tight text-slate-900 dark:text-white">Pipeline Settings</h1>
+            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Pipeline Settings</h1>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Manage sales pipelines, stages, and bulk lead assignment.</p>
         </div>
-        <a href="/admin/sales/pipelines/new"
-           class="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-cyan-700">
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            New Pipeline
-        </a>
-    </div>
+        <div class="flex flex-wrap gap-2">
+            <a href="/admin/sales"
+               class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                Back to Dashboard
+            </a>
+            <a href="/admin/sales/pipelines-settings/new"
+               class="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                New Pipeline
+            </a>
+        </div>
+    </header>
 
-    {% if bulk_result == 'ok' %}
-    <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-200">
-        Bulk assignment complete. Updated {{ bulk_count }} lead(s).
-    </div>
-    {% endif %}
+    <section class="rounded-xl border border-cyan-200 bg-cyan-50/70 p-5 shadow-sm dark:border-cyan-900/50 dark:bg-cyan-950/20" aria-labelledby="recommended-stages-heading">
+        <div class="flex items-start gap-3">
+            <div class="rounded-lg bg-cyan-100 p-2 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div class="min-w-0 flex-1">
+                <h2 id="recommended-stages-heading" class="font-semibold text-slate-900 dark:text-white">Recommended Default Stages</h2>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">These stages are automatically created when <strong>Add Default Stages</strong> is selected during pipeline creation.</p>
+                <ol class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    {% for stage in default_pipeline_stages %}
+                    <li class="flex items-center gap-2 rounded-lg border border-white/80 bg-white/80 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800/70">
+                        <span class="h-2.5 w-2.5 shrink-0 rounded-full" style="background-color: {{ stage.color }}"></span>
+                        <span class="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{{ stage.name }}</span>
+                        <span class="font-semibold text-slate-500 dark:text-slate-400">{{ stage.probability }}%</span>
+                    </li>
+                    {% endfor %}
+                </ol>
+            </div>
+        </div>
+    </section>
 
-    <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <h2 class="text-base font-semibold text-slate-900 dark:text-white">Recommended Default Stages</h2>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Used when creating a pipeline with default stages.</p>
-        <ol class="mt-3 list-decimal space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-300">
-            {% for stage in default_pipeline_stages %}
-            <li>{{ stage.name }} ({{ stage.probability }}%)</li>
-            {% endfor %}
-        </ol>
-    </div>
-
-    {% for pipeline in pipelines %}
-    {% set stages = stage_map.get(pipeline.id|string, []) %}
-    <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    {% if pipelines %}
+    <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-label="Pipeline filters">
+        <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
             <div>
-                <h3 class="text-base font-semibold text-slate-900 dark:text-white">{{ pipeline.name }}</h3>
-                <p class="text-xs text-slate-500 dark:text-slate-400">
-                    {{ 'Active' if pipeline.is_active else 'Inactive' }} · {{ stages|length }} stage(s)
-                </p>
+                <label for="pipeline-search" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Search by Pipeline Name</label>
+                <div class="relative">
+                    <svg class="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21-4.35-4.35m2.35-5.65a8 8 0 11-16 0 8 8 0 0116 0z"/></svg>
+                    <input id="pipeline-search" type="search" autocomplete="off" placeholder="Search pipelines..."
+                           class="block w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                </div>
             </div>
-            <div class="flex flex-wrap gap-2">
-                <a href="/admin/sales/pipelines/{{ pipeline.id }}/edit"
-                   class="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">
-                    Edit Pipeline
-                </a>
-                <form method="post" action="/admin/sales/pipelines/{{ pipeline.id }}/delete"
-                      onsubmit="return confirm('Deactivate this pipeline?')">
+            <div>
+                <label for="pipeline-status-filter" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
+                <select id="pipeline-status-filter"
+                        class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <option value="all">All</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                </select>
+            </div>
+        </div>
+    </section>
+
+    <div class="space-y-4" data-pipeline-list>
+        {% for pipeline in pipelines %}
+        {% set pipeline_key = pipeline.id|string %}
+        {% set stages = stage_map.get(pipeline_key, []) %}
+        <details open
+                 data-pipeline-card
+                 data-pipeline-name="{{ pipeline.name|lower|e }}"
+                 data-pipeline-status="{{ 'active' if pipeline.is_active else 'inactive' }}"
+                 class="group rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <summary class="flex cursor-pointer list-none flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex min-w-0 items-center gap-3">
+                    <svg class="h-5 w-5 shrink-0 text-slate-400 transition group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7"/></svg>
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h2 class="truncate text-base font-semibold text-slate-900 dark:text-white">{{ pipeline.name }}</h2>
+                            {% if pipeline.is_active %}
+                            <span class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">Active</span>
+                            {% else %}
+                            <span class="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">Inactive</span>
+                            {% endif %}
+                        </div>
+                        <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                            <span>{{ stages|length }} stage(s)</span>
+                            <span>{{ pipeline_lead_counts.get(pipeline_key, 0) }} active lead(s)</span>
+                            <span>Created {{ pipeline.created_at.strftime('%d %b %Y') if pipeline.created_at else '—' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <span class="text-xs font-medium text-cyan-700 dark:text-cyan-300">Expand management controls</span>
+            </summary>
+
+            <div class="border-t border-slate-200 p-5 dark:border-slate-700">
+                <div class="mb-5 flex flex-wrap gap-2">
+                    <a href="/admin/sales/pipelines-settings/{{ pipeline.id }}/edit"
+                       class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Edit Pipeline</a>
+                    <form method="post" action="/admin/sales/pipelines-settings/{{ pipeline.id }}/status"
+                          {% if pipeline.is_active %}onsubmit="return confirm('Deactivate this pipeline? It will be unavailable for new work, but existing data will remain intact.')"{% endif %}>
+                        {% include "components/forms/csrf_input.html" %}
+                        <input type="hidden" name="is_active" value="{{ 'false' if pipeline.is_active else 'true' }}">
+                        <button type="submit" class="rounded-lg border px-3 py-2 text-sm font-medium {{ 'border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300' if pipeline.is_active else 'border-emerald-200 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300' }}">
+                            {{ 'Deactivate' if pipeline.is_active else 'Activate' }}
+                        </button>
+                    </form>
+                    <a href="/admin/sales/pipeline-board?pipeline_id={{ pipeline.id }}"
+                       class="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">View Pipeline Board</a>
+                </div>
+
+                <div class="mb-3">
+                    <h3 class="font-semibold text-slate-900 dark:text-white">Stage Management</h3>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Drag rows to reorder them. The new order is saved immediately; the button remains available as a no-JavaScript fallback.</p>
+                </div>
+
+                {% if stages %}
+                <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
+                    <table class="min-w-[1120px] w-full text-sm" data-stage-ordering>
+                        <thead class="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/30 dark:text-slate-400">
+                            <tr>
+                                <th class="w-12 px-3 py-3"><span class="sr-only">Drag</span></th>
+                                <th class="px-3 py-3">Stage</th>
+                                <th class="px-3 py-3">Order</th>
+                                <th class="px-3 py-3">Probability</th>
+                                <th class="px-3 py-3">Type</th>
+                                <th class="px-3 py-3">Color</th>
+                                <th class="px-3 py-3">Icon</th>
+                                <th class="px-3 py-3">Leads</th>
+                                <th class="px-3 py-3">Active</th>
+                                <th class="px-3 py-3 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-200 dark:divide-slate-700" data-stage-rows>
+                            {% for stage in stages %}
+                            {% set presentation = stage_presentations.get(stage.id|string) %}
+                            {% set stage_form_id = 'stage-form-' ~ stage.id %}
+                            <tr draggable="true" data-stage-row data-stage-id="{{ stage.id }}" class="bg-white dark:bg-slate-800">
+                                <td class="cursor-grab px-3 py-3 text-slate-400" title="Drag to reorder">
+                                    <svg class="h-5 w-5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 6a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm-1.5 7.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM16 4a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm-1.5 7.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm1.5 4.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>
+                                </td>
+                                <td class="px-3 py-3"><input form="{{ stage_form_id }}" name="name" value="{{ stage.name }}" required maxlength="120" class="w-44 rounded-lg border border-slate-200 px-2.5 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"></td>
+                                <td class="px-3 py-3"><input form="{{ stage_form_id }}" name="order_index" type="number" min="0" value="{{ stage.order_index }}" class="w-20 rounded-lg border border-slate-200 px-2.5 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"></td>
+                                <td class="px-3 py-3"><div class="flex items-center gap-1"><input form="{{ stage_form_id }}" name="default_probability" type="number" min="0" max="100" value="{{ stage.default_probability }}" class="w-20 rounded-lg border border-slate-200 px-2.5 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"><span class="text-slate-500">%</span></div></td>
+                                <td class="px-3 py-3">
+                                    <select form="{{ stage_form_id }}" name="stage_type" class="w-32 rounded-lg border border-slate-200 px-2.5 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                        {% for stage_type in stage_type_options %}
+                                        <option value="{{ stage_type.value }}" {% if presentation.stage_type == stage_type %}selected{% endif %}>{{ stage_type.value|replace('_', ' ')|title }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </td>
+                                <td class="px-3 py-3"><input form="{{ stage_form_id }}" name="color" type="color" value="{{ presentation.color }}" class="h-10 w-14 cursor-pointer rounded border border-slate-200 bg-white p-1 dark:border-slate-600 dark:bg-slate-700" aria-label="Stage color"></td>
+                                <td class="px-3 py-3">
+                                    <select form="{{ stage_form_id }}" name="icon" class="w-32 rounded-lg border border-slate-200 px-2.5 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                        {% for icon_value, icon_label in stage_icon_options %}
+                                        <option value="{{ icon_value }}" {% if presentation.icon == icon_value or (not presentation.icon and not icon_value) %}selected{% endif %}>{{ icon_label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </td>
+                                <td class="px-3 py-3"><span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-300">{{ stage_lead_counts.get(stage.id|string, 0) }}</span></td>
+                                <td class="px-3 py-3">
+                                    <span class="rounded-full px-2 py-1 text-xs font-semibold {{ 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' if stage.is_active else 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }}">{{ 'Active' if stage.is_active else 'Inactive' }}</span>
+                                </td>
+                                <td class="px-3 py-3">
+                                    <div class="flex justify-end gap-2">
+                                        <form id="{{ stage_form_id }}" method="post" action="/admin/sales/pipelines-settings/stages/{{ stage.id }}">
+                                            {% include "components/forms/csrf_input.html" %}
+                                            <button type="submit" class="rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">Save</button>
+                                        </form>
+                                        <form method="post" action="/admin/sales/pipelines-settings/stages/{{ stage.id }}/status"
+                                              {% if stage.is_active %}onsubmit="return confirm('Deactivate this stage? {{ stage_lead_counts.get(stage.id|string, 0) }} active lead(s) are currently assigned to it. Existing assignments remain intact.')"{% endif %}>
+                                            {% include "components/forms/csrf_input.html" %}
+                                            <input type="hidden" name="is_active" value="{{ 'false' if stage.is_active else 'true' }}">
+                                            <button type="submit" class="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">{{ 'Deactivate' if stage.is_active else 'Activate' }}</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <form method="post" action="/admin/sales/pipelines-settings/{{ pipeline.id }}/stages/reorder" data-stage-reorder-form class="mt-3 flex justify-end">
                     {% include "components/forms/csrf_input.html" %}
-                    <button type="submit"
-                            class="rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-700 dark:text-rose-300">
-                        Deactivate
-                    </button>
+                    <input type="hidden" name="stage_ids" value="{% for stage in stages %}{{ ',' if not loop.first else '' }}{{ stage.id }}{% endfor %}">
+                    <button type="submit" data-stage-order-save class="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Save Stage Order</button>
                 </form>
+                {% else %}
+                <div class="rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">This pipeline has no stages yet. Add the first stage below.</div>
+                {% endif %}
+
+                <div class="mt-6 grid gap-5 xl:grid-cols-2">
+                    <section class="rounded-xl border border-slate-200 p-4 dark:border-slate-700" aria-labelledby="add-stage-{{ pipeline.id }}">
+                        <h3 id="add-stage-{{ pipeline.id }}" class="font-semibold text-slate-900 dark:text-white">Add Stage</h3>
+                        <form method="post" action="/admin/sales/pipelines-settings/{{ pipeline.id }}/stages" class="mt-4 grid gap-3 sm:grid-cols-2">
+                            {% include "components/forms/csrf_input.html" %}
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Stage Name
+                                <input name="name" required maxlength="120" placeholder="e.g. Proposal Sent" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            </label>
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Display Order
+                                <input name="order_index" type="number" min="0" value="{{ stages|length }}" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            </label>
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Default Probability
+                                <input name="default_probability" type="number" min="0" max="100" value="50" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                            </label>
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Stage Type
+                                <select name="stage_type" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                    {% for stage_type in stage_type_options %}<option value="{{ stage_type.value }}">{{ stage_type.value|replace('_', ' ')|title }}</option>{% endfor %}
+                                </select>
+                            </label>
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Stage Color
+                                <input name="color" type="color" value="#06B6D4" class="mt-1 block h-10 w-full rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-600 dark:bg-slate-700">
+                            </label>
+                            <label class="text-sm text-slate-700 dark:text-slate-300">Stage Icon
+                                <select name="icon" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                    {% for icon_value, icon_label in stage_icon_options %}<option value="{{ icon_value }}">{{ icon_label }}</option>{% endfor %}
+                                </select>
+                            </label>
+                            <div class="sm:col-span-2 flex justify-end"><button type="submit" class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">Add Stage</button></div>
+                        </form>
+                    </section>
+
+                    <section class="rounded-xl border border-slate-200 p-4 dark:border-slate-700" aria-labelledby="bulk-assign-{{ pipeline.id }}">
+                        <h3 id="bulk-assign-{{ pipeline.id }}" class="font-semibold text-slate-900 dark:text-white">Bulk Assign Leads</h3>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Assign leads to this pipeline and a chosen target stage.</p>
+                        <form method="post" action="/admin/sales/pipelines-settings/{{ pipeline.id }}/bulk-assign-leads" class="mt-4 space-y-3" data-bulk-assignment-form>
+                            {% include "components/forms/csrf_input.html" %}
+                            <label class="block text-sm text-slate-700 dark:text-slate-300">Target Stage
+                                <select name="stage_id" class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                    <option value="">No Stage</option>
+                                    <optgroup label="Any Active Stage">
+                                        {% for stage in stages if stage.is_active %}<option value="{{ stage.id }}">{{ stage.name }}</option>{% endfor %}
+                                    </optgroup>
+                                </select>
+                            </label>
+                            <label class="block text-sm text-slate-700 dark:text-slate-300">Assignment Scope
+                                <select name="scope" data-assignment-scope class="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                                    <option value="unassigned">Only Unassigned Leads</option>
+                                    <option value="all">All Active Leads (Overwrite)</option>
+                                </select>
+                            </label>
+                            <div class="flex justify-end"><button type="submit" class="rounded-lg border border-cyan-200 px-4 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50 dark:border-cyan-800 dark:text-cyan-300">Run Bulk Assignment</button></div>
+                        </form>
+                    </section>
+                </div>
             </div>
-        </div>
-
-        <div class="mt-5 overflow-x-auto">
-            <table class="min-w-full text-sm">
-                <thead>
-                    <tr class="border-b border-slate-200 dark:border-slate-700">
-                        <th class="px-2 py-2 text-left font-semibold text-slate-500 dark:text-slate-400">Stage</th>
-                        <th class="px-2 py-2 text-left font-semibold text-slate-500 dark:text-slate-400">Order</th>
-                        <th class="px-2 py-2 text-left font-semibold text-slate-500 dark:text-slate-400">Probability</th>
-                        <th class="px-2 py-2 text-left font-semibold text-slate-500 dark:text-slate-400">Active</th>
-                        <th class="px-2 py-2 text-left font-semibold text-slate-500 dark:text-slate-400">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for stage in stages %}
-                    <tr class="border-b border-slate-100 dark:border-slate-700/60">
-                        <td class="px-2 py-2">
-                            <form method="post" action="/admin/sales/pipelines/stages/{{ stage.id }}" class="flex items-center gap-2">
-                                {% include "components/forms/csrf_input.html" %}
-                                <input type="text" name="name" value="{{ stage.name }}" required aria-label="Stage name"
-                                       class="w-full min-w-[180px] rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        </td>
-                        <td class="px-2 py-2">
-                                <input type="number" name="order_index" value="{{ stage.order_index }}" aria-label="Stage order"
-                                       class="w-20 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        </td>
-                        <td class="px-2 py-2">
-                                <input type="number" min="0" max="100" name="default_probability" value="{{ stage.default_probability }}" aria-label="Default probability"
-                                       class="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        </td>
-                        <td class="px-2 py-2">
-                                <input type="checkbox" name="is_active" value="true" {% if stage.is_active %}checked{% endif %} aria-label="Stage active"
-                                       class="h-4 w-4 rounded border-slate-300 text-cyan-600 dark:border-slate-600 dark:bg-slate-700">
-                        </td>
-                        <td class="px-2 py-2">
-                                <button type="submit" class="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Save</button>
-                            </form>
-                            <form method="post" action="/admin/sales/pipelines/stages/{{ stage.id }}/delete" class="mt-1">
-                                {% include "components/forms/csrf_input.html" %}
-                                <button type="submit" class="rounded-lg border border-rose-300 bg-white px-2 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:bg-slate-700 dark:text-rose-300">Deactivate</button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-
-        <div class="mt-4 grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40 sm:grid-cols-5">
-            <form method="post" action="/admin/sales/pipelines/{{ pipeline.id }}/stages" class="contents">
-                {% include "components/forms/csrf_input.html" %}
-                <input type="text" name="name" required placeholder="New stage name" aria-label="New stage name"
-                       class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white sm:col-span-2">
-                <input type="number" name="order_index" value="{{ stages|length }}" aria-label="New stage order"
-                       class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                <input type="number" min="0" max="100" name="default_probability" value="50" aria-label="New stage probability"
-                       class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                <button type="submit"
-                        class="rounded-lg bg-cyan-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-cyan-700">
-                    Add Stage
-                </button>
-            </form>
-        </div>
-
-        <div class="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
-            <h4 class="text-sm font-semibold text-slate-900 dark:text-white">Bulk Assign Leads</h4>
-            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Assign existing leads to this pipeline in one action.</p>
-            <form method="post" action="/admin/sales/pipelines/{{ pipeline.id }}/bulk-assign-leads" class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-4">
-                {% include "components/forms/csrf_input.html" %}
-                <select name="stage_id" aria-label="Target stage" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <option value="">No stage</option>
-                    {% for stage in stages if stage.is_active %}
-                    <option value="{{ stage.id }}">{{ stage.name }}</option>
-                    {% endfor %}
-                </select>
-                <select name="scope" aria-label="Assignment scope" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <option value="unassigned">Only unassigned leads</option>
-                    <option value="all_active">All active leads (overwrite)</option>
-                </select>
-                <button type="submit" class="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-slate-100 sm:col-span-2">
-                    Run Bulk Assignment
-                </button>
-            </form>
-        </div>
+        </details>
+        {% endfor %}
     </div>
-    {% endfor %}
+
+    <div data-filter-empty hidden class="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400">No pipelines match the current search and status filter.</div>
+    {% else %}
+    <section class="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center shadow-sm dark:border-slate-600 dark:bg-slate-800">
+        <div class="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-50 text-cyan-600 dark:bg-cyan-900/20 dark:text-cyan-300">
+            <svg class="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 6h16M4 12h10M4 18h7"/></svg>
+        </div>
+        <h2 class="mt-4 text-lg font-semibold text-slate-900 dark:text-white">No pipelines have been created yet.</h2>
+        <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">Create a pipeline to organize leads into stages and begin managing your sales flow.</p>
+        <a href="/admin/sales/pipelines-settings/new" class="mt-5 inline-flex rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">Create First Pipeline</a>
+    </section>
+    {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="/static/js/pipeline-settings.js"></script>
+{% if toast_message %}
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+    window.dispatchEvent(new CustomEvent("show-toast", {
+        detail: { message: {{ toast_message|tojson }}, type: {{ toast_type|tojson }} }
+    }));
+});
+</script>
+{% endif %}
 {% endblock %}
