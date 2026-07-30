@@ -21,6 +21,8 @@
         </div>
     {% endcall %}
 
+    {% include "admin/inbox/_contact_preview.html" %}
+
     {% call ctx_section("Customer & subscription") %}
         {% if subscriber_summary %}
         <dl class="space-y-2 text-xs">
@@ -185,11 +187,4 @@
         </form>
     {% endcall %}
 
-    {% call ctx_section("Related work") %}
-        <div class="space-y-2 text-xs">
-            <button type="button" @click="showDemoNotice('Projects context')" class="flex min-h-10 w-full items-center justify-between rounded-lg border border-dashed border-slate-300 px-3 text-slate-600 dark:border-slate-700 dark:text-slate-300"><span>Projects</span><span>API pending</span></button>
-            <button type="button" @click="showDemoNotice('Tasks context')" class="flex min-h-10 w-full items-center justify-between rounded-lg border border-dashed border-slate-300 px-3 text-slate-600 dark:border-slate-700 dark:text-slate-300"><span>Tasks</span><span>API pending</span></button>
-            <button type="button" @click="showDemoNotice('Conversation history')" class="flex min-h-10 w-full items-center justify-between rounded-lg border border-dashed border-slate-300 px-3 text-slate-600 dark:border-slate-700 dark:text-slate-300"><span>Conversation history</span><span>API pending</span></button>
-        </div>
-    {% endcall %}
 </div>

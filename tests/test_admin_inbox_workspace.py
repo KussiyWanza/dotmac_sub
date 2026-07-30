@@ -52,9 +52,13 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/index.html",
         "admin/inbox/_sidebar.html",
         "admin/inbox/_conversation.html",
+        "admin/inbox/_comment_thread.html",
         "admin/inbox/_contact_drawer.html",
+        "admin/inbox/_contact_preview.html",
         "admin/inbox/_empty_state.html",
+        "admin/inbox/_floating_surfaces.html",
         "admin/inbox/_overlays.html",
+        "admin/inbox/_ticket_panel.html",
     ):
         assert environment.get_template(template_name) is not None
 

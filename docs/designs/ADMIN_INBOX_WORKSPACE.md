@@ -175,9 +175,45 @@ a persisted UI flag.
 
 ## Responsive contract
 
+- The admin shell uses the dynamic viewport height and keeps the 64px top bar
+  outside the scrollable page region.
+- The page wrapper fills the remaining height and applies 24px vertical
+  padding, with 16px horizontal padding on mobile, 24px from 640px, and 32px
+  from 1024px.
+- The Alpine workspace remains a padding-free, full-size positioning
+  container. A separate full-size inbox frame provides the 16px radius,
+  white/slate-900 surface, and translucent slate border.
+- The page behind the frame uses the shared subtle noise and gradient treatment
+  over slate-100 in light mode and slate-900 in dark mode.
 - Desktop: resizable 288–448px list, flexible thread, optional 320px context.
 - Tablet: fixed list and thread; context is an overlay drawer.
 - Mobile: list or thread, never squeezed columns. Thread provides a back action.
+
+## CRM inbox replication previews
+
+The CRM visual structure is replicated inside the admin page-content boundary.
+Existing queue, conversation, contact, ticket, assignment, status, note,
+attachment, transcript, and outbound-message actions continue to use their
+registered backend owners.
+
+UI whose backend contract does not yet exist is marked
+`data-replica-placeholder` and visibly labelled as dummy or preview data.
+Contextual examples appear only in their relevant panel, while event-only
+surfaces remain hidden by default. The `crm_preview` query parameter may show
+an event preview (`comment`, `reply-failed`, `notifications`, `incoming-call`,
+or `active-call`) or `all`. Preview values are not submitted and must not be
+treated as customer facts.
+
+The following remain non-authoritative preview UI:
+
+- persistent notification and reply-failure cards;
+- incoming and active WhatsApp call controls;
+- social-post comment thread and public comment reply;
+- AI reply generation and voice capture;
+- fine-grained WhatsApp template parameter fields;
+- CRM-only profile completion, merge/convert/new-lead actions, demographic and
+  masked identity fields, retention indicator, activity statistics, embedded
+  conversation history, projects, and tasks.
 - The document does not scroll; list, timeline, context, and long overlays
   scroll independently.
 

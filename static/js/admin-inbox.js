@@ -28,10 +28,16 @@
     document.querySelector('meta[name="csrf-token"]')?.content || "";
 
   window.inboxWorkspace = function inboxWorkspace(config) {
+    const crmPreview =
+      new URLSearchParams(window.location.search).get("crm_preview") || "";
+    const previewIncludes = (name) =>
+      crmPreview === "all" || crmPreview.split(",").includes(name);
     return {
       selectedId: config.selectedId || "",
       myTeamIds: config.myTeamIds || "",
       actorId: config.actorId || "",
+      commentMode: Boolean(config.commentMode) || previewIncludes("comment"),
+      crmPreview,
       mode: config.initialMode || "list",
       sidebarWidth: clamp(
         Number(localStorage.getItem(KEYS.sidebarWidth) || 320),
@@ -62,6 +68,29 @@
       newMessagesAvailable: false,
       newListActivityAvailable: false,
       toastMessage: "",
+      replyFailure: previewIncludes("reply-failed")
+        ? { detail: "The channel did not accept this message. Try again." }
+        : null,
+      realtimeNotifications: previewIncludes("notifications")
+        ? [
+            {
+              id: "preview-reminder",
+              kind: "reminder",
+              title: "Follow-up reminder",
+              subtitle: "Acme Fibre Upgrade",
+              preview: "Customer asked for an update before close of business.",
+              time: "Now",
+            },
+          ]
+        : [],
+      incomingCall: previewIncludes("incoming-call")
+        ? { name: "Ada Customer" }
+        : null,
+      activeCall: crmPreview === "active-call"
+        ? { name: "Ada Customer", seconds: 42 }
+        : null,
+      callMuted: false,
+      callOnHold: false,
       socket: null,
       reconnectTimer: null,
       reconnectAttempts: 0,
@@ -81,13 +110,14 @@
         files: [],
         error: "",
       },
-      ticketDraft: { title: "", priority: "Medium", description: "" },
+      ticketDraft: { title: "", priority: "normal", description: "" },
       commands: [
-        { id: "new", label: "New conversation", shortcut: "N" },
-        { id: "reply", label: "Focus reply composer", shortcut: "R" },
-        { id: "resolve", label: "Resolve current conversation", shortcut: "E" },
-        { id: "contact", label: "Toggle contact details", shortcut: "" },
-        { id: "unreplied", label: "Open unreplied", shortcut: "" },
+        { id: "new", label: "New conversation", hint: "Start an outbound conversation", shortcut: "N" },
+        { id: "reply", label: "Focus reply composer", hint: "Jump to the current thread reply", shortcut: "R" },
+        { id: "resolve", label: "Resolve current conversation", hint: "Mark the selected conversation resolved", shortcut: "E" },
+        { id: "contact", label: "Toggle contact details", hint: "Show or hide customer context", shortcut: "" },
+        { id: "ticket", label: "Create support ticket", hint: "Open the ticket split panel", shortcut: "" },
+        { id: "unreplied", label: "Open unreplied", hint: "Filter conversations needing a reply", shortcut: "" },
       ],
 
       init() {
@@ -573,6 +603,7 @@
       },
 
       openContact(id) {
+        this.ticketPanelOpen = false;
         this.contactOpen = true;
         if (id) this.selectedId = id;
       },
@@ -611,7 +642,37 @@
         }
       },
       openTicketPanel() {
+        this.contactOpen = false;
         this.ticketPanelOpen = true;
+      },
+      dismissNotification(id) {
+        this.realtimeNotifications = this.realtimeNotifications.filter(
+          (notification) => notification.id !== id,
+        );
+      },
+      openNotification(notification) {
+        this.dismissNotification(notification.id);
+        this.showToast("Preview notification opened.");
+      },
+      declineIncomingCall() {
+        this.incomingCall = null;
+        this.showDemoNotice("WhatsApp calling");
+      },
+      acceptIncomingCall() {
+        const name = this.incomingCall?.name || "Customer";
+        this.incomingCall = null;
+        this.activeCall = { name, seconds: 0 };
+        this.showDemoNotice("WhatsApp calling");
+      },
+      endActiveCall() {
+        this.activeCall = null;
+        this.callMuted = false;
+        this.callOnHold = false;
+        this.showDemoNotice("WhatsApp calling");
+      },
+      formatCallDuration(seconds) {
+        const value = Number(seconds || 0);
+        return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
       },
       closeOverlays() {
         this.newConversationOpen = false;
@@ -826,6 +887,7 @@
         if (id === "contact") {
           this.contactOpen ? this.closeContact() : this.openContact(this.selectedId);
         }
+        if (id === "ticket") this.openTicketPanel();
         if (id === "unreplied") this.applyAssignmentFilter("unreplied");
       },
 
@@ -1034,6 +1096,9 @@
             "Hello, thanks for contacting Dotmac. I’m reviewing your request and will update you shortly.";
           this.releaseIdentity();
         }
+      },
+      startVoicePreview() {
+        this.workspace()?.showDemoNotice?.("Voice input");
       },
 
       // Uploads are staged server-side immediately and bound to the reply when

@@ -1,0 +1,147 @@
+/* CRM inbox content-area replication.
+ *
+ * These rules cover exact dimensions and stacking that are not guaranteed by
+ * the repository's currently checked-in Tailwind bundle. Domain state and
+ * action styling continue to come from the normal utility classes.
+ */
+.inbox-content-wrapper {
+  position: static !important;
+  z-index: auto !important;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  margin-inline: auto;
+  padding-block: 1.5rem;
+  padding-inline: 1rem;
+}
+
+.inbox-main-frame {
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
+}
+
+.inbox-mesh {
+  background-image:
+    radial-gradient(at 0 0, rgb(6 182 212 / 0.06) 0, transparent 50%),
+    radial-gradient(at 100% 100%, rgb(249 115 22 / 0.04) 0, transparent 50%);
+}
+
+.inbox-reply-failure {
+  position: fixed;
+  top: 1.5rem;
+  right: 1.5rem;
+  z-index: 50;
+  width: min(22rem, calc(100vw - 2rem));
+}
+
+.inbox-realtime-stack,
+.inbox-call-card {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  width: min(22.5rem, calc(100vw - 2rem));
+}
+
+.inbox-realtime-stack {
+  z-index: 90;
+}
+
+.inbox-call-card {
+  z-index: 100;
+}
+
+.inbox-contact-panel {
+  position: fixed;
+  inset-block: 0;
+  right: 0;
+  z-index: 50;
+  width: 20rem;
+  max-width: 92vw;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 0.28);
+}
+
+.inbox-ticket-panel {
+  position: fixed;
+  inset-block: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  width: min(100vw, 30rem);
+  max-width: 100vw;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 0.28);
+}
+
+.inbox-command-overlay {
+  z-index: 80;
+  padding-top: 0;
+}
+
+.inbox-command-palette {
+  width: 92%;
+  max-width: 42rem;
+  margin-top: 5rem;
+}
+
+.inbox-command-list {
+  max-height: 22rem;
+}
+
+.inbox-blocking-overlay {
+  z-index: 200;
+}
+
+.inbox-shortcut-overlay {
+  z-index: 200;
+}
+
+.inbox-shortcut-dialog {
+  width: 100%;
+  max-width: 28rem;
+}
+
+[data-reply-composer] > * {
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+@media (min-width: 640px) {
+  .inbox-content-wrapper {
+    padding-inline: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .inbox-content-wrapper {
+    padding-inline: 2rem;
+  }
+
+  .inbox-contact-panel {
+    position: static;
+    z-index: auto;
+    flex-shrink: 0;
+    max-width: none;
+    box-shadow: none;
+  }
+
+  .inbox-ticket-panel {
+    position: static;
+    z-index: auto;
+    width: 30rem;
+    min-width: 30rem;
+    flex-shrink: 0;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-inbox-workspace] *,
+  [data-inbox-workspace] *::before,
+  [data-inbox-workspace] *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
