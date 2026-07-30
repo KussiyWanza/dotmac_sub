@@ -123,7 +123,11 @@ def test_find_ont_by_serial_accepts_only_explicit_ont_absence(monkeypatch) -> No
     closed: list[bool] = []
     _stub_lookup(
         monkeypatch,
-        output="Failure: The ONT does not exist",
+        output=(
+            "display ont info by-sn 485754431234ABCD\r\n"
+            "  The required ONT does not exist\r\n\r\n"
+            "legacy-olt#"
+        ),
         commands=commands,
         closed=closed,
     )

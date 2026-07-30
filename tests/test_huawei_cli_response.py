@@ -22,6 +22,7 @@ from app.services.network.parsers.cli import is_error_output
     [
         ("Failure: The VLAN does not exist", HuaweiCliErrorCode.VLAN_NOT_EXIST),
         ("Failure: The ONT does not exist", HuaweiCliErrorCode.ONT_NOT_EXIST),
+        ("The required ONT does not exist", HuaweiCliErrorCode.ONT_NOT_EXIST),
         ("Failure: ONT is not online", HuaweiCliErrorCode.ONT_OFFLINE),
         (
             "Failure: The service virtual port does not exist",

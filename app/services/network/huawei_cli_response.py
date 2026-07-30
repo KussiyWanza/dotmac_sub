@@ -192,7 +192,7 @@ _RESPONSE_PATTERNS = (
     ),
     _pattern(
         _response_line(
-            r"(?:the\s+)?ont(?:\s+\d+)?\s+"
+            r"(?:the\s+)?(?:required\s+)?ont(?:\s+\d+)?\s+"
             r"(?:does\s+not\s+exist|is\s+not\s+exist|not\s+found)"
             r"|unknown\s+ont(?:\s+\d+)?"
         ),
