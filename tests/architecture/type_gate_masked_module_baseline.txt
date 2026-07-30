@@ -1,0 +1,8 @@
+# Application modules that `[tool.mypy] ignore_errors = true` still excuses
+# from type checking. Every one of them is a module mypy reports "Success" for
+# without having looked at it.
+#
+# This is migration debt, not permission. The number must only shrink: fix a
+# module's errors and delete its entry, never add one. New code is checked.
+# Format: a single integer, the number of masked app modules.
+88

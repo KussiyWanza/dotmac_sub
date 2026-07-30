@@ -230,6 +230,8 @@ class EventType(enum.Enum):
     ont_service_port_created = "ont.service_port_created"
     ont_service_port_deleted = "ont.service_port_deleted"
     ont_tr069_bound = "ont.tr069_bound"
+    ont_commissioning_requested = "ont.commissioning_requested"
+    ont_commissioning_state_changed = "ont.commissioning_state_changed"
 
     # ONT credential changes (audit events)
     ont_pppoe_credentials_set = "ont.pppoe_credentials_set"

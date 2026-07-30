@@ -21,6 +21,7 @@ from app.models.subscriber import Subscriber, SubscriberCategory
 from app.services.file_upload import MAGIC_BYTES
 from app.services.object_storage import (
     ObjectNotFoundError,
+    S3StorageService,
     StreamResult,
     get_s3_storage,
 )
@@ -201,7 +202,7 @@ class UnifiedFileUploadService:
     """Tenant-aware private file upload service."""
 
     def __init__(self) -> None:
-        self.storage = None
+        self.storage: S3StorageService | None = None
 
     def _storage_client(self):
         if self.storage is None:

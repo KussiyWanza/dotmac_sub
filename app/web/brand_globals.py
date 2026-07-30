@@ -192,7 +192,7 @@ def install_brand_jinja_global() -> None:
 
     _original_init = Jinja2Templates.__init__
 
-    def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def _patched_init(self, *args, **kwargs):
         _original_init(self, *args, **kwargs)
         try:
             _attach_globals(self)

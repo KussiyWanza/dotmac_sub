@@ -14,7 +14,7 @@ Provisioning is staged so live OLT writes only happen after the shared foundatio
 | 4. Config-pack readiness | Validate that the OLT has authorization profiles, internet and management VLANs, a management IP pool, ACS assignment, and an OLT-local TR-069 profile ID. | `app/services/network/olt_config_pack.py`, `app/services/network/olt_readiness_validator.py`, `app/services/network/acs_reachability.py`, `app/services/network/olt_profile_resolution.py` |
 | 5. Inventory and topology sync | Model shelves, cards, ports, PON interfaces, SFPs, power units, hardware inventory, linked monitoring devices, and topology views. Hardware inventory reads SNMP Entity MIB data collected by Zabbix. | `app/services/network/olt_inventory.py`, `app/services/network/olt_hardware_discovery.py`, `app/services/network/olt_web_topology.py`, `app/web/admin/network_pon_interfaces.py`, `app/web/admin/network_olts_profiles.py`, `app/tasks/olt_hardware_discovery.py` |
 | 6. Customer-service assignment | Bind one exact subscription and modeled PON to an ONT through the normal assignment command owner. UISP, RADIUS, ACS, authorization, and topology imports provide observations or candidates; they never infer this customer decision. | `app/services/network/ont_assignment_commands.py`, `app/services/web_network_ont_assignments.py`, `app/services/field_equipment.py` |
-| 7. ONT authorization and provisioning | Authorize ONTs only after readiness passes. Authorization records verified device/topology state and waits for ACS bootstrap when TR-069 is configured, but it does not create customer assignments. | `app/services/network/ont_authorization.py`, `app/services/network/acs_foundation.py`, `app/services/network/ont_provision_steps.py`, `app/services/network/ont_provisioning/orchestrator.py` |
+| 7. ONT authorization and provisioning | Assigned **Authorize & provision** applies customer service only for an exact active assignment. Assignment-free work is a separate expiring management-only commissioning intent. | `app/services/network/ont_commissioning.py`, `app/services/network/ont_authorization.py`, `app/services/network/ont_provision_steps.py` |
 | 8. Backup, config audit, and drift checks | Capture OLT running-config backups over SSH, audit backups and live config-pack assumptions against intended state, and retry failed compensation entries. Drift checks are read-only guardrails by default. | `app/tasks/olt_config_backup.py`, `app/services/network/olt_config_audit.py`, `app/services/network/olt_config_pack_live_audit.py`, `app/tasks/provisioning.py` |
 
 ## Polling, Monitoring, and Status
@@ -221,19 +221,35 @@ Main modules: `app/services/network/olt_polling.py`, `app/services/network/olt_p
 
 ## Key Data Flows
 
-### 1. ONT Authorization Flow
+### 1. Assigned ONT Authorization Flow
 
 ```
-User clicks "Authorize"
-    → ont_authorization.authorize_autofind_ont_and_provision_network_audited()
+User clicks "Authorize & provision"
+    → ont_provisioning_commands requires the exact active assignment and PON
+    → durable authorization operation/dispatch
+    → ont_authorization.authorize_ont()
         → Validate OLT authorization readiness
         → Resolve line/service/TR-069 profile and VLAN defaults
         → olt_protocol_adapters.authorize_ont()
             → olt_ssh_ont/lifecycle.authorize_ont() [via SSH]
         → Create or update OntUnit inventory and observed topology in DB
-        → Allocate management IP and apply ACS foundation
-        → Leave customer-service assignment to ont_assignment_commands
-        → Wait for ACS bootstrap when TR-069 is configured
+        → Apply internet service-port and management/ACS baseline from assignment
+        → Verify ACS and apply saved customer service intent
+```
+
+### 1a. Assignment-free ONT Commissioning Flow
+
+```
+User with network:ont:commission clicks "Commission ONT"
+    → network.ont_commissioning stores exact candidate + reason + 24h expiry
+    → durable commission operation/dispatch
+    → worker re-reads exact live OLT autofind
+    → authorize_ont(provision=False, allow_registration_move=False)
+    → restricted management batch:
+         management VLAN service-port + IPHOST + TR-069 profile only
+         no internet-config, WAN, PPPoE, LAN, or Wi-Fi
+    → bounded ACS observation / Inform marks management_ready
+    → assignment converts ownership, or expiry stages safe inventory cleanup
 ```
 
 ### 2. ACS Configuration Push Flow

@@ -1,4 +1,6 @@
 import logging
+from collections.abc import Callable
+from typing import ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -8,6 +10,11 @@ def list_response(items: list, limit: int, offset: int) -> dict:
 
 
 class ListResponseMixin:
+    # Declared, never defined: the concrete service supplies `list`, and the
+    # mixin only wraps its result in the paginated envelope. The declaration
+    # states that contract so the call below resolves.
+    list: ClassVar[Callable[..., list]]
+
     @classmethod
     def list_response(cls, db, *args, **kwargs):
         if "limit" in kwargs and "offset" in kwargs:

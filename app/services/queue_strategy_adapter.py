@@ -94,6 +94,7 @@ TASK_QUEUE_ROUTING: dict[str, str] = {
     "app.tasks.tr069.": "acs",
     # Provisioning -> tr069 queue
     "app.tasks.ont_provisioning.": "tr069",
+    "app.tasks.ont_commissioning.": "tr069",
     "app.tasks.olt_queue.": "tr069",
     # High-volume tasks -> dedicated queues (to be created)
     "app.tasks.bandwidth.": "bandwidth",
@@ -104,6 +105,7 @@ TASK_QUEUE_ROUTING: dict[str, str] = {
 TASK_PRIORITY_MAPPING: dict[str, TaskPriority] = {
     # Critical - never shed
     "app.tasks.ont_provisioning.": TaskPriority.critical,
+    "app.tasks.ont_commissioning.": TaskPriority.critical,
     "app.tasks.billing.": TaskPriority.critical,
     "app.tasks.tr069.apply_acs_config": TaskPriority.critical,
     "app.tasks.tr069.wait_for_ont_bootstrap": TaskPriority.critical,

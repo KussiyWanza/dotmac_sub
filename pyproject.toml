@@ -1,6 +1,6 @@
 [project]
 name = "dotmac_sm"
-version = "7.72.1"
+version = "7.73.1"
 description = "Subscriber management API and web UI"
 authors = [{name = "DotMac", email = "engineering@dotmac.local"}]
 requires-python = ">=3.11,<3.13"
@@ -119,7 +119,12 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = false
-warn_unused_ignores = false
+# Most of this codebase is untyped defs, so without this the gate reports
+# "Success" while checking almost none of the bodies it was pointed at.
+check_untyped_defs = true
+# Without this a `# type: ignore` outlives the error it was added for and
+# silently masks the next one to land on that line.
+warn_unused_ignores = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
 mypy_path = "stubs"
@@ -133,25 +138,18 @@ module = [
     "app.services.email",
     "app.services.events.dispatcher",
     "app.services.events.handlers.provisioning",
-    "app.services.integrations.accounting_sync",
-    "app.services.integrations.connectors.whatsapp",
     "app.services.genieacs_service_intent",
     "app.services.nas",
-    "app.services.nas_pkg.web_builders",
     "app.services.notification_adapter",
     "app.services.olt_action_adapter",
     "app.services.olt_detail_adapter",
     "app.services.queue_adapter",
     "app.services.scheduler_config",
-    "app.services.service_intent_adapter",
     "app.services.service_intent_ui_adapter",
     "app.services.network.ont_tr069",
-    "app.services.network.olt_targeted_sync",
-    "app.services.network.authorization_executor",
     "app.services.network.config_validator_adapter",
     "app.services.network.metrics_adapters",
     "app.services.network.olt_api_operations",
-    "app.services.network.olt_authorization_workflow",
     "app.services.network.olt_autofind",
     "app.services.network.olt_config_audit",
     "app.services.network.olt_monitoring_devices",
@@ -159,13 +157,11 @@ module = [
     "app.services.network.olt_vendor_adapters",
     "app.services.network.ont_provision_steps",
     "app.services.network.ont_service_intent",
-    "app.services.network.provisioning_coordinator",
     "app.services.network.result_adapter",
     "app.services.network.snmp_config",
     "app.services.network.subscriber_ont_adapter",
     "app.services.provisioning_managers",
     "app.services.reseller_portal",
-    "app.services.snmp_discovery",
     "app.services.support",
     "app.services.table_config",
     "app.services.web_billing_invoice_batch",
@@ -199,15 +195,12 @@ module = [
     "app.services.web_system_export_tool",
     "app.services.web_system_geocode_tool",
     "app.services.web_system_import_wizard",
-    "app.services.web_system_logs",
     "app.services.web_system_users",
     "app.services.web_vpn_management",
     "app.tasks.catalog",
     "app.tasks.olt_config_backup",
-    "app.tasks.ont_authorization",
     "app.tasks.ont_bulk",
     "app.tasks.provisioning",
-    "app.tasks.saga",
     "app.api.network_ont_ops",
     "app.services.customer_portal_flow_payments",
     "app.services.infrastructure_health",
@@ -215,7 +208,6 @@ module = [
     "app.web.admin.integrations",
     "app.web.admin.network_core_devices",
     "app.web.admin.network_fiber_plant",
-    "app.web.admin.network_olts",
     "app.web.admin.network_olts_inventory",
     "app.web.admin.network_olts_profiles",
     "app.web.admin.network_olts_onts",

@@ -60,7 +60,7 @@ def _setup_loki(
         True if Loki handler was configured, False otherwise.
     """
     try:
-        import logging_loki  # type: ignore[import-untyped]
+        import logging_loki
     except ImportError:
         logger.warning(
             "python-logging-loki not installed, Loki logging disabled. "
@@ -71,7 +71,7 @@ def _setup_loki(
     try:
         loki_url = _normalize_loki_url(loki_url)
 
-        class BestEffortLokiHandler(logging_loki.LokiHandler):  # type: ignore[misc]
+        class BestEffortLokiHandler(logging_loki.LokiHandler):
             def handleError(self, record: logging.LogRecord) -> None:
                 # Keep Loki transport failures local to the Loki handler.
                 return None

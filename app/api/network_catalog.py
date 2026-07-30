@@ -168,7 +168,7 @@ def update_onu_type(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_permission("network:onu_type:write"))],
 )
-def delete_onu_type(onu_type_id: str, db: Session = Depends(get_db)):  # type: ignore[no-untyped-def]
+def delete_onu_type(onu_type_id: str, db: Session = Depends(get_db)):
     onu_types.delete(db, onu_type_id)
 
 
@@ -274,7 +274,7 @@ def update_speed_profile(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_permission("network:speed_profile:write"))],
 )
-def delete_speed_profile(profile_id: str, db: Session = Depends(get_db)):  # type: ignore[no-untyped-def]
+def delete_speed_profile(profile_id: str, db: Session = Depends(get_db)):
     SpeedProfiles.delete(db, profile_id)
 
 
@@ -356,7 +356,7 @@ def update_network_zone(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_permission("network:zone:write"))],
 )
-def delete_network_zone(zone_id: str, db: Session = Depends(get_db)):  # type: ignore[no-untyped-def]
+def delete_network_zone(zone_id: str, db: Session = Depends(get_db)):
     NetworkZones.delete(db, zone_id)
 
 
@@ -451,7 +451,7 @@ def update_vendor_capability(
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_permission("network:vendor_capability:write"))],
 )
-def delete_vendor_capability(capability_id: str, db: Session = Depends(get_db)):  # type: ignore[no-untyped-def]
+def delete_vendor_capability(capability_id: str, db: Session = Depends(get_db)):
     VendorCapabilities.delete(db, capability_id)
 
 
@@ -527,5 +527,5 @@ def update_parameter_map(
 )
 def delete_parameter_map(
     capability_id: str, map_id: str, db: Session = Depends(get_db)
-):  # type: ignore[no-untyped-def]
+):
     Tr069ParameterMaps.delete(db, map_id)

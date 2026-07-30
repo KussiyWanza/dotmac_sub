@@ -439,6 +439,34 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
     "app.tasks.ont_provisioning.queue_bulk_provisioning": _c(
         "provisioning", ITEMS, PER_ITEM, STATUS
     ),
+    "app.tasks.ont_commissioning.commission_ont": _c(
+        "provisioning",
+        STATE,
+        STATEFUL,
+        STATUS,
+        "Exact live autofind admission and landed-device evidence prevent blind writes.",
+    ),
+    "app.tasks.ont_commissioning.verify_commissioned_ont": _c(
+        "provisioning",
+        STATE,
+        STATEFUL,
+        STATUS,
+        "Five immutable dispatch keys own bounded ACS readiness observations.",
+    ),
+    "app.tasks.ont_commissioning.cleanup_commissioned_ont": _c(
+        "provisioning",
+        STATE,
+        STATEFUL,
+        STATUS,
+        "Locked identity and assignment revalidation gates every cleanup attempt.",
+    ),
+    "app.tasks.ont_commissioning.reconcile_intents": _c(
+        "provisioning",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Permanent convergence pass converts assignments and stages expired cleanup.",
+    ),
     "app.tasks.ont_reconcile.run_ont_reconcile_sweep": _c(
         "network", SWEEP, IDEMP, HEALTH
     ),

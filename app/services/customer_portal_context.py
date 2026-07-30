@@ -274,7 +274,7 @@ _RESTRICTED_STATUSES = RESTRICTED_CUSTOMER_STATUSES
 def get_restricted_since(subscriber: Subscriber) -> datetime | None:
     """Return when the subscriber most recently entered a restricted status."""
     metadata = subscriber.metadata_ or {}
-    return subscriber_service._metadata_datetime(metadata, "restricted_since")  # type: ignore[attr-defined]
+    return subscriber_service._metadata_datetime(metadata, "restricted_since")
 
 
 def get_total_outstanding_balance(db: Session, account_id: object) -> float:

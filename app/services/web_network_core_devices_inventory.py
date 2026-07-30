@@ -1071,7 +1071,7 @@ def olts_list_page_data(
     not_working_count = sum(
         1 for item in olts if item.get("operational_status") == NOT_WORKING
     )
-    total_pon_ports = sum(int(item.get("pon_ports") or 0) for item in olts)  # type: ignore[call-overload]
+    total_pon_ports = sum(int(item.get("pon_ports") or 0) for item in olts)
 
     stats = {
         "total": filtered_total,

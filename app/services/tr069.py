@@ -142,7 +142,7 @@ def _job_extra(
     return extra
 
 
-def _normalized_serial_expr(column):  # type: ignore[no-untyped-def]
+def _normalized_serial_expr(column):
     """Build a SQL expression that strips common serial formatting."""
     expr = func.upper(column)
     for token in ("-", " ", ":", ".", "_", "/"):
@@ -346,10 +346,23 @@ def _upsert_inform_parameters(
 
 
 def _ont_has_saved_service_intent(db: Session, ont_id: object) -> bool:
-    from app.models.network import OntUnit, OntWanServiceInstance
+    from app.models.network import OntAssignment, OntUnit, OntWanServiceInstance
 
     ont = db.get(OntUnit, ont_id)
     if ont is None or not ont.is_active:
+        return False
+    # Service delivery is assignment-owned. In particular, a temporary
+    # management-only commissioning intent must never make config-pack defaults
+    # look like customer WAN/Wi-Fi intent on Inform.
+    assignment_id = db.scalar(
+        select(OntAssignment.id)
+        .where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+        .limit(1)
+    )
+    if assignment_id is None:
         return False
     effective = resolve_effective_ont_config(db, ont)
     effective_values = (
@@ -609,8 +622,8 @@ def _validate_target_cpe_device(
 
 def sync_ont_acs_server(
     db: Session,
-    ont,  # type: ignore[no-untyped-def]
-    acs_server_id,  # type: ignore[no-untyped-def]
+    ont,
+    acs_server_id,
 ) -> int:
     """Keep linked TR-069 rows aligned without rewriting ONT ACS policy."""
     if not acs_server_id:
@@ -631,7 +644,7 @@ def sync_ont_acs_server(
 
 def refresh_ont_status_snapshot(
     db: Session,
-    ont,  # type: ignore[no-untyped-def]
+    ont,
 ) -> None:
     """Recompute ACS/effective status from the ONT's current active TR-069 links."""
     acs_last_inform_at = (
@@ -698,15 +711,15 @@ def _refresh_synced_ont_acs_observations(
     result = db.execute(statement)
     # SQLAlchemy `Result` is the generic supertype; UPDATE statements return a
     # `CursorResult`, which carries `.rowcount`.
-    return result.rowcount or 0  # type: ignore[attr-defined]
+    return result.rowcount or 0
 
 
 def link_tr069_device_to_ont(
     db: Session,
     device: Tr069CpeDevice,
-    ont,  # type: ignore[no-untyped-def]
+    ont,
     *,
-    acs_server_id=None,  # type: ignore[no-untyped-def]
+    acs_server_id=None,
 ) -> None:
     """Enforce a single active TR-069 link per ONT.
 
@@ -898,7 +911,7 @@ class CpeDevices(ListResponseMixin):
         db: Session,
         *,
         acs_server_id: str,
-        ont,  # type: ignore[no-untyped-def]
+        ont,
     ) -> Tr069CpeDevice | None:
         serial_candidates = [
             normalize_tr069_serial(candidate)
@@ -1675,6 +1688,27 @@ def receive_inform(
     )
     db.add(session)
     db.commit()
+    commissioning_completed = False
+    if ont_id_for_service_apply is not None:
+        try:
+            from app.services.network.ont_commissioning import (
+                complete_commissioning_after_inform,
+            )
+
+            commissioning_completed = complete_commissioning_after_inform(
+                db,
+                ont_id=str(ont_id_for_service_apply),
+                reason="tr069_inform",
+            )
+            if commissioning_completed:
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Failed to complete commissioning after Inform for ONT %s",
+                ont_id_for_service_apply,
+                exc_info=True,
+            )
     service_apply_queued = False
     try:
         service_apply_queued = _queue_saved_service_apply_after_stale_inform(

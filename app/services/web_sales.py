@@ -1686,7 +1686,7 @@ def build_quote_form_error_context(
 ) -> dict[str, Any]:
     editing = mode == "update"
     return {
-        "quote_form": _quote_form_fields(**fields),  # type: ignore[arg-type]
+        "quote_form": _quote_form_fields(**fields),
         "status_values": quote_status_values(),
         "form_title": "Edit Quote" if editing else "New Quote",
         "submit_label": "Update Quote" if editing else "Create Quote",

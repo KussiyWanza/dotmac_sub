@@ -298,7 +298,12 @@ def find_completed_device_authorization(
     operation = db.scalars(
         select(NetworkOperation)
         .where(
-            NetworkOperation.operation_type == NetworkOperationType.ont_authorize,
+            NetworkOperation.operation_type.in_(
+                {
+                    NetworkOperationType.ont_authorize,
+                    NetworkOperationType.ont_commission,
+                }
+            ),
             NetworkOperation.correlation_key == correlation_key,
             NetworkOperation.status.in_(_TERMINAL_OPERATION_STATUSES),
         )
@@ -875,6 +880,7 @@ def authorize_autofind_ont(
     force_reauthorize: bool = False,
     preset_id: str | None = None,
     operation_id: str | None = None,
+    allow_registration_move: bool = True,
 ) -> AuthorizationWorkflowResult:
     """Authorize an ONT on an OLT and persist ONT inventory state."""
     from app.services.network.olt_profile_resolution import (
@@ -1083,9 +1089,17 @@ def authorize_autofind_ont(
                     adapter_result=auth_result,
                 )
             else:
-                # On different port - remove and re-add
+                # Moving a registration is a separate, destructive topology
+                # decision. Temporary commissioning always disables it.
                 if not find_result.success or existing is None:
                     msg = "ONT serial already exists, but existing registration not found."
+                    add_step("Activate ONT", False, msg, activation_started)
+                    return finish(success=False, message=msg, status="error")
+                if not allow_registration_move:
+                    msg = (
+                        "ONT serial is already registered on "
+                        f"{existing.fsp}; commissioning will not move it to {fsp}."
+                    )
                     add_step("Activate ONT", False, msg, activation_started)
                     return finish(success=False, message=msg, status="error")
 
@@ -1236,6 +1250,7 @@ def authorize_ont(
     request: Request | None = None,
     provision: bool = True,
     operation_id: str | None = None,
+    allow_registration_move: bool = True,
 ) -> AuthorizationWorkflowResult:
     """Authorize ONT on the OLT, apply the OLT baseline, and audit log.
 
@@ -1284,6 +1299,7 @@ def authorize_ont(
         force_reauthorize=force_reauthorize,
         preset_id=preset_id,
         operation_id=operation_id,
+        allow_registration_move=allow_registration_move,
     )
     record_phase("core_authorization", phase_started, success=result.success)
     result.phase_timings = phase_timings

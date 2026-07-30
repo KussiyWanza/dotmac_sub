@@ -365,12 +365,12 @@ class _DatabasePressureCollector(Collector):
                 pass
 
         activity = {
-            str(item.get("signal")): float(item.get("value"))
+            str(item.get("signal")): float(raw_value)
             for item in snapshot.get("observations") or []
             if isinstance(item, dict)
             and item.get("scope") == "postgres"
             and item.get("signal") is not None
-            and isinstance(item.get("value"), (int, float))
+            and isinstance(raw_value := item.get("value"), (int, float))
         }
         probe = GaugeMetricFamily(
             "postgres_activity_probe_success",
@@ -620,12 +620,12 @@ class _BillingHealthCollector(Collector):
                 pass
 
         observations = {
-            (str(item.get("signal")), str(item.get("scope"))): float(item.get("value"))
+            (str(item.get("signal")), str(item.get("scope"))): float(raw_value)
             for item in snapshot.get("observations") or []
             if isinstance(item, dict)
             and item.get("signal") is not None
             and item.get("scope") is not None
-            and isinstance(item.get("value"), (int, float))
+            and isinstance(raw_value := item.get("value"), (int, float))
         }
 
         def value(signal: str, scope: str = "all") -> float | None:

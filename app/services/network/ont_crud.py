@@ -348,7 +348,7 @@ class OntUnits(CRUDManager[OntUnit]):
         payload: OntUnitUpdate,
         *,
         commit: bool = True,
-    ) -> OntUnit:  # type: ignore[override]
+    ) -> OntUnit:
         values = cls._payload_dict(payload, exclude_unset=True)
         if {"splitter_id", "splitter_port_id"} & values.keys():
             raise HTTPException(

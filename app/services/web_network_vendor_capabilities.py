@@ -174,7 +174,7 @@ def handle_update(
         else None,
         supported_features=form_data["supported_features"]
         if form_data.get("supported_features")
-        else None,  # type: ignore[arg-type]
+        else None,
         max_wan_services=int(str(form_data.get("max_wan_services") or 1)),
         max_lan_ports=int(str(form_data.get("max_lan_ports") or 4)),
         max_ssids=int(str(form_data.get("max_ssids") or 2)),

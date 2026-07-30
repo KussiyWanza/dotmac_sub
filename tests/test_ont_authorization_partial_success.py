@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models.network import (
     OLTDevice,
+    OntAssignment,
     OntAuthorizationStatus,
     OntUnit,
     PonPort,
@@ -75,6 +76,33 @@ def _olt(db_session, label: str) -> OLTDevice:
     db_session.commit()
     db_session.refresh(olt)
     return olt
+
+
+def _assigned_ont(
+    db_session,
+    *,
+    olt: OLTDevice,
+    fsp: str,
+    serial_number: str,
+) -> OntUnit:
+    pon = PonPort(olt_id=olt.id, name=fsp, is_active=True)
+    ont = OntUnit(
+        serial_number=serial_number,
+        olt_device_id=olt.id,
+        is_active=True,
+    )
+    db_session.add_all([pon, ont])
+    db_session.flush()
+    ont.pon_port_id = pon.id
+    db_session.add(
+        OntAssignment(
+            ont_unit_id=ont.id,
+            pon_port_id=pon.id,
+            active=True,
+        )
+    )
+    db_session.commit()
+    return ont
 
 
 def _patch_device_stack(monkeypatch, adapter) -> None:
@@ -155,6 +183,12 @@ def test_partial_authorization_is_stored_on_the_operation_and_rendered_distinctl
     )
 
     olt = _olt(db_session, "OLT-Partial-Store")
+    ont = _assigned_ont(
+        db_session,
+        olt=olt,
+        fsp="0/1/6",
+        serial_number="HWTCSTORE0001",
+    )
     calls: list[tuple] = []
     _patch_device_stack(monkeypatch, _RecordingAdapter(calls))
     monkeypatch.setattr(
@@ -172,6 +206,7 @@ def test_partial_authorization_is_stored_on_the_operation_and_rendered_distinctl
         olt_id=str(olt.id),
         fsp="0/1/6",
         serial_number="HWTCSTORE0001",
+        scoped_ont_id=str(ont.id),
         initiated_by="admin",
     )
     assert command.accepted is True
@@ -201,7 +236,7 @@ def test_partial_authorization_is_stored_on_the_operation_and_rendered_distinctl
     assert stored["device_authorization"]["fsp"] == "0/1/6"
 
     history = web_network_operations.build_operation_history(
-        db_session, "olt", str(olt.id)
+        db_session, "ont", str(ont.id)
     )
     entry = next(item for item in history if item["id"] == command.operation_id)
     assert entry["local_inventory_failed"] is True
@@ -221,6 +256,12 @@ def test_device_rejection_is_not_reported_as_a_local_inventory_failure(
     )
 
     olt = _olt(db_session, "OLT-Rejects")
+    ont = _assigned_ont(
+        db_session,
+        olt=olt,
+        fsp="0/1/6",
+        serial_number="HWTCREJECT001",
+    )
     cli_error = "OLT rejected command: Failure: Configuration conflict on port 0/1/6"
 
     class RejectingAdapter(_RecordingAdapter):
@@ -235,6 +276,7 @@ def test_device_rejection_is_not_reported_as_a_local_inventory_failure(
         olt_id=str(olt.id),
         fsp="0/1/6",
         serial_number="HWTCREJECT001",
+        scoped_ont_id=str(ont.id),
         initiated_by="admin",
     )
     payload = execute_ont_authorization(
@@ -256,7 +298,7 @@ def test_device_rejection_is_not_reported_as_a_local_inventory_failure(
     assert operation.error == cli_error
 
     history = web_network_operations.build_operation_history(
-        db_session, "olt", str(olt.id)
+        db_session, "ont", str(ont.id)
     )
     entry = next(item for item in history if item["id"] == command.operation_id)
     assert entry["local_inventory_failed"] is False
@@ -273,11 +315,18 @@ def test_landed_device_authorization_survives_a_worker_crash(db_session, monkeyp
     from app.services.network_operation_dispatch import fail_dispatch_execution
 
     olt = _olt(db_session, "OLT-Crash")
+    ont = _assigned_ont(
+        db_session,
+        olt=olt,
+        fsp="0/1/6",
+        serial_number="HWTCCRASH0001",
+    )
     command = request_ont_authorization(
         db_session,
         olt_id=str(olt.id),
         fsp="0/1/6",
         serial_number="HWTCCRASH0001",
+        scoped_ont_id=str(ont.id),
         initiated_by="admin",
     )
     assert command.accepted is True

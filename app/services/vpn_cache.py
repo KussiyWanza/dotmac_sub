@@ -295,7 +295,7 @@ def cached(
                 try:
                     return cast(T, json.loads(cached_value))
                 except json.JSONDecodeError:
-                    return cached_value  # type: ignore
+                    return cached_value  # type: ignore[return-value]
 
             # Call function and cache result
             result = func(*args, **kwargs)

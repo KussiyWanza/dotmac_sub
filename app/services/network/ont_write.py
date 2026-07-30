@@ -108,9 +108,9 @@ def _strict_olt_write_context(
 def _set_sync_meta(ont: OntUnit, source: str) -> None:
     """Update sync-tracking fields on ``OntUnit``."""
     if hasattr(ont, "last_sync_source"):
-        ont.last_sync_source = source  # type: ignore[assignment]
+        ont.last_sync_source = source
     if hasattr(ont, "last_sync_at"):
-        ont.last_sync_at = datetime.now(UTC)  # type: ignore[assignment]
+        ont.last_sync_at = datetime.now(UTC)
 
 
 def _emit_ont_event(db: Session, event_name: str, payload: dict) -> None:

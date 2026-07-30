@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from app.models.network import OLTDevice, OntUnit
+from app.models.network import OLTDevice, OntAssignment, OntUnit, PonPort
 from app.models.network_operation import (
     NetworkOperation,
     NetworkOperationDispatch,
@@ -35,10 +35,38 @@ class _SessionContext:
         return False
 
 
+def _assigned_ont(db_session, olt: OLTDevice, *, fsp: str, serial: str) -> OntUnit:
+    pon = PonPort(olt_id=olt.id, name=fsp, is_active=True)
+    ont = OntUnit(
+        serial_number=serial,
+        olt_device_id=olt.id,
+        pon_port_id=pon.id,
+        is_active=True,
+    )
+    db_session.add_all([pon, ont])
+    db_session.flush()
+    ont.pon_port_id = pon.id
+    db_session.add(
+        OntAssignment(
+            ont_unit_id=ont.id,
+            pon_port_id=pon.id,
+            active=True,
+        )
+    )
+    db_session.commit()
+    return ont
+
+
 def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
     olt = OLTDevice(name="Command OLT", vendor="Huawei")
     db_session.add(olt)
-    db_session.commit()
+    db_session.flush()
+    ont = _assigned_ont(
+        db_session,
+        olt,
+        fsp="0/1/2",
+        serial="HWTCOMMAND01",
+    )
 
     result = request_ont_authorization(
         db_session,
@@ -46,6 +74,7 @@ def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
         fsp="0/1/2",
         serial_number="HWTCOMMAND01",
         force_reauthorize=True,
+        scoped_ont_id=str(ont.id),
         initiated_by="network-admin",
     )
 
@@ -55,7 +84,8 @@ def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
     assert operation is not None
     assert dispatch is not None
     assert operation.operation_type == NetworkOperationType.ont_authorize
-    assert operation.target_type == NetworkOperationTargetType.olt
+    assert operation.target_type == NetworkOperationTargetType.ont
+    assert str(operation.target_id) == str(ont.id)
     assert operation.status == NetworkOperationStatus.pending
     assert dispatch.command_name == "ont_authorize.v1"
     assert dispatch.args_payload == []
@@ -65,7 +95,7 @@ def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
         "serial_number": "HWTCOMMAND01",
         "force_reauthorize": True,
         "preset_id": None,
-        "scoped_ont_id": None,
+        "scoped_ont_id": str(ont.id),
         "initiated_by": "network-admin",
         "operation_id": str(operation.id),
     }
@@ -192,7 +222,13 @@ def test_legacy_authorization_envelope_rehomes_without_device_execution(
 
     olt = OLTDevice(name="Legacy Envelope OLT", vendor="Huawei")
     db_session.add(olt)
-    db_session.commit()
+    db_session.flush()
+    ont = _assigned_ont(
+        db_session,
+        olt,
+        fsp="0/1/0",
+        serial="HWTLEGACY01",
+    )
     monkeypatch.setattr(
         task_module.db_session_adapter,
         "session",
@@ -209,6 +245,7 @@ def test_legacy_authorization_envelope_rehomes_without_device_execution(
         str(olt.id),
         "0/1/0",
         "HWTLEGACY01",
+        scoped_ont_id=str(ont.id),
         initiated_by="legacy-worker",
     )
 

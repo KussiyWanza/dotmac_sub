@@ -46,6 +46,7 @@ PERMANENT_LIFECYCLE_TASKS = frozenset(
         "app.tasks.monitoring_cleanup.sync_inventory_to_monitoring",
         "app.tasks.channel_health.observe_channel_health",
         "app.tasks.network_operation_dispatch.publish_network_operation_dispatches",
+        "app.tasks.ont_commissioning.reconcile_intents",
         "app.tasks.tr069.reconcile_command_outcomes",
     }
 )

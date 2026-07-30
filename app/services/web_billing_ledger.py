@@ -123,7 +123,7 @@ def _invoice_as_ledger_row(invoice: Invoice) -> SimpleNamespace:
     )
 
 
-def _display_date(entry) -> datetime:  # type: ignore[no-untyped-def]
+def _display_date(entry) -> datetime:
     return getattr(entry, "effective_date", None) or entry.created_at
 
 

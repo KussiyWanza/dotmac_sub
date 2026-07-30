@@ -101,11 +101,11 @@ def lock_for_update(
         if "could not obtain lock" in error_msg or "lock not available" in error_msg:
             logger.debug(
                 "Lock not available for %s id=%s",
-                model.__name__,  # type: ignore[attr-defined]
+                model.__name__,
                 entity_id,
             )
             raise ConcurrencyConflict(
-                f"Could not acquire lock on {model.__name__} {entity_id}"  # type: ignore[attr-defined]
+                f"Could not acquire lock on {model.__name__} {entity_id}"
             ) from exc
         raise
 
@@ -164,11 +164,11 @@ def lock_multiple(
         if "could not obtain lock" in error_msg or "lock not available" in error_msg:
             logger.debug(
                 "Lock not available for %s ids=%s",
-                model.__name__,  # type: ignore[attr-defined]
+                model.__name__,
                 sorted_ids,
             )
             raise ConcurrencyConflict(
-                f"Could not acquire locks on {model.__name__} entities"  # type: ignore[attr-defined]
+                f"Could not acquire locks on {model.__name__} entities"
             ) from exc
         raise
 

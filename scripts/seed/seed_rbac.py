@@ -154,6 +154,10 @@ DEFAULT_PERMISSIONS = [
     ),
     ("network:olt:read", "View OLT devices and operations"),
     ("network:olt:write", "Manage OLT devices and operations"),
+    (
+        "network:ont:commission",
+        "Commission unassigned ONTs for management access",
+    ),
     ("network:cpe:read", "View CPE devices"),
     ("network:cpe:write", "Manage CPE devices"),
     ("network:nas:read", "View NAS device management"),
@@ -359,6 +363,7 @@ ROLE_PERMISSIONS = {
         "network:device:write",
         "network:olt:read",
         "network:olt:write",
+        "network:ont:commission",
         "network:cpe:read",
         "network:cpe:write",
         "network:nas:read",

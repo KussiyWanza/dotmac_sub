@@ -46,7 +46,7 @@ def require_field_principal(
     try:
         vendor = vendor_context(db, auth)
     except HTTPException:
-        vendor = None  # type: ignore[assignment]
+        vendor = None
     if vendor is not None:
         return {**vendor, "field_actor": "vendor"}
 

@@ -330,9 +330,15 @@
                             <td class="px-3 py-2 font-mono text-sm text-slate-700 dark:text-slate-300">{{ entry.mac or '-' }}</td>
                             <td class="px-3 py-2 text-sm text-slate-700 dark:text-slate-300">
                                 {% if entry.is_active %}
-                                {{ status_badge("Active", "online", pulse=True) }}
+                                    {% if entry.commissioning %}
+                                    {{ status_badge(entry.commissioning.state | replace('_', ' ') | title, "warning", pulse=True) }}
+                                    {% else %}
+                                    {{ status_badge("Active", "online", pulse=True) }}
+                                    {% endif %}
                                 {% elif entry.resolution_reason == 'authorized' %}
                                 {{ status_badge("Authorized", "active") }}
+                                {% elif entry.resolution_reason == 'commissioned' %}
+                                {{ status_badge("Commissioned", "warning") }}
                                 {% elif entry.resolution_reason == 'disappeared' %}
                                 {{ status_badge("Disappeared", "warning") }}
                                 {% else %}
@@ -344,12 +350,18 @@
                                 <div class="text-xs text-slate-500 dark:text-slate-400">Last: {% if entry.last_seen_at %}{{ entry.last_seen_at | app_datetime('%Y-%m-%d %H:%M') }}{% else %}-{% endif %}</div>
                             </td>
                             <td class="px-3 py-2 text-right">
-                                {% if entry.is_active %}
+                                {% if entry.commissioning and entry.commissioning.state not in ['expired', 'canceled', 'assigned', 'provisioned'] %}
+                                <div class="text-left">
+                                    <span class="text-xs font-semibold text-amber-700 dark:text-amber-300">{{ entry.commissioning.state | replace('_', ' ') | title }}</span>
+                                    <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Expires {{ entry.commissioning.expires_at | app_datetime('%Y-%m-%d %H:%M') }}</p>
+                                    {% if entry.commissioning.failure_message %}
+                                    <p class="mt-0.5 max-w-xs text-xs text-red-600 dark:text-red-300">{{ entry.commissioning.failure_message }}</p>
+                                    {% endif %}
+                                </div>
+                                {% elif entry.is_active and entry.has_active_assignment %}
                                 <form method="POST" action="/admin/network/olts/{{ entry.olt_id }}/authorize-ont" class="inline-flex items-center gap-2" x-data="{ submitting: false }" @submit="submitting = true">
                                     {% include "components/forms/csrf_input.html" %}
-                                    {% if entry.ont_unit_id %}
                                     <input type="hidden" name="ont_id" value="{{ entry.ont_unit_id }}">
-                                    {% endif %}
                                     <input type="hidden" name="fsp" value="{{ entry.fsp }}">
                                     <input type="hidden" name="serial_number" value="{{ entry.serial_number }}">
                                     <input type="hidden" name="return_to" value="/admin/network/onts?view=unconfigured">
@@ -362,14 +374,14 @@
                                         {% endfor %}
                                     </select>
                                     {% endif %}
-                                    <button type="submit" :disabled="submitting" data-confirm="Authorize ONT {{ entry.serial_number }} on {{ entry.olt_name }} {{ entry.fsp }}? Existing stale OLT registration will be cleaned up automatically if needed." data-confirm-variant="warning" class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2" :class="submitting && 'opacity-75 cursor-wait'">
+                                    <button type="submit" :disabled="submitting" data-confirm="Authorize and provision assigned ONT {{ entry.serial_number }} on {{ entry.olt_name }} {{ entry.fsp }}?" data-confirm-variant="warning" class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow-md focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2" :class="submitting && 'opacity-75 cursor-wait'">
                                         {# Spinner - shown when submitting #}
                                         <svg x-show="submitting" x-cloak class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                         </svg>
                                         {# Normal state #}
-                                        <span x-show="!submitting">Authorize</span>
+                                        <span x-show="!submitting">Authorize &amp; provision</span>
                                         {# Loading text #}
                                         <span x-show="submitting" x-cloak>Authorize running...</span>
                                     </button>
@@ -378,6 +390,12 @@
                                         Running
                                     </span>
                                 </form>
+                                {% elif entry.is_active and can_commission_ont %}
+                                <a href="/admin/network/olts/{{ entry.olt_id }}/commission-ont?candidate_id={{ entry.id }}" class="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2">
+                                    Commission ONT
+                                </a>
+                                {% elif entry.is_active %}
+                                <span class="text-xs text-slate-500 dark:text-slate-400">Assignment required</span>
                                 {% elif entry.resolution_reason == 'disappeared' %}
                                 <form method="POST" action="/admin/network/unconfigured-onts/{{ entry.id }}/restore" class="inline" x-data="{ submitting: false }" @submit="submitting = true">
                                     {% include "components/forms/csrf_input.html" %}

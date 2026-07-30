@@ -655,7 +655,7 @@ def _ensure_igd_ppp_wan_service(
     return None
 
 
-def _normalized_serial_expr(column):  # type: ignore[no-untyped-def]
+def _normalized_serial_expr(column):
     expr = func.upper(column)
     for token in ("-", " ", ":", ".", "_", "/"):
         expr = func.replace(expr, token, "")
