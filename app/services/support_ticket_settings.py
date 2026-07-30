@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from enum import Enum
 from functools import wraps
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam
 from app.models.subscription_engine import SettingValueType
-from app.models.support import TicketStatus
+from app.models.support import Ticket, TicketStatus
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
@@ -67,6 +70,25 @@ TERMINAL_STATUSES = {"resolved", "closed", "canceled", "merged"}
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _CONFIGURATION_OWNER = "support.ticket_configuration"
 _CONFIGURATION_CONCERN = "ticket configuration mutations"
+CUSTOMER_EXPERIENCE_TEAM_NAME = "Customer Experience"
+SYSTEM_ADMIN_TEAM_NAME = "System Admin"
+
+
+class PortalTicketTeamRoutingSource(str, Enum):
+    """Configured fallback that supplied a portal ticket's requested team."""
+
+    customer_experience = "customer_experience"
+    system_admin = "system_admin"
+    unassigned = "unassigned"
+
+
+@dataclass(frozen=True)
+class SupportTeamRoutingResolution:
+    """Typed, current resolution of the customer-portal team fallback policy."""
+
+    service_team_id: UUID | None
+    service_team_name: str | None
+    source: PortalTicketTeamRoutingSource
 
 
 class SupportTicketConfigurationError(DomainError):
@@ -434,6 +456,71 @@ def list_region_options(db: Session) -> list[str]:
         key=REGION_OPTIONS_KEY,
         defaults=DEFAULT_REGION_OPTIONS,
         normalizer=normalize_system_value,
+    )
+
+
+def list_canonical_region_options(db: Session) -> list[str]:
+    """Return the canonical region projection shared by ticket forms."""
+
+    rows = (
+        db.query(Ticket.region)
+        .filter(
+            Ticket.is_active.is_(True),
+            Ticket.region.isnot(None),
+            Ticket.region != "",
+        )
+        .distinct()
+        .order_by(Ticket.region.asc())
+        .limit(200)
+        .all()
+    )
+    discovered = [str(item[0]) for item in rows if item and item[0]]
+    return sorted(set(discovered + list_region_options(db)))
+
+
+def canonical_region_option(db: Session, submitted: str | None) -> str | None:
+    """Resolve a submitted region only when it is a current canonical option."""
+
+    candidate = str(submitted or "").strip()
+    if not candidate:
+        return None
+    return next(
+        (option for option in list_canonical_region_options(db) if option == candidate),
+        None,
+    )
+
+
+def resolve_portal_ticket_team_routing(
+    db: Session,
+) -> SupportTeamRoutingResolution:
+    """Resolve the first active exact-name team in the portal fallback order."""
+
+    candidates = (
+        (
+            CUSTOMER_EXPERIENCE_TEAM_NAME,
+            PortalTicketTeamRoutingSource.customer_experience,
+        ),
+        (SYSTEM_ADMIN_TEAM_NAME, PortalTicketTeamRoutingSource.system_admin),
+    )
+    for team_name, source in candidates:
+        team = (
+            db.query(ServiceTeam)
+            .filter(
+                ServiceTeam.is_active.is_(True),
+                func.lower(ServiceTeam.name) == team_name.lower(),
+            )
+            .one_or_none()
+        )
+        if team is not None:
+            return SupportTeamRoutingResolution(
+                service_team_id=team.id,
+                service_team_name=team.name,
+                source=source,
+            )
+    return SupportTeamRoutingResolution(
+        service_team_id=None,
+        service_team_name=None,
+        source=PortalTicketTeamRoutingSource.unassigned,
     )
 
 

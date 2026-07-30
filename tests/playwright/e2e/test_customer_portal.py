@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import Page, expect
 
 from tests.playwright.pages.customer import (
@@ -122,8 +123,17 @@ class TestCustomerSupport:
         page.expect_loaded()
         page.expect_tickets_visible()
 
-    def test_create_ticket_flow(self, customer_page: Page, settings):
-        """Should be able to create a new support ticket."""
+    @pytest.mark.parametrize(
+        "viewport",
+        (
+            {"width": 1440, "height": 900},
+            {"width": 390, "height": 844},
+        ),
+        ids=("desktop", "mobile"),
+    )
+    def test_create_ticket_flow(self, customer_page: Page, settings, viewport):
+        """Should be able to create a new support ticket at supported widths."""
+        customer_page.set_viewport_size(viewport)
         support_page = CustomerSupportPage(customer_page, settings.base_url)
         support_page.goto()
         support_page.expect_loaded()
@@ -131,8 +141,9 @@ class TestCustomerSupport:
 
         ticket_page = CustomerTicketPage(customer_page, settings.base_url)
         ticket_page.expect_form_loaded()
-        ticket_page.fill_subject("Test Support Request")
+        ticket_page.fill_subject(f"Test Support Request {viewport['width']}")
         ticket_page.fill_description("This is a test support request for e2e testing.")
+        ticket_page.select_region()
         ticket_page.submit_ticket()
 
 

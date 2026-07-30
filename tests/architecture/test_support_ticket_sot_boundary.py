@@ -86,6 +86,23 @@ def test_assignment_and_automation_policies_do_not_write_ticket_lifecycle() -> N
     assert "auto_assign_ticket(" in assignment
 
 
+def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> None:
+    configuration = _source("app/services/support_ticket_settings.py")
+    lifecycle = _source("app/services/support.py")
+    portal = _source("app/web/customer/routes.py")
+
+    assert "class SupportTeamRoutingResolution" in configuration
+    assert 'CUSTOMER_EXPERIENCE_TEAM_NAME = "Customer Experience"' in configuration
+    assert 'SYSTEM_ADMIN_TEAM_NAME = "System Admin"' in configuration
+    assert "func.lower(ServiceTeam.name) == team_name.lower()" in configuration
+    assert "class TicketCreationRoutingMode" in lifecycle
+    assert "preserve_requested_team" in lifecycle
+    assert "resolve_portal_ticket_team_routing(db)" in portal
+    assert "TicketCreationRoutingMode.preserve_requested_team" in _source(
+        "app/services/crm_portal.py"
+    )
+
+
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:
     source = _source("app/services/ticket_work_order_handoff.py")
     assert "execute_owner_command(" in source

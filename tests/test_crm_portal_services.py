@@ -7,6 +7,18 @@ from uuid import uuid4
 from fastapi import Request
 
 from app.services import crm_portal
+from app.services.support_ticket_settings import (
+    PortalTicketTeamRoutingSource,
+    SupportTeamRoutingResolution,
+)
+
+
+def _unassigned_routing() -> SupportTeamRoutingResolution:
+    return SupportTeamRoutingResolution(
+        service_team_id=None,
+        service_team_name=None,
+        source=PortalTicketTeamRoutingSource.unassigned,
+    )
 
 
 def _ticket(
@@ -336,19 +348,30 @@ def test_ticket_detail_context_filters_internal_comments(monkeypatch) -> None:
     assert context["ticket"]["status_presentation"]["value"] == "open"
 
 
-def test_ticket_create_context_exposes_priority_choices() -> None:
-    context = crm_portal.ticket_create_context(Mock(spec=Request), {"id": "cust-1"})
+def test_ticket_create_context_exposes_canonical_form_choices(db_session) -> None:
+    context = crm_portal.ticket_create_context(
+        Mock(spec=Request), db_session, {"id": "cust-1"}
+    )
 
     assert context["active_page"] == "support"
     assert context["priorities"] == list(crm_portal.TICKET_PRIORITY_DISPLAY.keys())
+    assert context["region_options"] == ["central", "east", "north", "south", "west"]
 
 
 def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     sid = str(uuid4())
     captured: dict[str, str] = {}
 
-    def _create(db, payload, actor_id=None, dispatch_event_after_commit=True):
+    def _create(
+        db,
+        payload,
+        actor_id=None,
+        dispatch_event_after_commit=True,
+        routing_mode=None,
+    ):
         captured["priority"] = payload.priority
+        captured["region"] = payload.region
+        captured["routing_mode"] = routing_mode.value
         return _ticket(id="ticket-1", subscriber_id=sid)
 
     monkeypatch.setattr("app.services.support.Tickets.create", _create)
@@ -357,17 +380,33 @@ def test_handle_ticket_create_normalizes_unknown_priority(monkeypatch) -> None:
     )
 
     result = crm_portal.handle_ticket_create(
-        Mock(), {}, sid, "Slow internet", "Please investigate.", "not-a-priority"
+        Mock(),
+        {},
+        sid,
+        "Slow internet",
+        "Please investigate.",
+        "not-a-priority",
+        "north",
+        _unassigned_routing(),
     )
 
     assert result["success"] is True
     assert result["ticket"]["id"] == "ticket-1"
     assert captured["priority"] == "normal"
+    assert captured["region"] == "north"
+    assert captured["routing_mode"] == "preserve_requested_team"
 
 
 def test_handle_ticket_create_returns_link_error_without_valid_subscriber() -> None:
     result = crm_portal.handle_ticket_create(
-        Mock(), {}, "not-a-uuid", "Slow internet", "", "normal"
+        Mock(),
+        {},
+        "not-a-uuid",
+        "Slow internet",
+        "",
+        "normal",
+        "north",
+        _unassigned_routing(),
     )
 
     assert result == {
@@ -379,13 +418,20 @@ def test_handle_ticket_create_returns_link_error_without_valid_subscriber() -> N
 def test_handle_ticket_create_returns_error_on_failure(monkeypatch) -> None:
     sid = str(uuid4())
 
-    def _boom(db, payload, actor_id=None):
+    def _boom(db, payload, actor_id=None, **kwargs):
         raise RuntimeError("db down")
 
     monkeypatch.setattr("app.services.support.Tickets.create", _boom)
 
     result = crm_portal.handle_ticket_create(
-        Mock(), {}, sid, "Slow internet", "", "normal"
+        Mock(),
+        {},
+        sid,
+        "Slow internet",
+        "",
+        "normal",
+        "north",
+        _unassigned_routing(),
     )
 
     assert result == {

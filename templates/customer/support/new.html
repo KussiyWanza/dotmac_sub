@@ -83,6 +83,18 @@
                            class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white dark:placeholder-stone-400">
                 </div>
 
+                <!-- Region -->
+                <div>
+                    <label for="region" class="block text-sm font-semibold text-stone-700 dark:text-stone-300 mb-2">Region</label>
+                    <select id="region" name="region" required
+                            class="block w-full rounded-xl border-2 border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 transition-all focus:border-[var(--color-brand-500)] focus:outline-none focus:ring-4 focus:ring-[var(--color-brand-500)]/10 dark:border-stone-600 dark:bg-stone-700 dark:text-white">
+                        <option value="" {% if form_values is not defined or not form_values or not form_values.region %}selected{% endif %}>Select region</option>
+                        {% for region in region_options %}
+                        <option value="{{ region }}" {% if form_values is defined and form_values and form_values.region == region %}selected{% endif %}>{{ region | replace('_', ' ') | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
                 <!-- Priority -->
                 <div>
                     <label for="priority" class="block text-sm font-semibold text-stone-700 dark:text-stone-300 mb-2">Priority</label>

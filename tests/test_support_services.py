@@ -211,6 +211,80 @@ def test_ticket_create_uses_configured_routing_and_sla_policy(db_session, subscr
     )
 
 
+def test_ticket_create_preserves_requested_team_or_unassigned_routing(
+    db_session, subscriber
+):
+    requested_team = ServiceTeam(
+        name="Requested Portal Team",
+        team_type=ServiceTeamType.support.value,
+    )
+    rule_team = ServiceTeam(
+        name="Assignment Rule Team",
+        team_type=ServiceTeamType.support.value,
+    )
+    automation_team = ServiceTeam(
+        name="Automation Team",
+        team_type=ServiceTeamType.support.value,
+    )
+    db_session.add_all([requested_team, rule_team, automation_team])
+    db_session.flush()
+    db_session.add(
+        TicketAssignmentRule(
+            name="Route all north tickets",
+            priority=100,
+            is_active=True,
+            strategy=TicketAssignmentStrategy.round_robin.value,
+            team_id=rule_team.id,
+            match_config={"regions": ["north"]},
+        )
+    )
+    db_session.commit()
+    support_automation_rules.create_rule(
+        db_session,
+        name="Replace created ticket team",
+        trigger=AutomationTrigger.ticket_created,
+        action_type=AutomationActionType.assign_team,
+        action_value=support_automation_rules.TicketAutomationAction(
+            service_team_id=automation_team.id
+        ),
+    )
+    support_automation_rules.create_rule(
+        db_session,
+        name="Tag portal-created tickets",
+        trigger=AutomationTrigger.ticket_created,
+        action_type=AutomationActionType.add_tag,
+        action_value=support_automation_rules.TicketAutomationAction(
+            tag="creation_automation_ran"
+        ),
+    )
+
+    explicitly_routed = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Preserve requested team",
+            subscriber_id=subscriber.id,
+            region="north",
+            service_team_id=requested_team.id,
+        ),
+        routing_mode=support_service.TicketCreationRoutingMode.preserve_requested_team,
+    )
+    intentionally_unassigned = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Preserve intentional unassignment",
+            subscriber_id=subscriber.id,
+            region="north",
+            service_team_id=None,
+        ),
+        routing_mode=support_service.TicketCreationRoutingMode.preserve_requested_team,
+    )
+
+    assert explicitly_routed.service_team_id == requested_team.id
+    assert intentionally_unassigned.service_team_id is None
+    assert "creation_automation_ran" in explicitly_routed.tags
+    assert "creation_automation_ran" in intentionally_unassigned.tags
+
+
 def test_ticket_auto_assignment_respects_configured_open_limit(db_session, subscriber):
     team = ServiceTeam(name="Support queue", team_type=ServiceTeamType.support.value)
     db_session.add(team)
