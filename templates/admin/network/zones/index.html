@@ -80,6 +80,7 @@
                 {{ table_head([
                     {"label": "Zone"},
                     {"label": "Parent"},
+                    {"label": "Geographic Area"},
                     {"label": "ONTs"},
                     {"label": "Splitters"},
                     {"label": "FDH Cabinets"},
@@ -110,6 +111,16 @@
                             <a href="/admin/network/zones/{{ zone.parent_id }}" class="text-sm text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ zone.parent.name }}</a>
                             {% else %}
                             <span class="text-xs text-slate-400">Top-level</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            {% set geo = zone_geo_areas.get(zone.id | string) if zone_geo_areas is defined else None %}
+                            {% if geo and geo.unavailable %}
+                            <span class="text-xs text-amber-600" title="Bound to a retired area">Unavailable</span>
+                            {% elif geo and geo.name %}
+                            <span class="text-sm text-slate-800 dark:text-slate-100">{{ geo.name }}</span>
+                            {% else %}
+                            <span class="text-xs text-slate-400" title="No binding on this zone; it may still inherit from a parent">Not bound here</span>
                             {% endif %}
                         </td>
                         <td class="px-6 py-4 whitespace-nowrap">

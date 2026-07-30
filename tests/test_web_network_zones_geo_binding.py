@@ -81,3 +81,67 @@ def test_zone_templates_expose_geo_area_binding():
     assert "inherit from parent zone" in form
     assert "Geographic Area" in detail
     assert "Unbound (global routing applies)" in detail
+
+
+def test_list_page_reports_the_binding_declared_on_each_zone(db_session):
+    """The list has a bounded-query contract, so it shows own bindings only.
+
+    A child that merely inherits is reported as unbound *here*; the detail
+    page resolves the full parent chain.
+    """
+
+    area = _area(db_session, "Kano Coverage")
+    bound = web_network_zones.create_zone(
+        db_session,
+        web_network_zones.parse_form_values(
+            _form(name="Kano Parent", geo_area_id=str(area.id), is_active="true")
+        ),
+    )
+    child = web_network_zones.create_zone(
+        db_session,
+        web_network_zones.parse_form_values(
+            _form(name="Kano Child", parent_id=str(bound.id), is_active="true")
+        ),
+    )
+    loose = web_network_zones.create_zone(
+        db_session,
+        web_network_zones.parse_form_values(_form(name="Kano Loose", is_active="true")),
+    )
+
+    labels = web_network_zones.list_page_data(db_session)["zone_geo_areas"]
+
+    assert labels[str(bound.id)] == {
+        "bound": True,
+        "unavailable": False,
+        "name": "Kano Coverage",
+    }
+    assert labels[str(child.id)]["bound"] is False
+    assert labels[str(child.id)]["name"] is None
+    assert labels[str(loose.id)]["name"] is None
+    assert labels[str(loose.id)]["unavailable"] is False
+
+
+def test_list_page_marks_stale_binding_unavailable(db_session):
+    retired = _area(db_session, "Retired List Area")
+    zone = web_network_zones.create_zone(
+        db_session,
+        web_network_zones.parse_form_values(
+            _form(name="Stale List Zone", geo_area_id=str(retired.id), is_active="true")
+        ),
+    )
+    retired.is_active = False
+    db_session.flush()
+
+    labels = web_network_zones.list_page_data(db_session)["zone_geo_areas"]
+
+    assert labels[str(zone.id)]["unavailable"] is True
+    assert labels[str(zone.id)]["name"] is None
+
+
+def test_tickets_index_bulk_preview_guards_null_preview():
+    source = Path("templates/admin/support/tickets/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "${preview.skipped_count" not in source
+    assert "${(preview?.skipped_count || 0) - 5}" in source
