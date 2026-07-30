@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from paramiko.ssh_exception import SSHException
 
 from app.models.network import OLTDevice
-from app.services.network.huawei_cli_response import is_huawei_cli_unsupported
 
 logger = logging.getLogger(__name__)
 
@@ -672,7 +671,6 @@ def get_traffic_tables(olt: OLTDevice) -> tuple[bool, str, list[TrafficTableEntr
     from app.services.network.olt_ssh import (
         _open_shell,
         _read_until_prompt,
-        _run_huawei_cmd,
         _run_huawei_paged_cmd,
     )
 
@@ -687,22 +685,12 @@ def get_traffic_tables(olt: OLTDevice) -> tuple[bool, str, list[TrafficTableEntr
         channel.send("screen-length 0 temporary\n")
         _read_until_prompt(channel, r"#\s*$", timeout_sec=5)
 
-        model = str(getattr(olt, "model", "") or "").lower()
-        command = (
-            "display traffic table ip from-index 0"
-            if "ma5800" in model
-            else "display traffic table ip all"
-        )
+        # ``display ... all`` can stream indefinitely on Huawei shelves with a
+        # large legacy table.  The indexed form is bounded and is supported by
+        # both MA5800 and the older Huawei OLTs we operate.
+        command = "display traffic table ip from-index 0"
         prompt = getattr(policy, "prompt_regex", r"#\s*$") or r"#\s*$"
-        if command == "display traffic table ip from-index 0":
-            output = _run_huawei_paged_cmd(channel, command, prompt=prompt)
-        else:
-            output = _run_huawei_cmd(channel, command, prompt=prompt)
-        if command == "display traffic table ip all" and is_huawei_cli_unsupported(
-            output
-        ):
-            command = "display traffic table ip from-index 0"
-            output = _run_huawei_paged_cmd(channel, command, prompt=prompt)
+        output = _run_huawei_paged_cmd(channel, command, prompt=prompt)
         entries = parse_traffic_tables(output)
         return True, f"Found {len(entries)} traffic table(s)", entries
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:

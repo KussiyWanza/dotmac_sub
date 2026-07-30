@@ -62,7 +62,7 @@ def test_get_dba_profiles_runs_display_command(monkeypatch) -> None:
     assert entries[0].name == "DOTMAC_100M"
 
 
-def test_get_traffic_tables_runs_display_command(monkeypatch) -> None:
+def test_get_traffic_tables_uses_bounded_from_index_command(monkeypatch) -> None:
     from app.services.network import olt_ssh_profiles
 
     sent: list[str] = []
@@ -77,7 +77,7 @@ def test_get_traffic_tables_runs_display_command(monkeypatch) -> None:
 
     def fake_run(_channel, command, **_kwargs):
         sent.append(command)
-        if command == "display traffic table ip all":
+        if command == "display traffic table ip from-index 0":
             return """
             Index  Name            CIR(kbps)  PIR(kbps)  Priority
             6      DOTMAC_100M_IN  50000      100000     0
@@ -93,7 +93,7 @@ def test_get_traffic_tables_runs_display_command(monkeypatch) -> None:
         lambda *_args, **_kwargs: "",
     )
     monkeypatch.setattr(
-        "app.services.network.olt_ssh._run_huawei_cmd",
+        "app.services.network.olt_ssh._run_huawei_paged_cmd",
         fake_run,
     )
 
@@ -106,7 +106,7 @@ def test_get_traffic_tables_runs_display_command(monkeypatch) -> None:
     assert sent[:3] == [
         "enable\n",
         "screen-length 0 temporary\n",
-        "display traffic table ip all",
+        "display traffic table ip from-index 0",
     ]
     assert sent[-1] == "close"
     assert entries[0].index == 6
@@ -168,7 +168,7 @@ def test_get_traffic_tables_uses_from_index_for_ma5800(monkeypatch) -> None:
     assert [entry.index for entry in entries] == [7, 86]
 
 
-def test_get_traffic_tables_falls_back_when_all_is_unknown(monkeypatch) -> None:
+def test_get_traffic_tables_uses_bounded_command_for_older_huawei(monkeypatch) -> None:
     from app.services.network import olt_ssh_profiles
 
     sent: list[str] = []
@@ -183,8 +183,6 @@ def test_get_traffic_tables_falls_back_when_all_is_unknown(monkeypatch) -> None:
 
     def fake_run(_channel, command, **_kwargs):
         sent.append(command)
-        if command == "display traffic table ip all":
-            return "% Unknown command, the error locates at '^'"
         if command == "display traffic table ip from-index 0":
             return """
             TID CIR      CBS        PIR      PBS        Pri Copy-policy     Pri-Policy
@@ -202,10 +200,6 @@ def test_get_traffic_tables_falls_back_when_all_is_unknown(monkeypatch) -> None:
         lambda *_args, **_kwargs: "",
     )
     monkeypatch.setattr(
-        "app.services.network.olt_ssh._run_huawei_cmd",
-        fake_run,
-    )
-    monkeypatch.setattr(
         "app.services.network.olt_ssh._run_huawei_paged_cmd",
         fake_run,
     )
@@ -216,10 +210,9 @@ def test_get_traffic_tables_falls_back_when_all_is_unknown(monkeypatch) -> None:
 
     assert ok is True
     assert message == "Found 2 traffic table(s)"
-    assert sent[:4] == [
+    assert sent[:3] == [
         "enable\n",
         "screen-length 0 temporary\n",
-        "display traffic table ip all",
         "display traffic table ip from-index 0",
     ]
     assert sent[-1] == "close"
