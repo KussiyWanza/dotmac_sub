@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
 from app.models.vendor_routes import (
     InstallationProject,
+    ProjectQuote,
     Vendor,
     VendorPurchaseInvoice,
     VendorPurchaseInvoiceLineItem,
@@ -311,6 +313,50 @@ def stage_submission(
     return serialize(_get(db, command.invoice_id))
 
 
+def _assert_within_quote_net_of_advances(
+    db: Session, invoice: VendorPurchaseInvoice
+) -> None:
+    """Refuse an approval that would pay the same work twice.
+
+    Advances leave Sub as money owed to the vendor but are never transmitted
+    to ERP: the AP payload has no prepayment field, and ERP cannot park an
+    on-account payment against a future invoice. ERP therefore bills the
+    invoice gross, and an advance already taken would be paid a second time.
+
+    Sub is the only place that knows both numbers, so the control lives here.
+    It refuses rather than adjusting the total, because Sub never rewrites a
+    vendor's stated invoice amount — the vendor reissues net of the advance.
+    Only approved and settled advances count; a merely requested one
+    authorises nothing.
+    """
+
+    from app.services import vendor_advances
+
+    project = invoice.project
+    if project is None or project.approved_quote_id is None:
+        return
+    quote = db.get(ProjectQuote, project.approved_quote_id)
+    if quote is None:
+        return
+
+    quote_total = Decimal(str(quote.total or 0)).quantize(Decimal("0.01"))
+    advances = vendor_advances.authorised_total(db, invoice.project_id)
+    invoice_total = Decimal(str(invoice.total or 0)).quantize(Decimal("0.01"))
+    if advances <= Decimal("0.00"):
+        return
+    if invoice_total + advances <= quote_total:
+        return
+    raise _error(
+        "invoice_exceeds_quote_net_of_advances",
+        (
+            f"Invoice {invoice_total} plus advances already authorised "
+            f"{advances} exceeds the approved quote {quote_total}. Advances "
+            "are not netted downstream, so the invoice must be reissued net "
+            "of them."
+        ),
+    )
+
+
 def stage_review(db: Session, command: ReviewVendorPurchaseInvoiceCommand) -> dict:
     invoice = _get(db, command.invoice_id, for_update=True)
     (
@@ -330,6 +376,7 @@ def stage_review(db: Session, command: ReviewVendorPurchaseInvoiceCommand) -> di
     action = "approved" if command.approve else "revision_requested"
     if command.approve:
         _recalculate(invoice)
+        _assert_within_quote_net_of_advances(db, invoice)
         invoice.status = VendorPurchaseInvoiceStatus.approved.value
         invoice.procurement_order_reference = (
             invoice.project.procurement_order_reference

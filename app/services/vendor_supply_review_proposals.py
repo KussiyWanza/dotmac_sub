@@ -213,6 +213,11 @@ def _review(
 ) -> None:
     try:
         if supply_type is VendorSupplyType.material:
+            if action is VendorSupplyReviewAction.disburse:
+                raise _error(
+                    "unsupported_action",
+                    "Only an advance can be recorded as disbursed.",
+                )
             if action is VendorSupplyReviewAction.approve:
                 vendor_material_release.approve(
                     db, record_id, actor_id=actor_id, notes=reason
@@ -221,6 +226,23 @@ def _review(
                 vendor_material_release.reject(
                     db, record_id, actor_id=actor_id, reason=str(reason or "")
                 )
+        elif action is VendorSupplyReviewAction.disburse:
+            # The operator who paid is the observation: there is no payables
+            # transport for advances, so without this the settled state is
+            # unreachable and Sub cannot tell committed money from paid money.
+            payment_reference = str(reason or "").strip()
+            if not payment_reference:
+                raise _error(
+                    "payment_reference_required",
+                    "Recording a disbursement requires the payment reference.",
+                )
+            vendor_advances.apply_payables_observation(
+                db,
+                record_id,
+                payables_system="operator",
+                payables_reference=payment_reference,
+                payables_status="paid",
+            )
         elif action is VendorSupplyReviewAction.approve:
             vendor_advances.approve(db, record_id, actor_id=actor_id, notes=reason)
         else:

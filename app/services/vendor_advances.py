@@ -213,6 +213,31 @@ def committed_total(db: Session, project_id: UUID | str) -> Decimal:
     return sum((_money(row.amount) for row in rows), Decimal("0.00"))
 
 
+def authorised_total(db: Session, project_id: UUID | str) -> Decimal:
+    """What this project has authorised for disbursement in advances.
+
+    Narrower than :func:`committed_total`: a merely *requested* advance
+    reserves ceiling but authorises no money, so it must not reduce what a
+    vendor may still invoice. Approved and settled advances are money the
+    vendor is owed or has, and an invoice on top of them would pay twice.
+    """
+
+    rows = db.scalars(
+        select(VendorAdvance)
+        .where(VendorAdvance.project_id == coerce_uuid(project_id))
+        .where(VendorAdvance.is_active.is_(True))
+        .where(
+            VendorAdvance.status.in_(
+                (
+                    VendorAdvanceStatus.approved.value,
+                    VendorAdvanceStatus.settled.value,
+                )
+            )
+        )
+    )
+    return sum((_money(row.amount) for row in rows), Decimal("0.00"))
+
+
 def configured_max_percent(db: Session) -> Decimal:
     """The operator's percentage guard rail, or 0 when they have not set one."""
     raw = resolve_value(db, SettingDomain.projects, "vendor_advance_max_percent")

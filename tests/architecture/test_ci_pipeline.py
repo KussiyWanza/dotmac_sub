@@ -145,6 +145,22 @@ def test_ci_test_jobs_fail_closed_instead_of_hanging_indefinitely() -> None:
     assert "    timeout-minutes: 30\n" in architecture_job
 
 
+def test_ci_change_classifier_fetches_missing_comparison_base() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    classifier = workflow[
+        workflow.index("  changes:\n") : workflow.index("  python-environment:\n")
+    ]
+
+    existence_check = 'git cat-file -e "$base^{commit}"'
+    targeted_fetch = 'git fetch --no-tags --depth=1 origin "$base"'
+    path_diff = 'git diff --name-only "$base" HEAD'
+
+    assert existence_check in classifier
+    assert targeted_fetch in classifier
+    assert classifier.index(existence_check) < classifier.index(targeted_fetch)
+    assert classifier.index(targeted_fetch) < classifier.index(path_diff)
+
+
 def test_production_dependency_group_excludes_ci_tools() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))

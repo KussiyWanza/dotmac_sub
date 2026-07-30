@@ -59,6 +59,14 @@ jobs:
             base="$(git rev-list --max-parents=0 HEAD)"
           fi
 
+          # A shallow checkout of GitHub's synthetic PR merge ref does not
+          # guarantee that the event's base commit is present. Fetch that one
+          # commit on demand so path classification cannot fail with
+          # "fatal: bad object" before the required jobs are scheduled.
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$base"
+          fi
+
           git diff --name-only "$base" HEAD > "$RUNNER_TEMP/changed-paths"
           if [ ! -s "$RUNNER_TEMP/changed-paths" ]; then
             echo "docs-only=false" >> "$GITHUB_OUTPUT"
