@@ -15,6 +15,13 @@
         <a href="/admin/network/fiber-map" class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Map</a>
     {% endcall %}
 
+    {% if awaiting_activation_count %}
+    <a href="/admin/network/fiber-as-built-activation" class="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-100 dark:hover:bg-amber-900/30">
+        <span><span class="font-semibold">{{ awaiting_activation_count }}</span> accepted as-built cable{{ '' if awaiting_activation_count == 1 else 's' }} recorded but not in service — absent from every map until activated.</span>
+        <span class="whitespace-nowrap font-medium">Activate →</span>
+    </a>
+    {% endif %}
+
     {# asset-type facet tabs #}
     <div class="border-b border-slate-200 dark:border-slate-800">
         <nav class="-mb-px flex flex-wrap gap-6" aria-label="Asset types">

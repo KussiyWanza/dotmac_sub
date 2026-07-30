@@ -11808,8 +11808,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="network.as_built_plant_projection",
                 module="app.services.network.as_built_plant_projection",
-                owns=("fiber segment projection of accepted vendor as-built evidence",),
-                depends_on=("operations.vendor_project_records",),
+                owns=(
+                    "fiber segment projection of accepted vendor as-built evidence",
+                    "operator activation of the projected as-built fiber segment",
+                ),
+                depends_on=(
+                    "operations.vendor_project_records",
+                    "network.fiber_plant_integrity",
+                ),
                 notes=(
                     "Accepted as-built geometry previously never reached the "
                     "network record. This reconciler owns exactly one derived "
@@ -11817,11 +11823,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the as_built_routes.fiber_segment_id link. The evidence "
                     "stays authoritative with operations.vendor_project_records, "
                     "so a lost segment rebuilds from the accepted rows alone. It "
-                    "creates cable inactive: fiber_segments requires bound "
-                    "endpoints on an active row, and binding them into the graph "
-                    "is network.fiber_topology's decision. It never retires "
-                    "plant, never binds endpoints, and never deactivates a "
-                    "segment topology has since activated."
+                    "creates cable inactive, because the projection may not "
+                    "infer what the cable splices into. Because nothing else "
+                    "ever activated that row, every accepted as-built stayed "
+                    "invisible to the is_active-filtered plant and map reads, so "
+                    "this owner also owns activate_projected_segment: the one "
+                    "command that binds two operator-named terminations onto its "
+                    "own projected row and puts it in service. It reaches a "
+                    "segment only through the fiber_segment_id backlink of an "
+                    "accepted as-built, never activates anything another owner "
+                    "created, takes fiber count from the accepted evidence and "
+                    "refuses to contradict it, and submits the bound segment to "
+                    "network.fiber_plant_integrity so activation is held to the "
+                    "same rootedness, endpoint-identity, and exact-core rules as "
+                    "a reviewed fiber change. It never retires plant, never "
+                    "deactivates a segment, and never re-binds endpoints on one "
+                    "that is already active."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -11832,6 +11849,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             role=OwnerRole.RECONCILER,
                             input_names=("accepted vendor as-built evidence",),
+                            canonical_writer="network.as_built_plant_projection",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "operator activation of the projected as-built "
+                                "fiber segment"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "accepted vendor as-built evidence",
+                                "active cable operational integrity ruling",
+                            ),
                             canonical_writer="network.as_built_plant_projection",
                         ),
                     ),
@@ -11846,13 +11875,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "fiber count"
                             ),
                         ),
+                        AuthorityInput(
+                            name="active cable operational integrity ruling",
+                            owner="network.fiber_plant_integrity",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "validate_active_segment and "
+                                "ensure_segment_strand_inventory, which decide "
+                                "whether the operator-named terminations form an "
+                                "exact PON-rooted component; activation fails "
+                                "closed on their refusal"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.PARTICIPANT,
                         boundary=(
                             "The acceptance decision owns the transaction; the "
                             "projection stages the segment inside it. The repair "
-                            "sweep owns its own commit."
+                            "sweep owns its own commit, and so does "
+                            "activate_projected_segment, which is one operator "
+                            "decision rather than a step inside another."
                         ),
                         locking=(
                             "The accepted as-built row is already locked by the "
@@ -11860,32 +11903,61 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         idempotency=(
                             "fiber_segment_id makes a replay refresh the same "
-                            "segment rather than mint a second cable."
+                            "segment rather than mint a second cable, and a "
+                            "replayed activation returns already_active without "
+                            "re-binding the endpoints."
                         ),
                         retries=(
                             "Safe to re-run: reconcile_accepted_as_builts is a "
-                            "no-op for evidence already projected."
+                            "no-op for evidence already projected, and a refused "
+                            "activation rolls back its own endpoint binding."
                         ),
                     ),
                     errors=ErrorContract(
                         domain_codes=(
                             "network.as_built_plant_projection.as_built_not_found",
+                            "network.as_built_plant_projection."
+                            "activation_target_required",
+                            "network.as_built_plant_projection.segment_not_projected",
+                            "network.as_built_plant_projection.as_built_not_accepted",
+                            "network.as_built_plant_projection."
+                            "termination_point_not_found",
+                            "network.as_built_plant_projection."
+                            "termination_points_not_distinct",
+                            "network.as_built_plant_projection.missing_route_geometry",
+                            "network.as_built_plant_projection.missing_fiber_count",
+                            "network.as_built_plant_projection."
+                            "fiber_count_conflicts_with_evidence",
+                            "network.as_built_plant_projection.plant_integrity_refused",
                         ),
-                        mapping_owner="app.services.vendor_project_records",
+                        mapping_owner="app.web.admin.network_fiber_plant",
+                        fail_closed_on=(
+                            "network.as_built_plant_projection.plant_integrity_refused",
+                        ),
                     ),
                     events=EventContract(
-                        event_types=("vendor_as_built.accepted",),
+                        event_types=(
+                            "vendor_as_built.accepted",
+                            "fiber_segment.activated",
+                        ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
                             "Consumes the acceptance event emitted by "
-                            "operations.vendor_project_records; this owner emits "
-                            "none of its own, because a derived segment is not a "
-                            "new fact about the world."
+                            "operations.vendor_project_records; the projection "
+                            "itself emits nothing, because a derived segment is "
+                            "not a new fact about the world. Activation does "
+                            "emit fiber_segment.activated: cable entering "
+                            "service is a new operational fact, and it is the "
+                            "moment the cable becomes visible to every "
+                            "is_active-filtered plant and map read."
                         ),
                         replay=(
                             "Replaying an acceptance refreshes the same segment "
-                            "through fiber_segment_id rather than creating one."
+                            "through fiber_segment_id rather than creating one; "
+                            "replaying an activation emits nothing further, "
+                            "because the already_active path returns before the "
+                            "event is staged."
                         ),
                     ),
                     projections=(
@@ -11922,12 +11994,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         verification=(
                             "Projection, idempotency, variation-refresh, "
                             "unaccepted-evidence, missing-attribute, "
-                            "endpoint-abstention, and repair-sweep tests."
+                            "endpoint-abstention, and repair-sweep tests, plus "
+                            "activation tests covering map visibility, "
+                            "non-projected refusal, endpoint validation, replay, "
+                            "and the awaiting-activation queue."
                         ),
                     ),
                     steward="network operations",
                     design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
-                    test_refs=("tests/test_as_built_plant_projection.py",),
+                    test_refs=(
+                        "tests/test_as_built_plant_projection.py",
+                        "tests/test_as_built_plant_activation.py",
+                    ),
                 ),
             ),
             SOTService(
