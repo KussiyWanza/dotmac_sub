@@ -98,6 +98,37 @@ docker compose -f docker-compose.yml run --rm --no-deps app \
   python -m scripts.integrations.verify_crm_ticket_readiness
 ```
 
+## Working-tree drift detection
+
+Code deploys are immutable images, but the host checkout remains the source for
+`docker-compose.yml`, `config/`, and `nginx/`. The tree is therefore part of
+the deployed configuration and must stay at `origin/main` and clean; a tree
+left on a feature branch or with hand-applied edits is configuration drift.
+
+`scripts/ops/prod_tree_drift_metrics.sh` exports that state as gauges
+(`deploy_tree_on_main`, `deploy_tree_clean`, `deploy_tree_matches_origin_main`,
+`deploy_tree_behind_commits`, `deploy_tree_dirty_files`,
+`deploy_tree_fetch_ok`) to the host's VictoriaMetrics. Install it on the
+deploy host as a root cron entry:
+
+```
+*/15 * * * * /root/dotmac_sub/scripts/ops/prod_tree_drift_metrics.sh >> /var/log/dotmac_tree_drift.log 2>&1
+```
+
+Intended alert rules (ops wiring lives on the observe host):
+
+```promql
+# Tree drifted: wrong branch, dirty, or not at origin/main for 6h
+min without() (deploy_tree_on_main) == 0
+min without() (deploy_tree_clean) == 0
+min without() (deploy_tree_matches_origin_main) == 0
+# Exporter dead or cron removed
+absent_over_time(deploy_tree_clean[2h])
+```
+
+Six hours tolerates a deliberate in-progress operation; past incidents left the
+tree drifted for days undetected.
+
 ## Failure behavior
 
 - Migration, schema verification, unavailable integration-pin, or CRM ticket
