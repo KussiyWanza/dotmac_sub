@@ -24,8 +24,13 @@ repos:
         args: [--maxkb=500]
       - id: check-merge-conflict
       - id: debug-statements  # no pdb/breakpoint() in commits
+      # Every entry below is a literal PEM *header string* in a placeholder,
+      # fixture or form hint — none contain key material. Adding a real file
+      # here to make the hook pass is how a live OpenVPN server key stayed
+      # public for five months; `ci-secret-scan` in ci.yml now scans the tree
+      # independently of this list so silencing the hook is no longer enough.
       - id: detect-private-key  # catch accidental key commits
-        exclude: (templates/admin/network/nas/device_form\.html|docs/superpowers/plans/2026-03-29-router-management\.md|tests/test_router_management_schemas\.py|tests/test_web_vpn_management_service\.py|configs/openvpn/mikrotik\.conf)
+        exclude: (templates/admin/network/nas/device_form\.html|docs/superpowers/plans/2026-03-29-router-management\.md|tests/test_router_management_schemas\.py|tests/test_web_vpn_management_service\.py)
 
   # Security: bandit static analysis
   - repo: https://github.com/PyCQA/bandit
@@ -42,4 +47,5 @@ repos:
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
-        exclude: (\.env\.example|tests/|alembic/|scripts/|templates/|docs/|configs/|\.playwright-mcp/)
+        # configs/ deliberately NOT excluded: it holds generated PKI/VPN output.
+        exclude: (\.env\.example|tests/|alembic/|scripts/|templates/|docs/|\.playwright-mcp/)

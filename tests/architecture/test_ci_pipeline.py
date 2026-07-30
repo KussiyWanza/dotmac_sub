@@ -75,10 +75,20 @@ def test_ci_uses_one_named_application_cache_and_one_branch_publisher() -> None:
     assert "docker push" not in workflow
     assert "docker/build-push-action" not in e2e_workflow
     assert 'image_tag="sha-${GITHUB_SHA::7}"' in e2e_workflow
-    assert ghcr_workflow.count("uses: docker/build-push-action@v6") == 1
+    # ghcr.yml publishes exactly two images: the application and the pinned
+    # GenieACS runtime (built in CI so no prod host needs a source checkout).
+    # Each publisher keeps its own named buildx cache scope, and only the
+    # application image may carry the moving `latest` tag — GenieACS is pinned
+    # to the version parsed from its Dockerfile.
+    assert ghcr_workflow.count("uses: docker/build-push-action@v6") == 2
     assert "branches: [main, dev]" in ghcr_workflow
-    assert "type=raw,value=latest,enable={{is_default_branch}}" in ghcr_workflow
+    assert (
+        ghcr_workflow.count("type=raw,value=latest,enable={{is_default_branch}}") == 1
+    )
     assert "scope=dotmac-sub-application" in ghcr_workflow
+    assert "scope=genieacs" in ghcr_workflow
+    assert "-genieacs:${{ steps.version.outputs.version }}" in ghcr_workflow
+    assert "genieacs:latest" not in ghcr_workflow
 
 
 def test_ci_removes_workstation_venv_pointer_before_cache_and_restore() -> None:

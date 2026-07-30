@@ -117,3 +117,9 @@ remediation_*.json
 /static/reports/*.csv
 # One-off production remediations with embedded account/invoice identifiers stay local.
 /scripts/one_off/remediate_prepaid_overlap_locks.py
+# Generated VPN/PKI server configs — these embed CA + server PRIVATE KEYS.
+# scripts/seed/seed_mikrotik_vpn.py renders them at provisioning time; they are
+# regenerable and must never be committed. A committed one leaked publicly on
+# 2026-01-26 and stayed exposed until 2026-07-27.
+/configs/openvpn/
+/configs/**/*.conf

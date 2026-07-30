@@ -144,8 +144,29 @@ docker-shell: ## Open shell in app container
 docker-migrate: ## Run migrations inside Docker
 	docker exec dotmac_sub_app alembic upgrade heads
 
-prod-build: ## Build + tag the immutable prod image from a CLEAN checkout of HEAD (working-tree edits are NOT baked)
+# ─── Host-build fallback guard ─────────────────────────────────────────────
+#
+# Building the prod image ON the prod host is the fallback path, not the
+# supported one: it bakes whatever that box's git tree happens to contain,
+# which is how prod drifted away from main repeatedly. `make deploy TAG=...`
+# (GHCR) is the supported path. These targets now refuse to run unless the
+# operator states the intent explicitly, so nobody reaches for them under
+# incident pressure without noticing what they are choosing.
+define require-host-build
+	if [ "$${ALLOW_HOST_BUILD:-0}" != "1" ]; then \
+		echo "REFUSING TO BUILD ON HOST: this bakes the host's git tree, not a CI-tested commit." >&2; \
+		echo "Supported path:  make deploy TAG=sha-<shortsha>   (pulls the CI-built GHCR image)" >&2; \
+		echo "List tags:       bash scripts/deploy.sh --status" >&2; \
+		echo "" >&2; \
+		echo "If the registry is genuinely unreachable and you accept the drift risk:" >&2; \
+		echo "  ALLOW_HOST_BUILD=1 make $@" >&2; \
+		exit 1; \
+	fi
+endef
+
+prod-build: ## [FALLBACK] Build the prod image on this host. Requires ALLOW_HOST_BUILD=1 — prefer `make deploy TAG=...`
 	@set -eu; \
+	$(require-host-build); \
 	if [ -n "$$(git status --porcelain)" ]; then \
 		echo "WARNING: working tree has uncommitted changes — building committed HEAD only; they will NOT be in the image."; \
 	fi; \
@@ -156,7 +177,8 @@ prod-build: ## Build + tag the immutable prod image from a CLEAN checkout of HEA
 	echo "Building $(APP_IMAGE) (+ dotmac_sub:latest, dotmac_sub:$$sha) from clean HEAD $$sha"; \
 	docker build -t $(APP_IMAGE) -t dotmac_sub:latest -t "dotmac_sub:$$sha" "$$wt"
 
-prod-deploy: ## Full deploy: build image, pin it in .env, migrate, recreate app+workers
+prod-deploy: ## [FALLBACK] Host-build deploy. Requires ALLOW_HOST_BUILD=1 — prefer `make deploy TAG=sha-<shortsha>`
+	@set -eu; $(require-host-build)
 	$(MAKE) prod-build
 	$(MAKE) prod-pin
 	$(MAKE) prod-migrate
@@ -219,11 +241,37 @@ deploy: ## Hardened GHCR deploy. Usage: make deploy TAG=sha-abc1234
 	@test -n "$(TAG)" || { echo "usage: make deploy TAG=sha-<shortsha> (see: scripts/deploy.sh --status)"; exit 1; }
 	bash scripts/deploy.sh "$(TAG)"
 
+genieacs-build: ## Rebuild the GenieACS image locally (CI publishes it; this is for local dev only)
+	@set -eu; \
+	version="$$(grep -oE 'genieacs@[0-9]+\.[0-9]+\.[0-9]+' docker/genieacs/Dockerfile | head -1 | cut -d@ -f2)"; \
+	test -n "$$version" || { echo "could not parse genieacs version from docker/genieacs/Dockerfile" >&2; exit 1; }; \
+	img="$(GHCR_IMAGE)-genieacs:$$version"; \
+	echo "Building $$img from docker/genieacs"; \
+	docker build -t "$$img" docker/genieacs
+
 GHCR_IMAGE ?= ghcr.io/michaelayoade/dotmac_sub
 GHCR_TAG ?= latest
 
-prod-ghcr-pin: ## Point .env APP_IMAGE at the GHCR image (GHCR_IMAGE:GHCR_TAG)
-	@img="$(GHCR_IMAGE):$(GHCR_TAG)"; \
+# prod-ghcr-pin / prod-ghcr-deploy predate scripts/deploy.sh and skip its DB
+# backup, OCI revision validation, warm-candidate handoff, health gates and
+# rollback — and GHCR_TAG defaults to the moving `latest` tag. They are kept
+# only as a manual escape hatch and refuse to run unless the operator states
+# the intent explicitly, same contract as require-host-build above.
+define require-legacy-ghcr-deploy
+	if [ "$${ALLOW_LEGACY_GHCR_DEPLOY:-0}" != "1" ]; then \
+		echo "REFUSING LEGACY GHCR PATH: this skips scripts/deploy.sh's backup, revision validation, health gates and rollback." >&2; \
+		echo "Supported path:  make deploy TAG=sha-<shortsha>   (runs the hardened scripts/deploy.sh)" >&2; \
+		echo "" >&2; \
+		echo "If you accept an unguarded pin/deploy:" >&2; \
+		echo "  ALLOW_LEGACY_GHCR_DEPLOY=1 make $@" >&2; \
+		exit 1; \
+	fi
+endef
+
+prod-ghcr-pin: ## [FALLBACK] Point .env APP_IMAGE at GHCR_IMAGE:GHCR_TAG. Requires ALLOW_LEGACY_GHCR_DEPLOY=1 — prefer `make deploy TAG=...`
+	@set -eu; \
+	$(require-legacy-ghcr-deploy); \
+	img="$(GHCR_IMAGE):$(GHCR_TAG)"; \
 	if grep -q '^APP_IMAGE=' .env 2>/dev/null; then \
 		sed -i.bak "s#^APP_IMAGE=.*#APP_IMAGE=$$img#" .env && rm -f .env.bak; \
 	else \
@@ -231,7 +279,8 @@ prod-ghcr-pin: ## Point .env APP_IMAGE at the GHCR image (GHCR_IMAGE:GHCR_TAG)
 	fi; \
 	echo "Pinned APP_IMAGE=$$img in .env (compose now runs the CI-built image)"
 
-prod-ghcr-deploy: ## Deploy from the CI-built GHCR image (pull + migrate + restart; no host build)
+prod-ghcr-deploy: ## [FALLBACK] Unguarded GHCR deploy. Requires ALLOW_LEGACY_GHCR_DEPLOY=1 — prefer `make deploy TAG=...`
+	@set -eu; $(require-legacy-ghcr-deploy)
 	$(MAKE) prod-ghcr-pin
 	$(PROD_COMPOSE) pull app
 	$(MAKE) prod-migrate
