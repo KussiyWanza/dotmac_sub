@@ -689,8 +689,11 @@ def get_traffic_tables(olt: OLTDevice) -> tuple[bool, str, list[TrafficTableEntr
         # large legacy table.  The indexed form is bounded and is supported by
         # both MA5800 and the older Huawei OLTs we operate.
         command = "display traffic table ip from-index 0"
-        prompt = getattr(policy, "prompt_regex", r"#\s*$") or r"#\s*$"
-        output = _run_huawei_paged_cmd(channel, command, prompt=prompt)
+        # ``enable`` transitions Huawei from the initial user prompt (usually
+        # ``>``) to the privileged prompt (``#``).  The profile policy still
+        # describes the pre-enable prompt, so use the authoritative privileged
+        # prompt for the command response.
+        output = _run_huawei_paged_cmd(channel, command, prompt=r"#\s*$")
         entries = parse_traffic_tables(output)
         return True, f"Found {len(entries)} traffic table(s)", entries
     except (*_SSH_CONNECTION_ERRORS, RuntimeError) as exc:
