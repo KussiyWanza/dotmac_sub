@@ -46,6 +46,62 @@ def test_send_email_success(db_session, monkeypatch):
     assert "recipient@example.com" in to_addrs
 
 
+def test_send_email_delivers_cc_and_hidden_bcc(db_session, monkeypatch):
+    fake_smtp = FakeSMTP()
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setattr("smtplib.SMTP_SSL", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.local")
+    monkeypatch.setenv("SMTP_FROM", "noreply@test.local")
+
+    assert email_service.send_email(
+        db=db_session,
+        to_email="primary@example.com",
+        subject="Recipients",
+        body_html="<p>Hello</p>",
+        track=False,
+        cc_addresses=["copy@example.com"],
+        bcc_addresses=["hidden@example.com"],
+    )
+
+    _, recipients, message = fake_smtp.messages[0]
+    assert recipients == [
+        "primary@example.com",
+        "copy@example.com",
+        "hidden@example.com",
+    ]
+    assert "Cc: copy@example.com" in message
+    assert "\nBcc:" not in message
+
+
+def test_send_email_with_selected_config_delivers_cc_and_hidden_bcc(monkeypatch):
+    fake_smtp = FakeSMTP()
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setattr("smtplib.SMTP_SSL", lambda *args, **kwargs: fake_smtp)
+
+    assert email_service.send_email_with_config(
+        {
+            "host": "smtp.selected.test",
+            "port": 587,
+            "from_email": "support@example.com",
+            "from_name": "Support",
+        },
+        "primary@example.com",
+        "Recipients",
+        "<p>Hello</p>",
+        cc_addresses=["copy@example.com"],
+        bcc_addresses=["hidden@example.com"],
+    )
+
+    _, recipients, message = fake_smtp.messages[0]
+    assert recipients == [
+        "primary@example.com",
+        "copy@example.com",
+        "hidden@example.com",
+    ]
+    assert "Cc: copy@example.com" in message
+    assert "\nBcc:" not in message
+
+
 def test_send_email_html_and_text(db_session, monkeypatch):
     """Test sending email with both HTML and text content."""
     fake_smtp = FakeSMTP()

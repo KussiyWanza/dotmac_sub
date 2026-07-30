@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +26,8 @@ from app.services.secrets import resolve_secret
 WHATSAPP_SEND_CAPABILITY = "messaging.send.v1"
 WHATSAPP_RECEIVE_CAPABILITY = "messaging.receive.v1"
 WHATSAPP_TEMPLATE_READ_CAPABILITY = "messaging.templates.read.v1"
+_TEMPLATE_CACHE_TTL_SECONDS = 300
+_template_list_cache: dict[str, tuple[float, tuple[dict[str, Any], ...]]] = {}
 
 
 def require_binding(db: Session, *, capability_id: str) -> IntegrationCapabilityBinding:
@@ -140,6 +143,7 @@ def send_template_message(
     template_name: str,
     language: str | None = None,
     variables: dict[str, Any] | None = None,
+    components: list[dict[str, Any]] | None = None,
     dry_run: bool = True,
     correlation_id: str | None = None,
     secret_resolver: Callable[[str | None], str | None] = resolve_secret,
@@ -153,6 +157,7 @@ def send_template_message(
             "template_name": template_name,
             "language": language or "en",
             "variables": variables or {},
+            "components": components or [],
         },
         dry_run=dry_run,
         correlation_id=correlation,
@@ -191,3 +196,43 @@ def fetch_template_details(
     if not isinstance(template, dict):
         raise ValueError("template response invalid")
     return template
+
+
+def list_approved_templates(
+    db: Session,
+    *,
+    secret_resolver: Callable[[str | None], str | None] = resolve_secret,
+) -> tuple[dict[str, Any], ...]:
+    binding = require_binding(db, capability_id=WHATSAPP_TEMPLATE_READ_CAPABILITY)
+    revision = binding.installation.current_config_revision
+    cache_key = f"{binding.id}:{revision.id if revision is not None else 'none'}"
+    cached = _template_list_cache.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _TEMPLATE_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    context = build_execution_context(
+        db,
+        capability_binding_id=binding.id,
+        runner_override=WhatsAppRuntimeRunner(),
+        secret_resolver=secret_resolver,
+    )
+    executor = make_operation_executor(
+        context,
+        correlation_id=f"whatsapp:template-list:{cache_key}",
+        trigger=OperationTrigger.interactive,
+        actor="integration.whatsapp.templates",
+        timeout_seconds=int(context.config.get("timeout_seconds") or 10) + 5,
+    )
+    result = _typed_result(executor("list_templates", {}))
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error_code") or "template list failed"))
+    rows = result.get("templates")
+    templates = tuple(
+        dict(item)
+        for item in (rows if isinstance(rows, list) else [])
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().lower() == "approved"
+    )
+    _template_list_cache[cache_key] = (now, templates)
+    return templates

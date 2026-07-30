@@ -31,7 +31,11 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["444_crm_lead_delete_permission"]
+    assert script.get_heads() == ["445_social_comment_channels"]
+    assert (
+        script.get_revision("445_social_comment_channels").down_revision
+        == "444_crm_lead_delete_permission"
+    )
     assert (
         script.get_revision("444_crm_lead_delete_permission").down_revision
         == "443_device_projection_lifecycle_state"

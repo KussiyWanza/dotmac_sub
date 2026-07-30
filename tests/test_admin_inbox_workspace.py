@@ -422,6 +422,8 @@ def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
     db_session,
     monkeypatch,
 ):
+    from app.services.integrations import whatsapp_capability
+
     template = InboxMessageTemplate(
         name="Welcome",
         channel_type="whatsapp",
@@ -476,6 +478,24 @@ def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
         "send_inbox_reply",
         fake_send,
     )
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "welcome_customer",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+    components = (
+        {
+            "type": "body",
+            "parameters": [{"type": "text", "text": "Ada"}],
+        },
+    )
 
     team_inbox_commands.start_conversation(
         db_session,
@@ -484,6 +504,9 @@ def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
         body_text="",
         template_id=template.id,
         template_values=("Ada",),
+        whatsapp_template_name="welcome_customer",
+        whatsapp_template_language="en",
+        whatsapp_template_components=components,
         uploads=(("proof.png", "image/png", b"png"),),
         actor_person_id=uuid.uuid4(),
     )
@@ -493,7 +516,8 @@ def test_start_conversation_keeps_whatsapp_template_values_and_uploads(
     assert payload.metadata["whatsapp_template"] == {
         "name": "welcome_customer",
         "language": "en",
-        "variables": {"1": "Ada"},
+        "components": list(components),
+        "variables": {},
         "inbox_template_id": str(template.id),
     }
     assert captured["asset_ids"] == (str(asset_id),)

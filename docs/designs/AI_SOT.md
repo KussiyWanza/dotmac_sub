@@ -120,13 +120,20 @@ it, and requires its own architecture decision.
 chat-support work. If that work does not adopt it, delete the model and its
 API: an unenforced gate with an admin UI reads as protection and is not.
 
+## Implemented extensions
+
+- **Inbox reply draft and sentence polish.** The Team Inbox owner builds a
+  bounded projection and the `inbox_analyst` advisor declares
+  `customer_content`. Drafts and polish suggestions land in
+  `AIInsight.structured_output`; neither action sends. An agent must accept or
+  insert the text, and sending still calls `team_inbox_commands.reply()`.
+- **Voice transcription.** `ai.voice_transcription` is a separate
+  zero-retention provider transport governed by
+  `docs/designs/VOICE_TRANSCRIPTION_DATA_PROTECTION.md`. It writes no AI or
+  domain row and inserts returned text only into an unsent browser composer.
+
 ## Open work
 
-- **Inbox reply draft.** The projection exists
-  (`team_inbox_read.get_conversation_timeline`), so this is an advisor
-  registration declaring `customer_content`, not new plumbing. The draft lands
-  in `AIInsight.structured_output`; sending it calls
-  `team_inbox_commands.reply()`, which is the consequence rule in practice.
 - **`ai_handling`.** The inbox conversation flag is read by the queue filter,
   the projection counter and the admin surface, and written by nothing. It
   needs an owner or removal; the AI chat-support work should settle which.
@@ -149,8 +156,9 @@ API: an unenforced gate with an admin UI reads as protection and is not.
 
 ## Non-goals
 
-- Voice use-cases (transcription, field extraction) — a different
-  data-protection question, evaluated separately.
+- Voice-driven field extraction, automatic commands, or sending without agent
+  review. Transcription is transport-only under the accepted voice
+  data-protection contract.
 - CRM-marketing advisors (`campaign_optimizer`, `customer_success`) — deferred
   until the marketing and sales domain lands in Sub, which
   `docs/designs/MARKETING_SALES_SOT.md` commits to. They are out of scope here,

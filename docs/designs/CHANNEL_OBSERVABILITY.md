@@ -207,9 +207,12 @@ dead-man's-switch during the declared active window.
 
 ### Meta social
 
-Messenger and Instagram have separate contracts even though they share Meta
-signature settings. Enable each only after its page/account subscription is
-verified. One active platform never masks silence on the other.
+Messenger, Facebook comments, Instagram direct messages, and Instagram comments
+have separate contracts even though they share Meta signature settings. Enable
+each only after its page/account subscription and canonical inbound producer
+are verified. Outbound public-comment replies alone do not activate the comment
+health contracts; one active platform or message type never masks silence on
+another.
 
 ### Chat widget
 

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
@@ -21,6 +24,7 @@ from app.services import (
     team_inbox_metrics,
     team_inbox_operations,
     team_inbox_projection,
+    team_inbox_read,
     team_inbox_read_state,
     team_inbox_routing,
 )
@@ -30,6 +34,24 @@ from app.services.owner_commands import CommandContext
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
 templates = Jinja2Templates(directory="templates")
+logger = logging.getLogger(__name__)
+
+
+class InboxPolishRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    context: str = Field(default="crm_reply", max_length=80)
+
+
+def _json_object_list(value: str | None) -> tuple[dict[str, object], ...]:
+    text = str(value or "").strip()
+    if not text:
+        return ()
+    parsed = json.loads(text)
+    if not isinstance(parsed, list) or any(
+        not isinstance(item, dict) for item in parsed
+    ):
+        raise ValueError("WhatsApp template components must be a JSON array.")
+    return tuple(dict(item) for item in parsed)
 
 
 def _form_flag(value: object) -> bool:
@@ -253,12 +275,82 @@ def team_inbox_queue(
     return templates.TemplateResponse("admin/inbox/index.html", context)
 
 
+@router.get(
+    "/whatsapp-contacts",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_whatsapp_contacts(
+    search: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    contacts = team_inbox_projection.list_whatsapp_contacts(
+        db,
+        search=search,
+        limit=20,
+    )
+    return {
+        "contacts": [
+            {
+                "id": contact.id,
+                "name": contact.name,
+                "whatsapp_address": contact.whatsapp_address,
+            }
+            for contact in contacts
+        ]
+    }
+
+
+@router.get(
+    "/whatsapp-templates",
+    dependencies=[Depends(require_permission("support:ticket:read"))],
+)
+def team_inbox_whatsapp_templates(
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.services.integrations import whatsapp_capability
+
+        rows = whatsapp_capability.list_approved_templates(db)
+    except Exception:
+        logger.warning("inbox_whatsapp_template_list_failed")
+        return JSONResponse(
+            {"templates": [], "error": "WhatsApp templates are unavailable."},
+            status_code=200,
+        )
+    return {"templates": list(rows)}
+
+
 def _detail_redirect(
     conversation_id: str | UUID,
     *,
     status: str,
     message: str,
+    next_url: str | None = None,
 ) -> RedirectResponse:
+    target = str(next_url or "").strip()
+    parsed = urlsplit(target)
+    if (
+        target
+        and not parsed.scheme
+        and not parsed.netloc
+        and parsed.path == "/admin/inbox"
+    ):
+        query_items = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key not in {"c", "status", "message"}
+        ]
+        query_items.extend(
+            (
+                ("c", str(conversation_id)),
+                ("status", status),
+                ("message", message),
+            )
+        )
+        return RedirectResponse(
+            url=urlunsplit(("", "", parsed.path, urlencode(query_items), "")),
+            status_code=303,
+        )
     return RedirectResponse(
         url=(
             f"/admin/inbox?c={conversation_id}&status={quote_plus(status)}"
@@ -446,6 +538,7 @@ def team_inbox_reply(
     send_after: str | None = Form(default=None),
     idempotency_key: str | None = Form(default=None),
     reply_to_message_id: str | None = Form(default=None),
+    next_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -479,6 +572,7 @@ def team_inbox_reply(
             conversation_id,
             status="error",
             message=str(exc),
+            next_url=next_url,
         )
     return _detail_redirect(
         conversation_id,
@@ -492,6 +586,150 @@ def team_inbox_reply(
             if outcome.kind == "queued"
             else f"Reply sent from {outcome.sender}."
         ),
+        next_url=next_url,
+    )
+
+
+@router.post(
+    "/{conversation_id}/ai-draft",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_draft(
+    conversation_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    report = team_inbox_projection.build_ai_reply_projection(
+        db,
+        conversation_id=conversation_id,
+    )
+    if report is None:
+        return JSONResponse(
+            {"ok": False, "error": "AI Draft Unavailable"},
+            status_code=200,
+        )
+    _prepare_mutation(db)
+    try:
+        from app.services.ai.engine import AIEngineError, intelligence_engine
+
+        insight = intelligence_engine.advise(
+            db,
+            advisor_key="inbox_analyst",
+            report=report,
+            entity_type="inbox_conversation",
+            entity_id=str(conversation_id),
+            trigger="manual",
+            triggered_by_system_user_id=_actor_id_from_request(request),
+        )
+    except (AIEngineError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "AI Draft Unavailable"},
+            status_code=200,
+        )
+    except Exception:
+        logger.warning(
+            "inbox_ai_draft_failed conversation_id=%s",
+            conversation_id,
+        )
+        return JSONResponse(
+            {"ok": False, "error": "AI Draft Unavailable"},
+            status_code=200,
+        )
+    output = dict(insight.structured_output or {})
+    draft = str(output.get("draft") or "").strip()
+    if not draft:
+        return JSONResponse(
+            {"ok": False, "error": "AI Draft Unavailable"},
+            status_code=200,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "draft": draft,
+            "tone": output.get("tone"),
+            "title": output.get("title"),
+            "summary": output.get("summary"),
+            "meta": {
+                "provider": insight.llm_provider,
+                "model": insight.llm_model,
+                "endpoint": insight.llm_endpoint,
+            },
+        }
+    )
+
+
+@router.post(
+    "/{conversation_id}/ai-polish",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_polish(
+    conversation_id: UUID,
+    payload: InboxPolishRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    timeline = team_inbox_read.get_conversation_timeline(db, conversation_id)
+    if timeline is None:
+        return JSONResponse(
+            {"ok": False, "error": "Suggestion unavailable."},
+            status_code=200,
+        )
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse(
+            {"ok": False, "error": "Enter text to polish."},
+            status_code=200,
+        )
+    _prepare_mutation(db)
+    try:
+        from app.services.ai.engine import AIEngineError, intelligence_engine
+
+        insight = intelligence_engine.advise(
+            db,
+            advisor_key="inbox_sentence_polish",
+            report={"text": text, "context": payload.context},
+            entity_type="inbox_composer",
+            entity_id=str(conversation_id),
+            trigger="manual",
+            triggered_by_system_user_id=_actor_id_from_request(request),
+        )
+    except (AIEngineError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "Suggestion unavailable."},
+            status_code=200,
+        )
+    except Exception:
+        logger.warning(
+            "inbox_ai_polish_failed conversation_id=%s",
+            conversation_id,
+        )
+        return JSONResponse(
+            {"ok": False, "error": "Suggestion unavailable."},
+            status_code=200,
+        )
+    output = dict(insight.structured_output or {})
+    suggestion = str(output.get("suggested_text") or "").strip()
+    alternatives = output.get("alternatives")
+    if not suggestion:
+        return JSONResponse(
+            {"ok": False, "error": "Suggestion unavailable."},
+            status_code=200,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "suggested_text": suggestion,
+            "alternatives": (
+                [str(value) for value in alternatives[:2]]
+                if isinstance(alternatives, list)
+                else []
+            ),
+            "meta": {
+                "provider": insight.llm_provider,
+                "model": insight.llm_model,
+                "endpoint": insight.llm_endpoint,
+            },
+        }
     )
 
 
@@ -1428,6 +1666,152 @@ async def team_inbox_stage_attachments(
 
 
 @router.post(
+    "/voice/transcription",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+async def team_inbox_voice_transcription(
+    request: Request,
+    audio: UploadFile = File(...),
+    context: str = Form(...),
+    duration_ms: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    from app.services.ai import voice_transcription
+    from app.services.audit_adapter import record_audit_event
+    from app.services.rate_limiter_adapter import allow_operation
+
+    actor_id = _actor_id_from_request(request)
+    decision = allow_operation(
+        f"team-inbox:voice:{actor_id or 'unknown'}",
+        limit=10,
+        window_seconds=60,
+    )
+    if not decision.allowed:
+        return JSONResponse(
+            {"ok": False, "error": "Too many voice requests. Try again shortly."},
+            status_code=200,
+        )
+    installation_decision = allow_operation(
+        "team-inbox:voice:installation",
+        limit=60,
+        window_seconds=60,
+    )
+    if not installation_decision.allowed:
+        return JSONResponse(
+            {"ok": False, "error": "Voice transcription is busy. Try again shortly."},
+            status_code=200,
+        )
+    if not actor_id or not voice_transcription.acquire_actor_slot(actor_id):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "A voice transcription is already in progress.",
+            },
+            status_code=200,
+        )
+
+    try:
+        data = b""
+        content_type = voice_transcription.normalized_content_type(audio.content_type)
+        try:
+            data = await audio.read(voice_transcription.MAX_AUDIO_BYTES + 1)
+        finally:
+            await audio.close()
+
+        try:
+            result = voice_transcription.transcribe(
+                db,
+                audio=data,
+                content_type=content_type,
+                context=context,
+                duration_ms=duration_ms,
+            )
+        except voice_transcription.VoiceTranscriptionError as exc:
+            finish_read_transaction(db)
+            record_audit_event(
+                db,
+                action="voice_transcription_failed",
+                entity_type="inbox_voice_transcription",
+                actor_type=AuditActorType.user,
+                actor_id=actor_id,
+                is_success=False,
+                status_code=400,
+                request_id=request.headers.get("x-request-id"),
+                metadata={
+                    "context": context,
+                    "audio_byte_count": len(data),
+                    "duration_ms": duration_ms,
+                    "content_type": content_type,
+                    "outcome": exc.code,
+                },
+            )
+            return JSONResponse(
+                {"ok": False, "error": str(exc), "text": ""},
+                status_code=200,
+            )
+        except Exception:
+            finish_read_transaction(db)
+            record_audit_event(
+                db,
+                action="voice_transcription_failed",
+                entity_type="inbox_voice_transcription",
+                actor_type=AuditActorType.user,
+                actor_id=actor_id,
+                is_success=False,
+                status_code=500,
+                request_id=request.headers.get("x-request-id"),
+                metadata={
+                    "context": context,
+                    "audio_byte_count": len(data),
+                    "duration_ms": duration_ms,
+                    "content_type": content_type,
+                    "outcome": "ai.voice_transcription.unexpected_failure",
+                },
+            )
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Transcription is unavailable. Please try again.",
+                    "text": "",
+                },
+                status_code=200,
+            )
+        finish_read_transaction(db)
+        record_audit_event(
+            db,
+            action="voice_transcription_completed",
+            entity_type="inbox_voice_transcription",
+            actor_type=AuditActorType.user,
+            actor_id=actor_id,
+            request_id=request.headers.get("x-request-id"),
+            metadata={
+                "context": context,
+                "audio_byte_count": len(data),
+                "duration_ms": duration_ms,
+                "content_type": content_type,
+                "provider": result.provider,
+                "model": result.model,
+                "endpoint": result.endpoint,
+                "outcome": "completed",
+                "retry_count": result.retry_count,
+                "elapsed_ms": result.elapsed_ms,
+            },
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "text": result.text,
+                "meta": {
+                    "provider": result.provider,
+                    "model": result.model,
+                },
+            }
+        )
+    finally:
+        voice_transcription.release_actor_slot(actor_id)
+
+
+@router.post(
     "/conversations",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
@@ -1439,22 +1823,19 @@ async def team_inbox_start_conversation(
     subject: str | None = Form(default=None),
     service_team_id: str | None = Form(default=None),
     contact_name: str | None = Form(default=None),
+    contact_id: str | None = Form(default=None),
+    contact_country_code: str | None = Form(default=None),
     template_id: str | None = Form(default=None),
     template_values: str | None = Form(default=None),
+    whatsapp_template_name: str | None = Form(default=None),
+    whatsapp_template_language: str | None = Form(default=None),
+    whatsapp_template_components: str | None = Form(default=None),
     cc: str | None = Form(default=None),
     bcc: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ):
     """Open a new conversation and send its first message."""
-    if (_query_text(cc) or "").strip() or (_query_text(bcc) or "").strip():
-        return RedirectResponse(
-            url=(
-                "/admin/inbox?status=error&message="
-                "CC%20and%20BCC%20delivery%20is%20not%20available%20yet."
-            ),
-            status_code=303,
-        )
     uploads: list[tuple[str, str | None, bytes]] = []
     for upload in files:
         data = await upload.read()
@@ -1470,12 +1851,21 @@ async def team_inbox_start_conversation(
             service_team_id=_query_text(service_team_id),
             actor_person_id=_actor_id_from_request(request),
             contact_name=_query_text(contact_name),
+            contact_party_id=_query_text(contact_id),
+            contact_country_code=_query_text(contact_country_code),
             template_id=_query_text(template_id),
             template_values=tuple(
                 value.strip()
                 for value in (_query_text(template_values) or "").splitlines()
                 if value.strip()
             ),
+            whatsapp_template_name=_query_text(whatsapp_template_name),
+            whatsapp_template_language=_query_text(whatsapp_template_language),
+            whatsapp_template_components=_json_object_list(
+                _query_text(whatsapp_template_components)
+            ),
+            cc_addresses=team_inbox_commands.split_email_recipients(_query_text(cc)),
+            bcc_addresses=team_inbox_commands.split_email_recipients(_query_text(bcc)),
             uploads=tuple(uploads),
         )
     except (

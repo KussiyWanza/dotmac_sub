@@ -209,3 +209,97 @@ TICKET_SLA_ADVISOR = AdvisorSpec(
 )
 
 advisor_registry.register(TICKET_SLA_ADVISOR)
+
+
+INBOX_REPLY_PROJECTION_KEY = "team_inbox_projection.ai_reply_context"
+
+INBOX_REPLY_ADVISOR = AdvisorSpec(
+    key="inbox_analyst",
+    name="Inbox Reply Advisor",
+    domain="communications",
+    description="Drafts a reviewable reply from the owned Team Inbox projection.",
+    projection_key=INBOX_REPLY_PROJECTION_KEY,
+    input_sensitivity=InputSensitivity.CUSTOMER_CONTENT,
+    setting_key="intelligence_inbox_analyst_enabled",
+    insight_ttl_hours=24,
+    default_max_tokens=600,
+    system_prompt=(
+        "You are a customer-support agent for the company named in the supplied "
+        "Team Inbox projection. Draft a reply that matches the channel's tone "
+        "and uses only facts already present in the projection. Never mention "
+        "AI or internal systems. Do not invent facts, promises, dates, causes, "
+        "or resolutions. Ask one concise clarifying question when information "
+        "is missing. Keep the draft under 120 words. The agent will review it; "
+        "do not imply it has been sent.\n\n{output_instructions}"
+    ),
+    output_schema=OutputSchema(
+        fields=(
+            OutputField("draft", "string", "Reviewable reply under 120 words."),
+            OutputField(
+                "tone",
+                "string",
+                "Short description of the reply tone.",
+            ),
+            OutputField("title", "string", "Short title for this draft."),
+            OutputField("summary", "string", "What the draft is trying to do."),
+            OutputField(
+                "clarifying_questions",
+                "array of strings",
+                "Missing information the agent may need.",
+                required=False,
+            ),
+            OutputField(
+                "confidence",
+                "number",
+                "Confidence from 0 to 1.",
+                required=False,
+            ),
+        )
+    ),
+)
+
+INBOX_SENTENCE_POLISH_ADVISOR = AdvisorSpec(
+    key="inbox_sentence_polish",
+    name="Inbox Sentence Polish",
+    domain="communications",
+    description="Polishes agent-supplied composer text without adding facts.",
+    projection_key="admin_inbox.unsent_composer_submission",
+    input_sensitivity=InputSensitivity.CUSTOMER_CONTENT,
+    setting_key="intelligence_inbox_analyst_enabled",
+    insight_ttl_hours=1,
+    default_max_tokens=350,
+    system_prompt=(
+        "Polish the supplied unsent inbox composer text. Preserve its exact "
+        "meaning and language. Fix punctuation, spacing, capitalization, and "
+        "obvious grammar only. Do not add facts, names, promises, greetings, "
+        "apologies, dates, or explanations. Return at most two distinct "
+        "alternatives. The agent must accept a suggestion before anything "
+        "changes.\n\n{output_instructions}"
+    ),
+    output_schema=OutputSchema(
+        fields=(
+            OutputField("title", "string", "Short label for the suggestion."),
+            OutputField("summary", "string", "A short description of the edits."),
+            OutputField(
+                "suggested_text",
+                "string",
+                "The minimally polished text.",
+            ),
+            OutputField(
+                "alternatives",
+                "array of strings",
+                "No more than two distinct alternatives.",
+                required=False,
+            ),
+            OutputField(
+                "confidence",
+                "number",
+                "Confidence from 0 to 1.",
+                required=False,
+            ),
+        )
+    ),
+)
+
+advisor_registry.register(INBOX_REPLY_ADVISOR)
+advisor_registry.register(INBOX_SENTENCE_POLISH_ADVISOR)

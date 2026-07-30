@@ -222,6 +222,146 @@ def test_send_inbox_reply_does_not_call_whatsapp_provider_inline(
     assert db_session.query(InboxMessage).count() == 1
 
 
+def _social_comment_conversation(
+    db_session, *, channel: str, account_key: str, account_id: str
+) -> InboxConversation:
+    conversation = InboxConversation(
+        channel_type=channel,
+        subject="Social comment",
+        status=InboxConversationStatus.open.value,
+        metadata_={account_key: account_id, "permalink": "https://example.com/post"},
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=channel,
+            direction=InboxMessageDirection.inbound.value,
+            body="Is this available?",
+            external_message_id="comment-123",
+            from_address="Ada",
+            received_at=datetime(2026, 7, 10, 8, 0, tzinfo=UTC),
+        )
+    )
+    db_session.flush()
+    return conversation
+
+
+def test_facebook_comment_reply_records_provider_id_only_after_meta_accepts(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="facebook_comment",
+        account_key="page_id",
+        account_id="page-123",
+    )
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_comment_sync",
+        lambda _db, **kwargs: calls.append(kwargs) or {"id": "reply-456"},
+    )
+
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Yes, it is.</p>",
+            body_text="Yes, it is.",
+            sent_by_person_id=uuid4(),
+        ),
+    )
+    assert result.kind == "queued"
+    assert calls == []
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+    assert calls == [
+        {
+            "page_id": "page-123",
+            "comment_id": "comment-123",
+            "message": "Yes, it is.",
+        }
+    ]
+    assert outbound.external_message_id == "reply-456"
+    assert outbound.metadata_["delivery_status"] == "delivered"
+    assert outbound.metadata_["parent_provider_comment_id"] == "comment-123"
+
+
+def test_social_comment_provider_failure_does_not_create_a_false_reply(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="instagram_comment",
+        account_key="instagram_account_id",
+        account_id="ig-123",
+    )
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("provider token must not reach the browser")
+
+    monkeypatch.setattr(meta_pages, "reply_to_instagram_comment_sync", _fail)
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>Please send us a DM.</p>",
+            body_text="Please send us a DM.",
+        ),
+    )
+    notification_tasks._deliver_notification_queue_stats(db_session)
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .one()
+    )
+
+    assert result.kind == "queued"
+    assert outbound.external_message_id is None
+    assert outbound.metadata_["delivery_status"] == "failed"
+    assert outbound.metadata_["send_error"] == "meta_comment_provider_failed"
+
+
+def test_instagram_comment_limit_is_checked_before_meta(db_session, monkeypatch):
+    from app.services import meta_pages
+
+    conversation = _social_comment_conversation(
+        db_session,
+        channel="instagram_comment",
+        account_key="instagram_account_id",
+        account_id="ig-123",
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "reply_to_instagram_comment_sync",
+        lambda *_args, **_kwargs: calls.append(object()) or {"id": "unexpected"},
+    )
+    result = team_inbox_outbound.send_inbox_reply(
+        db_session,
+        conversation=conversation,
+        payload=team_inbox_outbound.InboxReplyPayload(
+            body_html="<p>too long</p>",
+            body_text="x" * 2_201,
+        ),
+    )
+
+    assert result.kind == "invalid_body"
+    assert calls == []
+
+
 def test_failed_outbox_message_can_be_manually_requeued(db_session, monkeypatch):
     conversation = _whatsapp_conversation(db_session)
     attempts: list[dict[str, object]] = []

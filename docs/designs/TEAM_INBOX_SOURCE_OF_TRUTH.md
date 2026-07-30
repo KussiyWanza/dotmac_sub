@@ -82,6 +82,25 @@ variables, and uploaded attachments are staged against the new conversation
 then bound only after the opening outbound intent succeeds. A failed opening
 send rolls the conversation and staged attachment facts back together.
 
+The admin CRM-replication controls use these existing owners:
+
+- A Facebook or Instagram parent comment is an inbound social-comment
+  `InboxMessage` on its `InboxConversation`; accepted public replies are
+  outbound messages on the same chronology. The command validates the stored
+  provider comment/account identity and platform limit, then stages a social
+  notification and attempt. The worker calls Meta after commit. Provider
+  acceptance adds the external reply ID and delivered state; a safe failed
+  attempt remains visible and is never projected as sent.
+- A business-initiated WhatsApp conversation requires a server-listed approved
+  template name and language. Numeric header/body/button inputs become explicit
+  Meta components and stay on the intent/message metadata through delivery.
+  Contact lookup reads active canonical Party contact points and manual numbers
+  normalize using the selected country.
+- Email CC/BCC is limited to opening a conversation. The command validates,
+  lowercases and deduplicates each list, then stores both on internal intent
+  metadata. SMTP places CC in the MIME header, never emits a BCC header, and
+  sends the primary, CC and BCC addresses in the envelope.
+
 ## Derived state and repair
 
 | Projection | Inputs | Canonical writer | Repair |
@@ -145,10 +164,14 @@ observation ledger and per-operator conversation read cursor. It is additive;
 no legacy data is inferred or deleted. Deployment order is expand, deploy
 writers/readers, verify parity and duplicate handling, then retire old paths.
 
-The migration is based on main migration 400. Open branches currently claim
-migration identifiers 401 through 403. If any lands first, this branch must be
-rebased and the down revision updated before merge; production must never
-receive parallel unreviewed heads.
+Migration `445_social_comment_channels` additively admits the
+Facebook and Instagram comment channels to the durable notification outbox.
+Its PostgreSQL enum labels are intentionally retained on downgrade; deleting a
+label in place is less safe than leaving an unused additive value.
+
+Migration 445 is based on main migration 444. If main advances before this
+slice is published, rebase it and update the down revision; production must
+never receive parallel unreviewed heads.
 
 ## Retired paths
 

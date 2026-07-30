@@ -113,6 +113,207 @@ def test_a_missing_contact_is_refused(db_session):
         )
 
 
+def test_email_cc_and_bcc_are_normalized_and_stored(db_session):
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="email",
+        contact_address="primary@example.com",
+        body_text="Hello.",
+        cc_addresses=("COPY@example.com", "copy@example.com"),
+        bcc_addresses=("audit@example.com",),
+    )
+
+    message = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == outcome.conversation_id)
+        .one()
+    )
+    assert message.cc_addresses == ["copy@example.com"]
+    assert message.metadata_["cc"] == ["copy@example.com"]
+    assert message.metadata_["bcc"] == ["audit@example.com"]
+
+
+@pytest.mark.parametrize("field", ["cc_addresses", "bcc_addresses"])
+def test_invalid_email_copy_recipient_blocks_the_send(db_session, field):
+    kwargs = {field: ("not-an-email",)}
+    with pytest.raises(team_inbox_commands.InboxCommandError):
+        team_inbox_commands.start_conversation(
+            db_session,
+            channel_type="email",
+            contact_address="primary@example.com",
+            body_text="Hello.",
+            **kwargs,
+        )
+    assert db_session.query(InboxConversation).count() == 0
+
+
+@pytest.mark.parametrize("field", ["cc_addresses", "bcc_addresses"])
+def test_email_copy_recipient_limit_blocks_the_send(db_session, field):
+    kwargs = {field: tuple(f"recipient-{index}@example.com" for index in range(21))}
+    with pytest.raises(team_inbox_commands.InboxCommandError) as exc:
+        team_inbox_commands.start_conversation(
+            db_session,
+            channel_type="email",
+            contact_address="primary@example.com",
+            body_text="Hello.",
+            **kwargs,
+        )
+    assert "at most 20" in str(exc.value)
+    assert db_session.query(InboxConversation).count() == 0
+
+
+def test_email_recipient_form_parser_accepts_all_supported_separators():
+    assert team_inbox_commands.split_email_recipients(
+        "one@example.com; two@example.com,\nthree@example.com"
+    ) == ("one@example.com", "two@example.com", "three@example.com")
+
+
+@pytest.mark.parametrize(
+    ("country", "local", "expected"),
+    [
+        ("NG", "08012345678", "+2348012345678"),
+        ("GH", "0241234567", "+233241234567"),
+        ("ZA", "0821234567", "+27821234567"),
+        ("KE", "0712345678", "+254712345678"),
+        ("GB", "07123456789", "+447123456789"),
+        ("US", "02025550123", "+12025550123"),
+    ],
+)
+def test_whatsapp_country_numbers_are_normalized(country, local, expected):
+    assert (
+        team_inbox_commands._normalize_whatsapp_recipient(local, country)  # noqa: SLF001
+        == expected
+    )
+
+
+def test_whatsapp_start_requires_and_stores_an_approved_template(
+    db_session, monkeypatch
+):
+    from app.services.integrations import whatsapp_capability
+
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "welcome_customer",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+    components = (
+        {
+            "type": "body",
+            "parameters": [{"type": "text", "text": "Ada"}],
+        },
+    )
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="whatsapp",
+        contact_address="08012345678",
+        contact_country_code="NG",
+        body_text="Hello Ada",
+        whatsapp_template_name="welcome_customer",
+        whatsapp_template_language="en",
+        whatsapp_template_components=components,
+    )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    message = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .one()
+    )
+    assert conversation.contact_address == "+2348012345678"
+    assert message.metadata_["whatsapp_template"] == {
+        "name": "welcome_customer",
+        "language": "en",
+        "components": list(components),
+        "variables": {},
+        "inbox_template_id": None,
+    }
+
+
+def test_whatsapp_start_rejects_a_forged_template(db_session, monkeypatch):
+    from app.services.integrations import whatsapp_capability
+
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (),
+    )
+    with pytest.raises(team_inbox_commands.InboxCommandError) as exc:
+        team_inbox_commands.start_conversation(
+            db_session,
+            channel_type="whatsapp",
+            contact_address="+2348012345678",
+            body_text="Hello",
+            whatsapp_template_name="not_approved",
+            whatsapp_template_language="en",
+        )
+    assert "approved" in str(exc.value).lower()
+    assert db_session.query(InboxConversation).count() == 0
+
+
+def test_whatsapp_selected_contact_uses_its_phone_when_form_value_is_missing(
+    db_session, monkeypatch
+):
+    from app.models.party import (
+        Party,
+        PartyContactPoint,
+        PartyDataClassification,
+        PartyIdentityStatus,
+        PartyType,
+    )
+    from app.services.integrations import whatsapp_capability
+
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name="Ada Contact",
+        status=PartyIdentityStatus.active.value,
+        data_classification=PartyDataClassification.test.value,
+    )
+    db_session.add(party)
+    db_session.flush()
+    db_session.add(
+        PartyContactPoint(
+            party_id=party.id,
+            channel_type="whatsapp",
+            normalized_value="+2348012345678",
+            display_value="0801 234 5678",
+            is_primary=True,
+        )
+    )
+    db_session.flush()
+    monkeypatch.setattr(
+        whatsapp_capability,
+        "list_approved_templates",
+        lambda _db: (
+            {
+                "name": "welcome_customer",
+                "language": "en",
+                "status": "APPROVED",
+                "components": [],
+            },
+        ),
+    )
+
+    outcome = team_inbox_commands.start_conversation(
+        db_session,
+        channel_type="whatsapp",
+        contact_address="",
+        contact_party_id=party.id,
+        body_text="Hello Ada",
+        whatsapp_template_name="welcome_customer",
+        whatsapp_template_language="en",
+    )
+
+    conversation = db_session.get(InboxConversation, outcome.conversation_id)
+    assert conversation.contact_address == "+2348012345678"
+
+
 def test_an_unknown_channel_is_refused(db_session):
     with pytest.raises(team_inbox_commands.InboxCommandError) as exc:
         team_inbox_commands.start_conversation(

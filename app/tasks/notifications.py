@@ -5,6 +5,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -188,6 +189,8 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     NotificationChannel.email,
                     NotificationChannel.sms,
                     NotificationChannel.whatsapp,
+                    NotificationChannel.facebook_comment,
+                    NotificationChannel.instagram_comment,
                     NotificationChannel.push,
                 ]
             )
@@ -349,6 +352,24 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     activity=activity,
                     notification_id=str(notification.id),
                     sensitive_content=ephemeral_delivery,
+                    cc_addresses=(
+                        [
+                            str(value)
+                            for value in delivery_metadata.get("cc", ())
+                            if isinstance(value, str)
+                        ]
+                        if isinstance(delivery_metadata.get("cc"), list)
+                        else []
+                    ),
+                    bcc_addresses=(
+                        [
+                            str(value)
+                            for value in delivery_metadata.get("bcc", ())
+                            if isinstance(value, str)
+                        ]
+                        if isinstance(delivery_metadata.get("bcc"), list)
+                        else []
+                    ),
                 )
             elif notification.channel == NotificationChannel.sms:
                 success = sms_service.send_sms(
@@ -383,6 +404,7 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                         template_name=str(whatsapp_payload.get("name") or ""),
                         language=str(whatsapp_payload.get("language") or "") or None,
                         variables=whatsapp_payload.get("variables") or {},
+                        components=whatsapp_payload.get("components") or [],
                         dry_run=False,
                         correlation_id=(
                             f"notification:{notification.id}:"
@@ -440,6 +462,90 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     notification.last_error = str(
                         result.get("response") or "whatsapp_send_failed"
                     )
+            elif notification.channel in {
+                NotificationChannel.facebook_comment,
+                NotificationChannel.instagram_comment,
+            }:
+                from app.models.team_inbox import InboxMessage
+                from app.services import meta_pages
+
+                account_id = str(
+                    delivery_metadata.get("provider_account_id") or ""
+                ).strip()
+                comment_id = str(
+                    delivery_metadata.get("parent_provider_comment_id")
+                    or notification.recipient
+                    or ""
+                ).strip()
+                provider_reply_id = ""
+                provider_error = "meta_comment_reply_failed"
+                try:
+                    if not account_id or not comment_id:
+                        raise ValueError("meta_comment_context_missing")
+                    if notification.channel == NotificationChannel.facebook_comment:
+                        provider_result = meta_pages.reply_to_comment_sync(
+                            db,
+                            page_id=account_id,
+                            comment_id=comment_id,
+                            message=body,
+                        )
+                    else:
+                        provider_result = meta_pages.reply_to_instagram_comment_sync(
+                            db,
+                            ig_account_id=account_id,
+                            comment_id=comment_id,
+                            message=body,
+                        )
+                    provider_reply_id = str(provider_result.get("id") or "").strip()
+                    if not provider_reply_id:
+                        raise ValueError("meta_reply_id_missing")
+                    success = True
+                except httpx.HTTPStatusError as exc:
+                    success = False
+                    status_code = exc.response.status_code
+                    if status_code not in {408, 409, 425, 429} and status_code < 500:
+                        notification.retry_count = max_retries - 1
+                    provider_error = f"meta_comment_http_{status_code}"
+                except ValueError:
+                    success = False
+                    notification.retry_count = max_retries - 1
+                    provider_error = "meta_comment_configuration_rejected"
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    success = False
+                    provider_error = "meta_comment_provider_unavailable"
+                except Exception:
+                    success = False
+                    provider_error = "meta_comment_provider_failed"
+                notification.last_error = None if success else provider_error
+                db.add(
+                    NotificationDelivery(
+                        notification_id=notification.id,
+                        provider="meta",
+                        provider_message_id=provider_reply_id or None,
+                        status=(
+                            DeliveryStatus.delivered
+                            if success
+                            else DeliveryStatus.failed
+                        ),
+                        response_code="accepted" if success else provider_error,
+                        response_body=(
+                            "Meta comment reply accepted"
+                            if success
+                            else "Meta comment reply failed"
+                        ),
+                    )
+                )
+                if success:
+                    message = (
+                        db.query(InboxMessage)
+                        .filter(InboxMessage.notification_id == notification.id)
+                        .one_or_none()
+                    )
+                    if message is not None:
+                        message.external_message_id = provider_reply_id
+                        metadata = dict(message.metadata_ or {})
+                        metadata["provider_message_id"] = provider_reply_id
+                        message.metadata_ = metadata
             elif notification.channel == NotificationChannel.push:
                 success = push_service.send_push(
                     db=db,

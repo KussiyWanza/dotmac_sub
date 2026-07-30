@@ -7,11 +7,13 @@ routes never become a parallel writer.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -36,6 +38,7 @@ from app.services import (
 )
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
+from app.services.customer_identity_normalization import normalize_phone_identifier
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
@@ -43,6 +46,7 @@ from app.services.owner_commands import (
     execute_owner_command,
     owner_command_active,
 )
+from app.services.validation_api import validate_email_format
 
 T = TypeVar("T")
 
@@ -159,6 +163,160 @@ def _active_conversation(
     if conversation is None or not conversation.is_active:
         raise ConversationNotFoundError("Conversation not found.")
     return conversation
+
+
+def _normalize_email_recipients(
+    values: Sequence[str],
+    *,
+    label: str,
+    limit: int = 20,
+) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        raw = str(raw_value or "").strip()
+        if not raw:
+            continue
+        address = team_inbox_routing.normalize_email_address(raw)
+        valid, _message = validate_email_format(address or "")
+        if not address or not valid:
+            raise InboxCommandError(f"Invalid {label} email address: {raw}")
+        if address in seen:
+            continue
+        seen.add(address)
+        normalized.append(address)
+    if len(normalized) > limit:
+        raise InboxCommandError(f"{label} allows at most {limit} email addresses.")
+    return tuple(normalized)
+
+
+def split_email_recipients(value: str | None) -> tuple[str, ...]:
+    """Split a form field without deciding whether any address is valid."""
+
+    return tuple(
+        item.strip()
+        for item in re.split(r"[,;\r\n]+", str(value or ""))
+        if item.strip()
+    )
+
+
+_WHATSAPP_COUNTRY_CODES = {
+    "NG": "234",
+    "GH": "233",
+    "ZA": "27",
+    "KE": "254",
+    "GB": "44",
+    "US": "1",
+}
+
+
+def _normalize_whatsapp_recipient(value: str, country_code: str | None) -> str:
+    calling_code = _WHATSAPP_COUNTRY_CODES.get(
+        str(country_code or "NG").strip().upper(),
+        _WHATSAPP_COUNTRY_CODES["NG"],
+    )
+    normalized = normalize_phone_identifier(
+        value,
+        default_country_code=calling_code,
+    )
+    if not normalized or len(re.sub(r"\D", "", normalized)) < 7:
+        raise InboxCommandError("WhatsApp number is required.")
+    return normalized
+
+
+def _whatsapp_party_address(
+    db: Session,
+    party_id: str | UUID | None,
+) -> str | None:
+    """Resolve the preferred active WhatsApp-capable endpoint for one Party."""
+
+    party_uuid = coerce_uuid(party_id)
+    if party_uuid is None:
+        return None
+    from app.models.party import Party, PartyContactPoint, PartyIdentityStatus
+
+    points = (
+        db.query(PartyContactPoint)
+        .join(Party, Party.id == PartyContactPoint.party_id)
+        .filter(Party.id == party_uuid)
+        .filter(Party.status == PartyIdentityStatus.active.value)
+        .filter(PartyContactPoint.is_active.is_(True))
+        .filter(PartyContactPoint.channel_type.in_(("whatsapp", "phone", "sms")))
+        .all()
+    )
+    channel_rank = {"whatsapp": 0, "phone": 1, "sms": 2}
+    points.sort(
+        key=lambda point: (
+            channel_rank.get(point.channel_type, 9),
+            not point.is_primary,
+            point.created_at,
+        )
+    )
+    for point in points:
+        address = str(point.normalized_value or point.display_value or "").strip()
+        if address:
+            return address
+    return None
+
+
+def _validate_whatsapp_components(
+    values: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    allowed_types = {"header", "body", "button"}
+    normalized: list[dict[str, Any]] = []
+    if len(values) > 50:
+        raise InboxCommandError("WhatsApp template components are invalid.")
+    for value in values:
+        if not isinstance(value, dict):
+            raise InboxCommandError("WhatsApp template components are invalid.")
+        component = dict(value)
+        component_type = str(component.get("type") or "").strip().lower()
+        if component_type not in allowed_types:
+            raise InboxCommandError("WhatsApp template components are invalid.")
+        parameters = component.get("parameters")
+        if not isinstance(parameters, list) or any(
+            not isinstance(item, dict) for item in parameters
+        ):
+            raise InboxCommandError("WhatsApp template components are invalid.")
+        clean_parameters: list[dict[str, Any]] = []
+        for parameter in parameters:
+            parameter_type = str(parameter.get("type") or "").strip().lower()
+            if parameter_type == "text":
+                text = str(parameter.get("text") or "").strip()
+                if not text:
+                    raise InboxCommandError(
+                        "Complete all required WhatsApp template values."
+                    )
+                clean_parameters.append({"type": "text", "text": text[:2000]})
+                continue
+            if parameter_type not in {"image", "video", "document"}:
+                raise InboxCommandError("WhatsApp template components are invalid.")
+            media = parameter.get(parameter_type)
+            if not isinstance(media, dict):
+                raise InboxCommandError("WhatsApp template components are invalid.")
+            link = str(media.get("link") or "").strip()
+            parsed = urlparse(link)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise InboxCommandError(
+                    "WhatsApp template media must use a public HTTP(S) URL."
+                )
+            clean_parameters.append(
+                {"type": parameter_type, parameter_type: {"link": link}}
+            )
+        clean_component: dict[str, Any] = {
+            "type": component_type,
+            "parameters": clean_parameters,
+        }
+        if component_type == "button":
+            if str(component.get("sub_type") or "").strip().lower() != "url":
+                raise InboxCommandError("WhatsApp template components are invalid.")
+            index = str(component.get("index") or "").strip()
+            if not index.isdigit():
+                raise InboxCommandError("WhatsApp template components are invalid.")
+            clean_component["sub_type"] = "url"
+            clean_component["index"] = index
+        normalized.append(clean_component)
+    return tuple(normalized)
 
 
 def reply(
@@ -336,6 +494,23 @@ def reply(
             raise InboxCommandRejected(
                 result.reason or "Reply could not be sent.",
                 conversation_id=conversation.id,
+            )
+        if conversation.channel_type in {
+            InboxChannelType.facebook_comment.value,
+            InboxChannelType.instagram_comment.value,
+        }:
+            stage_audit_event(
+                db,
+                action="reply_comment",
+                entity_type="inbox_conversation",
+                entity_id=str(conversation.id),
+                actor_type=AuditActorType.user,
+                actor_id=str(actor_person_id) if actor_person_id else None,
+                metadata={
+                    "owner": OWNER,
+                    "channel_type": conversation.channel_type,
+                    "message_id": result.message_id,
+                },
             )
         # Bind staged uploads to the message that actually carried them, inside
         # the same command — an attachment must never outlive a reply that
@@ -977,8 +1152,15 @@ def start_conversation(
     actor_person_id: str | UUID | None = None,
     attachment_ids: Sequence[str] | None = None,
     contact_name: str | None = None,
+    contact_party_id: str | UUID | None = None,
+    contact_country_code: str | None = None,
     template_id: str | UUID | None = None,
     template_values: Sequence[str] | None = None,
+    whatsapp_template_name: str | None = None,
+    whatsapp_template_language: str | None = None,
+    whatsapp_template_components: Sequence[dict[str, Any]] = (),
+    cc_addresses: Sequence[str] = (),
+    bcc_addresses: Sequence[str] = (),
     uploads: Sequence[tuple[str, str | None, bytes]] | None = None,
 ) -> StartConversationOutcome:
     """Open a new outbound conversation and send its first message.
@@ -998,8 +1180,76 @@ def start_conversation(
         clean_body = str(body_text or "").strip()
         if clean_channel not in {c.value for c in InboxChannelType}:
             raise InboxCommandError("Choose a channel for this conversation.")
-        if not str(contact_address or "").strip():
+        submitted_contact_address = str(contact_address or "").strip()
+        if (
+            clean_channel == InboxChannelType.whatsapp.value
+            and not submitted_contact_address
+        ):
+            submitted_contact_address = (
+                _whatsapp_party_address(db, contact_party_id) or ""
+            )
+        if not submitted_contact_address:
             raise InboxCommandError("Enter who this conversation is with.")
+        clean_cc: tuple[str, ...] = ()
+        clean_bcc: tuple[str, ...] = ()
+        if clean_channel == InboxChannelType.email.value:
+            primary_email = team_inbox_routing.normalize_email_address(contact_address)
+            valid_primary, _message = validate_email_format(primary_email or "")
+            if not primary_email or not valid_primary:
+                raise InboxCommandError("Enter a valid recipient email address.")
+            clean_cc = _normalize_email_recipients(cc_addresses, label="CC")
+            clean_bcc = _normalize_email_recipients(bcc_addresses, label="BCC")
+        elif cc_addresses or bcc_addresses:
+            raise InboxCommandError("CC and BCC are available only for email.")
+        resolved_contact_address = submitted_contact_address
+        resolved_subscriber_id = subscriber_id
+        if clean_channel == InboxChannelType.whatsapp.value:
+            resolved_contact_address = _normalize_whatsapp_recipient(
+                resolved_contact_address,
+                contact_country_code,
+            )
+            clean_provider_template_name = str(whatsapp_template_name or "").strip()
+            clean_provider_template_language = str(
+                whatsapp_template_language or ""
+            ).strip()
+            if not clean_provider_template_name:
+                raise InboxCommandError("Choose an approved WhatsApp template.")
+            if not clean_provider_template_language:
+                raise InboxCommandError("WhatsApp template language is required.")
+            try:
+                from app.services.integrations import whatsapp_capability
+
+                approved_templates = whatsapp_capability.list_approved_templates(db)
+            except Exception:
+                raise InboxCommandError(
+                    "WhatsApp templates are unavailable. Please try again."
+                ) from None
+            if not any(
+                str(item.get("name") or "").strip() == clean_provider_template_name
+                and str(item.get("language") or "").strip()
+                == clean_provider_template_language
+                for item in approved_templates
+            ):
+                raise InboxCommandError("Choose an approved WhatsApp template.")
+            clean_provider_components = _validate_whatsapp_components(
+                whatsapp_template_components
+            )
+            party_uuid = coerce_uuid(contact_party_id)
+            if party_uuid is not None:
+                from app.models.subscriber import Subscriber
+
+                contact_subscriber = (
+                    db.query(Subscriber)
+                    .filter(Subscriber.party_id == party_uuid)
+                    .filter(Subscriber.is_active.is_(True))
+                    .one_or_none()
+                )
+                if contact_subscriber is not None:
+                    resolved_subscriber_id = contact_subscriber.id
+        else:
+            clean_provider_template_name = ""
+            clean_provider_template_language = ""
+            clean_provider_components = ()
         template = None
         if template_id is not None and str(template_id).strip():
             template = team_inbox_operations.get_template(db, str(template_id))
@@ -1015,8 +1265,8 @@ def start_conversation(
         resolution = team_inbox_channel_receive.resolve_contact_context(
             db,
             channel_type=clean_channel,
-            contact_address=contact_address,
-            subscriber_id=subscriber_id,
+            contact_address=resolved_contact_address,
+            subscriber_id=resolved_subscriber_id,
         )
 
         conversation_metadata: dict[str, object] = {
@@ -1033,7 +1283,7 @@ def start_conversation(
                 or (str(template.subject or "").strip() if template is not None else "")
             )[:200]
             or None,
-            contact_address=resolution.normalized_contact or contact_address.strip(),
+            contact_address=(resolution.normalized_contact or resolved_contact_address),
             status=InboxConversationStatus.open.value,
             subscriber_id=resolution.subscriber_id,
             primary_service_team_id=coerce_uuid(service_team_id),
@@ -1115,6 +1365,14 @@ def start_conversation(
                     ),
                     "inbox_template_id": str(template.id),
                 }
+        if clean_channel == InboxChannelType.whatsapp.value:
+            reply_metadata["whatsapp_template"] = {
+                "name": clean_provider_template_name,
+                "language": clean_provider_template_language,
+                "components": list(clean_provider_components),
+                "variables": {},
+                "inbox_template_id": str(template.id) if template is not None else None,
+            }
         result = team_inbox_outbound.send_inbox_reply(
             db,
             conversation=conversation,
@@ -1122,6 +1380,8 @@ def start_conversation(
                 body_html=body_html,
                 body_text=clean_body,
                 subject=conversation.subject,
+                cc_addresses=clean_cc,
+                bcc_addresses=clean_bcc,
                 sent_by_person_id=actor_person_id,
                 metadata=reply_metadata,
             ),
