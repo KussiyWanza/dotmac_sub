@@ -130,9 +130,17 @@ _DISPATCH = {
 
 def fiber_plant_ledger_data(db: Session, asset_type: str = "fdh") -> dict:
     """Return the ledger page data for one fiber asset type (from its owner)."""
+    from app.services.network import as_built_plant_projection
+
     asset_type = asset_type if asset_type in _VALID else "fdh"
     columns, rows = _DISPATCH[asset_type](db)
     return {
+        # An accepted as-built whose projected cable is still inactive is
+        # absent from every ledger facet and every map, so the plant hub counts
+        # it explicitly rather than leaving it to be noticed.
+        "awaiting_activation_count": (
+            as_built_plant_projection.awaiting_activation_count(db)
+        ),
         "asset_type": asset_type,
         "asset_label": dict(ASSET_TYPES)[asset_type],
         "asset_types": [{"key": k, "label": lbl} for k, lbl in ASSET_TYPES],

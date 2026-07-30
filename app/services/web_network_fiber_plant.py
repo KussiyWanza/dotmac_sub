@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.datastructures import FormData
 
 from app.models.fiber_change_request import FiberChangeRequestStatus
+from app.models.network import FiberTerminationPoint
 from app.services import fiber_change_requests as change_request_service
 from app.services import web_network_core_devices as web_network_core_devices_service
 from app.services import web_network_core_runtime as web_network_core_runtime_service
@@ -143,6 +145,47 @@ def bulk_approve_change_requests(
         )
         approved_request_ids.append(request_id)
     return {"skipped": skipped, "approved_request_ids": approved_request_ids}
+
+
+def as_built_activation_page_data(
+    db: Session,
+    *,
+    error: str | None = None,
+    error_as_built_id: str | None = None,
+) -> dict[str, object]:
+    """Queue page for accepted as-builts whose projected cable is still off-map.
+
+    The queue itself comes from the projection owner; this only adds the
+    termination points an operator picks from, so the page never decides which
+    endpoints are legitimate — ``network.fiber_plant_integrity`` does that when
+    the activation command submits the bound segment to it.
+    """
+    from app.services.network import as_built_plant_projection
+
+    points = list(
+        db.scalars(
+            select(FiberTerminationPoint)
+            .where(FiberTerminationPoint.is_active.is_(True))
+            .order_by(FiberTerminationPoint.name.asc().nullslast())
+        )
+    )
+    rows = as_built_plant_projection.awaiting_activation_queue(db)
+    return {
+        "awaiting_activation": rows,
+        "awaiting_activation_count": len(rows),
+        "termination_points": [
+            {
+                "id": str(point.id),
+                "label": "{} · {}".format(
+                    point.name or str(point.id)[:8],
+                    getattr(point.endpoint_type, "value", point.endpoint_type),
+                ),
+            }
+            for point in points
+        ],
+        "activation_error": error,
+        "activation_error_as_built_id": error_as_built_id,
+    }
 
 
 def update_asset_position_data(

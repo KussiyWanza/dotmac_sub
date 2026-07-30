@@ -469,6 +469,58 @@ def test_future_anchor_without_coverage_is_never_suspended(
     assert _prepaid_locks(db_session, subscription) == []
 
 
+def test_paid_invoice_without_entitlement_is_quarantined_from_suspension(
+    db_session, subscriber_account, subscription
+):
+    _record_retired_control_rows(db_session)
+    _make_prepaid(
+        db_session,
+        subscriber_account,
+        subscription,
+        credit=Decimal("0.00"),
+        min_balance="100.00",
+    )
+    subscription.unit_price = Decimal("17500.00")
+    subscription.next_billing_at = _MONDAY_NOON - timedelta(days=30)
+    subscriber_account.prepaid_low_balance_at = _MONDAY_NOON - timedelta(days=5)
+    invoice = Invoice(
+        account_id=subscriber_account.id,
+        invoice_number="INV-PAID-COVERAGE-PROJECTION-GAP",
+        status=InvoiceStatus.paid,
+        currency="NGN",
+        subtotal=Decimal("17500.00"),
+        tax_total=Decimal("0.00"),
+        total=Decimal("17500.00"),
+        balance_due=Decimal("0.00"),
+        billing_period_start=_MONDAY_NOON - timedelta(days=3),
+        billing_period_end=_MONDAY_NOON + timedelta(days=27),
+        issued_at=_MONDAY_NOON - timedelta(days=3),
+        paid_at=_MONDAY_NOON - timedelta(days=2),
+    )
+    db_session.add(invoice)
+    db_session.flush()
+    db_session.add(
+        InvoiceLine(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+            description="Paid prepaid period missing entitlement projection",
+            quantity=Decimal("1.000"),
+            unit_price=Decimal("17500.00"),
+            amount=Decimal("17500.00"),
+            metadata_={"kind": "base_subscription"},
+        )
+    )
+    db_session.commit()
+
+    result = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON)
+
+    db_session.refresh(subscription)
+    assert result["coverage_unresolved"] == 1
+    assert result["suspended"] == 0
+    assert subscription.status == SubscriptionStatus.active
+    assert _prepaid_locks(db_session, subscription) == []
+
+
 def test_prepaid_legacy_invoice_ar_does_not_reduce_wallet_balance(
     db_session, subscriber_account, subscription
 ):

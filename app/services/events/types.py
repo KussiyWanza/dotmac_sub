@@ -243,6 +243,12 @@ class EventType(enum.Enum):
     # ONT lifecycle events
     ont_decommissioned = "ont.decommissioned"
 
+    # Fiber plant events. Emitted by network.as_built_plant_projection when the
+    # cable an accepted vendor as-built proved was built is bound to two
+    # terminations and put into service — the moment it becomes visible to
+    # every is_active-filtered plant and map read.
+    fiber_segment_activated = "fiber_segment.activated"
+
     # OLT circuit breaker events
     olt_circuit_opened = "olt.circuit_opened"
     olt_circuit_closed = "olt.circuit_closed"

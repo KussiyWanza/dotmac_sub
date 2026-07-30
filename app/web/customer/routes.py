@@ -34,6 +34,7 @@ from app.services import (
     crm_portal,
     customer_portal,
     portal_ticket_deflection,
+    support_ticket_settings,
     team_inbox_widget,
 )
 from app.services import customer_portal_bandwidth as customer_portal_bandwidth_service
@@ -413,7 +414,7 @@ def customer_support_new(
         return RedirectResponse(
             url="/portal/auth/login?next=/portal/support/new", status_code=303
         )
-    context = crm_portal.ticket_create_context(request, customer)
+    context = crm_portal.ticket_create_context(request, db, customer)
     # Tell the customer what we already know before asking them to describe it.
     # Informational only — the form still accepts the report.
     context.update(
@@ -434,6 +435,7 @@ def customer_support_create(
     title: str = Form(...),
     description: str = Form(""),
     priority: str = Form("normal"),
+    region: str = Form(""),
     attachments: list[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -442,6 +444,23 @@ def customer_support_create(
         return RedirectResponse(url="/portal/auth/login", status_code=303)
     if _is_read_only_customer(customer):
         return _read_only_response(request, customer, active_page="support")
+
+    canonical_region = support_ticket_settings.canonical_region_option(db, region)
+    if canonical_region is None:
+        context = crm_portal.ticket_create_context(request, db, customer)
+        context["crm_error"] = True
+        context["crm_error_message"] = "Select a valid Region."
+        context["form_values"] = {
+            "title": title,
+            "description": description,
+            "priority": priority,
+            "region": region,
+        }
+        return templates.TemplateResponse(
+            "customer/support/new.html",
+            context,
+            status_code=400,
+        )
 
     subscriber_id, _subscription_id = customer_portal.resolve_customer_account(
         customer, db
@@ -456,6 +475,8 @@ def customer_support_create(
         title,
         description,
         priority,
+        canonical_region,
+        support_ticket_settings.resolve_portal_ticket_team_routing(db),
         attachments=attachments,
     )
     if result["success"]:
@@ -473,13 +494,14 @@ def customer_support_create(
             },
         )
         return RedirectResponse(url=f"/portal/support/{ticket_id}", status_code=303)
-    context = crm_portal.ticket_create_context(request, customer)
+    context = crm_portal.ticket_create_context(request, db, customer)
     context["crm_error"] = True
     context["crm_error_message"] = result.get("error") or "Unable to create ticket."
     context["form_values"] = {
         "title": title,
         "description": description,
         "priority": priority,
+        "region": canonical_region,
     }
     return templates.TemplateResponse(
         "customer/support/new.html",

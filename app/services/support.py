@@ -7,6 +7,7 @@ import re
 import secrets
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 from uuid import UUID
@@ -79,6 +80,13 @@ _LIFECYCLE_CONCERN = "ticket lifecycle mutations"
 
 class SupportTicketError(DomainError):
     """Transport-neutral failure from the canonical Ticket owner."""
+
+
+class TicketCreationRoutingMode(str, Enum):
+    """Select how the lifecycle owner establishes team routing at creation."""
+
+    evaluate_policy = "evaluate_policy"
+    preserve_requested_team = "preserve_requested_team"
 
 
 def _ticket_error(code: str, message: str, **details: object) -> SupportTicketError:
@@ -1143,7 +1151,11 @@ class Tickets:
 
     @staticmethod
     def _apply_automation_rules(
-        db: Session, ticket: Ticket, trigger: AutomationTrigger
+        db: Session,
+        ticket: Ticket,
+        trigger: AutomationTrigger,
+        *,
+        preserve_service_team: bool = False,
     ) -> tuple[str, ...]:
         """Apply policy proposals inside the canonical Ticket writer."""
         from app.models.support import AutomationActionType
@@ -1156,6 +1168,8 @@ class Tickets:
         applied: list[str] = []
         for proposal in support_automation.evaluate_rules(db, ticket, trigger):
             if proposal.action_type == AutomationActionType.assign_team:
+                if preserve_service_team:
+                    continue
                 ticket.service_team_id = proposal.service_team_id
             elif proposal.action_type == AutomationActionType.assign_technician:
                 ticket.technician_person_id = proposal.technician_person_id
@@ -1457,6 +1471,7 @@ class Tickets:
         actor_id: str | None = None,
         *,
         dispatch_after_commit: bool = True,
+        creation_routing_mode: TicketCreationRoutingMode | None = None,
     ) -> None:
         payload = {
             "name": event_name,
@@ -1473,6 +1488,18 @@ class Tickets:
             else None,
             "actor_id": actor_id,
         }
+        if creation_routing_mode is not None:
+            payload.update(
+                {
+                    "region": ticket.region,
+                    "service_team_id": (
+                        str(ticket.service_team_id)
+                        if ticket.service_team_id is not None
+                        else None
+                    ),
+                    "creation_routing_mode": creation_routing_mode.value,
+                }
+            )
         emit_event(
             db,
             EventType.custom,
@@ -1493,6 +1520,9 @@ class Tickets:
         *,
         origin_conversation_id: UUID | None = None,
         dispatch_event_after_commit: bool = True,
+        routing_mode: TicketCreationRoutingMode = (
+            TicketCreationRoutingMode.evaluate_policy
+        ),
     ) -> Ticket:
         """Create a ticket inside the canonical Ticket transaction.
 
@@ -1548,7 +1578,10 @@ class Tickets:
             )
             db.add(link)
 
-        if Tickets._auto_assignment_enabled(db):
+        if (
+            routing_mode is TicketCreationRoutingMode.evaluate_policy
+            and Tickets._auto_assignment_enabled(db)
+        ):
             Tickets._apply_auto_assignment(ticket, db)
 
         Tickets._apply_sla_policy(
@@ -1562,7 +1595,14 @@ class Tickets:
 
         from app.models.support import AutomationTrigger
 
-        Tickets._apply_automation_rules(db, ticket, AutomationTrigger.ticket_created)
+        Tickets._apply_automation_rules(
+            db,
+            ticket,
+            AutomationTrigger.ticket_created,
+            preserve_service_team=(
+                routing_mode is TicketCreationRoutingMode.preserve_requested_team
+            ),
+        )
 
         Tickets._queue_notifications_for_assignments(db, ticket, actor_id)
 
@@ -1573,7 +1613,16 @@ class Tickets:
             entity_type="support_ticket",
             entity_id=str(ticket.id),
             actor_id=actor_id,
-            metadata={"number": ticket.number},
+            metadata={
+                "number": ticket.number,
+                "region": ticket.region,
+                "service_team_id": (
+                    str(ticket.service_team_id)
+                    if ticket.service_team_id is not None
+                    else None
+                ),
+                "creation_routing_mode": routing_mode.value,
+            },
         )
         Tickets._emit_ticket_event(
             db,
@@ -1581,6 +1630,7 @@ class Tickets:
             ticket,
             actor_id,
             dispatch_after_commit=dispatch_event_after_commit,
+            creation_routing_mode=routing_mode,
         )
 
         db.flush()
@@ -3078,20 +3128,9 @@ def ticket_types(db: Session) -> list[str]:
 
 
 def regions(db: Session) -> list[str]:
-    """Return distinct ticket regions with defaults."""
-    rows = (
-        db.query(Ticket.region)
-        .filter(
-            Ticket.is_active.is_(True), Ticket.region.isnot(None), Ticket.region != ""
-        )
-        .distinct()
-        .order_by(Ticket.region.asc())
-        .limit(200)
-        .all()
-    )
-    discovered = [str(item[0]) for item in rows if item and item[0]]
-    defaults = support_ticket_settings_service.list_region_options(db)
-    return sorted(set(discovered + defaults))
+    """Return the canonical ticket region projection shared by all forms."""
+
+    return support_ticket_settings_service.list_canonical_region_options(db)
 
 
 tickets = Tickets()

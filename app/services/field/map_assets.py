@@ -364,7 +364,11 @@ class FieldMapAssets:
                 actor_type=AuditActorType.user if actor_id else AuditActorType.system,
                 actor_id=actor_id,
                 action="field:map_asset:update_location",
-                entity_type=config.model.__name__,
+                # The snake_case asset key, not the ORM class name: every plant
+                # detail page filters activity on this exact string, so
+                # "FdhCabinet" silently produced an empty activity feed and a
+                # field move was traceable only by SQL.
+                entity_type=asset_type,
                 entity_id=str(asset_uuid),
                 status_code=200,
                 is_success=True,
@@ -413,7 +417,9 @@ class FieldMapAssets:
         last = (
             db.query(AuditEvent)
             .filter(AuditEvent.action == "field:map_asset:update_location")
-            .filter(AuditEvent.entity_type == config.model.__name__)
+            # Rows written before the key was corrected carry the ORM class
+            # name, so a revert must still find a technician's last move.
+            .filter(AuditEvent.entity_type.in_((asset_type, config.model.__name__)))
             .filter(AuditEvent.entity_id == str(row.id))
             .order_by(AuditEvent.occurred_at.desc())
             .first()

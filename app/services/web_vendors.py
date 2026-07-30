@@ -277,17 +277,15 @@ def add_vendor_user_from_form(
         raise ValueError(
             "This vendor has no portal identity, so a login cannot be added."
         )
-    db_session_adapter.release_read_transaction(db)
-    vendor_user_provisioning.provision_committed(
-        db,
-        vendor_user_provisioning.ProvisionVendorUser(
-            field_vendor_id=field_vendor.id,
-            first_name=first_name or "",
-            last_name=last_name or "",
-            email=email or "",
-            role=role,
-        ),
+    command = vendor_user_provisioning.ProvisionVendorUser(
+        field_vendor_id=field_vendor.id,
+        first_name=first_name or "",
+        last_name=last_name or "",
+        email=email or "",
+        role=role,
     )
+    db_session_adapter.release_read_transaction(db)
+    vendor_user_provisioning.provision_committed(db, command)
 
 
 def revoke_vendor_user(db: Session, *, membership_id: str) -> None:

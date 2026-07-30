@@ -23,6 +23,10 @@ from app.services import (
 )
 from app.services.audit_helpers import log_audit_event
 from app.services.auth_dependencies import require_permission
+from app.services.network.as_built_plant_projection import (
+    AsBuiltPlantProjectionError,
+    activate_projected_segment,
+)
 from app.services.network.fiber_topology_connectivity_coverage import (
     reconcile_fiber_connectivity_coverage,
 )
@@ -69,6 +73,19 @@ def _base_context(
         "current_user": get_current_user(request),
         "sidebar_stats": get_sidebar_stats(db),
     }
+
+
+# Transport-neutral refusals from the plant-projection owner, mapped here
+# because status codes are the adapter's vocabulary, not the service's.
+_ACTIVATION_STATUS = {"not_found": 404, "conflict": 409, "invalid": 400}
+
+
+def _activation_actor(request: Request) -> str | None:
+    from app.web.admin import get_current_user
+
+    current_user = get_current_user(request) or {}
+    actor_id = str(current_user.get("principal_id") or current_user.get("id") or "")
+    return actor_id or None
 
 
 def _identity_actor(request: Request) -> str:
@@ -161,6 +178,83 @@ def fiber_plant_consolidated(
         )
     )
     return templates.TemplateResponse("admin/network/fiber-plant/index.html", context)
+
+
+def _as_built_activation_response(
+    request: Request,
+    db: Session,
+    *,
+    error: str | None = None,
+    error_as_built_id: str | None = None,
+    status_code: int = 200,
+):
+    context = _base_context(
+        request, db, active_page="fiber-as-built-activation", active_menu="fiber"
+    )
+    context.update(
+        web_network_fiber_plant_service.as_built_activation_page_data(
+            db, error=error, error_as_built_id=error_as_built_id
+        )
+    )
+    return templates.TemplateResponse(
+        "admin/network/fiber/as_built_activation.html",
+        context,
+        status_code=status_code,
+    )
+
+
+@router.get(
+    "/fiber-as-built-activation",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:fiber:read"))],
+)
+def fiber_as_built_activation(request: Request, db: Session = Depends(get_db)):
+    """Accepted vendor as-builts whose projected cable is still off the map."""
+    return _as_built_activation_response(request, db)
+
+
+# Activation is plant authority, not accounts-payable review: the operator is
+# choosing which two terminations the cable landed on, so it is gated by the
+# same network:fiber:write this router uses for every other plant mutation
+# rather than the inventory/finance permissions the vendor-operations router
+# carries.
+@router.post(
+    "/fiber-as-built-activation/{as_built_id}/activate",
+    dependencies=[Depends(require_permission("network:fiber:write"))],
+)
+def fiber_as_built_activation_activate(
+    request: Request, as_built_id: str, db: Session = Depends(get_db)
+):
+    form = parse_form_data_sync(request)
+    raw_fiber_count = str(form.get("fiber_count") or "").strip()
+    if raw_fiber_count and not raw_fiber_count.isdigit():
+        return _as_built_activation_response(
+            request,
+            db,
+            error="invalid_fiber_count: Fiber count must be a whole number.",
+            error_as_built_id=as_built_id,
+            status_code=400,
+        )
+    try:
+        activate_projected_segment(
+            db,
+            as_built_id=as_built_id,
+            from_point_id=str(form.get("from_point_id") or "").strip(),
+            to_point_id=str(form.get("to_point_id") or "").strip(),
+            fiber_count=int(raw_fiber_count) if raw_fiber_count else None,
+            actor_id=_activation_actor(request),
+        )
+    except AsBuiltPlantProjectionError as exc:
+        return _as_built_activation_response(
+            request,
+            db,
+            error=f"{exc.code}: {exc}",
+            error_as_built_id=as_built_id,
+            status_code=_ACTIVATION_STATUS.get(exc.kind, 400),
+        )
+    return RedirectResponse(
+        url="/admin/network/fiber-as-built-activation", status_code=303
+    )
 
 
 @router.get(

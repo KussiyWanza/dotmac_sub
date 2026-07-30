@@ -21,6 +21,16 @@
 
   {% if message %}<div class="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{{ message }}</div>{% endif %}
 
+  {% if as_built.status == 'accepted' %}
+  {# Accepting the evidence records the cable; it does not put it in service.
+     Until network operations binds its two terminations the projected segment
+     is filtered out of every map, so point staff at the queue that owns it. #}
+  <a href="/admin/network/fiber-as-built-activation" class="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-100">
+    <span>Accepted evidence records the cable but does not put it in service — it stays off every fiber map until its terminations are bound.</span>
+    <span class="whitespace-nowrap font-semibold">As-built activation &rarr;</span>
+  </a>
+  {% endif %}
+
   <section class="overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
     <header class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
       <div><h2 class="font-bold">Submitted route</h2><p class="text-xs text-slate-500">This map shows only this as-built submission.</p></div>

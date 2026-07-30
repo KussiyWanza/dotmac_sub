@@ -8393,14 +8393,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "customer.accounts",
                     "financial.prepaid_currency",
                     "financial.prepaid_service_coverage",
+                    "financial.prepaid_service_coverage_reconciliation",
                     "financial.prepaid_service_renewals",
                     "financial.subscription_billing_treatments",
                 ),
                 notes=(
                     "Returns typed minimum and unfunded-renewal provenance. Renewal "
-                    "and enforcement consume one exact taxed contract charge. Missing "
-                    "renewal terms produce a typed protected outcome; missing accounts, "
-                    "invalid minimums, and cross-currency evidence fail closed."
+                    "and enforcement consume one exact taxed contract charge. Uncovered "
+                    "services with exact or malformed financial coverage evidence and "
+                    "services with missing renewal terms produce typed protected outcomes; "
+                    "missing accounts, invalid minimums, and cross-currency evidence fail "
+                    "closed."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -8420,6 +8423,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "canonical collectible prepaid subscriptions",
                                 "canonical current service coverage",
+                                "prepaid financial coverage evidence guard",
                                 "effective subscription billing treatment",
                                 "exact taxed contracted renewal charge",
                                 "canonical prepaid currency",
@@ -8459,6 +8463,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="prepaid financial coverage evidence guard",
+                            owner=("financial.prepaid_service_coverage_reconciliation"),
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed exact or malformed invoice/renewal evidence blocker "
+                                "for each uncovered collectible prepaid subscription"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="effective subscription billing treatment",
                             owner="financial.subscription_billing_treatments",
                             kind=AuthorityKind.DERIVED_PROJECTION,
@@ -8487,9 +8500,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_threshold",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "collectible status set, coverage precedence, typed missing-"
-                                "renewal protection, current-coverage precedence, and due-"
-                                "only max(minimum, renewal) rule"
+                                "collectible status set, coverage and financial-evidence "
+                                "guard precedence, typed missing-renewal protection, current-"
+                                "coverage precedence, and due-only max(minimum, renewal) rule"
                             ),
                         ),
                     ),
@@ -8527,6 +8540,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "missing requested account",
                             "negative, non-finite, or malformed minimum balance",
+                            "exact or malformed financial coverage evidence without a "
+                            "current coverage projection",
                             "unfunded collectible subscription without exact renewal terms",
                             "price and enforcement currency mismatch",
                             "missing or invalid canonical prepaid currency",
@@ -8542,8 +8557,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.prepaid_threshold",
                         verification=(
                             "Scalar/batch parity, query budget, renewal-charge/tax parity, "
-                            "missing-term protection, paid coverage, provenance, caller, "
-                            "and architecture tests."
+                            "missing-term protection, paid coverage, financial-evidence "
+                            "guard, provenance, caller, and architecture tests."
                         ),
                         cutover_gate=(
                             "Access consumes the typed threshold decision; service status "
@@ -11808,8 +11823,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="network.as_built_plant_projection",
                 module="app.services.network.as_built_plant_projection",
-                owns=("fiber segment projection of accepted vendor as-built evidence",),
-                depends_on=("operations.vendor_project_records",),
+                owns=(
+                    "fiber segment projection of accepted vendor as-built evidence",
+                    "operator activation of the projected as-built fiber segment",
+                ),
+                depends_on=(
+                    "operations.vendor_project_records",
+                    "network.fiber_plant_integrity",
+                ),
                 notes=(
                     "Accepted as-built geometry previously never reached the "
                     "network record. This reconciler owns exactly one derived "
@@ -11817,11 +11838,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the as_built_routes.fiber_segment_id link. The evidence "
                     "stays authoritative with operations.vendor_project_records, "
                     "so a lost segment rebuilds from the accepted rows alone. It "
-                    "creates cable inactive: fiber_segments requires bound "
-                    "endpoints on an active row, and binding them into the graph "
-                    "is network.fiber_topology's decision. It never retires "
-                    "plant, never binds endpoints, and never deactivates a "
-                    "segment topology has since activated."
+                    "creates cable inactive, because the projection may not "
+                    "infer what the cable splices into. Because nothing else "
+                    "ever activated that row, every accepted as-built stayed "
+                    "invisible to the is_active-filtered plant and map reads, so "
+                    "this owner also owns activate_projected_segment: the one "
+                    "command that binds two operator-named terminations onto its "
+                    "own projected row and puts it in service. It reaches a "
+                    "segment only through the fiber_segment_id backlink of an "
+                    "accepted as-built, never activates anything another owner "
+                    "created, takes fiber count from the accepted evidence and "
+                    "refuses to contradict it, and submits the bound segment to "
+                    "network.fiber_plant_integrity so activation is held to the "
+                    "same rootedness, endpoint-identity, and exact-core rules as "
+                    "a reviewed fiber change. It never retires plant, never "
+                    "deactivates a segment, and never re-binds endpoints on one "
+                    "that is already active."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -11832,6 +11864,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             role=OwnerRole.RECONCILER,
                             input_names=("accepted vendor as-built evidence",),
+                            canonical_writer="network.as_built_plant_projection",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "operator activation of the projected as-built "
+                                "fiber segment"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "accepted vendor as-built evidence",
+                                "active cable operational integrity ruling",
+                            ),
                             canonical_writer="network.as_built_plant_projection",
                         ),
                     ),
@@ -11846,13 +11890,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "fiber count"
                             ),
                         ),
+                        AuthorityInput(
+                            name="active cable operational integrity ruling",
+                            owner="network.fiber_plant_integrity",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "validate_active_segment and "
+                                "ensure_segment_strand_inventory, which decide "
+                                "whether the operator-named terminations form an "
+                                "exact PON-rooted component; activation fails "
+                                "closed on their refusal"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.PARTICIPANT,
                         boundary=(
                             "The acceptance decision owns the transaction; the "
                             "projection stages the segment inside it. The repair "
-                            "sweep owns its own commit."
+                            "sweep owns its own commit, and so does "
+                            "activate_projected_segment, which is one operator "
+                            "decision rather than a step inside another."
                         ),
                         locking=(
                             "The accepted as-built row is already locked by the "
@@ -11860,32 +11918,61 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         idempotency=(
                             "fiber_segment_id makes a replay refresh the same "
-                            "segment rather than mint a second cable."
+                            "segment rather than mint a second cable, and a "
+                            "replayed activation returns already_active without "
+                            "re-binding the endpoints."
                         ),
                         retries=(
                             "Safe to re-run: reconcile_accepted_as_builts is a "
-                            "no-op for evidence already projected."
+                            "no-op for evidence already projected, and a refused "
+                            "activation rolls back its own endpoint binding."
                         ),
                     ),
                     errors=ErrorContract(
                         domain_codes=(
                             "network.as_built_plant_projection.as_built_not_found",
+                            "network.as_built_plant_projection."
+                            "activation_target_required",
+                            "network.as_built_plant_projection.segment_not_projected",
+                            "network.as_built_plant_projection.as_built_not_accepted",
+                            "network.as_built_plant_projection."
+                            "termination_point_not_found",
+                            "network.as_built_plant_projection."
+                            "termination_points_not_distinct",
+                            "network.as_built_plant_projection.missing_route_geometry",
+                            "network.as_built_plant_projection.missing_fiber_count",
+                            "network.as_built_plant_projection."
+                            "fiber_count_conflicts_with_evidence",
+                            "network.as_built_plant_projection.plant_integrity_refused",
                         ),
-                        mapping_owner="app.services.vendor_project_records",
+                        mapping_owner="app.web.admin.network_fiber_plant",
+                        fail_closed_on=(
+                            "network.as_built_plant_projection.plant_integrity_refused",
+                        ),
                     ),
                     events=EventContract(
-                        event_types=("vendor_as_built.accepted",),
+                        event_types=(
+                            "vendor_as_built.accepted",
+                            "fiber_segment.activated",
+                        ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
                             "Consumes the acceptance event emitted by "
-                            "operations.vendor_project_records; this owner emits "
-                            "none of its own, because a derived segment is not a "
-                            "new fact about the world."
+                            "operations.vendor_project_records; the projection "
+                            "itself emits nothing, because a derived segment is "
+                            "not a new fact about the world. Activation does "
+                            "emit fiber_segment.activated: cable entering "
+                            "service is a new operational fact, and it is the "
+                            "moment the cable becomes visible to every "
+                            "is_active-filtered plant and map read."
                         ),
                         replay=(
                             "Replaying an acceptance refreshes the same segment "
-                            "through fiber_segment_id rather than creating one."
+                            "through fiber_segment_id rather than creating one; "
+                            "replaying an activation emits nothing further, "
+                            "because the already_active path returns before the "
+                            "event is staged."
                         ),
                     ),
                     projections=(
@@ -11922,12 +12009,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         verification=(
                             "Projection, idempotency, variation-refresh, "
                             "unaccepted-evidence, missing-attribute, "
-                            "endpoint-abstention, and repair-sweep tests."
+                            "endpoint-abstention, and repair-sweep tests, plus "
+                            "activation tests covering map visibility, "
+                            "non-projected refusal, endpoint validation, replay, "
+                            "and the awaiting-activation queue."
                         ),
                     ),
                     steward="network operations",
                     design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
-                    test_refs=("tests/test_as_built_plant_projection.py",),
+                    test_refs=(
+                        "tests/test_as_built_plant_projection.py",
+                        "tests/test_as_built_plant_activation.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -18199,6 +18292,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "typed ticket command",
                                 "canonical ticket state",
                                 "ticket configuration",
+                                "portal team-routing resolution",
                                 "customer identity evidence",
                                 "assignment policy proposal",
                                 "automation policy proposal",
@@ -18248,6 +18342,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "validated status subset, priorities, types, defaults, routing, "
                                 "and SLA target settings"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="portal team-routing resolution",
+                            owner="support.ticket_configuration",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed active-team fallback resolution plus the explicit "
+                                "TicketCreationRoutingMode supplied by the customer portal"
                             ),
                         ),
                         AuthorityInput(
@@ -18399,12 +18502,19 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "operator-visible ticket status subset",
                     "ticket priority and type options",
                     "ticket routing and priority/type SLA target policy",
+                    "canonical support-ticket region projection",
+                    "customer-portal ticket fallback team routing",
                 ),
-                depends_on=("support.ticket_lifecycle",),
+                depends_on=(
+                    "support.ticket_lifecycle",
+                    "operations.service_team_lifecycle",
+                ),
                 notes=(
                     "Configured status choices are constrained to the lifecycle "
                     "vocabulary and do not own semantic colors or tones. Every "
-                    "ticket SLA target is operator-managed in the ticket settings UI."
+                    "ticket SLA target is operator-managed in the ticket settings UI. "
+                    "Customer-portal routing resolves current native Service Teams by "
+                    "exact case-insensitive name without owning their identity."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -18425,6 +18535,19 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "ticket priority and type options",
                                 "ticket routing and priority/type SLA target policy",
                             )
+                        ),
+                        ConcernContract(
+                            name="canonical support-ticket region projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "current ticket configuration",
+                                "canonical ticket regions",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer-portal ticket fallback team routing",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("active service-team identity",),
                         ),
                     ),
                     authoritative_inputs=(
@@ -18452,6 +18575,23 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "ServiceTeamMember records"
                             ),
                         ),
+                        AuthorityInput(
+                            name="canonical ticket regions",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "distinct non-empty Region values on current active Ticket rows"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active service-team identity",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "current active ServiceTeam rows matched exactly after "
+                                "case normalization"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
@@ -18476,7 +18616,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "support.ticket_configuration"
                             ),
                         ),
-                        mapping_owner="admin system ticket-settings adapter",
+                        mapping_owner=(
+                            "admin system ticket-settings and customer-portal adapters"
+                        ),
                         fail_closed_on=(
                             "status outside lifecycle vocabulary",
                             "invalid team/person identity",
@@ -18500,9 +18642,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         state=AuthorityMigrationState.COMPLETE,
                         old_owner="ticket settings form and multi-commit settings helpers",
                         new_owner="support.ticket_configuration",
-                        verification="ticket settings, SLA, assignment, and architecture tests",
-                        cutover_gate="one typed owner command replaces the complete settings set",
-                        fallback_retirement="mid-command commit and settings-route writes are absent",
+                        verification=(
+                            "ticket settings, portal routing, SLA, assignment, and "
+                            "architecture tests"
+                        ),
+                        cutover_gate=(
+                            "one typed owner command replaces the complete settings set; "
+                            "portal routing uses the typed exact-name resolver"
+                        ),
+                        fallback_retirement=(
+                            "mid-command commit, settings-route writes, portal hard-coded "
+                            "team identifiers, and parallel fallback routing are absent"
+                        ),
                     ),
                     steward="support operations",
                     design_refs=(

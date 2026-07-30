@@ -133,6 +133,74 @@ def test_ticket_settings_projects_active_native_teams_without_writing_them(db_se
     ]
 
 
+@pytest.mark.parametrize("submitted", (None, "", "forged", "NORTH"))
+def test_portal_region_validation_rejects_noncanonical_values(db_session, submitted):
+    assert (
+        support_ticket_settings_service.canonical_region_option(db_session, submitted)
+        is None
+    )
+
+
+def test_portal_region_validation_returns_current_canonical_value(db_session):
+    support_ticket_settings_service.update_options(
+        db_session,
+        statuses=["open"],
+        priorities=["normal"],
+        ticket_types=["incident"],
+        regions=["lagos", "abuja"],
+    )
+
+    assert support_ticket_settings_service.list_canonical_region_options(
+        db_session
+    ) == ["abuja", "lagos"]
+    assert (
+        support_ticket_settings_service.canonical_region_option(db_session, "lagos")
+        == "lagos"
+    )
+
+
+def test_portal_team_routing_prefers_active_customer_experience(db_session):
+    expected = _native_team(db_session, name="customer EXPERIENCE")
+    _native_team(db_session, name="System Admin")
+
+    resolution = support_ticket_settings_service.resolve_portal_ticket_team_routing(
+        db_session
+    )
+
+    assert resolution.service_team_id == expected.id
+    assert resolution.service_team_name == expected.name
+    assert resolution.source.value == "customer_experience"
+
+
+def test_portal_team_routing_falls_back_to_active_system_admin(db_session):
+    inactive = _native_team(db_session, name="Customer Experience")
+    inactive.is_active = False
+    db_session.commit()
+    expected = _native_team(db_session, name="SYSTEM admin")
+
+    resolution = support_ticket_settings_service.resolve_portal_ticket_team_routing(
+        db_session
+    )
+
+    assert resolution.service_team_id == expected.id
+    assert resolution.source.value == "system_admin"
+
+
+def test_portal_team_routing_is_unassigned_without_an_exact_active_match(db_session):
+    _native_team(db_session, name="Admin")
+    inactive = _native_team(db_session, name="System Admin")
+    inactive.is_active = False
+    db_session.commit()
+
+    resolution = support_ticket_settings_service.resolve_portal_ticket_team_routing(
+        db_session
+    )
+
+    assert resolution.service_team_id is None
+    assert resolution.service_team_name is None
+    assert resolution.source.value == "unassigned"
+
+
 def test_assignment_rule_create_and_delete(db_session):
     team = _native_team(db_session, name="Support")
     team_id = str(team.id)

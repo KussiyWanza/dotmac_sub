@@ -52,6 +52,32 @@ Manual-review identity evidence fails closed for sensitive assignment and
 automation. A policy never becomes a lifecycle writer merely because its
 proposal is accepted.
 
+Customer-portal creation uses a distinct, typed configuration resolution.
+`support.ticket_configuration` resolves the first active Service Team whose
+name matches exactly after case normalization, in this order:
+`Customer Experience`, then `System Admin`, then intentional unassignment.
+The resolver consumes native Service Team identity from
+`operations.service_team_lifecycle`; it does not own or hard-code team UUIDs.
+
+The portal validates Region against the same current canonical region
+projection rendered by the admin ticket form. It passes that canonical value
+and the typed team resolution into `support.ticket_lifecycle`.
+The region projection is recomputed from workflow configuration and distinct
+non-empty Region values on active Tickets in the caller's current database
+transaction; it has no cache or stale fallback. Re-reading is its idempotent
+rebuild path, and form-context parity tests are its drift signal.
+`TicketCreationRoutingMode.preserve_requested_team` then prevents assignment
+rules and `assign_team` creation automation from replacing either the resolved
+team or the intentional unassigned result. Other creation automation continues
+to run. Other ticket creation adapters retain the default
+`evaluate_policy` mode.
+
+The lifecycle owner persists Region and final team state and stages assignment
+notifications, audit evidence, and the `ticket.created` event in its root
+transaction. Audit and event evidence include the creation routing mode and
+final team identifier, including a null identifier for intentional
+unassignment.
+
 ## Related owners
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.

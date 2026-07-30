@@ -25,6 +25,7 @@ from app.services.domain_errors import DomainError
 from app.services.integrations.crm_capability import capability_client
 from app.services.session_store import get_session_redis
 from app.services.status_presentation import ticket_status_presentation
+from app.services.support_ticket_settings import SupportTeamRoutingResolution
 
 logger = logging.getLogger(__name__)
 
@@ -364,15 +365,19 @@ def ticket_detail_context(
 
 def ticket_create_context(
     request: Request,
+    db: Session,
     customer: dict,
 ) -> dict[str, Any]:
     """Build template context for ticket creation form."""
+    from app.services import support as support_service
+
     return {
         "request": request,
         "customer": customer,
         "active_page": "support",
         "priorities": list(TICKET_PRIORITY_DISPLAY.keys()),
         "priority_display": TICKET_PRIORITY_DISPLAY,
+        "region_options": support_service.regions(db),
         **_ok_context(),
     }
 
@@ -427,6 +432,8 @@ def handle_ticket_create(
     title: str,
     description: str,
     priority: str,
+    region: str,
+    team_routing: SupportTeamRoutingResolution,
     attachments: list | None = None,
 ) -> dict[str, Any]:
     """Create a ticket in the internal (local) ticket module.
@@ -461,6 +468,8 @@ def handle_ticket_create(
                 title=title,
                 description=description or "",
                 priority=priority if priority in TICKET_PRIORITY_DISPLAY else "normal",
+                region=region,
+                service_team_id=team_routing.service_team_id,
                 channel=TicketChannel.web,
             ),
             actor_id=None,
@@ -468,6 +477,7 @@ def handle_ticket_create(
             # the customer wait for a broker or third-party integration; the
             # scheduled event dispatcher drains this outbox record.
             dispatch_event_after_commit=False,
+            routing_mode=support_service.TicketCreationRoutingMode.preserve_requested_team,
         )
         if files:
             uploaded = web_support_tickets.upload_ticket_attachments(

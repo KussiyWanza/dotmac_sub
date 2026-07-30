@@ -22,8 +22,9 @@ back to the canonical ``billing.prepaid_default_min_balance`` setting, and
 charge of every due, uncovered collectible prepaid subscription. Charge
 resolution belongs to ``financial.prepaid_service_renewals`` and coverage
 classification belongs to ``financial.prepaid_service_coverage``. A future
-billing anchor without coverage, or a due service without complete contract
-terms, blocks adverse enforcement through a typed outcome.
+billing anchor without coverage, exact or malformed financial evidence without
+a coverage projection, or a due service without complete contract terms blocks
+adverse enforcement through a typed outcome.
 
 Query cost is bounded by the number of accounts *batches*, not by the number of
 accounts: resolving 5,269 accounts costs the same handful of queries as resolving
@@ -229,8 +230,11 @@ def resolve_prepaid_threshold_decisions(
         else:
             standard_subscriptions.append(subscription)
 
-    # 4. Classify standard service through the named coverage owner. A future
-    # billing anchor without evidence is unresolved, not paid service.
+    # 4. Classify standard service through the named coverage owner, then ask
+    # the reconciliation owner whether any uncovered service has exact or
+    # malformed financial source evidence. Paid invoices remain source evidence
+    # rather than read-time coverage, but a missing entitlement projection is
+    # never safe-to-suspend.
     from app.services.prepaid_service_coverage import (
         PrepaidCoverageStatus,
         resolve_prepaid_service_coverage,
@@ -241,12 +245,34 @@ def resolve_prepaid_threshold_decisions(
         standard_subscriptions,
         as_of=effective_now,
     )
+    uncovered_subscriptions = [
+        subscription
+        for subscription in standard_subscriptions
+        if not coverage[subscription.id].covered
+    ]
+    if uncovered_subscriptions:
+        from app.services.prepaid_coverage_reconciliation import (
+            resolve_prepaid_coverage_enforcement_blockers,
+        )
+
+        enforcement_blocked_ids = {
+            item.subscription_id
+            for item in resolve_prepaid_coverage_enforcement_blockers(
+                db,
+                uncovered_subscriptions,
+                as_of=effective_now,
+            )
+        }
+    else:
+        enforcement_blocked_ids = set()
     covered_by_account: dict[str, list[UUID]] = defaultdict(list)
     unresolved_by_account: dict[str, list[UUID]] = defaultdict(list)
     for subscription in standard_subscriptions:
         account_key = str(subscription.subscriber_id)
         status = coverage[subscription.id].status
-        if status == PrepaidCoverageStatus.covered:
+        if subscription.id in enforcement_blocked_ids:
+            unresolved_by_account[account_key].append(subscription.id)
+        elif status == PrepaidCoverageStatus.covered:
             covered_by_account[account_key].append(subscription.id)
         elif status == PrepaidCoverageStatus.unresolved_projection:
             unresolved_by_account[account_key].append(subscription.id)
@@ -256,7 +282,10 @@ def resolve_prepaid_threshold_decisions(
     unfunded = [
         subscription
         for subscription in standard_subscriptions
-        if coverage[subscription.id].status == PrepaidCoverageStatus.uncovered_due
+        if (
+            coverage[subscription.id].status == PrepaidCoverageStatus.uncovered_due
+            and subscription.id not in enforcement_blocked_ids
+        )
     ]
     if not unfunded:
         return _decisions(

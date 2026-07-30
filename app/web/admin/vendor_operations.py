@@ -49,6 +49,7 @@ from app.services.vendor_supply_review_proposals import (
 from app.services.vendor_supply_views import (
     VendorSupplyReviewAction,
     VendorSupplyType,
+    advance_disbursement_queue,
     advance_review_queue,
     material_review_queue,
 )
@@ -165,6 +166,9 @@ def vendor_operations_queue(
             ),
             "advances": (
                 advance_review_queue(db).items if show_advance_reviews else ()
+            ),
+            "advances_awaiting_disbursement": (
+                advance_disbursement_queue(db).items if show_advance_reviews else ()
             ),
             "projects": (
                 vendor_portal_operations.list_reviewable_projects(db)

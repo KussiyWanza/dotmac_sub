@@ -51,6 +51,10 @@ class VendorSupplyType(StrEnum):
 class VendorSupplyReviewAction(StrEnum):
     approve = "approve"
     reject = "reject"
+    # Advances only: the operator records that the money actually left. Payment
+    # happens outside Sub and no payables transport reports it back, so the
+    # person who paid is the observation source.
+    disburse = "disburse"
 
 
 def _error(suffix: str, message: str) -> VendorSupplyProjectionError:
@@ -135,6 +139,7 @@ class AdvanceView:
     payables: ProviderObservation
     approve_action: Action
     reject_action: Action
+    disburse_action: Action
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +379,26 @@ def advance_view(row: VendorAdvance) -> AdvanceView:
             tone=StatusTone.negative,
             requires_confirmation=True,
         ),
+        # Payment happens outside Sub and nothing reports it back, so an
+        # approved advance stays indistinguishable from a paid one until an
+        # operator records the disbursement with its payment reference.
+        disburse_action=Action(
+            key="disburse_vendor_advance",
+            label="Record disbursement",
+            allowed=row.status == VendorAdvanceStatus.approved.value,
+            reason=(
+                None
+                if row.status == VendorAdvanceStatus.approved.value
+                else "Only an approved advance can be recorded as paid."
+            ),
+            permission="finance:ap:write",
+            preview_url=(
+                f"/admin/vendors/operations/advances/{row.id}/disburse/preview"
+            ),
+            affected=1,
+            tone=StatusTone.positive,
+            requires_confirmation=True,
+        ),
     )
 
 
@@ -511,6 +536,38 @@ def advance_review_queue(
             VendorAdvance.is_active.is_(True),
         )
         .order_by(VendorAdvance.requested_at.asc(), VendorAdvance.id.asc())
+        .offset(max(0, offset))
+        .limit(normalized_limit + 1)
+        .all()
+    )
+    return VendorSupplyQueue(
+        items=tuple(advance_view(row) for row in rows[:normalized_limit]),
+        count=min(len(rows), normalized_limit),
+        limit=normalized_limit,
+        offset=max(0, offset),
+        has_next=len(rows) > normalized_limit,
+    )
+
+
+def advance_disbursement_queue(
+    db: Session, *, limit: int = 100, offset: int = 0
+) -> VendorSupplyQueue:
+    """Approved advances that nobody has recorded as paid yet.
+
+    Payment happens outside Sub, so an approved advance is outstanding work
+    for whoever pays it — and until it is recorded, Sub must treat the money
+    as committed, which holds up the vendor's invoice. Without this queue the
+    disbursement action would exist with nothing surfacing the work.
+    """
+
+    normalized_limit = max(1, min(limit, 200))
+    rows = (
+        _advance_query(db)
+        .filter(
+            VendorAdvance.status == VendorAdvanceStatus.approved.value,
+            VendorAdvance.is_active.is_(True),
+        )
+        .order_by(VendorAdvance.reviewed_at.asc(), VendorAdvance.id.asc())
         .offset(max(0, offset))
         .limit(normalized_limit + 1)
         .all()
@@ -709,9 +766,10 @@ def advance_review_preview(
     reason: str | None = None,
     for_update: bool = False,
 ) -> SupplyReviewPreview:
+    is_disbursement = action is VendorSupplyReviewAction.disburse
     normalized_reason = _review_reason(
         reason,
-        required=action is VendorSupplyReviewAction.reject,
+        required=action is VendorSupplyReviewAction.reject or is_disbursement,
     )
     query = _advance_query(db).filter(
         VendorAdvance.id == coerce_uuid(advance_id),
@@ -722,19 +780,29 @@ def advance_review_preview(
     row = query.one_or_none()
     if row is None:
         raise _error("advance_not_found", "Vendor advance not found.")
-    allowed, blocked_reason = vendor_advances.review_eligibility(row.status)
-    if not allowed:
-        raise _error("advance_not_reviewable", str(blocked_reason))
+    if is_disbursement:
+        # Disbursement follows approval rather than replacing it: only an
+        # approved advance can be recorded as paid.
+        if row.status != VendorAdvanceStatus.approved.value:
+            raise _error(
+                "advance_not_disbursable",
+                "Only an approved advance can be recorded as paid.",
+            )
+    else:
+        allowed, blocked_reason = vendor_advances.review_eligibility(row.status)
+        if not allowed:
+            raise _error("advance_not_reviewable", str(blocked_reason))
     eligibility = vendor_advances.request_eligibility(
         db,
         project_id=row.project_id,
         vendor_id=row.vendor_id,
     )
-    result = (
-        "Approved; payment remains pending"
-        if action is VendorSupplyReviewAction.approve
-        else "Rejected"
-    )
+    if is_disbursement:
+        result = "Recorded as paid; netted against the vendor's invoice"
+    elif action is VendorSupplyReviewAction.approve:
+        result = "Approved; payment remains pending"
+    else:
+        result = "Rejected"
     return SupplyReviewPreview(
         supply_type=VendorSupplyType.advance,
         record_id=row.id,
@@ -742,8 +810,13 @@ def advance_review_preview(
         action=action,
         title=f"{action.value.title()} vendor advance",
         summary=(
-            "This records Dotmac's advance decision. The payables provider "
-            "still owns payment and settlement."
+            "This records that the advance was actually paid, so it is netted "
+            "against the vendor's invoice."
+            if is_disbursement
+            else (
+                "This records Dotmac's advance decision. Payment happens "
+                "outside Sub and must be recorded here once made."
+            )
         ),
         details=(
             ("Project", _project_identity(row.project).name),

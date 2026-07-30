@@ -34,6 +34,14 @@ class CustomerTicketPage(BasePage):
             self.page.get_by_placeholder("Description")
         ).or_(self.page.locator("textarea").first).first.fill(value)
 
+    def select_region(self) -> None:
+        region = self.page.get_by_label("Region")
+        option_values = region.locator("option").evaluate_all(
+            "(options) => options.map((option) => option.value).filter(Boolean)"
+        )
+        assert option_values, "The portal ticket form has no Region options."
+        region.select_option(option_values[0])
+
     def submit_ticket(self) -> None:
         self.page.get_by_role("button", name="Submit").or_(
             self.page.get_by_role("button", name="Create")
