@@ -9,6 +9,8 @@ from app.models.catalog import SubscriptionStatus
 from app.models.network import IPAssignment, IPv4Address, IPVersion
 from app.models.project import Project, ProjectTask, ProjectTaskStatus
 from app.models.provisioning import (
+    ProvisioningReadinessCheckKind,
+    ProvisioningReadinessCheckResult,
     ProvisioningReadinessDecision,
     ProvisioningReadinessDecisionStatus,
     ProvisioningReadinessEvidenceImmutableError,
@@ -20,6 +22,7 @@ from app.models.provisioning import (
     ServiceOrderType,
 )
 from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
+from app.models.work_order import WorkOrder
 from app.services.events.types import EventType
 from app.services.owner_commands import CommandContext
 from app.services.provisioning_lifecycle import (
@@ -107,6 +110,162 @@ def _invoke(db, fn, command):
     harness cannot survive a rollback across multiple commit cycles)."""
     db.commit()
     return fn(db, command)
+
+
+def _field_visit(db, order, *, status: str) -> WorkOrder:
+    """One field work order bound to the order's activation gate task."""
+    work_order = WorkOrder(
+        subscriber_id=order.subscriber_id,
+        project_id=order.project_id,
+        project_task_id=order.activation_project_task_id,
+        title="Fiber activation visit",
+        status=status,
+    )
+    db.add(work_order)
+    db.commit()
+    return work_order
+
+
+def _field_work_check(outcome):
+    return next(
+        check
+        for check in outcome.checks
+        if check.kind == ProvisioningReadinessCheckKind.field_work
+    )
+
+
+def test_open_field_visit_blocks_activation(
+    db_session, subscriber, subscription, monkeypatch
+):
+    order, run = _graph(
+        db_session,
+        subscriber,
+        subscription,
+        task_status=ProjectTaskStatus.done.value,
+    )
+    _field_visit(db_session, order, status="dispatched")
+    monkeypatch.setattr(
+        "app.services.provisioning_lifecycle.emit_event", lambda *a, **k: None
+    )
+
+    outcome = _invoke(
+        db_session,
+        evaluate_readiness,
+        EvaluateReadinessCommand(
+            context=_context("activation task done but visit still in the field"),
+            service_order_id=order.id,
+            provisioning_run_id=run.id,
+        ),
+    )
+
+    assert outcome.status == ProvisioningReadinessDecisionStatus.blocked
+    assert outcome.reason_code == "field_work_incomplete"
+    check = _field_work_check(outcome)
+    assert check.result == ProvisioningReadinessCheckResult.failed
+    assert check.reason_code == "field_work_incomplete"
+    assert (
+        db_session.get(ServiceOrder, order.id).status == ServiceOrderStatus.provisioning
+    )
+    assert subscription.status == SubscriptionStatus.pending
+
+
+def test_all_visits_canceled_blocks_activation(
+    db_session, subscriber, subscription, monkeypatch
+):
+    order, run = _graph(
+        db_session,
+        subscriber,
+        subscription,
+        task_status=ProjectTaskStatus.done.value,
+    )
+    _field_visit(db_session, order, status="canceled")
+    _field_visit(db_session, order, status="canceled")
+    monkeypatch.setattr(
+        "app.services.provisioning_lifecycle.emit_event", lambda *a, **k: None
+    )
+
+    outcome = _invoke(
+        db_session,
+        evaluate_readiness,
+        EvaluateReadinessCommand(
+            context=_context("all field visits ended without a completion"),
+            service_order_id=order.id,
+            provisioning_run_id=run.id,
+        ),
+    )
+
+    assert outcome.status == ProvisioningReadinessDecisionStatus.blocked
+    assert outcome.reason_code == "field_work_incomplete"
+    check = _field_work_check(outcome)
+    assert check.result == ProvisioningReadinessCheckResult.failed
+    assert check.reason_code == "field_work_incomplete"
+    assert (
+        db_session.get(ServiceOrder, order.id).status == ServiceOrderStatus.provisioning
+    )
+    assert subscription.status == SubscriptionStatus.pending
+
+
+def test_completed_visit_among_terminal_visits_passes_field_gate(
+    db_session, subscriber, subscription, monkeypatch
+):
+    order, run = _graph(
+        db_session,
+        subscriber,
+        subscription,
+        task_status=ProjectTaskStatus.done.value,
+    )
+    _field_visit(db_session, order, status="completed")
+    _field_visit(db_session, order, status="canceled")
+    monkeypatch.setattr(
+        "app.services.provisioning_lifecycle.emit_event", lambda *a, **k: None
+    )
+
+    outcome = _invoke(
+        db_session,
+        evaluate_readiness,
+        EvaluateReadinessCommand(
+            context=_context("terminal field visits with one completion"),
+            service_order_id=order.id,
+            provisioning_run_id=run.id,
+        ),
+    )
+
+    assert outcome.status == ProvisioningReadinessDecisionStatus.activation_requested
+    check = _field_work_check(outcome)
+    assert check.result == ProvisioningReadinessCheckResult.passed
+    assert check.reason_code == "field_work_completed"
+
+
+def test_no_field_visits_passes_gate_as_not_required(
+    db_session, subscriber, subscription, monkeypatch
+):
+    order, run = _graph(
+        db_session,
+        subscriber,
+        subscription,
+        task_status=ProjectTaskStatus.done.value,
+    )
+    monkeypatch.setattr(
+        "app.services.provisioning_lifecycle.emit_event", lambda *a, **k: None
+    )
+
+    outcome = _invoke(
+        db_session,
+        evaluate_readiness,
+        EvaluateReadinessCommand(
+            context=_context("activation task done with no field visits raised"),
+            service_order_id=order.id,
+            provisioning_run_id=run.id,
+        ),
+    )
+
+    # Today the gate treats zero task-linked visits as nothing to wait for:
+    # the check passes with reason field_work_not_required and activation
+    # proceeds on the remaining facts.
+    assert outcome.status == ProvisioningReadinessDecisionStatus.activation_requested
+    check = _field_work_check(outcome)
+    assert check.result == ProvisioningReadinessCheckResult.passed
+    assert check.reason_code == "field_work_not_required"
 
 
 def test_incomplete_activation_task_blocks_without_activating(
