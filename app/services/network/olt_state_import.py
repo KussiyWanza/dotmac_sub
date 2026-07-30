@@ -458,7 +458,7 @@ def _import_named_service_profile_mappings(
         service_ids[equipment_id] = int(service_profile.profile_id)
         counts.setdefault(equipment_id, Counter())[
             int(registration.line_profile_id)  # type: ignore[arg-type]
-        ] += 1  # type: ignore[arg-type]
+        ] += 1
 
     imported = 0
     for equipment_id, line_counts in counts.items():

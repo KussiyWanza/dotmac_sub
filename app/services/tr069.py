@@ -142,7 +142,7 @@ def _job_extra(
     return extra
 
 
-def _normalized_serial_expr(column):  # type: ignore[no-untyped-def]
+def _normalized_serial_expr(column):
     """Build a SQL expression that strips common serial formatting."""
     expr = func.upper(column)
     for token in ("-", " ", ":", ".", "_", "/"):
@@ -622,8 +622,8 @@ def _validate_target_cpe_device(
 
 def sync_ont_acs_server(
     db: Session,
-    ont,  # type: ignore[no-untyped-def]
-    acs_server_id,  # type: ignore[no-untyped-def]
+    ont,
+    acs_server_id,
 ) -> int:
     """Keep linked TR-069 rows aligned without rewriting ONT ACS policy."""
     if not acs_server_id:
@@ -644,7 +644,7 @@ def sync_ont_acs_server(
 
 def refresh_ont_status_snapshot(
     db: Session,
-    ont,  # type: ignore[no-untyped-def]
+    ont,
 ) -> None:
     """Recompute ACS/effective status from the ONT's current active TR-069 links."""
     acs_last_inform_at = (
@@ -711,15 +711,15 @@ def _refresh_synced_ont_acs_observations(
     result = db.execute(statement)
     # SQLAlchemy `Result` is the generic supertype; UPDATE statements return a
     # `CursorResult`, which carries `.rowcount`.
-    return result.rowcount or 0  # type: ignore[attr-defined]
+    return result.rowcount or 0
 
 
 def link_tr069_device_to_ont(
     db: Session,
     device: Tr069CpeDevice,
-    ont,  # type: ignore[no-untyped-def]
+    ont,
     *,
-    acs_server_id=None,  # type: ignore[no-untyped-def]
+    acs_server_id=None,
 ) -> None:
     """Enforce a single active TR-069 link per ONT.
 
@@ -911,7 +911,7 @@ class CpeDevices(ListResponseMixin):
         db: Session,
         *,
         acs_server_id: str,
-        ont,  # type: ignore[no-untyped-def]
+        ont,
     ) -> Tr069CpeDevice | None:
         serial_candidates = [
             normalize_tr069_serial(candidate)

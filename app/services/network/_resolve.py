@@ -24,7 +24,7 @@ from app.services.network.serial_utils import search_candidates
 logger = logging.getLogger(__name__)
 
 
-def _normalized_serial_expr(column):  # type: ignore[no-untyped-def]
+def _normalized_serial_expr(column):
     """Build a SQL expression that strips common serial formatting."""
     expr = func.upper(column)
     for token in ("-", " ", ":", ".", "_", "/"):

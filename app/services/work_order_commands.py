@@ -795,8 +795,8 @@ class WorkOrderCommands:
         row.assigned_to_crm_person_id = profile.crm_person_id
         row.assigned_to_name = name
         row.technician_name = name
-        row.scheduled_start = target["scheduled_start"]  # type: ignore[assignment]
-        row.scheduled_end = target["scheduled_end"]  # type: ignore[assignment]
+        row.scheduled_start = target["scheduled_start"]
+        row.scheduled_end = target["scheduled_end"]
         row.status = str(target["status"])
         mark_sub_authoritative(
             row,

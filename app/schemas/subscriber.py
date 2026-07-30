@@ -372,7 +372,7 @@ class SubscriberRead(SubscriberBase):
     # text column and may hold imported placeholder values (e.g. legacy
     # `no-email+<id>@splynx.local`) that EmailStr's strict validator rejects
     # as a "special-use TLD". Keep strict EmailStr on create/update payloads.
-    email: str  # type: ignore[assignment]
+    email: str
 
     id: UUID
     lifecycle_override_status: SubscriberStatus | None = None

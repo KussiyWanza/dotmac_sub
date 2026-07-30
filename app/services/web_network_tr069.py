@@ -49,7 +49,7 @@ from app.services.tr069_web_audit import (
 logger = logging.getLogger(__name__)
 
 
-def _normalized_serial_expr(column):  # type: ignore[no-untyped-def]
+def _normalized_serial_expr(column):
     expr = func.upper(column)
     for token in ("-", " ", ":", ".", "_", "/"):
         expr = func.replace(expr, token, "")

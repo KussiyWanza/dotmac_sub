@@ -435,7 +435,7 @@ def clear_authorization_status(ont: OntUnit, *, reason: str) -> None:
             "reason": reason,
         },
     )
-    ont.authorization_status = None  # type: ignore[assignment]
+    ont.authorization_status = None
 
 
 def clear_provisioning_status(ont: OntUnit, *, reason: str) -> None:
@@ -455,7 +455,7 @@ def clear_provisioning_status(ont: OntUnit, *, reason: str) -> None:
             "reason": reason,
         },
     )
-    ont.provisioning_status = None  # type: ignore[assignment]
+    ont.provisioning_status = None
 
 
 def _window_minutes_from_interval_seconds(interval_seconds: int | None) -> int:

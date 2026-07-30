@@ -74,9 +74,9 @@ def _check_capability(db: Session, ont: OntUnit, feature: str) -> ActionResult |
 
 def _set_sync_meta(ont: OntUnit, source: str) -> None:
     if hasattr(ont, "last_sync_source"):
-        ont.last_sync_source = source  # type: ignore[assignment]
+        ont.last_sync_source = source
     if hasattr(ont, "last_sync_at"):
-        ont.last_sync_at = datetime.now(UTC)  # type: ignore[assignment]
+        ont.last_sync_at = datetime.now(UTC)
 
 
 def _emit_feature_event(

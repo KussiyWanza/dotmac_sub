@@ -19,7 +19,9 @@ def sync_gis_sources():
     start = time.monotonic()
     started_at = datetime.now(UTC)
     status = "success"
-    results = {}
+    # record_last_sync_run persists this as an opaque JSON payload, so the
+    # value type stays open rather than narrowing to the per-source counters.
+    results: dict[str, object] = {}
     sync_pops = False
     sync_addresses = False
     deactivate_missing = False

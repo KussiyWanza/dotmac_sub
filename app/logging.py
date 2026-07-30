@@ -27,7 +27,7 @@ class StderrStreamHandler(logging.StreamHandler):
         super().__init__(stream=sys.stderr)
 
     @property
-    def stream(self):  # type: ignore[override]
+    def stream(self):
         return sys.stderr
 
     @stream.setter

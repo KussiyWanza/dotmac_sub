@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from redis import Redis
+
 logger = logging.getLogger(__name__)
 
 # Type for decorated functions
@@ -66,7 +68,7 @@ class OltReadCache:
         Args:
             redis_url: Redis connection URL. If None, uses REDIS_URL from config.
         """
-        self._redis = None
+        self._redis: Redis | None = None
         self._redis_url = redis_url
         self._enabled = True
         self._stats = {
@@ -303,7 +305,7 @@ class OltReadCache:
                 first_arg = args[0] if args else None
                 olt_id = None
 
-                if hasattr(first_arg, "id"):
+                if first_arg is not None and hasattr(first_arg, "id"):
                     olt_id = str(first_arg.id)
                 elif isinstance(first_arg, str):
                     olt_id = first_arg
@@ -333,7 +335,7 @@ class OltReadCache:
 
                 return result
 
-            return wrapper  # type: ignore
+            return wrapper  # type: ignore[return-value]
 
         return decorator
 
