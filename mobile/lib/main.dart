@@ -49,7 +49,7 @@ Future<void> main() async {
         options.environment = Env.glitchtipEnvironment;
         // Identifies app events in the shared GlitchTip project (filter by
         // release:dotmac-mobile@* or environment:mobile-*).
-        options.release = 'dotmac-mobile@7.70.6';
+        options.release = 'dotmac-mobile@7.70.7';
         options.sendDefaultPii = false;
       });
 
