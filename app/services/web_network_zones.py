@@ -68,8 +68,20 @@ def list_page_data(
         .correlate(NetworkZone)
         .scalar_subquery()
     )
+    # The GeoArea binding is joined into this same statement: the list has a
+    # bounded-query contract, so it reports the binding declared on each zone.
+    # Inherited and stale resolution stay on the detail page, which resolves
+    # the full parent chain through the zones owner.
     stmt = (
-        select(NetworkZone, ont_count, splitter_count, fdh_count)
+        select(
+            NetworkZone,
+            ont_count,
+            splitter_count,
+            fdh_count,
+            GeoArea.name,
+            GeoArea.is_active,
+        )
+        .outerjoin(GeoArea, GeoArea.id == NetworkZone.geo_area_id)
         .options(joinedload(NetworkZone.parent))
         .order_by(NetworkZone.name)
         .offset((page - 1) * per_page)
@@ -87,6 +99,14 @@ def list_page_data(
         }
         for row in rows
     }
+    zone_geo_areas = {
+        str(row[0].id): {
+            "bound": row[0].geo_area_id is not None,
+            "name": row[4] if row[5] else None,
+            "unavailable": row[0].geo_area_id is not None and not row[5],
+        }
+        for row in rows
+    }
 
     stats_row = db.execute(
         select(
@@ -98,6 +118,7 @@ def list_page_data(
 
     return {
         "zones": zones,
+        "zone_geo_areas": zone_geo_areas,
         "zone_stats": zone_stats,
         "status_filter": status_filter,
         "search": search_filter,

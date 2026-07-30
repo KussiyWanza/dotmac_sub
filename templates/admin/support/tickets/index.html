@@ -122,7 +122,7 @@
                     <template x-for="item in (preview?.skipped || []).slice(0, 5)" :key="item.id">
                         <li><span class="font-mono" x-text="item.id"></span>: <span x-text="item.reason"></span></li>
                     </template>
-                    <li x-show="preview?.skipped_count > 5" x-text="`And ${preview.skipped_count - 5} more skipped ticket(s).`"></li>
+                    <li x-show="preview?.skipped_count > 5" x-text="`And ${(preview?.skipped_count || 0) - 5} more skipped ticket(s).`"></li>
                 </ul>
             </div>
 
