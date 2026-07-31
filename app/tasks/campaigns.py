@@ -19,7 +19,7 @@ def process_due_campaigns(*, limit: int = 20) -> dict[str, int]:
         session.commit()
         logger.info(
             "campaign processing complete",
-            extra={"event": "campaign_processing_complete", **result},
+            extra={"event": "campaign_processing_complete", "counts": result},
         )
         return result
 
@@ -32,9 +32,12 @@ def process_due_campaign_steps(*, limit: int = 20) -> dict[str, int]:
     with db_session_adapter.session() as session:
         result = comms_campaigns.process_due_campaign_steps(session, limit=limit)
         session.commit()
+        # The result dict is nested under one key: spreading it into ``extra``
+        # collides with reserved LogRecord attributes (its ``created`` count
+        # shadowed LogRecord.created and failed every run).
         logger.info(
             "campaign step processing complete",
-            extra={"event": "campaign_step_processing_complete", **result},
+            extra={"event": "campaign_step_processing_complete", "counts": result},
         )
         return result
 
@@ -65,6 +68,6 @@ def send_campaign_batch(
         }
         logger.info(
             "campaign batch send complete",
-            extra={"event": "campaign_batch_send_complete", **payload},
+            extra={"event": "campaign_batch_send_complete", "counts": payload},
         )
         return payload
