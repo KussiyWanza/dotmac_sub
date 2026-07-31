@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -88,6 +90,63 @@ class VendorAsBuiltCreate(BaseModel):
     variation_reason: str | None = Field(default=None, max_length=2000)
     work_order_ref: str | None = Field(default=None, max_length=120)
     line_items: list[VendorAsBuiltLineCreate] = Field(default_factory=list)
+
+
+class VendorSpliceCreate(BaseModel):
+    work_order_id: str = Field(min_length=1, max_length=64)
+    closure_id: UUID
+    from_strand_id: UUID
+    from_strand_end: Literal["a", "b"]
+    to_strand_id: UUID
+    to_strand_end: Literal["a", "b"]
+    tray_id: UUID | None = None
+    position: int | None = Field(default=None, ge=1)
+    splice_type: str = Field(min_length=1, max_length=80)
+    loss_db: float | None = Field(default=None, ge=0, le=5)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class VendorStrandColorRead(BaseModel):
+    strand_number: int
+    color_standard: str
+    tube_number: int | None = None
+    tube_color: str | None = None
+    core_number_in_tube: int
+    core_color: str
+
+
+class VendorSpliceProposalResponse(BaseModel):
+    change_request_id: UUID
+    status: str
+    replayed: bool
+    closure_id: UUID
+    from_strand_id: UUID
+    from_strand_end: Literal["a", "b"]
+    to_strand_id: UUID
+    to_strand_end: Literal["a", "b"]
+    work_order_public_id: str | None = None
+    from_strand_colors: VendorStrandColorRead | None = None
+    to_strand_colors: VendorStrandColorRead | None = None
+
+
+class VendorSpliceProposalStatusRead(BaseModel):
+    change_request_id: UUID
+    status: str
+    operation: str
+    closure_id: UUID | None = None
+    from_strand_id: UUID | None = None
+    from_strand_end: Literal["a", "b"] | None = None
+    to_strand_id: UUID | None = None
+    to_strand_end: Literal["a", "b"] | None = None
+    splice_type: str | None = None
+    loss_db: float | None = None
+    work_order_public_id: str | None = None
+    from_strand_colors: VendorStrandColorRead | None = None
+    to_strand_colors: VendorStrandColorRead | None = None
+    review_notes: str | None = None
+    reviewed_at: datetime | None = None
+    applied_at: datetime | None = None
+    created_at: datetime
 
 
 class VendorSubmissionConfirm(BaseModel):

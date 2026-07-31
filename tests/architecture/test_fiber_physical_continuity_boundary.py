@@ -9,6 +9,8 @@ MIGRATION = PROJECT_ROOT / "alembic/versions/364_fiber_core_continuity.py"
 OWNER = PROJECT_ROOT / "app/services/network/fiber_physical_continuity.py"
 CHANGE_OWNER = PROJECT_ROOT / "app/services/fiber_change_requests.py"
 FIELD_ADAPTER = PROJECT_ROOT / "app/services/field/fiber.py"
+VENDOR_ADAPTER = PROJECT_ROOT / "app/services/vendor_fiber.py"
+SPLICE_INTAKE = PROJECT_ROOT / "app/services/network/fiber_splice_proposals.py"
 LEGACY_ADAPTER = PROJECT_ROOT / "app/services/network/fiber_services.py"
 ACCESS_PATH = PROJECT_ROOT / "app/services/network/access_path.py"
 
@@ -108,7 +110,9 @@ def test_connector_inventory_is_single_channel_until_lane_model_exists():
 
 
 def test_field_and_change_request_adapters_delegate_exact_splice_decisions():
+    intake_source = SPLICE_INTAKE.read_text(encoding="utf-8")
     field_source = FIELD_ADAPTER.read_text(encoding="utf-8")
+    vendor_source = VENDOR_ADAPTER.read_text(encoding="utf-8")
     change_source = CHANGE_OWNER.read_text(encoding="utf-8")
     legacy_source = LEGACY_ADAPTER.read_text(encoding="utf-8")
 
@@ -118,7 +122,12 @@ def test_field_and_change_request_adapters_delegate_exact_splice_decisions():
         "physical_link_decision_id",
         "propose_physical_link(",
     ):
-        assert required in field_source
+        assert required in intake_source
+    # Field and vendor transports delegate splice intake to the shared owner
+    # and never talk to the continuity owner directly.
+    for transport_source in (field_source, vendor_source):
+        assert "fiber_splice_proposals.propose_splice(" in transport_source
+        assert "propose_physical_link(" not in transport_source
     assert "approve_physical_link(" in change_source
     assert "execute_physical_link(" in change_source
     change_tree = ast.parse(change_source)

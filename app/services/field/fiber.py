@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.fiber_change_request import (
-    FiberChangeRequest,
-    FiberChangeRequestOperation,
-    FiberChangeRequestStatus,
+from app.models.catalog import AccessType, CatalogOffer, Subscription
+from app.models.fiber_change_request import FiberChangeRequest
+from app.models.fiber_physical import (
+    FiberConnectorPort,
+    FiberPatchPanel,
+    FiberRack,
+    FiberStrandTermination,
 )
 from app.models.field_attachment import FieldAttachment
 from app.models.field_fiber import FIELD_FIBER_TEST_TYPES, FieldFiberTestResult
@@ -22,20 +26,36 @@ from app.models.network import (
     FiberAccessPoint,
     FiberSplice,
     FiberSpliceClosure,
-    FiberSpliceTray,
     FiberStrand,
-    FiberStrandStatus,
     OLTDevice,
+    OntAssignment,
+    OntSignalObservation,
+    OntUnit,
 )
 from app.models.work_order import WorkOrder
-from app.services import fiber_change_requests
 from app.services.common import coerce_uuid
+from app.services.fiber_topology import (
+    FiberSubscriptionTrace,
+    trace_fiber_subscription,
+)
 from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.network import (
-    fiber_physical_continuity,
+    fiber_splice_proposals,
     fiber_topology_field_observations,
     fiber_topology_work_order_evidence_map,
 )
+from app.services.network.fiber_color_code import (
+    StrandColorCode,
+    derive_segment_strand_colors,
+)
+from app.services.network.fiber_splice_proposals import (
+    FieldTechnicianActor,
+    SpliceProposalError,
+    SpliceProposalReceipt,
+    SpliceProposalStatus,
+)
+
+_PROPOSAL_ERROR_STATUS = {"not_found": 404, "conflict": 409, "invalid": 422}
 
 _TESTABLE_ASSET_MODELS = {
     "fiber_strand": FiberStrand,
@@ -46,10 +66,6 @@ _TESTABLE_ASSET_MODELS = {
     "fdh_cabinet": FdhCabinet,
     "olt": OLTDevice,
     "olt_device": OLTDevice,
-}
-_SPLICEABLE_STRAND_STATUSES = {
-    FiberStrandStatus.available,
-    FiberStrandStatus.reserved,
 }
 
 
@@ -67,122 +83,38 @@ def propose_splice(
     splice_type: str | None = None,
     loss_db: float | None = None,
     note: str | None = None,
-) -> dict[str, Any]:
+    work_order_id: str | None = None,
+) -> SpliceProposalReceipt:
     profile = _profile_from_principal(db, principal)
-    closure_uuid = _uuid_or_422(closure_id, "closure_id")
-    from_uuid = _uuid_or_422(from_strand_id, "from_strand_id")
-    to_uuid = _uuid_or_422(to_strand_id, "to_strand_id")
-    from_end = _strand_end_or_422(from_strand_end, "from_strand_end")
-    to_end = _strand_end_or_422(to_strand_end, "to_strand_end")
-    if from_uuid == to_uuid:
-        raise HTTPException(
-            status_code=422, detail="A strand cannot be spliced to itself"
-        )
-
-    closure = db.get(FiberSpliceClosure, closure_uuid)
-    if closure is None or not closure.is_active:
-        raise HTTPException(status_code=404, detail="Splice closure not found")
-
-    _load_spliceable_strand(db, from_uuid, "from")
-    _load_spliceable_strand(db, to_uuid, "to")
-
-    tray_uuid = _uuid_or_422(tray_id, "tray_id") if tray_id else None
-    if tray_uuid is not None:
-        tray = db.get(FiberSpliceTray, tray_uuid)
-        if tray is None:
-            raise HTTPException(status_code=404, detail="Splice tray not found")
-        if tray.closure_id != closure.id:
-            raise HTTPException(
-                status_code=422, detail="Splice tray does not belong to this closure"
-            )
-        if position is not None:
-            occupied = (
-                db.query(FiberSplice)
-                .filter(FiberSplice.tray_id == tray.id)
-                .filter(FiberSplice.position == position)
-                .first()
-            )
-            if occupied is not None:
-                raise HTTPException(
-                    status_code=409, detail="That tray position is already occupied"
-                )
-
-    existing = (
-        db.query(FiberSplice)
-        .filter(
-            or_(
-                (FiberSplice.from_strand_id == from_uuid)
-                & (FiberSplice.to_strand_id == to_uuid),
-                (FiberSplice.from_strand_id == to_uuid)
-                & (FiberSplice.to_strand_id == from_uuid),
-            )
-        )
-        .first()
+    work_order = (
+        _scoped_work_order(db, profile, work_order_id) if work_order_id else None
     )
-    if existing is not None:
-        raise HTTPException(
-            status_code=409, detail="A splice between these strands already exists"
-        )
-
-    pair = {(str(from_uuid), from_end), (str(to_uuid), to_end)}
-    for request in _pending_splice_requests(db):
-        payload = request.payload or {}
-        if {
-            (str(payload.get("from_strand_id")), payload.get("from_strand_end")),
-            (str(payload.get("to_strand_id")), payload.get("to_strand_end")),
-        } == pair:
-            return _proposal_response(request, replayed=True)
-
+    actor = FieldTechnicianActor(
+        technician_id=profile.id,
+        person_id=profile.person_id,
+        system_user_id=profile.system_user_id,
+    )
     try:
-        decision = fiber_physical_continuity.propose_physical_link(
+        return fiber_splice_proposals.propose_splice(
             db,
-            "core_splice",
-            "connect",
-            proposed_by=f"field-technician:{profile.id}",
-            reason=note or "Field-captured exact fiber core splice",
-            first_strand_id=from_uuid,
-            first_strand_end=from_end,
-            second_strand_id=to_uuid,
-            second_strand_end=to_end,
-            splice_closure_id=closure.id,
-            splice_tray_id=tray_uuid,
+            actor=actor,
+            closure_id=closure_id,
+            from_strand_id=from_strand_id,
+            from_strand_end=from_strand_end,
+            to_strand_id=to_strand_id,
+            to_strand_end=to_strand_end,
+            tray_id=tray_id,
             position=position,
             splice_type=splice_type,
-            insertion_loss_db=loss_db,
+            loss_db=loss_db,
+            note=note,
+            work_order=work_order,
         )
-    except fiber_physical_continuity.FiberPhysicalContinuityError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    payload = {
-        "closure_id": str(closure.id),
-        "from_strand_id": str(from_uuid),
-        "from_strand_end": from_end,
-        "to_strand_id": str(to_uuid),
-        "to_strand_end": to_end,
-        "tray_id": str(tray_uuid) if tray_uuid else None,
-        "position": position,
-        "splice_type": splice_type,
-        "loss_db": loss_db,
-        "notes": note,
-        "physical_link_decision_id": str(decision.id),
-        "field_actor": {
-            "technician_id": str(profile.id),
-            "person_id": str(profile.person_id),
-            "system_user_id": str(profile.system_user_id)
-            if profile.system_user_id
-            else None,
-        },
-    }
-    request = fiber_change_requests.create_request(
-        db,
-        asset_type="fiber_splice",
-        asset_id=str(decision.id),
-        operation=FiberChangeRequestOperation.create,
-        payload=payload,
-        requested_by_person_id=None,
-        requested_by_vendor_id=None,
-    )
-    return _proposal_response(request, replayed=False)
+    except SpliceProposalError as exc:
+        raise HTTPException(
+            status_code=_PROPOSAL_ERROR_STATUS.get(exc.kind, 422),
+            detail=exc.message,
+        ) from exc
 
 
 def record_test(
@@ -399,48 +331,270 @@ def get_work_order_evidence_map(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-def _pending_splice_requests(db: Session) -> list[FiberChangeRequest]:
-    return (
-        db.query(FiberChangeRequest)
-        .filter(FiberChangeRequest.asset_type == "fiber_splice")
-        .filter(FiberChangeRequest.status == FiberChangeRequestStatus.pending)
+_MAX_TRACE_SUBSCRIPTIONS = 10
+_MAX_PROPOSAL_ROWS = 200
+
+
+@dataclass(frozen=True)
+class FieldOntLiveStatus:
+    """Latest observed OLT-side signal evidence for one exact ONT."""
+
+    ont_unit_id: uuid.UUID
+    serial_number: str
+    olt_status: str | None
+    olt_status_seen_at: datetime | None
+    rx_signal_dbm: float | None
+    rx_observed_at: datetime | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ont_unit_id": self.ont_unit_id,
+            "serial_number": self.serial_number,
+            "olt_status": self.olt_status,
+            "olt_status_seen_at": self.olt_status_seen_at,
+            "rx_signal_dbm": self.rx_signal_dbm,
+            "rx_observed_at": self.rx_observed_at,
+        }
+
+
+@dataclass(frozen=True)
+class FieldStrandTerminationDetail:
+    """Where one exact strand end lands: connector port, panel, rack."""
+
+    strand_number: int
+    strand_end: str
+    port_label: str | None
+    port_number: int | None
+    panel_name: str | None
+    rack_code: str | None
+    rack_name: str | None
+    colors: StrandColorCode | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "strand_number": self.strand_number,
+            "strand_end": self.strand_end,
+            "port_label": self.port_label,
+            "port_number": self.port_number,
+            "panel_name": self.panel_name,
+            "rack_code": self.rack_code,
+            "rack_name": self.rack_name,
+            "colors": self.colors.to_dict() if self.colors else None,
+        }
+
+
+@dataclass(frozen=True)
+class FieldSegmentPhysicalDetail:
+    """Exact reviewed strand terminations recorded for one traced segment."""
+
+    segment_id: uuid.UUID
+    termination_count: int
+    truncated: bool
+    terminations: tuple[FieldStrandTerminationDetail, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "segment_id": self.segment_id,
+            "termination_count": self.termination_count,
+            "truncated": self.truncated,
+            "terminations": [item.to_dict() for item in self.terminations],
+        }
+
+
+@dataclass(frozen=True)
+class FieldCustomerFiberTrace:
+    """One customer fiber trace projected into the technician's job scope."""
+
+    trace: FiberSubscriptionTrace
+    ont_live: FieldOntLiveStatus | None
+    physical_details: tuple[FieldSegmentPhysicalDetail, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self.trace.to_dict()
+        payload["ont_live"] = self.ont_live.to_dict() if self.ont_live else None
+        payload["physical_details"] = [
+            detail.to_dict() for detail in self.physical_details
+        ]
+        return payload
+
+
+def list_customer_traces(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    crm_work_order_id: str,
+) -> list[FieldCustomerFiberTrace]:
+    """Project the job customer's fiber traces inside the technician's scope.
+
+    Read-only adapter over the canonical trace owner
+    (``app.services.fiber_topology.trace_fiber_subscription``); it never
+    infers, repairs, or widens the owner's evidence.
+    """
+
+    profile = _profile_from_principal(db, principal)
+    work_order = _scoped_work_order(db, profile, crm_work_order_id)
+    subscriptions = (
+        db.query(Subscription)
+        .join(CatalogOffer, CatalogOffer.id == Subscription.offer_id)
+        .filter(
+            Subscription.subscriber_id == work_order.subscriber_id,
+            CatalogOffer.access_type == AccessType.fiber,
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(_MAX_TRACE_SUBSCRIPTIONS)
         .all()
+    )
+    results: list[FieldCustomerFiberTrace] = []
+    for subscription in subscriptions:
+        trace = trace_fiber_subscription(db, subscription.id)
+        results.append(
+            FieldCustomerFiberTrace(
+                trace=trace,
+                ont_live=_latest_ont_live(db, subscription.id),
+                physical_details=_segment_physical_details(db, trace),
+            )
+        )
+    return results
+
+
+_MAX_TERMINATIONS_PER_SEGMENT = 24
+
+
+def _segment_physical_details(
+    db: Session, trace: FiberSubscriptionTrace
+) -> tuple[FieldSegmentPhysicalDetail, ...]:
+    """Annotate traced segments with their exact reviewed ODF terminations.
+
+    Read-only projection over the physical-continuity records; segments with
+    no recorded terminations still appear so the absence is visible.
+    """
+
+    segment_ids: list[uuid.UUID] = []
+    for hop in trace.hops:
+        if hop.kind.endswith("_segment") and isinstance(hop.asset_id, uuid.UUID):
+            if hop.asset_id not in segment_ids:
+                segment_ids.append(hop.asset_id)
+    if not segment_ids:
+        return ()
+
+    rows = (
+        db.query(
+            FiberStrand,
+            FiberStrandTermination,
+            FiberConnectorPort,
+            FiberPatchPanel,
+            FiberRack,
+        )
+        .join(
+            FiberStrandTermination,
+            FiberStrandTermination.strand_id == FiberStrand.id,
+        )
+        .join(
+            FiberConnectorPort,
+            FiberConnectorPort.id == FiberStrandTermination.connector_port_id,
+        )
+        .outerjoin(
+            FiberPatchPanel,
+            FiberPatchPanel.id == FiberConnectorPort.patch_panel_id,
+        )
+        .outerjoin(FiberRack, FiberRack.id == FiberPatchPanel.rack_id)
+        .filter(FiberStrand.segment_id.in_(segment_ids))
+        .filter(FiberStrandTermination.active.is_(True))
+        .order_by(
+            FiberStrand.strand_number.asc(),
+            FiberStrandTermination.strand_end.asc(),
+        )
+        .all()
+    )
+    grouped: dict[uuid.UUID, list[FieldStrandTerminationDetail]] = {}
+    for strand, termination, port, panel, rack in rows:
+        grouped.setdefault(strand.segment_id, []).append(
+            FieldStrandTerminationDetail(
+                strand_number=strand.strand_number,
+                strand_end=termination.strand_end,
+                port_label=port.label,
+                port_number=port.port_number,
+                panel_name=panel.name if panel else None,
+                rack_code=rack.code if rack else None,
+                rack_name=rack.name if rack else None,
+                colors=derive_segment_strand_colors(
+                    strand.segment, strand.strand_number
+                ),
+            )
+        )
+    details = []
+    for segment_id in segment_ids:
+        items = grouped.get(segment_id, [])
+        details.append(
+            FieldSegmentPhysicalDetail(
+                segment_id=segment_id,
+                termination_count=len(items),
+                truncated=len(items) > _MAX_TERMINATIONS_PER_SEGMENT,
+                terminations=tuple(items[:_MAX_TERMINATIONS_PER_SEGMENT]),
+            )
+        )
+    return tuple(details)
+
+
+def _latest_ont_live(
+    db: Session, subscription_id: uuid.UUID
+) -> FieldOntLiveStatus | None:
+    """Latest observed ONT signal for exactly one active assignment.
+
+    Ambiguous or missing assignments return no live reading; the trace's own
+    gap evidence names the conflict.
+    """
+
+    assignments = (
+        db.query(OntAssignment)
+        .filter(
+            OntAssignment.subscription_id == subscription_id,
+            OntAssignment.active.is_(True),
+        )
+        .all()
+    )
+    if len(assignments) != 1:
+        return None
+    ont = db.get(OntUnit, assignments[0].ont_unit_id)
+    if ont is None or not ont.is_active:
+        return None
+    observation = (
+        db.query(OntSignalObservation)
+        .filter(OntSignalObservation.ont_unit_id == ont.id)
+        .order_by(OntSignalObservation.observed_at.desc())
+        .first()
+    )
+    return FieldOntLiveStatus(
+        ont_unit_id=ont.id,
+        serial_number=ont.serial_number,
+        olt_status=ont.olt_status.value if ont.olt_status else None,
+        olt_status_seen_at=ont.olt_status_seen_at,
+        rx_signal_dbm=observation.rx_signal_dbm if observation else None,
+        rx_observed_at=observation.observed_at if observation else None,
     )
 
 
-def _proposal_response(
-    request: FiberChangeRequest, *, replayed: bool
-) -> dict[str, Any]:
-    payload = request.payload or {}
-    return {
-        "change_request_id": request.id,
-        "status": request.status.value,
-        "replayed": replayed,
-        "closure_id": payload.get("closure_id"),
-        "from_strand_id": payload.get("from_strand_id"),
-        "from_strand_end": payload.get("from_strand_end"),
-        "to_strand_id": payload.get("to_strand_id"),
-        "to_strand_end": payload.get("to_strand_end"),
-    }
+def list_splice_proposals(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    limit: int = 50,
+) -> list[SpliceProposalStatus]:
+    """List the technician's own splice change requests, newest first."""
 
-
-def _load_spliceable_strand(db: Session, strand_id, label: str) -> FiberStrand:
-    strand = db.get(FiberStrand, strand_id)
-    if strand is None or not strand.is_active:
-        raise HTTPException(status_code=404, detail=f"{label} strand not found")
-    if strand.status not in _SPLICEABLE_STRAND_STATUSES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{label} strand is {strand.status.value}; only available or reserved strands can be spliced",
+    profile = _profile_from_principal(db, principal)
+    rows = (
+        db.query(FiberChangeRequest)
+        .filter(FiberChangeRequest.asset_type == "fiber_splice")
+        .filter(
+            FiberChangeRequest.payload["field_actor"]["technician_id"].as_string()
+            == str(profile.id)
         )
-    return strand
-
-
-def _strand_end_or_422(value: str, field_name: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized not in {"a", "b"}:
-        raise HTTPException(status_code=422, detail=f"{field_name} must be a or b")
-    return normalized
+        .order_by(FiberChangeRequest.created_at.desc())
+        .limit(max(1, min(limit, _MAX_PROPOSAL_ROWS)))
+        .all()
+    )
+    return [fiber_splice_proposals.proposal_status(row) for row in rows]
 
 
 def _scoped_work_order(db: Session, profile, crm_work_order_id: str) -> WorkOrder:

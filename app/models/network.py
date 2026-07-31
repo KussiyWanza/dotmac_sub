@@ -2979,6 +2979,17 @@ class FiberCableType(enum.Enum):
     direct_buried = "direct_buried"
 
 
+class FiberColorStandard(enum.Enum):
+    """Declared fiber color-code standard for a cable's construction.
+
+    Persisted as a checked string column; this enum is the typed vocabulary
+    for services. Extending the vocabulary requires a migration updating
+    ``ck_fiber_segments_color_standard_known``.
+    """
+
+    eia_tia_598 = "eia_tia_598"
+
+
 class FiberSegment(Base):
     __tablename__ = "fiber_segments"
     __table_args__ = (
@@ -2989,6 +3000,14 @@ class FiberSegment(Base):
             "AND route_geom IS NOT NULL AND fiber_count IS NOT NULL "
             "AND fiber_count > 0)",
             name="ck_fiber_segments_active_operational_shape",
+        ),
+        CheckConstraint(
+            "fibers_per_tube IS NULL OR fibers_per_tube > 0",
+            name="ck_fiber_segments_fibers_per_tube_positive",
+        ),
+        CheckConstraint(
+            "color_standard IS NULL OR color_standard IN ('eia_tia_598')",
+            name="ck_fiber_segments_color_standard_known",
         ),
     )
 
@@ -3004,6 +3023,16 @@ class FiberSegment(Base):
     )
     fiber_count: Mapped[int | None] = mapped_column(
         Integer, nullable=True, comment="Number of fiber cores in the cable"
+    )
+    fibers_per_tube: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Loose-tube construction: fiber cores per buffer tube",
+    )
+    color_standard: Mapped[str | None] = mapped_column(
+        String(40),
+        nullable=True,
+        comment="Declared color-code standard (FiberColorStandard vocabulary)",
     )
     from_point_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("fiber_termination_points.id")

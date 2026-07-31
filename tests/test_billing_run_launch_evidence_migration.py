@@ -14,7 +14,8 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: ONT commissioning intents (446) sit on social comment
+    # Single linear head: fiber segment color construction (448) sits on payment
+    # proof corrections (447), ONT commissioning intents (446), social comment
     # channels (445), CRM Lead delete permission (444), device projection lifecycle
     # state (443), customer VAT exemption policy (442),
     # network-zone GeoArea binding (441), composable service teams (440), billing
@@ -29,7 +30,7 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["447_payment_proof_corrections"]
+    assert script.get_heads() == ["448_fiber_segment_color_construction"]
     assert (
         script.get_revision("446_ont_commissioning_intents").down_revision
         == "445_social_comment_channels"
