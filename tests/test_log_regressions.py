@@ -91,9 +91,11 @@ def test_force_authorize_route_runs_synchronously(
     from app.web.admin import network_olts_inventory
 
     captured: dict[str, object] = {}
+    olt_id = uuid4()
+    ont_id = uuid4()
 
-    def _fake_request(_db, **kwargs):
-        captured.update(kwargs)
+    def _fake_request(_db, command):
+        captured["command"] = command
         return SimpleNamespace(accepted=True)
 
     monkeypatch.setattr(
@@ -110,6 +112,11 @@ def test_force_authorize_route_runs_synchronously(
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
+        network_olts_inventory,
+        "submitted_authorization_ont_matches_scope",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
         network_olts_inventory.web_admin_service,
         "get_current_user",
         lambda _request: {"name": "Alice Admin"},
@@ -119,7 +126,7 @@ def test_force_authorize_route_runs_synchronously(
         {
             "type": "http",
             "method": "POST",
-            "path": "/admin/network/olts/olt-123/authorize-ont",
+            "path": f"/admin/network/olts/{olt_id}/authorize-ont",
             "headers": [],
             "query_string": b"",
         }
@@ -133,9 +140,10 @@ def test_force_authorize_route_runs_synchronously(
 
     response = network_olts_inventory.olt_authorize_ont(
         request,
-        "olt-123",
+        str(olt_id),
         fsp="0/1/6",
         serial_number="4857544328201B9A",
+        ont_id=str(ont_id),
         return_to="/admin/network/onts?view=unconfigured",
         force_reauthorize="true",
         preset_id="",
@@ -144,10 +152,13 @@ def test_force_authorize_route_runs_synchronously(
 
     assert response.status_code == 303
     assert "Authorization+started" in response.headers["location"]
-    assert captured["force_reauthorize"] is True
-    assert captured["fsp"] == "0/1/6"
-    assert captured["serial_number"] == "4857544328201B9A"
-    assert captured["initiated_by"] == "Alice Admin"
+    command = captured["command"]
+    assert command.force_reauthorize is True
+    assert command.ont_id == ont_id
+    assert command.target.olt_id == olt_id
+    assert command.target.fsp.value == "0/1/6"
+    assert command.target.serial_number.value == "HWTC28201B9A"
+    assert command.context.actor == "Alice Admin"
 
 
 def test_normal_authorize_route_runs_synchronously(
@@ -156,9 +167,11 @@ def test_normal_authorize_route_runs_synchronously(
     from app.web.admin import network_olts_inventory
 
     captured: dict[str, object] = {}
+    olt_id = uuid4()
+    ont_id = uuid4()
 
-    def _fake_request(_db, **kwargs):
-        captured.update(kwargs)
+    def _fake_request(_db, command):
+        captured["command"] = command
         return SimpleNamespace(accepted=True)
 
     monkeypatch.setattr(
@@ -175,6 +188,11 @@ def test_normal_authorize_route_runs_synchronously(
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
+        network_olts_inventory,
+        "submitted_authorization_ont_matches_scope",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
         network_olts_inventory.web_admin_service,
         "get_current_user",
         lambda _request: {"name": "Alice Admin"},
@@ -184,7 +202,7 @@ def test_normal_authorize_route_runs_synchronously(
         {
             "type": "http",
             "method": "POST",
-            "path": "/admin/network/olts/olt-123/authorize-ont",
+            "path": f"/admin/network/olts/{olt_id}/authorize-ont",
             "headers": [],
             "query_string": b"",
         }
@@ -198,9 +216,10 @@ def test_normal_authorize_route_runs_synchronously(
 
     response = network_olts_inventory.olt_authorize_ont(
         request,
-        "olt-123",
+        str(olt_id),
         fsp="0/1/6",
         serial_number="4857544328201B9A",
+        ont_id=str(ont_id),
         return_to="/admin/network/onts?view=unconfigured",
         force_reauthorize="",
         preset_id="",
@@ -209,10 +228,13 @@ def test_normal_authorize_route_runs_synchronously(
 
     assert response.status_code == 303
     assert "Authorization+started" in response.headers["location"]
-    assert captured["force_reauthorize"] is False
-    assert captured["fsp"] == "0/1/6"
-    assert captured["serial_number"] == "4857544328201B9A"
-    assert captured["initiated_by"] == "Alice Admin"
+    command = captured["command"]
+    assert command.force_reauthorize is False
+    assert command.ont_id == ont_id
+    assert command.target.olt_id == olt_id
+    assert command.target.fsp.value == "0/1/6"
+    assert command.target.serial_number.value == "HWTC28201B9A"
+    assert command.context.actor == "Alice Admin"
 
 
 def test_olt_detail_template_exposes_import_state_actions() -> None:

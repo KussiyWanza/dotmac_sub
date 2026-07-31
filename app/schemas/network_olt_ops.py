@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -17,10 +18,32 @@ class OltOperationResponse(BaseModel):
     data: Any | None = None
 
 
+class OltAuthorizationAdmissionRead(BaseModel):
+    """Typed durable-command evidence for assigned authorization admission."""
+
+    operation_id: UUID | None
+    dispatch_id: UUID | None
+    waiting: bool
+    duplicate: bool
+
+
+class OltAuthorizationOperationResponse(BaseModel):
+    """Typed HTTP response for assigned ONT authorization."""
+
+    success: bool
+    message: str
+    data: OltAuthorizationAdmissionRead
+
+
 # ── Request schemas ────────────────────────────────────────────────────
 
 
 class OltAuthorizeOntRequest(BaseModel):
+    ont_id: UUID = Field(
+        description=(
+            "Exact assigned ONT identity. Assignment-free devices use Commission ONT."
+        ),
+    )
     fsp: str = Field(description="Frame/Slot/Port e.g. 0/1/0")
     serial_number: str = Field(min_length=8, max_length=32)
     force_reauthorize: bool = False

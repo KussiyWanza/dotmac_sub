@@ -177,17 +177,11 @@ def _ont_authorize_invocation(
             "invalid_operation_payload",
             "ONT authorization payload is missing its port or serial number.",
         )
-    scoped_ont_id = str(payload.get("scoped_ont_id") or "").strip() or None
-    if operation.target_type == NetworkOperationTargetType.olt:
-        if str(operation.target_id) != olt_id or scoped_ont_id is not None:
-            raise NetworkOperationDispatchError(
-                "invalid_operation_payload",
-                "OLT-scoped authorization payload does not match its target.",
-            )
-    elif scoped_ont_id != str(operation.target_id):
+    scoped_ont_id = str(payload.get("scoped_ont_id") or "").strip()
+    if not scoped_ont_id or scoped_ont_id != str(operation.target_id):
         raise NetworkOperationDispatchError(
             "invalid_operation_payload",
-            "ONT-scoped authorization payload does not match its target.",
+            "Assigned ONT authorization payload does not match its ONT target.",
         )
     return DispatchInvocation(
         args=[],
@@ -407,12 +401,7 @@ _COMMAND_SPECS: dict[NetworkOperationCommand, _CommandSpec] = {
     NetworkOperationCommand.ont_authorize_v1: _CommandSpec(
         task_name="app.tasks.ont_provisioning.authorize_ont",
         operation_type=NetworkOperationType.ont_authorize,
-        target_types=frozenset(
-            {
-                NetworkOperationTargetType.olt,
-                NetworkOperationTargetType.ont,
-            }
-        ),
+        target_types=frozenset({NetworkOperationTargetType.ont}),
         invocation=_ont_authorize_invocation,
     ),
     NetworkOperationCommand.ont_commission_v1: _CommandSpec(

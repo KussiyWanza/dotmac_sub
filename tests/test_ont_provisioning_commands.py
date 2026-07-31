@@ -12,6 +12,10 @@ from app.models.network_operation import (
     NetworkOperationTargetType,
     NetworkOperationType,
 )
+from app.services.network.ont_authorization_contracts import (
+    ExecuteAssignedOntAuthorization,
+    RequestAssignedOntAuthorization,
+)
 from app.services.network.ont_provisioning.result import StepResult
 from app.services.network.ont_provisioning_commands import (
     request_bootstrap_verification,
@@ -21,7 +25,9 @@ from app.services.network.ont_provisioning_commands import (
 )
 from app.services.network.ont_provisioning_execution import (
     execute_bootstrap_verification,
+    execute_ont_authorization,
 )
+from app.services.owner_commands import CommandContext
 
 
 class _SessionContext:
@@ -70,12 +76,18 @@ def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
 
     result = request_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/2",
-        serial_number="HWTCOMMAND01",
-        force_reauthorize=True,
-        scoped_ont_id=str(ont.id),
-        initiated_by="network-admin",
+        RequestAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="network-admin",
+                scope="network:ont:authorize",
+                reason="test assigned authorization admission",
+            ),
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/2",
+            serial_number="HWTCOMMAND01",
+            force_reauthorize=True,
+        ),
     )
 
     assert result.accepted is True
@@ -99,6 +111,76 @@ def test_authorization_command_stages_operation_and_typed_dispatch(db_session):
         "initiated_by": "network-admin",
         "operation_id": str(operation.id),
     }
+
+
+def test_authorization_execution_rechecks_exact_assignment_before_device_write(
+    db_session,
+    monkeypatch,
+):
+    olt = OLTDevice(name="Execution Gate OLT", vendor="Huawei")
+    db_session.add(olt)
+    db_session.flush()
+    ont = _assigned_ont(
+        db_session,
+        olt,
+        fsp="0/1/2",
+        serial="HWTCRACECHECK",
+    )
+    request = RequestAssignedOntAuthorization.from_transport(
+        context=CommandContext.system(
+            actor="network-admin",
+            scope="network:ont:authorize",
+            reason="test execution assignment race",
+        ),
+        ont_id=ont.id,
+        olt_id=olt.id,
+        fsp="0/1/2",
+        serial_number="HWTCRACECHECK",
+    )
+    admission = request_ont_authorization(db_session, request)
+    assert admission.operation_id is not None
+
+    assignment = db_session.scalars(
+        select(OntAssignment).where(
+            OntAssignment.ont_unit_id == ont.id,
+            OntAssignment.active.is_(True),
+        )
+    ).one()
+    assignment.active = False
+    db_session.commit()
+    device_called = False
+
+    def unexpected_device_write(*_args, **_kwargs):
+        nonlocal device_called
+        device_called = True
+        raise AssertionError("device authorization must not run")
+
+    monkeypatch.setattr(
+        "app.services.network.ont_authorization.authorize_and_provision_ont",
+        unexpected_device_write,
+    )
+    outcome = execute_ont_authorization(
+        db_session,
+        ExecuteAssignedOntAuthorization(
+            context=CommandContext.system(
+                actor="network-admin",
+                scope="network:ont:authorize",
+                reason="execute test authorization race",
+                command_id=admission.operation_id,
+                correlation_id=admission.operation_id,
+            ),
+            operation_id=admission.operation_id,
+            ont_id=request.ont_id,
+            target=request.target,
+        ),
+    )
+
+    assert outcome.authorization.success is False
+    assert "active assignment" in outcome.message
+    assert device_called is False
+    operation = db_session.get(NetworkOperation, admission.operation_id)
+    assert operation is not None
+    assert operation.status is NetworkOperationStatus.failed
 
 
 def test_provisioning_command_is_atomic_and_duplicate_safe(db_session):
@@ -235,7 +317,7 @@ def test_legacy_authorization_envelope_rehomes_without_device_execution(
         lambda: _SessionContext(db_session),
     )
     monkeypatch.setattr(
-        "app.services.network.ont_authorization.authorize_ont",
+        "app.services.network.ont_authorization.authorize_and_provision_ont",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("legacy envelope must not enter device code")
         ),

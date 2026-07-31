@@ -16,7 +16,7 @@ working tree on 2026-07-31.
 | **F4** | Vendors cannot record structured splices | **Closed 2026-07-31** |
 | **F5** | No tube/core color language in capture or review | **Closed 2026-07-31** (derived) |
 | **F6** | ODF detail invisible to technicians | **Closed 2026-07-31** (trace annotation) |
-| **F7** | No splice plan / cut sheet (design-first flow) | Open |
+| **F7** | No splice plan / cut sheet (design-first flow) | **Closed 2026-07-31** |
 | **F8** | Test acceptance is self-asserted | Open |
 | **F9** | Install last mile not captured from the field | Open |
 | **F10** | Field cannot record cable/closure/damage | Open |
@@ -50,24 +50,17 @@ working tree on 2026-07-31.
 - **F6** — the field customer trace annotates each traced segment with its
   reviewed strand terminations (connector port, patch panel, rack, colors)
   from the physical-continuity records.
+- **F7** — `network.fiber_splice_plans` (contracted owner-command writer,
+  migration 449): draft → issued → cancelled cut sheets of exact strand-end
+  pairs bound to one work order (one live plan each). Admin API
+  (`/fiber-splice-plans` CRUD/issue/cancel/diff), field/vendor
+  `GET …/fiber/splice-plan`, execute-and-confirm on splice proposals
+  (`plan_item_id` validated against the exact planned pair, plus auto-match),
+  planned-vs-as-built diff (executed / pending review / unexecuted /
+  unplanned), and a completion gate: a work order with an issued plan cannot
+  complete until every item has an executing proposal.
 
 ## Open gaps
-
-### F7 — No splice plan / cut sheet (design-first flow)
-
-The change flow is capture-first: a tech or vendor proposes what was built and
-Sub reviews. There is no *planned* splice entity, so an admin cannot pre-stage
-"splice cores 1–12 of cable A to tray 2 of closure X" for execution, and
-as-built review cannot diff against a design. Construction workflows want
-design → execute → verify-against-plan.
-
-**Owner:** a new planned-work owner beside
-`app.services.network.fiber_splice_proposals`; review stays with
-`fiber_change_requests`.
-**Fix:** splice-plan model (planned splice rows bound to closure/tray/strand
-identities and a work order), tech/vendor execute-and-confirm flow, and a
-planned-vs-as-built diff in the review queue. Largest remaining piece; do
-before large vendor build-outs.
 
 ### F8 — Test acceptance is self-asserted
 

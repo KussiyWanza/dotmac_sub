@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -16,6 +17,13 @@ from app.models.network_operation import (
     NetworkOperationStatus,
     NetworkOperationTargetType,
     NetworkOperationType,
+)
+from app.services.network.ont_authorization_contracts import (
+    AssignedAuthorizationDecision,
+    AssignedAuthorizationDecisionCode,
+    OntAuthorizationAdmission,
+    OntAuthorizationTarget,
+    RequestAssignedOntAuthorization,
 )
 from app.services.network.serial_utils import normalize as normalize_serial
 from app.services.network_operation_dispatch import (
@@ -95,6 +103,30 @@ def _duplicate_result(
     )
 
 
+def _duplicate_authorization_result(
+    db: Session,
+    *,
+    correlation_key: str,
+    message: str,
+) -> OntAuthorizationAdmission:
+    existing = _active_operation(db, correlation_key)
+    if existing is None:
+        return OntAuthorizationAdmission(
+            accepted=False,
+            waiting=False,
+            message="A command conflict occurred; retry the request.",
+        )
+    dispatch_id = _latest_dispatch_id(db, existing)
+    return OntAuthorizationAdmission(
+        accepted=True,
+        waiting=True,
+        message=message,
+        operation_id=existing.id,
+        dispatch_id=UUID(dispatch_id) if dispatch_id is not None else None,
+        duplicate=True,
+    )
+
+
 def ont_authorization_correlation_key(
     *,
     olt_id: str,
@@ -113,43 +145,27 @@ def ont_authorization_correlation_key(
     )
 
 
-def request_ont_authorization(
+def evaluate_assigned_authorization(
     db: Session,
     *,
-    olt_id: str,
-    fsp: str,
-    serial_number: str,
-    force_reauthorize: bool = False,
-    preset_id: str | None = None,
-    scoped_ont_id: str | None = None,
-    initiated_by: str | None = None,
-) -> ProvisioningCommandResult:
-    """Atomically persist and stage one ONT authorization command."""
-    if db.get(OLTDevice, olt_id) is None:
-        return ProvisioningCommandResult(False, False, "OLT not found.")
-    normalized_fsp = str(fsp or "").strip()
-    normalized_serial = str(serial_number or "").strip()
-    if not normalized_fsp or not normalized_serial:
-        return ProvisioningCommandResult(
-            False,
-            False,
-            "Port and serial number are required for ONT authorization.",
+    ont_id: UUID,
+    target: OntAuthorizationTarget,
+) -> AssignedAuthorizationDecision:
+    """Decide whether an exact assigned target may enter OLT authorization."""
+    if db.get(OLTDevice, target.olt_id) is None:
+        return AssignedAuthorizationDecision(
+            AssignedAuthorizationDecisionCode.OLT_NOT_FOUND,
+            "OLT not found.",
         )
-    normalized_ont_id = str(scoped_ont_id or "").strip() or None
-    if normalized_ont_id is None:
-        return ProvisioningCommandResult(
-            False,
-            False,
-            "Authorize & provision requires an assigned ONT. "
-            "Assign the device first or use Commission ONT.",
-        )
-    ont = db.get(OntUnit, normalized_ont_id)
+    ont = db.get(OntUnit, ont_id)
     if ont is None:
-        return ProvisioningCommandResult(False, False, "ONT not found.")
-    if normalize_serial(ont.serial_number) != normalize_serial(normalized_serial):
-        return ProvisioningCommandResult(
-            False,
-            False,
+        return AssignedAuthorizationDecision(
+            AssignedAuthorizationDecisionCode.ONT_NOT_FOUND,
+            "ONT not found.",
+        )
+    if normalize_serial(ont.serial_number) != target.serial_number.value:
+        return AssignedAuthorizationDecision(
+            AssignedAuthorizationDecisionCode.SERIAL_MISMATCH,
             "The submitted serial does not match the assigned ONT.",
         )
     assignment = db.scalars(
@@ -161,9 +177,8 @@ def request_ont_authorization(
         .limit(1)
     ).first()
     if assignment is None or assignment.pon_port_id is None:
-        return ProvisioningCommandResult(
-            False,
-            False,
+        return AssignedAuthorizationDecision(
+            AssignedAuthorizationDecisionCode.ASSIGNMENT_REQUIRED,
             "Authorize & provision requires an active assignment on an exact PON. "
             "Complete assignment first or use Commission ONT.",
         )
@@ -171,38 +186,59 @@ def request_ont_authorization(
     if (
         pon is None
         or not pon.is_active
-        or str(pon.olt_id) != str(olt_id)
-        or str(pon.name or "").strip() != normalized_fsp
+        or pon.olt_id != target.olt_id
+        or str(pon.name or "").strip() != target.fsp.value
     ):
-        return ProvisioningCommandResult(
-            False,
-            False,
+        return AssignedAuthorizationDecision(
+            AssignedAuthorizationDecisionCode.TOPOLOGY_MISMATCH,
             "The active assignment does not match the submitted OLT and F/S/P.",
+        )
+    return AssignedAuthorizationDecision(
+        AssignedAuthorizationDecisionCode.ALLOWED,
+        "The exact active assignment permits authorization.",
+    )
+
+
+def request_ont_authorization(
+    db: Session,
+    command: RequestAssignedOntAuthorization,
+) -> OntAuthorizationAdmission:
+    """Atomically persist and stage one typed assigned-authorization command."""
+    decision = evaluate_assigned_authorization(
+        db,
+        ont_id=command.ont_id,
+        target=command.target,
+    )
+    if not decision.allowed:
+        return OntAuthorizationAdmission(
+            accepted=False,
+            waiting=False,
+            message=decision.message,
         )
 
     correlation_key = ont_authorization_correlation_key(
-        olt_id=olt_id,
-        fsp=normalized_fsp,
-        serial_number=normalized_serial,
+        olt_id=str(command.target.olt_id),
+        fsp=command.target.fsp.value,
+        serial_number=command.target.serial_number.value,
     )
-    target_type = NetworkOperationTargetType.ont
-    target_id = normalized_ont_id
     try:
         operation = network_operations.start(
             db,
             NetworkOperationType.ont_authorize,
-            target_type,
-            target_id,
+            NetworkOperationTargetType.ont,
+            str(command.ont_id),
             correlation_key=correlation_key,
             input_payload={
-                "olt_id": olt_id,
-                "fsp": normalized_fsp,
-                "serial_number": normalized_serial,
-                "force_reauthorize": bool(force_reauthorize),
-                "preset_id": str(preset_id or "").strip() or None,
-                "scoped_ont_id": normalized_ont_id,
+                "olt_id": str(command.target.olt_id),
+                "fsp": command.target.fsp.value,
+                "serial_number": command.target.serial_number.value,
+                "force_reauthorize": command.force_reauthorize,
+                "preset_id": (
+                    str(command.preset_id) if command.preset_id is not None else None
+                ),
+                "scoped_ont_id": str(command.ont_id),
             },
-            initiated_by=initiated_by or "system",
+            initiated_by=command.context.actor,
         )
         dispatch = stage_dispatch(
             db,
@@ -212,22 +248,24 @@ def request_ont_authorization(
         db.commit()
     except NetworkOperationDispatchError as exc:
         db.rollback()
-        return ProvisioningCommandResult(False, False, exc.message)
+        return OntAuthorizationAdmission(False, False, exc.message)
     except HTTPException as exc:
         if exc.status_code != 409:
             raise
-        return _duplicate_result(
+        return _duplicate_authorization_result(
             db,
             correlation_key=correlation_key,
             message="ONT authorization is already in progress.",
         )
 
-    return ProvisioningCommandResult(
-        True,
-        True,
-        "ONT authorization accepted; progress is tracked in network operations.",
-        operation_id=str(operation.id),
-        dispatch_id=str(dispatch.id),
+    return OntAuthorizationAdmission(
+        accepted=True,
+        waiting=True,
+        message=(
+            "ONT authorization accepted; progress is tracked in network operations."
+        ),
+        operation_id=operation.id,
+        dispatch_id=dispatch.id,
     )
 
 

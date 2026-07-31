@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
+from dataclasses import is_dataclass
 from pathlib import Path
+from typing import get_type_hints
+from uuid import UUID
 
 from app.services import sot_relationships
-from app.services.network import ont_commissioning, ont_provisioning_commands
+from app.services.network import (
+    ont_authorization,
+    ont_authorization_contracts,
+    ont_commissioning,
+    ont_provisioning_commands,
+    ont_provisioning_execution,
+)
 from app.services.network_operation_dispatch import NetworkOperationCommand
 from app.services.scheduler import PERMANENT_LIFECYCLE_TASKS
 from app.services.task_reliability import TASK_RELIABILITY_CONTRACTS
@@ -46,16 +56,150 @@ def test_commissioning_cannot_manufacture_a_customer_assignment() -> None:
     assert ".assign(" not in source
     assert "internet_config_ip_index=None" in source
     assert "wan_config_profile_id=None" in source
-    assert "allow_registration_move=False" in source
+    assert "register_ont_for_commissioning" in source
 
 
-def test_raw_authorization_requires_exact_assignment_admission() -> None:
-    source = inspect.getsource(ont_provisioning_commands.request_ont_authorization)
+def test_assigned_authorization_requires_exact_assignment_admission() -> None:
+    source = inspect.getsource(
+        ont_provisioning_commands.evaluate_assigned_authorization
+    )
+    request_source = inspect.getsource(
+        ont_provisioning_commands.request_ont_authorization
+    )
 
     assert "OntAssignment" in source
     assert "PonPort" in source
     assert "Commission ONT" in source
     assert "assignment.pon_port_id" in source
+    assert "evaluate_assigned_authorization(" in request_source
+
+
+def test_authorization_capabilities_have_only_their_named_owner_callers() -> None:
+    restricted_names = {
+        "_authorize_registration",
+        "_execute_authorization_workflow",
+        "authorize_and_provision_ont",
+        "authorize_autofind_ont",
+        "authorize_ont",
+        "register_ont_for_commissioning",
+    }
+    observed: set[tuple[str, str]] = set()
+    module_import_bypasses: list[str] = []
+
+    for path in (PROJECT_ROOT / "app").rglob("*.py"):
+        relative = str(path.relative_to(PROJECT_ROOT))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "app.services.network.ont_authorization":
+                    observed.update(
+                        (relative, alias.name)
+                        for alias in node.names
+                        if alias.name in restricted_names
+                    )
+                if node.module == "app.services.network" and any(
+                    alias.name == "ont_authorization" for alias in node.names
+                ):
+                    module_import_bypasses.append(relative)
+            elif isinstance(node, ast.Import) and any(
+                alias.name == "app.services.network.ont_authorization"
+                for alias in node.names
+            ):
+                module_import_bypasses.append(relative)
+
+    assert observed == {
+        (
+            "app/services/network/ont_commissioning.py",
+            "register_ont_for_commissioning",
+        ),
+        (
+            "app/services/network/ont_provisioning_execution.py",
+            "authorize_and_provision_ont",
+        ),
+    }
+    assert module_import_bypasses == []
+    assert not hasattr(ont_authorization, "authorize_ont")
+    assert not hasattr(ont_authorization, "authorize_autofind_ont")
+    for capability in (
+        ont_authorization.authorize_and_provision_ont,
+        ont_authorization.register_ont_for_commissioning,
+    ):
+        parameters = inspect.signature(capability).parameters
+        assert tuple(parameters) == ("db", "command")
+        assert "provision" not in parameters
+        assert "dependency_scope" not in parameters
+        assert "allow_registration_move" not in parameters
+
+
+def test_authorization_process_uses_typed_commands_and_outcomes() -> None:
+    request_parameters = inspect.signature(
+        ont_provisioning_commands.request_ont_authorization
+    ).parameters
+
+    assert tuple(request_parameters) == ("db", "command")
+    assert request_parameters["command"].annotation == (
+        "RequestAssignedOntAuthorization"
+    )
+    assert (
+        inspect.signature(
+            ont_provisioning_commands.request_ont_authorization
+        ).return_annotation
+        == "OntAuthorizationAdmission"
+    )
+    assert {
+        "RequestAssignedOntAuthorization",
+        "ExecuteAssignedOntAuthorization",
+        "RegisterCommissioningOnt",
+        "OntAuthorizationTarget",
+        "OntFsp",
+        "OntSerialNumber",
+        "OntAuthorizationAdmission",
+        "AssignedAuthorizationDecision",
+    }.issubset(set(vars(ont_authorization_contracts)))
+    immutable_contracts = (
+        ont_authorization_contracts.OntFsp,
+        ont_authorization_contracts.OntSerialNumber,
+        ont_authorization_contracts.OntAuthorizationTarget,
+        ont_authorization_contracts.RequestAssignedOntAuthorization,
+        ont_authorization_contracts.ExecuteAssignedOntAuthorization,
+        ont_authorization_contracts.RegisterCommissioningOnt,
+        ont_authorization_contracts.OntAuthorizationAdmission,
+        ont_authorization_contracts.AssignedAuthorizationDecision,
+        ont_authorization.AuthorizationWorkflowResult,
+        ont_provisioning_execution.OntAuthorizationExecutionOutcome,
+    )
+    for contract in immutable_contracts:
+        assert is_dataclass(contract)
+        assert contract.__dataclass_params__.frozen is True
+
+    request_hints = get_type_hints(
+        ont_authorization_contracts.RequestAssignedOntAuthorization
+    )
+    assert request_hints["ont_id"] is UUID
+    assert request_hints["target"] is ont_authorization_contracts.OntAuthorizationTarget
+    execution_parameters = inspect.signature(
+        ont_provisioning_execution.execute_ont_authorization
+    ).parameters
+    assert tuple(execution_parameters) == ("db", "command")
+    assert (
+        inspect.signature(
+            ont_provisioning_execution.execute_ont_authorization
+        ).return_annotation
+        == "OntAuthorizationExecutionOutcome"
+    )
+
+
+def test_reauthorization_delegates_to_assigned_command_owner() -> None:
+    source = (
+        PROJECT_ROOT / "app/services/web_network_ont_actions/device_actions.py"
+    ).read_text(encoding="utf-8")
+    adapter_source = (PROJECT_ROOT / "app/services/olt_action_adapter.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "request_ont_authorization(" in source
+    assert "from app.services.network.ont_authorization import" not in source
+    assert "def authorize_ont(" not in adapter_source
 
 
 def test_commission_verify_cleanup_are_versioned_durable_commands() -> None:

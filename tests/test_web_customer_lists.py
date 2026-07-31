@@ -153,6 +153,46 @@ def test_customer_list_excludes_reseller_users(db_session):
     assert reseller.email not in emails
 
 
+def test_customer_list_keeps_explicitly_retained_canceled_imports(db_session):
+    retained = Subscriber(
+        first_name="Retained",
+        last_name="Canceled",
+        email="retained-canceled-list@example.com",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+        user_type=UserType.customer,
+        splynx_customer_id=7301,
+        metadata_={"splynx_deleted": False, "splynx_status": "blocked"},
+    )
+    legacy_deleted = Subscriber(
+        first_name="Legacy",
+        last_name="Deleted",
+        email="legacy-deleted-list@example.com",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+        user_type=UserType.customer,
+        splynx_customer_id=7302,
+        metadata_={"splynx_status": "blocked"},
+    )
+    db_session.add_all([retained, legacy_deleted])
+    db_session.commit()
+
+    context = _build_context(
+        db_session,
+        search="canceled-list",
+        status=None,
+        customer_type=None,
+        nas_id=None,
+        pop_site_id=None,
+        page=1,
+        per_page=25,
+    )
+
+    emails = {item["email"] for item in context["customers"]}
+    assert retained.email in emails
+    assert legacy_deleted.email not in emails
+
+
 def test_customer_list_projects_service_counts_without_action_ids(db_session):
     customer = _make_customer(db_session, "service-counts@example.com")
     _make_subscription(

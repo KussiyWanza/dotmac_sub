@@ -480,6 +480,28 @@ def _check_completion_gate(
                 "splice proposal linked to this work order"
             ),
         )
+    _check_splice_plan_gate(db, row)
+
+
+def _check_splice_plan_gate(db: Session, row: WorkOrder) -> None:
+    """An issued cut sheet is declared scope: every item must be executed."""
+
+    from app.services.network import fiber_splice_plans
+
+    plan = fiber_splice_plans.live_plan_for_work_order(db, row.id)
+    if plan is None or plan.status != "issued":
+        return
+    diff = fiber_splice_plans.diff_for_work_order(db, row.id)
+    if diff is None or not diff.unexecuted_items:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "Completion requires executing the issued splice plan: "
+            f"{len(diff.unexecuted_items)} planned splice(s) have no recorded "
+            "splice proposal"
+        ),
+    )
 
 
 def _mark_sub_authoritative(

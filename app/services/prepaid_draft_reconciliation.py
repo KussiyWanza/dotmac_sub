@@ -231,7 +231,18 @@ def _funding_preview(
     db: Session,
     invoice: Invoice,
 ) -> AccountCreditInvoiceFundingPreview:
-    return AccountCreditApplications.preview_invoice_funding(db, invoice)
+    baseline = db.scalar(
+        select(PrepaidFundingBaseline).where(
+            PrepaidFundingBaseline.account_id == invoice.account_id,
+            PrepaidFundingBaseline.currency == (invoice.currency or "NGN").upper(),
+            PrepaidFundingBaseline.is_active.is_(True),
+        )
+    )
+    return AccountCreditApplications.preview_invoice_funding(
+        db,
+        invoice,
+        funding_position_at=baseline.position_at if baseline is not None else None,
+    )
 
 
 def _reviewed_opening_funding_preview(
@@ -989,6 +1000,7 @@ def _stage_action(
                     db,
                     invoice,
                     preview_fingerprint=funding.fingerprint,
+                    funding_position_at=funding.funding_position_at,
                 )
                 opening_amount = round_money(to_decimal(invoice.balance_due))
                 if opening_amount != preview.opening_funding_required:
@@ -1015,6 +1027,7 @@ def _stage_action(
                     db,
                     invoice,
                     preview_fingerprint=funding.fingerprint,
+                    funding_position_at=funding.funding_position_at,
                 )
                 opening_consumption = None
         except (AccountCreditApplicationError, InvoiceOwnerError) as exc:

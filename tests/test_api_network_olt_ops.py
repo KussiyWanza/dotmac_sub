@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from app.schemas.network_olt_ops import (
@@ -21,13 +23,21 @@ class TestOltSchemas:
     """Schema validation tests for OLT operations."""
 
     def test_authorize_request_valid(self):
-        req = OltAuthorizeOntRequest(fsp="0/1/0", serial_number="HWTC-ABCD1234")
+        req = OltAuthorizeOntRequest(
+            ont_id=UUID("00000000-0000-0000-0000-000000000123"),
+            fsp="0/1/0",
+            serial_number="HWTC-ABCD1234",
+        )
         assert req.fsp == "0/1/0"
         assert req.serial_number == "HWTC-ABCD1234"
 
     def test_authorize_request_short_serial(self):
         with pytest.raises(Exception):
-            OltAuthorizeOntRequest(fsp="0/1/0", serial_number="ABC")
+            OltAuthorizeOntRequest(
+                ont_id=UUID("00000000-0000-0000-0000-000000000123"),
+                fsp="0/1/0",
+                serial_number="ABC",
+            )
 
     def test_service_port_create_request(self):
         req = OltServicePortCreateRequest(
@@ -98,38 +108,35 @@ class TestAuthorizeEndpoint:
 
         captured = {}
 
-        def fake_authorize_ont(
-            db,
-            olt_id,
-            *,
-            fsp,
-            serial_number,
-            force_reauthorize=False,
-            request=None,
-        ):
+        def fake_authorize_ont(db, command):
             captured.update(
                 {
                     "db": db,
-                    "olt_id": olt_id,
-                    "fsp": fsp,
-                    "serial_number": serial_number,
-                    "force_reauthorize": force_reauthorize,
-                    "request": request,
+                    "olt_id": command.target.olt_id,
+                    "ont_id": command.ont_id,
+                    "fsp": command.target.fsp.value,
+                    "serial_number": command.target.serial_number.value,
+                    "force_reauthorize": command.force_reauthorize,
+                    "actor": command.context.actor,
                 }
             )
-            return network_olt_ops.olt_api_operations.OltApiWriteResult(
-                True,
-                "ONT authorization completed.",
-                {"status": "success", "ont_unit_id": "ont-123"},
+            return network_olt_ops.olt_api_operations.OltAuthorizationApiResult(
+                success=True,
+                message="ONT authorization accepted.",
+                operation_id=UUID("00000000-0000-0000-0000-000000000124"),
+                dispatch_id=UUID("00000000-0000-0000-0000-000000000125"),
+                waiting=True,
+                duplicate=False,
             )
 
         monkeypatch.setattr(
             network_olt_ops.olt_api_operations,
-            "authorize_ont",
+            "authorize_and_provision_ont",
             fake_authorize_ont,
         )
 
         payload = OltAuthorizeOntRequest(
+            ont_id=UUID("00000000-0000-0000-0000-000000000123"),
             fsp="0/1/0",
             serial_number="HWTCABCD1234",
             force_reauthorize=True,
@@ -137,15 +144,26 @@ class TestAuthorizeEndpoint:
         request = object()
         db = object()
 
-        response = network_olt_ops.authorize_ont(request, "olt-123", payload, db=db)
+        response = network_olt_ops.authorize_and_provision_ont(
+            request,
+            UUID("00000000-0000-0000-0000-000000000122"),
+            payload,
+            db=db,
+        )
 
         assert response.success is True
-        assert response.data == {"status": "success", "ont_unit_id": "ont-123"}
+        assert response.data.operation_id == UUID(
+            "00000000-0000-0000-0000-000000000124"
+        )
+        assert response.data.dispatch_id == UUID("00000000-0000-0000-0000-000000000125")
+        assert response.data.waiting is True
+        assert response.data.duplicate is False
         assert captured == {
             "db": db,
-            "olt_id": "olt-123",
+            "olt_id": UUID("00000000-0000-0000-0000-000000000122"),
+            "ont_id": UUID("00000000-0000-0000-0000-000000000123"),
             "fsp": "0/1/0",
             "serial_number": "HWTCABCD1234",
             "force_reauthorize": True,
-            "request": request,
+            "actor": "unknown",
         }

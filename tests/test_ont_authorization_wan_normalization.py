@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 from app.models.network import (
     IpBlock,
@@ -12,8 +13,31 @@ from app.models.network import (
     OntUnit,
 )
 from app.services.network import ont_authorization
+from app.services.network.ont_authorization_contracts import (
+    AuthorizationWorkflowStatus,
+    ExecuteAssignedOntAuthorization,
+)
 from app.services.network.ont_desired_config import desired_config
 from app.services.network.ont_management_ipam import allocate_ont_management_ip
+from app.services.owner_commands import CommandContext
+
+
+def _authorization_command(serial_number: str) -> ExecuteAssignedOntAuthorization:
+    operation_id = uuid4()
+    return ExecuteAssignedOntAuthorization.from_transport(
+        context=CommandContext.system(
+            actor="test",
+            scope="network:ont:authorize",
+            reason="test assigned authorization workflow",
+            command_id=operation_id,
+            correlation_id=operation_id,
+        ),
+        operation_id=operation_id,
+        ont_id=uuid4(),
+        olt_id=uuid4(),
+        fsp="0/1/1",
+        serial_number=serial_number,
+    )
 
 
 def _allocate_management_ip_for_ont(
@@ -52,15 +76,15 @@ def test_authorization_applies_olt_baseline_but_not_followup_tasks_inline(
     result = ont_authorization.AuthorizationWorkflowResult(
         success=True,
         message="ONT authorization completed.",
-        status="success",
-        ont_unit_id="ont-1",
+        status=AuthorizationWorkflowStatus.SUCCESS,
+        ont_unit_id=uuid4(),
         ont_id_on_olt=7,
         completed_authorization=True,
     )
 
     monkeypatch.setattr(
         ont_authorization,
-        "authorize_autofind_ont",
+        "_authorize_registration",
         lambda *args, **kwargs: result,
     )
     monkeypatch.setattr(
@@ -69,11 +93,9 @@ def test_authorization_applies_olt_baseline_but_not_followup_tasks_inline(
             "authorization_baseline", True, "baseline ok"
         ),
     )
-    response = ont_authorization.authorize_ont(
+    response = ont_authorization.authorize_and_provision_ont(
         db_session,
-        "olt-1",
-        "0/1/1",
-        "HWTCBOOTSTRAP",
+        _authorization_command("HWTCBOOTSTRAP"),
     )
 
     assert response.success is True
@@ -419,7 +441,7 @@ def test_authorization_cleans_stale_registration_before_retry(
         ),
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -493,7 +515,7 @@ def test_authorization_reports_partial_failure_when_local_record_setup_fails(
         lambda *args, **kwargs: (None, "Failed to create ONT record."),
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -503,7 +525,7 @@ def test_authorization_reports_partial_failure_when_local_record_setup_fails(
     assert result.success is False
     assert result.completed_authorization is True
     assert result.partial_success is True
-    assert result.status == "error"
+    assert result.status is AuthorizationWorkflowStatus.ERROR
     assert result.local_inventory_failed is True
     assert result.message.startswith(
         "OLT authorization succeeded; local inventory failed"
@@ -573,7 +595,7 @@ def test_authorization_links_assignment_before_reporting_success(
         fake_ensure,
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -642,7 +664,7 @@ def test_authorization_reports_partial_failure_when_assignment_link_fails(
         lambda *args, **kwargs: (False, "Invalid OLT F/S/P for assignment."),
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -652,7 +674,7 @@ def test_authorization_reports_partial_failure_when_assignment_link_fails(
     assert result.success is False
     assert result.completed_authorization is True
     assert result.partial_success is True
-    assert result.status == "error"
+    assert result.status is AuthorizationWorkflowStatus.ERROR
     assert result.local_inventory_failed is True
     assert result.message.startswith(
         "OLT authorization succeeded; local inventory failed"
@@ -681,7 +703,7 @@ def test_authorization_fails_before_adapter_when_dependency_audit_fails(
         ),
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -703,15 +725,15 @@ def test_authorization_ignores_explicit_foundation_failures(db_session, monkeypa
     result = ont_authorization.AuthorizationWorkflowResult(
         success=True,
         message="ONT authorization completed.",
-        status="success",
-        ont_unit_id="ont-1",
+        status=AuthorizationWorkflowStatus.SUCCESS,
+        ont_unit_id=uuid4(),
         ont_id_on_olt=7,
         completed_authorization=True,
     )
 
     monkeypatch.setattr(
         ont_authorization,
-        "authorize_autofind_ont",
+        "_authorize_registration",
         lambda *args, **kwargs: result,
     )
     monkeypatch.setattr(
@@ -720,18 +742,16 @@ def test_authorization_ignores_explicit_foundation_failures(db_session, monkeypa
             "authorization_baseline", False, "OLT baseline failed"
         ),
     )
-    response = ont_authorization.authorize_ont(
+    response = ont_authorization.authorize_and_provision_ont(
         db_session,
-        "olt-1",
-        "0/1/1",
-        "HWTCWARNFOLLOWUP",
+        _authorization_command("HWTCWARNFOLLOWUP"),
     )
 
     assert response.success is True
     assert response.completed_authorization is True
     assert response.partial_success is True
     assert response.baseline_applied is False
-    assert response.status == "warning"
+    assert response.status is AuthorizationWorkflowStatus.WARNING
     assert response.message == (
         "ONT authorized, but OLT service baseline failed: OLT baseline failed"
     )
@@ -745,8 +765,8 @@ def test_authorization_duration_includes_olt_baseline_work(db_session, monkeypat
     result = ont_authorization.AuthorizationWorkflowResult(
         success=True,
         message="ONT authorization completed.",
-        status="success",
-        ont_unit_id="ont-1",
+        status=AuthorizationWorkflowStatus.SUCCESS,
+        ont_unit_id=uuid4(),
         ont_id_on_olt=7,
         completed_authorization=True,
         duration_ms=1,
@@ -756,7 +776,7 @@ def test_authorization_duration_includes_olt_baseline_work(db_session, monkeypat
     monkeypatch.setattr(ont_authorization, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(
         ont_authorization,
-        "authorize_autofind_ont",
+        "_authorize_registration",
         lambda *args, **kwargs: result,
     )
     monkeypatch.setattr(
@@ -765,16 +785,14 @@ def test_authorization_duration_includes_olt_baseline_work(db_session, monkeypat
             "authorization_baseline", True, "baseline ok"
         ),
     )
-    response = ont_authorization.authorize_ont(
+    response = ont_authorization.authorize_and_provision_ont(
         db_session,
-        "olt-1",
-        "0/1/1",
-        "HWTCDURATION",
+        _authorization_command("HWTCDURATION"),
     )
 
     assert response.duration_ms == 5000
     assert [step.name for step in response.steps] == ["Apply Authorization Baseline"]
-    assert [phase["phase"] for phase in response.phase_timings] == [
+    assert [phase.phase.value for phase in response.phase_timings] == [
         "core_authorization",
         "post_authorization_commit",
         "authorization_baseline",

@@ -18,7 +18,7 @@ from app.models.fiber_change_request import FiberChangeRequest
 from app.models.vendor_routes import InstallationProject
 from app.models.work_order import WorkOrder
 from app.services.common import coerce_uuid
-from app.services.network import fiber_splice_proposals
+from app.services.network import fiber_splice_plans, fiber_splice_proposals
 from app.services.network.fiber_splice_proposals import (
     SpliceProposalError,
     SpliceProposalReceipt,
@@ -76,6 +76,7 @@ def propose_splice(
     splice_type: str | None = None,
     loss_db: float | None = None,
     note: str | None = None,
+    plan_item_id: str | None = None,
 ) -> SpliceProposalReceipt:
     """File one reviewed splice proposal for the vendor's assigned project."""
 
@@ -99,7 +100,27 @@ def propose_splice(
         loss_db=loss_db,
         note=note,
         work_order=work_order,
+        plan_item_id=plan_item_id,
     )
+
+
+def get_splice_plan(
+    db: Session,
+    *,
+    vendor_id: str,
+    work_order_id: str,
+) -> dict:
+    """Project the assigned work order's live cut sheet for the vendor crew."""
+
+    vendor_uuid = coerce_uuid(vendor_id)
+    work_order = _scoped_vendor_work_order(db, vendor_uuid, work_order_id)
+    view = fiber_splice_plans.view_for_work_order(db, work_order.id)
+    diff = fiber_splice_plans.diff_for_work_order(db, work_order.id)
+    return {
+        "work_order_id": work_order.public_id,
+        "plan": view.to_dict() if view else None,
+        "diff": diff.to_dict() if diff else None,
+    }
 
 
 def list_splice_proposals(

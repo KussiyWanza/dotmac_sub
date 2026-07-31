@@ -28,10 +28,15 @@ from app.models.network_operation import (
     NetworkOperationType,
 )
 from app.services.network import ont_authorization
+from app.services.network.ont_authorization_contracts import (
+    ExecuteAssignedOntAuthorization,
+    RequestAssignedOntAuthorization,
+)
 from app.services.network.ont_provisioning_commands import (
     ont_authorization_correlation_key,
     request_ont_authorization,
 )
+from app.services.owner_commands import CommandContext
 
 HEADLINE = "OLT authorization succeeded; local inventory failed"
 
@@ -203,27 +208,44 @@ def test_partial_authorization_is_stored_on_the_operation_and_rendered_distinctl
 
     command = request_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/6",
-        serial_number="HWTCSTORE0001",
-        scoped_ont_id=str(ont.id),
-        initiated_by="admin",
+        RequestAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="admin",
+                scope="network:ont:authorize",
+                reason="test partial assigned authorization",
+            ),
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/6",
+            serial_number="HWTCSTORE0001",
+        ),
     )
     assert command.accepted is True
+    assert command.operation_id is not None
 
     payload = execute_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/6",
-        serial_number="HWTCSTORE0001",
-        operation_id=command.operation_id,
-    )
+        ExecuteAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="admin",
+                scope="network:ont:authorize",
+                reason="test partial assigned authorization execution",
+                command_id=command.operation_id,
+                correlation_id=command.operation_id,
+            ),
+            operation_id=command.operation_id,
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/6",
+            serial_number="HWTCSTORE0001",
+        ),
+    ).to_dict()
 
     assert ("authorize", "0/1/6", "HWTCSTORE0001") in calls
     assert payload["completed_authorization"] is True
     assert payload["local_inventory_failed"] is True
 
-    operation = db_session.get(NetworkOperation, uuid.UUID(command.operation_id))
+    operation = db_session.get(NetworkOperation, command.operation_id)
     # Degraded success, not failure: the device write landed.
     assert operation.status == NetworkOperationStatus.warning
     stored = operation.output_payload
@@ -238,7 +260,7 @@ def test_partial_authorization_is_stored_on_the_operation_and_rendered_distinctl
     history = web_network_operations.build_operation_history(
         db_session, "ont", str(ont.id)
     )
-    entry = next(item for item in history if item["id"] == command.operation_id)
+    entry = next(item for item in history if item["id"] == str(command.operation_id))
     assert entry["local_inventory_failed"] is True
     assert entry["device_authorization_completed"] is True
     assert entry["partial_success_headline"] == HEADLINE
@@ -273,25 +295,42 @@ def test_device_rejection_is_not_reported_as_a_local_inventory_failure(
 
     command = request_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/6",
-        serial_number="HWTCREJECT001",
-        scoped_ont_id=str(ont.id),
-        initiated_by="admin",
+        RequestAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="admin",
+                scope="network:ont:authorize",
+                reason="test rejected assigned authorization",
+            ),
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/6",
+            serial_number="HWTCREJECT001",
+        ),
     )
+    assert command.operation_id is not None
     payload = execute_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/6",
-        serial_number="HWTCREJECT001",
-        operation_id=command.operation_id,
-    )
+        ExecuteAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="admin",
+                scope="network:ont:authorize",
+                reason="test rejected assigned authorization execution",
+                command_id=command.operation_id,
+                correlation_id=command.operation_id,
+            ),
+            operation_id=command.operation_id,
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/6",
+            serial_number="HWTCREJECT001",
+        ),
+    ).to_dict()
 
     assert payload["completed_authorization"] is False
     assert payload["local_inventory_failed"] is False
     assert payload["device_message"] == cli_error
 
-    operation = db_session.get(NetworkOperation, uuid.UUID(command.operation_id))
+    operation = db_session.get(NetworkOperation, command.operation_id)
     assert operation.status == NetworkOperationStatus.failed
     assert operation.output_payload["completed_authorization"] is False
     assert "device_authorization" not in operation.output_payload
@@ -300,7 +339,7 @@ def test_device_rejection_is_not_reported_as_a_local_inventory_failure(
     history = web_network_operations.build_operation_history(
         db_session, "ont", str(ont.id)
     )
-    entry = next(item for item in history if item["id"] == command.operation_id)
+    entry = next(item for item in history if item["id"] == str(command.operation_id))
     assert entry["local_inventory_failed"] is False
     assert entry["partial_success_headline"] is None
     assert entry["device_message"] == cli_error
@@ -323,13 +362,21 @@ def test_landed_device_authorization_survives_a_worker_crash(db_session, monkeyp
     )
     command = request_ont_authorization(
         db_session,
-        olt_id=str(olt.id),
-        fsp="0/1/6",
-        serial_number="HWTCCRASH0001",
-        scoped_ont_id=str(ont.id),
-        initiated_by="admin",
+        RequestAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="admin",
+                scope="network:ont:authorize",
+                reason="test landed assigned authorization",
+            ),
+            ont_id=ont.id,
+            olt_id=olt.id,
+            fsp="0/1/6",
+            serial_number="HWTCCRASH0001",
+        ),
     )
     assert command.accepted is True
+    assert command.operation_id is not None
+    assert command.dispatch_id is not None
 
     ont_authorization.record_device_authorization_landed(
         db_session,
@@ -341,14 +388,14 @@ def test_landed_device_authorization_survives_a_worker_crash(db_session, monkeyp
         device_message="Authorized.",
     )
 
-    dispatch = db_session.get(NetworkOperationDispatch, uuid.UUID(command.dispatch_id))
+    dispatch = db_session.get(NetworkOperationDispatch, command.dispatch_id)
     dispatch.status = NetworkOperationDispatchStatus.acknowledged
     db_session.flush()
 
-    fail_dispatch_execution(db_session, command.dispatch_id, "worker died")
+    fail_dispatch_execution(db_session, str(command.dispatch_id), "worker died")
     db_session.commit()
 
-    operation = db_session.get(NetworkOperation, uuid.UUID(command.operation_id))
+    operation = db_session.get(NetworkOperation, command.operation_id)
     assert operation.status == NetworkOperationStatus.failed
     assert operation.output_payload["completed_authorization"] is True
     assert operation.output_payload["device_authorization"]["ont_id_on_olt"] == 11
@@ -376,7 +423,7 @@ def test_retry_repairs_local_inventory_without_re_authorizing_the_device(
     calls: list[tuple] = []
     _patch_device_stack(monkeypatch, _RecordingAdapter(calls))
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -415,7 +462,7 @@ def test_repair_that_fails_again_still_reports_the_partial_headline(
         lambda *args, **kwargs: (False, "topology still conflicts"),
     )
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -446,7 +493,7 @@ def test_force_reauthorize_is_the_only_way_to_re_issue_the_device_command(
     calls: list[tuple] = []
     _patch_device_stack(monkeypatch, _RecordingAdapter(calls))
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",
@@ -483,7 +530,7 @@ def test_a_revoked_local_authorization_disables_device_authorization_reuse(
     calls: list[tuple] = []
     _patch_device_stack(monkeypatch, _RecordingAdapter(calls))
 
-    result = ont_authorization.authorize_autofind_ont(
+    result = ont_authorization._authorize_registration(
         db_session,
         str(olt.id),
         "0/1/6",

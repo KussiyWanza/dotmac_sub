@@ -151,6 +151,13 @@ then projects `next_billing_at` from the entitlement end. Automatic discovery
 creates a durable operator exception; it does not silently leave a generic
 `draft_invoice_pending` outcome.
 
+That classifier scopes payment-backed and unbacked account credit to native
+facts whose economic timestamp or Sub creation time crosses the active reviewed
+opening-position boundary. Pre-boundary mirror rows are already represented by
+the signed opening amount and are neither reused nor quarantined again.
+Post-boundary unbacked credit remains a fail-closed blocker. Accounts without an
+active reviewed baseline retain the generic all-history classification.
+
 Generic subscription Restore cannot clear an active prepaid financial lock.
 The lifecycle preview reports
 `prepaid_financial_reconciliation_required` and the admin UI routes the

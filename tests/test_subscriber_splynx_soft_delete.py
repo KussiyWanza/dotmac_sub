@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
 from app.models.subscriber import Subscriber, SubscriberStatus, UserType
+from app.services import customer_account_visibility
 from app.services import subscriber as subscriber_service
 
 
@@ -18,7 +21,7 @@ def test_is_splynx_deleted_import_detects_explicit_flag(db_session):
     db_session.add(subscriber)
     db_session.commit()
 
-    assert subscriber_service.is_splynx_deleted_import(subscriber) is True
+    assert customer_account_visibility.is_splynx_deleted_import(subscriber) is True
 
 
 def test_is_splynx_deleted_import_detects_legacy_rows_without_flag(db_session):
@@ -35,7 +38,45 @@ def test_is_splynx_deleted_import_detects_legacy_rows_without_flag(db_session):
     db_session.add(subscriber)
     db_session.commit()
 
-    assert subscriber_service.is_splynx_deleted_import(subscriber) is True
+    assert customer_account_visibility.is_splynx_deleted_import(subscriber) is True
+
+
+def test_explicit_false_splynx_deleted_flag_overrides_legacy_fallback(db_session):
+    retained = Subscriber(
+        first_name="Retained",
+        last_name="Canceled",
+        email="retained-canceled@example.com",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+        user_type=UserType.customer,
+        splynx_customer_id=203,
+        metadata_={"splynx_deleted": False, "splynx_status": "blocked"},
+    )
+    legacy_deleted = Subscriber(
+        first_name="Legacy",
+        last_name="Fallback",
+        email="legacy-fallback@example.com",
+        status=SubscriberStatus.canceled,
+        is_active=False,
+        user_type=UserType.customer,
+        splynx_customer_id=204,
+        metadata_={"splynx_status": "blocked"},
+    )
+    db_session.add_all([retained, legacy_deleted])
+    db_session.commit()
+
+    assert customer_account_visibility.is_splynx_deleted_import(retained) is False
+    assert customer_account_visibility.is_splynx_deleted_import(legacy_deleted) is True
+
+    deleted_ids = set(
+        db_session.scalars(
+            select(Subscriber.id).where(
+                customer_account_visibility.splynx_deleted_import_clause()
+            )
+        )
+    )
+    assert retained.id not in deleted_ids
+    assert legacy_deleted.id in deleted_ids
 
 
 def test_count_stats_excludes_splynx_deleted_imports(db_session):

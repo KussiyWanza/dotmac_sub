@@ -282,6 +282,11 @@ from app.models.fiber_physical import (  # noqa: F401
     FiberRack,
     FiberStrandTermination,
 )
+from app.models.fiber_splice_plan import (  # noqa: F401
+    FiberSplicePlan,
+    FiberSplicePlanItem,
+    FiberSplicePlanStatus,
+)
 from app.models.fiber_support import (  # noqa: F401
     FiberSupportMount,
     FiberSupportMountDecision,

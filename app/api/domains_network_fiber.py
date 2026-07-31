@@ -14,6 +14,10 @@ from app.schemas.network import (
     FiberSpliceClosureRead,
     FiberSpliceClosureUpdate,
     FiberSpliceCreate,
+    FiberSplicePlanCreate,
+    FiberSplicePlanDiffRead,
+    FiberSplicePlanItemCreate,
+    FiberSplicePlanRead,
     FiberSpliceRead,
     FiberSpliceTrayCreate,
     FiberSpliceTrayRead,
@@ -38,6 +42,10 @@ from app.schemas.network import (
 from app.schemas.network_metrics import FiberPathRead, PortUtilizationRead
 from app.services import network as network_service
 from app.services.auth_dependencies import require_permission
+from app.services.db_session_adapter import db_session_adapter
+from app.services.network import fiber_splice_plans
+from app.services.network.fiber_splice_plans import SplicePlanError
+from app.services.owner_commands import CommandContext
 
 router = APIRouter()
 
@@ -734,3 +742,188 @@ def update_fiber_splice(
 )
 def delete_fiber_splice(splice_id: str, db: Session = Depends(get_db)):
     network_service.fiber_splices.delete(db, splice_id)
+
+
+def _splice_plan_http_error(exc: SplicePlanError) -> HTTPException:
+    status_code = {"not_found": 404, "conflict": 409, "invalid": 422}.get(exc.kind, 422)
+    return HTTPException(status_code=status_code, detail=exc.message)
+
+
+def _splice_plan_context(auth: dict, *, reason: str) -> CommandContext:
+    return CommandContext.system(
+        actor=str(auth.get("principal_id") or "api"),
+        scope="network:fiber:write",
+        reason=reason,
+    )
+
+
+@router.post(
+    "/fiber-splice-plans",
+    response_model=FiberSplicePlanRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["network"],
+)
+def create_fiber_splice_plan(
+    payload: FiberSplicePlanCreate,
+    auth: dict = Depends(require_permission("network:fiber:write")),
+    db: Session = Depends(get_db),
+):
+    db_session_adapter.release_read_transaction(db)
+    try:
+        plan = fiber_splice_plans.create_plan(
+            db,
+            context=_splice_plan_context(
+                auth, reason="operator created a splice cut sheet"
+            ),
+            work_order_id=payload.work_order_id,
+            name=payload.name,
+            notes=payload.notes,
+            created_by_person_id=str(auth.get("person_id"))
+            if auth.get("person_id")
+            else None,
+        )
+        return fiber_splice_plans.get_plan_view(db, str(plan.id)).to_dict()
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.get(
+    "/fiber-splice-plans/{plan_id}",
+    response_model=FiberSplicePlanRead,
+    tags=["network"],
+    dependencies=[Depends(require_permission("network:fiber:read"))],
+)
+def get_fiber_splice_plan(plan_id: str, db: Session = Depends(get_db)):
+    try:
+        return fiber_splice_plans.get_plan_view(db, plan_id).to_dict()
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.post(
+    "/fiber-splice-plans/{plan_id}/items",
+    response_model=FiberSplicePlanRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["network"],
+)
+def add_fiber_splice_plan_item(
+    plan_id: str,
+    payload: FiberSplicePlanItemCreate,
+    auth: dict = Depends(require_permission("network:fiber:write")),
+    db: Session = Depends(get_db),
+):
+    db_session_adapter.release_read_transaction(db)
+    try:
+        fiber_splice_plans.add_item(
+            db,
+            context=_splice_plan_context(
+                auth, reason="operator added a planned splice"
+            ),
+            plan_id=plan_id,
+            closure_id=str(payload.closure_id),
+            from_strand_id=str(payload.from_strand_id),
+            from_strand_end=payload.from_strand_end,
+            to_strand_id=str(payload.to_strand_id),
+            to_strand_end=payload.to_strand_end,
+            splice_type=payload.splice_type,
+            tray_id=str(payload.tray_id) if payload.tray_id else None,
+            tray_position=payload.tray_position,
+            expected_loss_db=payload.expected_loss_db,
+            notes=payload.notes,
+        )
+        return fiber_splice_plans.get_plan_view(db, plan_id).to_dict()
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.delete(
+    "/fiber-splice-plans/{plan_id}/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["network"],
+)
+def remove_fiber_splice_plan_item(
+    plan_id: str,
+    item_id: str,
+    auth: dict = Depends(require_permission("network:fiber:write")),
+    db: Session = Depends(get_db),
+):
+    db_session_adapter.release_read_transaction(db)
+    try:
+        fiber_splice_plans.remove_item(
+            db,
+            context=_splice_plan_context(
+                auth, reason="operator removed a planned splice"
+            ),
+            plan_id=plan_id,
+            item_id=item_id,
+        )
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.post(
+    "/fiber-splice-plans/{plan_id}/issue",
+    response_model=FiberSplicePlanRead,
+    tags=["network"],
+)
+def issue_fiber_splice_plan(
+    plan_id: str,
+    auth: dict = Depends(require_permission("network:fiber:write")),
+    db: Session = Depends(get_db),
+):
+    db_session_adapter.release_read_transaction(db)
+    try:
+        fiber_splice_plans.issue_plan(
+            db,
+            context=_splice_plan_context(
+                auth, reason="operator issued the cut sheet to the field"
+            ),
+            plan_id=plan_id,
+        )
+        return fiber_splice_plans.get_plan_view(db, plan_id).to_dict()
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.post(
+    "/fiber-splice-plans/{plan_id}/cancel",
+    response_model=FiberSplicePlanRead,
+    tags=["network"],
+)
+def cancel_fiber_splice_plan(
+    plan_id: str,
+    auth: dict = Depends(require_permission("network:fiber:write")),
+    db: Session = Depends(get_db),
+):
+    db_session_adapter.release_read_transaction(db)
+    try:
+        fiber_splice_plans.cancel_plan(
+            db,
+            context=_splice_plan_context(
+                auth, reason="operator cancelled the cut sheet"
+            ),
+            plan_id=plan_id,
+        )
+        return fiber_splice_plans.get_plan_view(db, plan_id).to_dict()
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+
+
+@router.get(
+    "/fiber-splice-plans/{plan_id}/diff",
+    response_model=FiberSplicePlanDiffRead,
+    tags=["network"],
+    dependencies=[Depends(require_permission("network:fiber:read"))],
+)
+def get_fiber_splice_plan_diff(plan_id: str, db: Session = Depends(get_db)):
+    try:
+        view = fiber_splice_plans.get_plan_view(db, plan_id)
+    except SplicePlanError as exc:
+        raise _splice_plan_http_error(exc) from exc
+    diff = fiber_splice_plans.diff_for_work_order(db, view.work_order_id)
+    if diff is None or diff.plan_id != view.plan_id:
+        raise HTTPException(
+            status_code=409,
+            detail="The plan is not the live plan for its work order",
+        )
+    return diff.to_dict()

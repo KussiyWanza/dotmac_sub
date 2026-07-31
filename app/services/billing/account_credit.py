@@ -91,6 +91,7 @@ class AccountCreditInvoiceFundingPreview:
     shortfall: Decimal
     unbacked_credit: Decimal
     source_payment_ids: tuple[UUID, ...]
+    funding_position_at: datetime | None
     fingerprint: str
 
     @property
@@ -243,8 +244,13 @@ def eligible_invoices(db: Session, account_id: str) -> list[Invoice]:
     )
 
 
-def _source_payments(db: Session, account_id: str) -> list[tuple[Payment, Decimal]]:
-    rows = (
+def _source_payments(
+    db: Session,
+    account_id: str,
+    *,
+    funding_position_at: datetime | None = None,
+) -> list[tuple[Payment, Decimal]]:
+    query = (
         db.query(Payment)
         .filter(Payment.account_id == coerce_uuid(account_id))
         .filter(Payment.is_active.is_(True))
@@ -256,8 +262,16 @@ def _source_payments(db: Session, account_id: str) -> list[tuple[Payment, Decima
             Payment.created_at.asc(),
             Payment.id.asc(),
         )
-        .all()
     )
+    if funding_position_at is not None:
+        query = query.filter(
+            or_(
+                Payment.created_at > funding_position_at,
+                func.coalesce(Payment.paid_at, Payment.created_at)
+                > funding_position_at,
+            )
+        )
+    rows = query.all()
     account_remaining: dict[str, Decimal] = {}
     sources: list[tuple[Payment, Decimal]] = []
     for payment in rows:
@@ -266,7 +280,12 @@ def _source_payments(db: Session, account_id: str) -> list[tuple[Payment, Decima
             account_remaining[currency] = max(
                 Decimal("0.00"),
                 round_money(
-                    get_account_credit_balance(db, account_id, currency=currency)
+                    get_account_credit_balance(
+                        db,
+                        account_id,
+                        currency=currency,
+                        after=funding_position_at,
+                    )
                 ),
             )
         room = min(
@@ -302,8 +321,16 @@ class AccountCreditApplications:
     def preview_invoice_funding(
         db: Session,
         invoice: Invoice,
+        *,
+        funding_position_at: datetime | None = None,
     ) -> AccountCreditInvoiceFundingPreview:
-        """Project exact payment-backed credit for one invoice without writes."""
+        """Project exact payment-backed credit for one invoice without writes.
+
+        A reviewed opening-position boundary scopes both the reusable-credit
+        ledger and source payments. Pre-boundary facts are already represented
+        by that baseline and must neither be reused nor reported as current
+        unbacked credit.
+        """
 
         currency = (invoice.currency or "NGN").upper()
         invoice_remaining = max(
@@ -317,12 +344,17 @@ class AccountCreditApplications:
                     db,
                     str(invoice.account_id),
                     currency=currency,
+                    after=funding_position_at,
                 )
             ),
         )
         sources = tuple(
             (payment, room)
-            for payment, room in _source_payments(db, str(invoice.account_id))
+            for payment, room in _source_payments(
+                db,
+                str(invoice.account_id),
+                funding_position_at=funding_position_at,
+            )
             if (payment.currency or "NGN").upper() == currency
         )
         payment_backed = round_money(
@@ -349,6 +381,7 @@ class AccountCreditApplications:
             "spendable_credit": spendable,
             "shortfall": shortfall,
             "unbacked_credit": unbacked,
+            "funding_position_at": funding_position_at,
             "source_payments": tuple(
                 (payment.id, round_money(room)) for payment, room in sources
             ),
@@ -364,6 +397,7 @@ class AccountCreditApplications:
             shortfall=shortfall,
             unbacked_credit=unbacked,
             source_payment_ids=source_payment_ids,
+            funding_position_at=funding_position_at,
             fingerprint=_invoice_funding_fingerprint(payload),
         )
 
@@ -373,6 +407,7 @@ class AccountCreditApplications:
         invoice: Invoice,
         *,
         preview_fingerprint: str,
+        funding_position_at: datetime | None = None,
     ) -> AccountCreditApplicationResult:
         """Apply exact payment-backed credit only when it covers the invoice."""
 
@@ -381,6 +416,7 @@ class AccountCreditApplications:
             invoice,
             preview_fingerprint=preview_fingerprint,
             require_full_funding=True,
+            funding_position_at=funding_position_at,
         )
 
     @staticmethod
@@ -389,6 +425,7 @@ class AccountCreditApplications:
         invoice: Invoice,
         *,
         preview_fingerprint: str,
+        funding_position_at: datetime | None = None,
     ) -> AccountCreditApplicationResult:
         """Apply all exact payment-backed credit before another typed source."""
 
@@ -397,6 +434,7 @@ class AccountCreditApplications:
             invoice,
             preview_fingerprint=preview_fingerprint,
             require_full_funding=False,
+            funding_position_at=funding_position_at,
         )
 
     @staticmethod
@@ -406,10 +444,15 @@ class AccountCreditApplications:
         *,
         preview_fingerprint: str,
         require_full_funding: bool,
+        funding_position_at: datetime | None,
     ) -> AccountCreditApplicationResult:
         lock_account(db, str(invoice.account_id))
         db.refresh(invoice)
-        preview = AccountCreditApplications.preview_invoice_funding(db, invoice)
+        preview = AccountCreditApplications.preview_invoice_funding(
+            db,
+            invoice,
+            funding_position_at=funding_position_at,
+        )
         if preview.fingerprint != preview_fingerprint:
             raise AccountCreditApplicationError(
                 code="financial.account_credit_applications.stale_preview",
@@ -434,7 +477,11 @@ class AccountCreditApplications:
         remaining = preview.invoice_remaining
         sources = [
             (payment, room)
-            for payment, room in _source_payments(db, str(invoice.account_id))
+            for payment, room in _source_payments(
+                db,
+                str(invoice.account_id),
+                funding_position_at=funding_position_at,
+            )
             if (payment.currency or "NGN").upper() == preview.currency
         ]
         for payment, room in sources:

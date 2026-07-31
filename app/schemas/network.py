@@ -1471,3 +1471,81 @@ class OntWanServiceInstanceRead(OntWanServiceInstanceBase):
     last_error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class StrandColorRead(BaseModel):
+    """Derived EIA/TIA-598 field color identity for one exact strand."""
+
+    strand_number: int
+    color_standard: str
+    tube_number: int | None = None
+    tube_color: str | None = None
+    core_number_in_tube: int
+    core_color: str
+
+
+class FiberSplicePlanCreate(BaseModel):
+    work_order_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=160)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class FiberSplicePlanItemCreate(BaseModel):
+    closure_id: UUID
+    from_strand_id: UUID
+    from_strand_end: Literal["a", "b"]
+    to_strand_id: UUID
+    to_strand_end: Literal["a", "b"]
+    splice_type: str = Field(min_length=1, max_length=80)
+    tray_id: UUID | None = None
+    tray_position: int | None = Field(default=None, ge=1)
+    expected_loss_db: float | None = Field(default=None, ge=0, le=5)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class FiberSplicePlanItemExecutionRead(BaseModel):
+    change_request_id: UUID
+    status: str
+
+
+class FiberSplicePlanItemRead(BaseModel):
+    item_id: UUID
+    position_index: int
+    closure_id: UUID
+    tray_id: UUID | None = None
+    tray_position: int | None = None
+    from_strand_id: UUID
+    from_strand_end: Literal["a", "b"]
+    to_strand_id: UUID
+    to_strand_end: Literal["a", "b"]
+    splice_type: str
+    expected_loss_db: float | None = None
+    notes: str | None = None
+    from_strand_colors: StrandColorRead | None = None
+    to_strand_colors: StrandColorRead | None = None
+    execution: FiberSplicePlanItemExecutionRead | None = None
+    executed: bool
+
+
+class FiberSplicePlanRead(BaseModel):
+    plan_id: UUID
+    work_order_id: UUID
+    work_order_public_id: str
+    name: str
+    status: str
+    notes: str | None = None
+    issued_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    item_count: int
+    executed_count: int
+    unexecuted_count: int
+    items: list[FiberSplicePlanItemRead] = Field(default_factory=list)
+
+
+class FiberSplicePlanDiffRead(BaseModel):
+    plan_id: UUID
+    executed_items: list[UUID] = Field(default_factory=list)
+    pending_review_items: list[UUID] = Field(default_factory=list)
+    unexecuted_items: list[UUID] = Field(default_factory=list)
+    unplanned_change_requests: list[UUID] = Field(default_factory=list)
+    complete: bool

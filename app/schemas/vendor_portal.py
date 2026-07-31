@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.network import FiberSplicePlanDiffRead, FiberSplicePlanRead
+
 
 class VendorQuoteCreate(BaseModel):
     project_id: UUID
@@ -104,6 +106,15 @@ class VendorSpliceCreate(BaseModel):
     splice_type: str = Field(min_length=1, max_length=80)
     loss_db: float | None = Field(default=None, ge=0, le=5)
     note: str | None = Field(default=None, max_length=2000)
+    plan_item_id: UUID | None = None
+
+
+class VendorSplicePlanResponse(BaseModel):
+    """The assigned work order's live cut sheet and diff (None when absent)."""
+
+    work_order_id: str
+    plan: FiberSplicePlanRead | None = None
+    diff: FiberSplicePlanDiffRead | None = None
 
 
 class VendorStrandColorRead(BaseModel):
@@ -127,6 +138,8 @@ class VendorSpliceProposalResponse(BaseModel):
     work_order_public_id: str | None = None
     from_strand_colors: VendorStrandColorRead | None = None
     to_strand_colors: VendorStrandColorRead | None = None
+    plan_id: UUID | None = None
+    plan_item_id: UUID | None = None
 
 
 class VendorSpliceProposalStatusRead(BaseModel):
@@ -143,6 +156,8 @@ class VendorSpliceProposalStatusRead(BaseModel):
     work_order_public_id: str | None = None
     from_strand_colors: VendorStrandColorRead | None = None
     to_strand_colors: VendorStrandColorRead | None = None
+    plan_id: UUID | None = None
+    plan_item_id: UUID | None = None
     review_notes: str | None = None
     reviewed_at: datetime | None = None
     applied_at: datetime | None = None

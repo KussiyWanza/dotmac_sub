@@ -39,7 +39,12 @@ from app.models.ont_commissioning import (
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
-from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
+from app.services.network.ont_authorization_contracts import (
+    OntAuthorizationTarget,
+    OntFsp,
+    OntSerialNumber,
+    RegisterCommissioningOnt,
+)
 from app.services.network.serial_utils import (
     canonical as canonical_serial,
 )
@@ -131,8 +136,8 @@ class RequestOntCommissioning:
     context: CommandContext
     candidate_id: uuid.UUID
     expected_olt_id: uuid.UUID
-    expected_fsp: str
-    expected_serial: str
+    expected_fsp: OntFsp
+    expected_serial: OntSerialNumber
     reason: str
     reference: str | None = None
     ttl: timedelta = DEFAULT_COMMISSIONING_TTL
@@ -306,8 +311,8 @@ def _admit(
             "candidate_not_active",
             "The selected autofind candidate is no longer active. Refresh the scan.",
         )
-    expected_fsp = request.expected_fsp.strip()
-    expected_serial = canonical_serial(request.expected_serial)
+    expected_fsp = request.expected_fsp.value
+    expected_serial = request.expected_serial.value
     observed_serial = canonical_serial(candidate.serial_number)
     if (
         candidate.olt_id != request.expected_olt_id
@@ -737,18 +742,29 @@ def execute_ont_commissioning(
                 code="live_autofind_mismatch",
                 message=live_message,
             )
-        from app.services.network.ont_authorization import authorize_ont
+        from app.services.network.ont_authorization import (
+            register_ont_for_commissioning,
+        )
 
-        result = authorize_ont(
+        result = register_ont_for_commissioning(
             db,
-            str(intent.olt_id),
-            intent.fsp,
-            intent.canonical_serial,
-            request=None,
-            provision=False,
-            operation_id=operation_id,
-            allow_registration_move=False,
-            dependency_scope=OltDependencyAuditScope.MANAGEMENT_ONLY,
+            RegisterCommissioningOnt(
+                context=CommandContext.system(
+                    actor=operation.initiated_by or "system",
+                    scope="network:ont:commission",
+                    reason="execute durable management-only ONT commissioning",
+                    command_id=_uuid(operation_id, "operation_id"),
+                    correlation_id=_uuid(operation_id, "operation_id"),
+                    causation_id=intent.id,
+                ),
+                operation_id=_uuid(operation_id, "operation_id"),
+                intent_id=intent.id,
+                target=OntAuthorizationTarget.from_transport(
+                    olt_id=intent.olt_id,
+                    fsp=intent.fsp,
+                    serial_number=intent.canonical_serial,
+                ),
+            ),
         )
         if result.completed_authorization:
             # The device write is authoritative external evidence even when

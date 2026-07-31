@@ -225,9 +225,12 @@ Main modules: `app/services/network/olt_polling.py`, `app/services/network/olt_p
 
 ```
 User clicks "Authorize & provision"
+    → RequestAssignedOntAuthorization carries CommandContext + exact typed target
     → ont_provisioning_commands requires the exact active assignment and PON
     → durable authorization operation/dispatch
-    → ont_authorization.authorize_ont()
+    → worker reconstructs ExecuteAssignedOntAuthorization
+    → execution owner rechecks the exact assignment immediately before device I/O
+    → ont_authorization.authorize_and_provision_ont(typed command)
         → Validate OLT authorization readiness
         → Resolve line/service/TR-069 profile and VLAN defaults
         → olt_protocol_adapters.authorize_ont()
@@ -245,11 +248,7 @@ User with network:ont:commission clicks "Commission ONT"
     → durable commission operation/dispatch
     → worker re-reads model-supported live OLT autofind and filters exact F/S/P
     → management-only dependency audit (line/service + DBA + TR-069)
-    → authorize_ont(
-         provision=False,
-         allow_registration_move=False,
-         dependency_scope=management_only
-      )
+    → ont_authorization.register_ont_for_commissioning(RegisterCommissioningOnt)
     → restricted management batch:
          management VLAN service-port + IPHOST + TR-069 profile only
          no internet-config, WAN, PPPoE, LAN, or Wi-Fi
@@ -262,6 +261,15 @@ filters it in application code to the exact requested F/S/P and canonical
 serial. The unsupported per-port command is never attempted. Normal assigned
 authorization retains the full live dependency audit, including customer
 traffic-table and WAN-profile inventories.
+
+The two authorization capabilities are separate named interfaces. There is no
+public `provision` switch: only the assigned command executor may call
+`authorize_and_provision_ont`, and only the commissioning owner may call
+`register_ont_for_commissioning`. Reauthorization returns through the assigned
+command owner and therefore cannot bypass assignment admission. OLT, ONT,
+operation, and intent identities remain `UUID`; F/S/P and serial are validated
+value objects; actor/correlation evidence remains `CommandContext` until the
+explicit persistence or transport serialization boundary.
 
 ### 2. ACS Configuration Push Flow
 

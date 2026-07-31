@@ -19,6 +19,7 @@ from app.schemas.vendor_portal import (
     VendorQuoteLineUpdate,
     VendorRouteRevisionCreate,
     VendorSpliceCreate,
+    VendorSplicePlanResponse,
     VendorSpliceProposalResponse,
     VendorSpliceProposalStatusRead,
     VendorSubmissionConfirm,
@@ -36,6 +37,7 @@ from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.field import vendor_capabilities
 from app.services.field.vendor_auth import require_native_vendor_context
+from app.services.network.fiber_splice_plans import SplicePlanError
 from app.services.network.fiber_splice_proposals import SpliceProposalError
 from app.services.owner_commands import CommandContext
 from app.services.vendor_portal_operations import (
@@ -428,13 +430,36 @@ def propose_vendor_splice(
             splice_type=payload.splice_type,
             loss_db=payload.loss_db,
             note=payload.note,
+            plan_item_id=str(payload.plan_item_id) if payload.plan_item_id else None,
         )
-    except SpliceProposalError as exc:
+    except (SpliceProposalError, SplicePlanError) as exc:
         status_code = {"not_found": 404, "conflict": 409, "invalid": 422}.get(
             exc.kind, 422
         )
         raise HTTPException(status_code=status_code, detail=exc.message) from exc
     return receipt.to_dict()
+
+
+@router.get(
+    "/fiber/splice-plan",
+    response_model=VendorSplicePlanResponse,
+)
+def get_vendor_splice_plan(
+    work_order_id: str = Query(min_length=1, max_length=64),
+    context: dict = Depends(
+        require_vendor_capability(vendor_capabilities.AS_BUILT_WRITE)
+    ),
+    db: Session = Depends(get_db),
+):
+    try:
+        return vendor_fiber.get_splice_plan(
+            db, vendor_id=_vendor_id(context), work_order_id=work_order_id
+        )
+    except (SpliceProposalError, SplicePlanError) as exc:
+        status_code = {"not_found": 404, "conflict": 409, "invalid": 422}.get(
+            exc.kind, 422
+        )
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
 
 
 @router.get(

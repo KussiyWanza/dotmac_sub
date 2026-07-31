@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from time import monotonic
-from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -38,7 +39,11 @@ from app.services.network.huawei_cli_response import (
 )
 from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
 from app.services.network.olt_inventory import get_olt_or_none
-from app.services.network.olt_web_audit import log_olt_audit_event
+from app.services.network.ont_authorization_contracts import (
+    AuthorizationWorkflowStatus,
+    ExecuteAssignedOntAuthorization,
+    RegisterCommissioningOnt,
+)
 from app.services.network.serial_utils import (
     build_huawei_external_id,
     normalized_serial_sql,
@@ -49,9 +54,6 @@ from app.services.network.serial_utils import (
 from app.services.network.serial_utils import (
     search_candidates as serial_search_candidates,
 )
-
-if TYPE_CHECKING:
-    from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ _TERMINAL_OPERATION_STATUSES = (
 )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AuthorizationStepResult:
     """Result of one ONT authorization step."""
 
@@ -78,19 +80,43 @@ class AuthorizationStepResult:
     success: bool
     message: str
     duration_ms: int = 0
-    details: dict[str, object] | None = None
+    details: Mapping[str, object] | None = None
 
 
-@dataclass
+class _AuthorizationPhase(StrEnum):
+    CORE_AUTHORIZATION = "core_authorization"
+    POST_AUTHORIZATION_COMMIT = "post_authorization_commit"
+    AUTHORIZATION_BASELINE = "authorization_baseline"
+    POST_BASELINE_COMMIT = "post_baseline_commit"
+    AUDIT = "audit"
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationPhaseTiming:
+    """Typed duration and evidence for one authorization phase."""
+
+    phase: _AuthorizationPhase
+    duration_ms: int
+    details: Mapping[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "phase": self.phase.value,
+            "duration_ms": self.duration_ms,
+            **self.details,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizationWorkflowResult:
-    """Compatibility result shape for OLT authorization callers."""
+    """Immutable typed authorization outcome."""
 
     success: bool
     message: str
-    steps: list[AuthorizationStepResult] = field(default_factory=list)
-    ont_unit_id: str | None = None
+    steps: tuple[AuthorizationStepResult, ...] = ()
+    ont_unit_id: uuid.UUID | None = None
     ont_id_on_olt: int | None = None
-    status: str = "error"
+    status: AuthorizationWorkflowStatus = AuthorizationWorkflowStatus.ERROR
     completed_authorization: bool = False
     partial_success: bool = False
     #: The OLT accepted the command but the local inventory/assignment
@@ -102,13 +128,13 @@ class AuthorizationWorkflowResult:
     device_message: str | None = None
     #: Set when this run reused a previously landed device authorization and
     #: repaired only the local projection instead of re-issuing the command.
-    device_authorization_reused_from: str | None = None
+    device_authorization_reused_from: uuid.UUID | None = None
     baseline_applied: bool | None = None
     duration_ms: int = 0
-    phase_timings: list[dict[str, object]] = field(default_factory=list)
+    phase_timings: tuple[AuthorizationPhaseTiming, ...] = ()
 
     @property
-    def ont_id(self) -> str | None:
+    def ont_id(self) -> uuid.UUID | None:
         """Backward-compatible alias for callers expecting an ONT unit ID."""
         return self.ont_unit_id
 
@@ -116,17 +142,23 @@ class AuthorizationWorkflowResult:
         return {
             "success": self.success,
             "message": self.message,
-            "ont_unit_id": self.ont_unit_id,
+            "ont_unit_id": (
+                str(self.ont_unit_id) if self.ont_unit_id is not None else None
+            ),
             "ont_id_on_olt": self.ont_id_on_olt,
-            "status": self.status,
+            "status": self.status.value,
             "completed_authorization": self.completed_authorization,
             "partial_success": self.partial_success,
             "local_inventory_failed": self.local_inventory_failed,
             "device_message": self.device_message,
-            "device_authorization_reused_from": self.device_authorization_reused_from,
+            "device_authorization_reused_from": (
+                str(self.device_authorization_reused_from)
+                if self.device_authorization_reused_from is not None
+                else None
+            ),
             "baseline_applied": self.baseline_applied,
             "duration_ms": self.duration_ms,
-            "phase_timings": self.phase_timings,
+            "phase_timings": [timing.to_dict() for timing in self.phase_timings],
             "steps": [
                 {
                     "step": step.step,
@@ -139,6 +171,13 @@ class AuthorizationWorkflowResult:
                 for step in self.steps
             ],
         }
+
+
+class _AuthorizationWorkflow(StrEnum):
+    """Internal authorization capabilities selected by named owner interfaces."""
+
+    ASSIGNED_SERVICE = "assigned_service"
+    COMMISSIONING = "commissioning"
 
 
 def _is_serial_already_registered_message(message: str | None) -> bool:
@@ -229,14 +268,14 @@ def _commit_without_expiring(db: Session) -> None:
 class PriorDeviceAuthorization:
     """A previously landed OLT authorization recorded on a tracked operation."""
 
-    operation_id: str
+    operation_id: uuid.UUID
     ont_id_on_olt: int | None
     device_message: str | None
 
 
 def record_device_authorization_landed(
     db: Session,
-    operation_id: str | None,
+    operation_id: uuid.UUID | str | None,
     *,
     olt_id: str,
     fsp: str,
@@ -252,7 +291,7 @@ def record_device_authorization_landed(
     try:
         network_operations.merge_output_payload(
             db,
-            operation_id,
+            str(operation_id),
             {
                 "completed_authorization": True,
                 "device_authorization": {
@@ -341,7 +380,7 @@ def find_completed_device_authorization(
     except (TypeError, ValueError):
         parsed_ont_id = None
     return PriorDeviceAuthorization(
-        operation_id=str(operation.id),
+        operation_id=operation.id,
         ont_id_on_olt=parsed_ont_id,
         device_message=str(device_message) if device_message else None,
     )
@@ -851,10 +890,10 @@ def repair_local_authorization_projection(
         return AuthorizationWorkflowResult(
             success=False,
             message=_local_inventory_failure_message(detail),
-            steps=[step],
-            ont_unit_id=projection.ont_unit_id,
+            steps=(step,),
+            ont_unit_id=_as_uuid(projection.ont_unit_id),
             ont_id_on_olt=prior.ont_id_on_olt,
-            status="error",
+            status=AuthorizationWorkflowStatus.ERROR,
             completed_authorization=True,
             partial_success=True,
             local_inventory_failed=True,
@@ -867,10 +906,10 @@ def repair_local_authorization_projection(
         message=(
             "Local ONT inventory repaired for an ONT already authorized on the OLT."
         ),
-        steps=[step],
-        ont_unit_id=projection.ont_unit_id,
+        steps=(step,),
+        ont_unit_id=_as_uuid(projection.ont_unit_id),
         ont_id_on_olt=prior.ont_id_on_olt,
-        status="success",
+        status=AuthorizationWorkflowStatus.SUCCESS,
         completed_authorization=True,
         device_message=prior.device_message,
         device_authorization_reused_from=prior.operation_id,
@@ -878,7 +917,7 @@ def repair_local_authorization_projection(
     )
 
 
-def authorize_autofind_ont(
+def _authorize_registration(
     db: Session,
     olt_id: str,
     fsp: str,
@@ -925,8 +964,8 @@ def authorize_autofind_ont(
         *,
         success: bool,
         message: str,
-        status: str,
-        ont_unit_id: str | None = None,
+        status: AuthorizationWorkflowStatus,
+        ont_unit_id: uuid.UUID | str | None = None,
         ont_id_on_olt: int | None = None,
         completed_authorization: bool = False,
         partial_success: bool = False,
@@ -936,8 +975,8 @@ def authorize_autofind_ont(
         return AuthorizationWorkflowResult(
             success=success,
             message=message,
-            steps=steps,
-            ont_unit_id=ont_unit_id,
+            steps=tuple(steps),
+            ont_unit_id=_as_uuid(ont_unit_id),
             ont_id_on_olt=ont_id_on_olt,
             status=status,
             completed_authorization=completed_authorization,
@@ -949,7 +988,11 @@ def authorize_autofind_ont(
 
     olt = get_olt_or_none(db, olt_id)
     if olt is None:
-        return finish(success=False, message="OLT not found", status="error")
+        return finish(
+            success=False,
+            message="OLT not found",
+            status=AuthorizationWorkflowStatus.ERROR,
+        )
 
     normalized_serial = normalize_serial(serial_number)
 
@@ -1002,7 +1045,11 @@ def authorize_autofind_ont(
         add_step(
             "Validate OLT Profile Dependencies", False, dependency_error, started_at
         )
-        return finish(success=False, message=dependency_error, status="error")
+        return finish(
+            success=False,
+            message=dependency_error,
+            status=AuthorizationWorkflowStatus.ERROR,
+        )
 
     adapter = get_protocol_adapter(olt)
     _commit_without_expiring(db)
@@ -1020,7 +1067,11 @@ def authorize_autofind_ont(
                 force_started,
                 adapter_result=find_result,
             )
-            return finish(success=False, message=find_result.message, status="error")
+            return finish(
+                success=False,
+                message=find_result.message,
+                status=AuthorizationWorkflowStatus.ERROR,
+            )
         if existing:
             delete_result = adapter.deauthorize_ont(existing.fsp, existing.onu_id)
             if not delete_result.success:
@@ -1032,7 +1083,9 @@ def authorize_autofind_ont(
                     adapter_result=delete_result,
                 )
                 return finish(
-                    success=False, message=delete_result.message, status="error"
+                    success=False,
+                    message=delete_result.message,
+                    status=AuthorizationWorkflowStatus.ERROR,
                 )
             absence = verify_ont_absent(
                 olt,
@@ -1042,7 +1095,11 @@ def authorize_autofind_ont(
             )
             if not absence.success:
                 add_step("Activate ONT", False, absence.message, force_started)
-                return finish(success=False, message=absence.message, status="error")
+                return finish(
+                    success=False,
+                    message=absence.message,
+                    status=AuthorizationWorkflowStatus.ERROR,
+                )
 
     # Resolve authorization profiles
     activation_started = monotonic()
@@ -1065,7 +1122,11 @@ def authorize_autofind_ont(
         )
         if not profiles_ok or authorization_profiles is None:
             add_step("Activate ONT", False, profiles_msg, activation_started)
-            return finish(success=False, message=profiles_msg, status="error")
+            return finish(
+                success=False,
+                message=profiles_msg,
+                status=AuthorizationWorkflowStatus.ERROR,
+            )
 
     # Authorize on OLT
     _commit_without_expiring(db)
@@ -1106,14 +1167,22 @@ def authorize_autofind_ont(
                 if not find_result.success or existing is None:
                     msg = "ONT serial already exists, but existing registration not found."
                     add_step("Activate ONT", False, msg, activation_started)
-                    return finish(success=False, message=msg, status="error")
+                    return finish(
+                        success=False,
+                        message=msg,
+                        status=AuthorizationWorkflowStatus.ERROR,
+                    )
                 if not allow_registration_move:
                     msg = (
                         "ONT serial is already registered on "
                         f"{existing.fsp}; commissioning will not move it to {fsp}."
                     )
                     add_step("Activate ONT", False, msg, activation_started)
-                    return finish(success=False, message=msg, status="error")
+                    return finish(
+                        success=False,
+                        message=msg,
+                        status=AuthorizationWorkflowStatus.ERROR,
+                    )
 
                 delete_result = adapter.deauthorize_ont(existing.fsp, existing.onu_id)
                 if not delete_result.success:
@@ -1125,7 +1194,9 @@ def authorize_autofind_ont(
                         adapter_result=delete_result,
                     )
                     return finish(
-                        success=False, message=delete_result.message, status="error"
+                        success=False,
+                        message=delete_result.message,
+                        status=AuthorizationWorkflowStatus.ERROR,
                     )
 
                 absence = verify_ont_absent(
@@ -1137,7 +1208,9 @@ def authorize_autofind_ont(
                 if not absence.success:
                     add_step("Activate ONT", False, absence.message, activation_started)
                     return finish(
-                        success=False, message=absence.message, status="error"
+                        success=False,
+                        message=absence.message,
+                        status=AuthorizationWorkflowStatus.ERROR,
                     )
 
                 auth_result = adapter.authorize_ont(
@@ -1157,7 +1230,11 @@ def authorize_autofind_ont(
                         activation_started,
                         adapter_result=auth_result,
                     )
-                    return finish(success=False, message=msg, status="error")
+                    return finish(
+                        success=False,
+                        message=msg,
+                        status=AuthorizationWorkflowStatus.ERROR,
+                    )
                 auth_result.message = (
                     f"Removed existing ONT registration on {existing.fsp}; "
                     f"authorized on {fsp}."
@@ -1177,7 +1254,7 @@ def authorize_autofind_ont(
             return finish(
                 success=False,
                 message=message,
-                status="error",
+                status=AuthorizationWorkflowStatus.ERROR,
                 device_message=message,
             )
 
@@ -1218,7 +1295,7 @@ def authorize_autofind_ont(
         return finish(
             success=False,
             message=_local_inventory_failure_message(detail),
-            status="error",
+            status=AuthorizationWorkflowStatus.ERROR,
             ont_unit_id=projection.ont_unit_id,
             ont_id_on_olt=ont_id,
             completed_authorization=True,
@@ -1243,7 +1320,7 @@ def authorize_autofind_ont(
     return finish(
         success=True,
         message="ONT authorization completed.",
-        status="success",
+        status=AuthorizationWorkflowStatus.SUCCESS,
         ont_unit_id=projection.ont_unit_id,
         ont_id_on_olt=ont_id,
         completed_authorization=True,
@@ -1251,63 +1328,53 @@ def authorize_autofind_ont(
     )
 
 
-def authorize_ont(
+def _execute_authorization_workflow(
     db: Session,
-    olt_id: str,
-    fsp: str,
-    serial_number: str,
-    *,
-    force_reauthorize: bool = False,
-    preset_id: str | None = None,
-    request: Request | None = None,
-    provision: bool = True,
-    operation_id: str | None = None,
-    allow_registration_move: bool = True,
-    dependency_scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
+    command: ExecuteAssignedOntAuthorization | RegisterCommissioningOnt,
 ) -> AuthorizationWorkflowResult:
-    """Authorize ONT on the OLT, apply the OLT baseline, and audit log.
-
-    This is the main entry point for ONT authorization. It:
-    1. Registers the ONT serial on the OLT (line/service profiles)
-    2. Creates/updates the OntUnit record
-    3. Applies OLT-side internet and ACS reachability config
-    4. Logs the action for audit
-
-    After TR-069 binding, the ONT reboots and connects to ACS automatically.
-
-    Args:
-        db: Database session.
-        olt_id: OLT device ID.
-        fsp: Frame/Slot/Port (e.g., "0/1/0").
-        serial_number: ONT serial number.
-        force_reauthorize: Remove existing registration before authorizing.
-        preset_id: Optional preset ID (unused, kept for compatibility).
-        request: Optional request for audit logging.
-        provision: If True, apply OLT baseline after authorization (default True).
-        operation_id: Tracked operation to record the landed device
-            authorization against, so a later reader can tell "OLT authorized,
-            local projection failed" from "OLT rejected the command".
-        dependency_scope: Live dependency set required by this authorization
-            workflow. Normal service authorization uses the full scope;
-            commissioning uses only registration and management dependencies.
-    """
+    """Execute one capability-selected authorization workflow."""
     from app.services.network.ont_provision_steps import apply_authorization_baseline
 
     started_at = monotonic()
-    phase_timings: list[dict[str, object]] = []
+    phase_timings: list[AuthorizationPhaseTiming] = []
+    is_commissioning = isinstance(command, RegisterCommissioningOnt)
+    workflow = (
+        _AuthorizationWorkflow.COMMISSIONING
+        if is_commissioning
+        else _AuthorizationWorkflow.ASSIGNED_SERVICE
+    )
+    olt_id = str(command.target.olt_id)
+    fsp = command.target.fsp.value
+    serial_number = command.target.serial_number.value
+    force_reauthorize = (
+        command.force_reauthorize
+        if isinstance(command, ExecuteAssignedOntAuthorization)
+        else False
+    )
+    preset_id = (
+        str(command.preset_id)
+        if isinstance(command, ExecuteAssignedOntAuthorization)
+        and command.preset_id is not None
+        else None
+    )
+    operation_id = str(command.operation_id)
 
-    def record_phase(name: str, phase_started: float, **details: object) -> None:
+    def record_phase(
+        phase: _AuthorizationPhase,
+        phase_started: float,
+        **details: object,
+    ) -> None:
         phase_timings.append(
-            {
-                "phase": name,
-                "duration_ms": max(0, int((monotonic() - phase_started) * 1000)),
-                **details,
-            }
+            AuthorizationPhaseTiming(
+                phase=phase,
+                duration_ms=max(0, int((monotonic() - phase_started) * 1000)),
+                details=details,
+            )
         )
 
     # Step 1: Core OLT authorization (register serial, create record, link PON)
     phase_started = monotonic()
-    result = authorize_autofind_ont(
+    result = _authorize_registration(
         db,
         olt_id,
         fsp,
@@ -1315,32 +1382,41 @@ def authorize_ont(
         force_reauthorize=force_reauthorize,
         preset_id=preset_id,
         operation_id=operation_id,
-        allow_registration_move=allow_registration_move,
-        dependency_scope=dependency_scope,
+        allow_registration_move=not is_commissioning,
+        dependency_scope=(
+            OltDependencyAuditScope.MANAGEMENT_ONLY
+            if is_commissioning
+            else OltDependencyAuditScope.FULL
+        ),
     )
-    record_phase("core_authorization", phase_started, success=result.success)
-    result.phase_timings = phase_timings
+    record_phase(
+        _AuthorizationPhase.CORE_AUTHORIZATION,
+        phase_started,
+        success=result.success,
+    )
+    result = replace(result, phase_timings=tuple(phase_timings))
 
     if not result.success:
         phase_started = monotonic()
-        _audit_authorization(
-            db, request, olt_id, fsp, serial_number, force_reauthorize, result
+        _audit_authorization(command, olt_id, fsp, force_reauthorize, result)
+        record_phase(_AuthorizationPhase.AUDIT, phase_started)
+        return replace(
+            result,
+            phase_timings=tuple(phase_timings),
+            duration_ms=max(0, int((monotonic() - started_at) * 1000)),
         )
-        record_phase("audit", phase_started)
-        result.duration_ms = max(0, int((monotonic() - started_at) * 1000))
-        return result
 
     phase_started = monotonic()
     db.commit()
-    record_phase("post_authorization_commit", phase_started)
+    record_phase(_AuthorizationPhase.POST_AUTHORIZATION_COMMIT, phase_started)
 
     # Step 2: Apply OLT baseline (internet service port + ACS reachability)
-    if provision and result.ont_unit_id:
+    if workflow is _AuthorizationWorkflow.ASSIGNED_SERVICE and result.ont_unit_id:
         phase_started = monotonic()
-        provision_result = apply_authorization_baseline(db, result.ont_unit_id)
+        provision_result = apply_authorization_baseline(db, str(result.ont_unit_id))
         provision_data = provision_result.data or {}
         record_phase(
-            "authorization_baseline",
+            _AuthorizationPhase.AUTHORIZATION_BASELINE,
             phase_started,
             success=provision_result.success,
             subphases=provision_data.get("phase_timings", []),
@@ -1351,97 +1427,105 @@ def authorize_ont(
             if key in provision_data
         }
         if provision_result.success:
-            result.baseline_applied = True
-            result.steps.append(
-                AuthorizationStepResult(
-                    step=len(result.steps) + 1,
-                    name="Apply Authorization Baseline",
-                    success=True,
-                    message=provision_result.message,
-                    duration_ms=provision_result.duration_ms,
-                    details=step_details,
-                )
+            result = replace(
+                result,
+                baseline_applied=True,
+                steps=(
+                    *result.steps,
+                    AuthorizationStepResult(
+                        step=len(result.steps) + 1,
+                        name="Apply Authorization Baseline",
+                        success=True,
+                        message=provision_result.message,
+                        duration_ms=provision_result.duration_ms,
+                        details=step_details,
+                    ),
+                ),
             )
             phase_started = monotonic()
             db.commit()
-            record_phase("post_baseline_commit", phase_started)
+            record_phase(_AuthorizationPhase.POST_BASELINE_COMMIT, phase_started)
         else:
             # Provisioning failed but authorization succeeded - partial success
-            result.baseline_applied = False
-            result.steps.append(
-                AuthorizationStepResult(
-                    step=len(result.steps) + 1,
-                    name="Apply Authorization Baseline",
-                    success=False,
-                    message=provision_result.message,
-                    duration_ms=provision_result.duration_ms,
-                    details=step_details,
-                )
-            )
-            result.status = "warning"
-            result.partial_success = True
-            result.message = (
-                "ONT authorized, but OLT service baseline failed: "
-                f"{provision_result.message}"
+            result = replace(
+                result,
+                baseline_applied=False,
+                steps=(
+                    *result.steps,
+                    AuthorizationStepResult(
+                        step=len(result.steps) + 1,
+                        name="Apply Authorization Baseline",
+                        success=False,
+                        message=provision_result.message,
+                        duration_ms=provision_result.duration_ms,
+                        details=step_details,
+                    ),
+                ),
+                status=AuthorizationWorkflowStatus.WARNING,
+                partial_success=True,
+                message=(
+                    "ONT authorized, but OLT service baseline failed: "
+                    f"{provision_result.message}"
+                ),
             )
 
     phase_started = monotonic()
-    _audit_authorization(
-        db, request, olt_id, fsp, serial_number, force_reauthorize, result
+    _audit_authorization(command, olt_id, fsp, force_reauthorize, result)
+    record_phase(_AuthorizationPhase.AUDIT, phase_started)
+    return replace(
+        result,
+        phase_timings=tuple(phase_timings),
+        duration_ms=max(0, int((monotonic() - started_at) * 1000)),
     )
-    record_phase("audit", phase_started)
-    result.phase_timings = phase_timings
-    result.duration_ms = max(0, int((monotonic() - started_at) * 1000))
-    return result
+
+
+def authorize_and_provision_ont(
+    db: Session,
+    command: ExecuteAssignedOntAuthorization,
+) -> AuthorizationWorkflowResult:
+    """Register one assigned ONT and apply its full OLT service baseline."""
+    return _execute_authorization_workflow(db, command)
+
+
+def register_ont_for_commissioning(
+    db: Session,
+    command: RegisterCommissioningOnt,
+) -> AuthorizationWorkflowResult:
+    """Register one unassigned ONT for the commissioning owner only."""
+    return _execute_authorization_workflow(db, command)
 
 
 def _audit_authorization(
-    db: Session,
-    request: Request | None,
+    command: ExecuteAssignedOntAuthorization | RegisterCommissioningOnt,
     olt_id: str,
     fsp: str,
-    serial_number: str,
     force_reauthorize: bool,
     result: AuthorizationWorkflowResult,
 ) -> None:
-    """Log authorization action for audit trail."""
-    from app.services.network.action_logging import log_network_action_result
-
+    """Emit structured execution evidence without importing a transport request."""
     status = (
         "success"
         if result.success
         else ("warning" if result.partial_success else "error")
     )
-    log_olt_audit_event(
-        db,
-        request=request,
-        action="force_authorize_ont" if force_reauthorize else "authorize_ont",
-        entity_id=olt_id,
-        metadata={
-            "result": status,
-            "message": result.message,
+    logger.log(
+        logging.INFO if result.success else logging.ERROR,
+        "ONT authorization execution completed",
+        extra={
+            "event": "ont_authorization_execution_completed",
+            "authorization_status": status,
+            "authorization_workflow": (
+                _AuthorizationWorkflow.COMMISSIONING.value
+                if isinstance(command, RegisterCommissioningOnt)
+                else _AuthorizationWorkflow.ASSIGNED_SERVICE.value
+            ),
+            "actor": command.context.actor,
+            "command_id": str(command.context.command_id),
+            "operation_id": str(command.operation_id),
+            "olt_id": olt_id,
             "fsp": fsp,
-            "serial_number": serial_number,
             "force_reauthorize": force_reauthorize,
             "completed_authorization": result.completed_authorization,
             "local_inventory_failed": result.local_inventory_failed,
-            "device_authorization_reused_from": (
-                result.device_authorization_reused_from
-            ),
-        },
-        status_code=200 if result.success or result.partial_success else 500,
-        is_success=result.success,
-    )
-    log_network_action_result(
-        request=request,
-        resource_type="olt",
-        resource_id=olt_id,
-        action="Force Authorize ONT" if force_reauthorize else "Authorize ONT",
-        success=result.success,
-        message=result.message,
-        metadata={
-            "fsp": fsp,
-            "serial_number": serial_number,
-            "force_reauthorize": force_reauthorize,
         },
     )

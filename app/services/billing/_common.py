@@ -121,7 +121,11 @@ def _validate_account(db: Session, account_id: str):
 
 
 def get_account_credit_balance(
-    db: Session, account_id: str, *, currency: str | None = "NGN"
+    db: Session,
+    account_id: str,
+    *,
+    currency: str | None = "NGN",
+    after: datetime | None = None,
 ) -> Decimal:
     """Calculate the credit balance for an account from ledger entries.
 
@@ -129,12 +133,18 @@ def get_account_credit_balance(
     - Sum of credit entries with no invoice (unallocated payments)
     - Minus any debit entries for refunds/adjustments
 
+    ``after`` scopes both economic time and Sub record time to facts crossing a
+    reviewed opening-position boundary. It is used only by owners that combine
+    native account credit with an authoritative baseline, so pre-boundary
+    mirror residue cannot be counted or quarantined a second time.
+
     Args:
         db: Database session
         account_id: The account to check
         currency: Currency to read. Defaults to NGN so payment credit in one
             currency cannot accidentally cover debt in another. Pass ``None``
             only for explicit all-currency reporting, never enforcement.
+        after: Optional exclusive reviewed-position boundary.
 
     Returns:
         Credit balance (positive means customer has credit)
@@ -160,6 +170,14 @@ def get_account_credit_balance(
     )
     if currency is not None:
         credit_query = credit_query.filter(LedgerEntry.currency == currency)
+    if after is not None:
+        credit_query = credit_query.filter(
+            or_(
+                LedgerEntry.created_at > after,
+                func.coalesce(LedgerEntry.effective_date, LedgerEntry.created_at)
+                > after,
+            )
+        )
     credit_total = credit_query.scalar() or Decimal("0.00")
 
     # Get debits against unallocated credits (refunds)
@@ -192,6 +210,14 @@ def get_account_credit_balance(
     )
     if currency is not None:
         debit_query = debit_query.filter(LedgerEntry.currency == currency)
+    if after is not None:
+        debit_query = debit_query.filter(
+            or_(
+                LedgerEntry.created_at > after,
+                func.coalesce(LedgerEntry.effective_date, LedgerEntry.created_at)
+                > after,
+            )
+        )
     debit_total = debit_query.scalar() or Decimal("0.00")
 
     return round_money(to_decimal(credit_total) - to_decimal(debit_total))

@@ -31,7 +31,12 @@ from app.services.network.olt_batched_mgmt import (
     BatchedMgmtSpec,
     build_management_command_batch,
 )
-from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
+from app.services.network.ont_authorization_contracts import (
+    OntFsp,
+    OntSerialNumber,
+    RegisterCommissioningOnt,
+    RequestAssignedOntAuthorization,
+)
 from app.services.network.ont_commissioning import (
     RequestOntCommissioning,
     _exact_live_autofind_preflight,
@@ -93,8 +98,8 @@ def _request(
         ),
         candidate_id=target.candidate_id,
         expected_olt_id=target.olt_id,
-        expected_fsp=expected_fsp or target.fsp,
-        expected_serial=target.serial,
+        expected_fsp=OntFsp.parse(expected_fsp or target.fsp),
+        expected_serial=OntSerialNumber.parse(target.serial),
         reason="Pre-stage ACS management for field installation",
         reference="WO-100013286",
     )
@@ -153,18 +158,34 @@ def test_commissioning_rejects_stale_exact_target(db_session):
 
 
 def test_normal_authorization_rejects_assignment_free_request(db_session):
-    _olt, _candidate_row, target = _candidate(db_session)
+    _olt, candidate, target = _candidate(db_session)
+    ont = OntUnit(
+        serial_number=target.serial,
+        olt_device_id=target.olt_id,
+        is_active=True,
+    )
+    db_session.add(ont)
+    db_session.commit()
+    candidate.ont_unit_id = ont.id
+    db_session.commit()
 
     result = request_ont_authorization(
         db_session,
-        olt_id=str(target.olt_id),
-        fsp=target.fsp,
-        serial_number=target.serial,
-        initiated_by="noc.operator",
+        RequestAssignedOntAuthorization.from_transport(
+            context=CommandContext.system(
+                actor="noc.operator",
+                scope="network:ont:authorize",
+                reason="test assignment-free rejection",
+            ),
+            ont_id=ont.id,
+            olt_id=target.olt_id,
+            fsp=target.fsp,
+            serial_number=target.serial,
+        ),
     )
 
     assert result.accepted is False
-    assert "assigned ONT" in result.message
+    assert "active assignment" in result.message
     assert "Commission ONT" in result.message
 
 
@@ -440,10 +461,10 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
         "app.services.network.ont_commissioning._exact_live_autofind_preflight",
         lambda _intent, _olt: (True, "exact"),
     )
-    authorization_kwargs = {}
+    authorization_commands: list[RegisterCommissioningOnt] = []
 
-    def fail_local_inventory(*_args, **kwargs):
-        authorization_kwargs.update(kwargs)
+    def fail_local_inventory(_db, command):
+        authorization_commands.append(command)
         return SimpleNamespace(
             success=False,
             message="OLT authorization succeeded; local inventory failed",
@@ -454,7 +475,7 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
         )
 
     monkeypatch.setattr(
-        "app.services.network.ont_authorization.authorize_ont",
+        "app.services.network.ont_authorization.register_ont_for_commissioning",
         fail_local_inventory,
     )
 
@@ -469,10 +490,13 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
     assert intent is not None
     assert intent.device_authorized_at is not None
     assert intent.ont_unit_id is None
-    assert (
-        authorization_kwargs["dependency_scope"]
-        is OltDependencyAuditScope.MANAGEMENT_ONLY
-    )
+    assert len(authorization_commands) == 1
+    authorization_command = authorization_commands[0]
+    assert authorization_command.operation_id == admission.operation_id
+    assert authorization_command.intent_id == admission.intent_id
+    assert authorization_command.target.olt_id == target.olt_id
+    assert authorization_command.target.fsp.value == target.fsp
+    assert authorization_command.target.serial_number.value == target.serial
     intent.created_at = datetime.now(UTC) - timedelta(hours=2)
     intent.expires_at = datetime.now(UTC) - timedelta(minutes=1)
     db_session.commit()
