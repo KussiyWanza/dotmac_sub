@@ -4280,6 +4280,18 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=30,
         label="Location prompt snooze (days)",
     ),
+    # Customer-impact shields (outage/ticket) defer billing notices; this
+    # bounds how long their evidence keeps suppressing before the normal
+    # collections progression resumes (see billing_communication_policy).
+    SettingSpec(
+        domain=SettingDomain.billing,
+        key="notice_shield_max_hours",
+        env_var="NOTICE_SHIELD_MAX_HOURS",
+        value_type=SettingValueType.integer,
+        default=72,
+        min_value=1,
+        label="Billing notice shield expiry (hours)",
+    ),
     # Scheduler booleans are decision inputs. Every mutable task gate must be
     # registered here or in control_registry; scheduler_config may not invent
     # an environment/database/default precedence path of its own.

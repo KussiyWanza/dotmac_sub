@@ -6,10 +6,30 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.models.domain_settings import SettingDomain
 from app.services.customer_service_state import (
     active_outage_subscription_ids,
     subscribers_with_open_infrastructure_down_tickets,
 )
+
+#: A customer-impact shield defers billing consequences, so it must expire:
+#: an evidence source older than this stops suppressing notices and the
+#: normal progression resumes. Kept as a registered setting so operations
+#: can widen it during a genuine prolonged incident.
+DEFAULT_NOTICE_SHIELD_MAX_HOURS = 72
+
+
+def _notice_shield_max_hours(db: Session) -> int:
+    from app.services.settings_spec import resolve_value
+
+    try:
+        value = int(
+            resolve_value(db, SettingDomain.billing, "notice_shield_max_hours")
+            or DEFAULT_NOTICE_SHIELD_MAX_HOURS
+        )
+    except (TypeError, ValueError):
+        value = DEFAULT_NOTICE_SHIELD_MAX_HOURS
+    return max(1, value)
 
 
 @dataclass(frozen=True)
@@ -32,9 +52,13 @@ def billing_communication_decisions(
     subscriber_ids = {
         sub.subscriber_id for sub in rows if getattr(sub, "subscriber_id", None)
     }
-    outage_ids = active_outage_subscription_ids(db) & subscription_ids
+    shield_max_hours = _notice_shield_max_hours(db)
+    outage_ids = (
+        active_outage_subscription_ids(db, manual_open_max_hours=shield_max_hours)
+        & subscription_ids
+    )
     ticket_subscribers = subscribers_with_open_infrastructure_down_tickets(
-        db, subscriber_ids
+        db, subscriber_ids, max_age_hours=shield_max_hours
     )
 
     decisions: dict[object, BillingCommunicationDecision] = {}

@@ -395,7 +395,7 @@ def test_nonzero_grace_does_not_start_until_warning_is_queued(
 
     result = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON)
 
-    assert result["notice_blocked"] == 1
+    assert result["notice_suppressed"] == 1
     assert result["warned"] == 0
     db_session.refresh(subscriber_account)
     assert subscriber_account.prepaid_low_balance_at is None

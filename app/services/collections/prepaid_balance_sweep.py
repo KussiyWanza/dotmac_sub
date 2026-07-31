@@ -17,8 +17,10 @@ processed in its own committed unit so one bad row cannot abort the batch.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,7 +31,6 @@ from app.models.subscriber import Subscriber
 from app.services.access_resolution import PrepaidFundingDecision
 from app.services.collections._core import (
     _clear_prepaid_dunning_flags,
-    _get_account_email,
     _restore_prepaid_if_funded,
     _suspend_account,
     confirm_financial_access_restoration,
@@ -54,8 +55,35 @@ logger = logging.getLogger(__name__)
 
 _SOURCE = "prepaid_balance_sweep"
 
+_NO_CONTACT_FINDING_PREFIX = "prepaid-enforcement:no-contact-route:"
+#: Review window recorded on the staff work item for an unreachable customer.
+_NO_CONTACT_SLA_HOURS = 72
 
-def _send_notice(
+
+class PrepaidNoticeOutcome(StrEnum):
+    """Typed result of attempting to queue an enforcement notice.
+
+    Only ``policy_suppressed`` (a live customer-impact shield) may defer the
+    collections progression. A missing contact route or an undeliverable
+    channel never stops the timer: delivery stays independently retryable in
+    the notification queue, and the unreachable customer becomes a staff work
+    item instead of an indefinitely parked account.
+    """
+
+    queued = "queued"
+    no_contact_route = "no_contact_route"
+    delivery_unavailable = "delivery_unavailable"
+    policy_suppressed = "policy_suppressed"
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidNoticeDecision:
+    outcome: PrepaidNoticeOutcome
+    queued_count: int
+    suppressed: tuple[str, ...]
+
+
+def _queue_notice(
     db: Session,
     account: Subscriber,
     subject: str,
@@ -64,13 +92,13 @@ def _send_notice(
     threshold: Decimal,
     *,
     suppression_reason: str | None = None,
-) -> bool:
-    """Queue a customer email using the operator-configured subject/body.
+) -> PrepaidNoticeDecision:
+    """Queue the notice on every policy-resolved channel with a route.
 
-    Reuses the same simple ``Notification`` (channel=email, status=queued)
-    mechanism the dunning throttle/suspension notices use — the notification
-    queue runner owns delivery. ``{balance}`` / ``{threshold}`` placeholders in
-    the body are filled; malformed templates fall back to the raw text.
+    Channel selection, per-address policy gates, and row creation belong to
+    the communication-intent owner; the queue runner owns delivery and
+    retries. ``{balance}`` / ``{threshold}`` placeholders in the body are
+    filled; malformed templates fall back to the raw text.
     """
     if suppression_reason:
         logger.info(
@@ -78,35 +106,98 @@ def _send_notice(
             account.id,
             suppression_reason,
         )
-        return False
+        return PrepaidNoticeDecision(
+            outcome=PrepaidNoticeOutcome.policy_suppressed,
+            queued_count=0,
+            suppressed=(suppression_reason,),
+        )
 
     from app.models.notification import NotificationChannel
-    from app.schemas.notification import NotificationCreate
-    from app.services.notification import notifications as notifications_svc
+    from app.services.communication_intents import CommunicationIntent, submit
 
-    email = _get_account_email(db, str(account.id))
-    if not email:
-        logger.warning(
-            "prepaid_balance_sweep notice skipped for %s: no email", account.id
-        )
-        return False
     try:
         rendered = str(body).format(balance=balance, threshold=threshold)
     except (KeyError, IndexError, ValueError):
         rendered = str(body)
-    notifications_svc.queue_customer_notification(
+    result = submit(
         db,
-        NotificationCreate(
+        CommunicationIntent(
             subscriber_id=account.id,
-            channel=NotificationChannel.email,
             event_type="prepaid_balance_enforcement",
             category="billing",
-            recipient=email,
             subject=str(subject),
             body=rendered,
+            # Push is deliberately absent: its address resolver returns the
+            # subscriber id unconditionally, which would count every customer
+            # as reachable and make no_contact_route unobservable. The
+            # notification channel policy can still add push explicitly.
+            default_channels=(
+                NotificationChannel.email,
+                NotificationChannel.sms,
+                NotificationChannel.whatsapp,
+            ),
         ),
     )
-    return True
+    if result.queued:
+        return PrepaidNoticeDecision(
+            outcome=PrepaidNoticeOutcome.queued,
+            queued_count=len(result.queued),
+            suppressed=tuple(result.suppressed),
+        )
+    subscriber_reasons = tuple(
+        reason for reason in result.suppressed if reason.startswith("subscriber:")
+    )
+    no_route = not subscriber_reasons or all(
+        reason.endswith(":missing_address") for reason in subscriber_reasons
+    )
+    return PrepaidNoticeDecision(
+        outcome=(
+            PrepaidNoticeOutcome.no_contact_route
+            if no_route
+            else PrepaidNoticeOutcome.delivery_unavailable
+        ),
+        queued_count=0,
+        suppressed=tuple(result.suppressed),
+    )
+
+
+def _record_no_contact_route_finding(
+    db: Session,
+    account: Subscriber,
+    decision: PrepaidNoticeDecision,
+    *,
+    now: datetime,
+) -> None:
+    """Create/refresh the staff work item for an unreachable customer."""
+    from datetime import timedelta
+
+    from app.models.network_monitoring import AlertSeverity
+    from app.services.observability import Finding, record_finding
+
+    record_finding(
+        db,
+        Finding(
+            fingerprint=f"{_NO_CONTACT_FINDING_PREFIX}{account.id}",
+            domain="prepaid_enforcement",
+            source=_SOURCE,
+            severity=AlertSeverity.warning,
+            title="Prepaid customer has no deliverable warning channel",
+            summary=(
+                "The account entered low-balance enforcement with no "
+                "deliverable customer channel. The collections timer is armed "
+                "and enforcement continues; a staff contact route is required "
+                "within the review SLA."
+            ),
+            details={
+                "owner": "support-collections",
+                "account_id": str(account.id),
+                "sla_due_at": (
+                    now + timedelta(hours=_NO_CONTACT_SLA_HOURS)
+                ).isoformat(),
+                "suppressed_routes": list(decision.suppressed),
+            },
+        ),
+    )
 
 
 def _reconcile_funded(
@@ -174,8 +265,9 @@ def _reconcile_low(
     result = "ok"
     just_armed = False
     if account.prepaid_low_balance_at is None:
+        decision: PrepaidNoticeDecision | None = None
         if not suspend_now:
-            queued = _send_notice(
+            decision = _queue_notice(
                 db,
                 account,
                 cfg.warning_subject,
@@ -184,14 +276,31 @@ def _reconcile_low(
                 threshold,
                 suppression_reason=notice_suppression_reason,
             )
-            if not queued:
-                return "notice_blocked"
+            # Only a live customer-impact shield defers the progression; the
+            # grace clock must not start while the customer was deliberately
+            # not warned during an outage they are inside.
+            if decision.outcome is PrepaidNoticeOutcome.policy_suppressed:
+                return "notice_suppressed"
+        # A missing contact route or undeliverable channel never stops the
+        # collections timer: delivery is the queue runner's retryable concern,
+        # and the unreachable customer becomes a staff work item.
         just_armed = arm_prepaid_low_balance_timer(
             db,
             account.id,
             armed_at=now,
         )
-        result = "ok" if suspend_now else "warned"
+        if suspend_now:
+            result = "ok"
+        elif decision is not None and decision.outcome is PrepaidNoticeOutcome.queued:
+            result = "warned"
+        elif (
+            decision is not None
+            and decision.outcome is PrepaidNoticeOutcome.no_contact_route
+        ):
+            _record_no_contact_route_finding(db, account, decision, now=now)
+            result = "no_contact_route"
+        else:
+            result = "delivery_unavailable"
         logger.info(
             "prepaid_balance_sweep armed low-balance for account %s", account.id
         )
@@ -215,7 +324,9 @@ def _reconcile_low(
     )
     if suspended:
         mark_prepaid_deactivated(db, account.id, deactivated_at=now)
-        _send_notice(
+        # Suspension already happened; the deactivation notice is best-effort
+        # and its delivery stays with the queue runner.
+        _queue_notice(
             db,
             account,
             cfg.deactivation_subject,
@@ -350,7 +461,9 @@ def run_prepaid_balance_sweep(
         "coverage_unresolved": 0,
         "renewal_terms_unresolved": 0,
         "funding_quarantined": 0,
-        "notice_blocked": 0,
+        "notice_suppressed": 0,
+        "no_contact_route": 0,
+        "delivery_unavailable": 0,
         "state_drift": 0,
         "ok": 0,
         "errors": 0,
@@ -368,6 +481,7 @@ def run_prepaid_balance_sweep(
     notice_reasons = prepaid_notice_suppression_reasons(db, enforceable_ids)
     stats["accounts_scanned"] = len(account_ids)
     stats["funding_quarantined"] = len(quarantined_ids)
+    no_contact_account_ids: set[str] = set()
     for account_id in enforceable_ids:
         try:
             account = db.execute(
@@ -384,6 +498,8 @@ def run_prepaid_balance_sweep(
                 cfg,
                 notice_suppression_reason=notice_reasons.get(account.id),
             )
+            if outcome == "no_contact_route":
+                no_contact_account_ids.add(str(account.id))
             db.commit()
             stats[outcome] = int(stats.get(outcome, 0)) + 1
         except Exception:
@@ -393,5 +509,35 @@ def run_prepaid_balance_sweep(
                 "prepaid_balance_sweep_account_failed",
                 extra={"account_id": str(account_id)},
             )
+    try:
+        # A work item stays open while its account remains inside prepaid
+        # enforcement (armed timer or deactivation marker) — the outcome only
+        # fires on the arming pass, so absence from this run's set does not
+        # mean the customer became reachable. It closes when the account
+        # exits enforcement (restored/funded), which clears both timers.
+        from app.services.observability import resolve_findings
+
+        still_enforced = set(
+            db.scalars(
+                select(Subscriber.id).where(
+                    (Subscriber.prepaid_low_balance_at.is_not(None))
+                    | (Subscriber.prepaid_deactivation_at.is_not(None))
+                )
+            ).all()
+        )
+        resolve_findings(
+            db,
+            managed_prefix=_NO_CONTACT_FINDING_PREFIX,
+            active_fingerprints={
+                f"{_NO_CONTACT_FINDING_PREFIX}{value}"
+                for value in (
+                    no_contact_account_ids | {str(item) for item in still_enforced}
+                )
+            },
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("prepaid_balance_sweep_finding_resolution_failed")
     logger.info("prepaid_balance_sweep completed: %s", stats)
     return stats

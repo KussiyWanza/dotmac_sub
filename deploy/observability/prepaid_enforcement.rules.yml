@@ -119,17 +119,49 @@ groups:
             posting backfill (ADR 0007 Phase 3).
           runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
 
-      - alert: PrepaidNoticeBlockedAccounts
-        expr: observability_state{domain="prepaid_enforcement",signal="notice_blocked"} > 0
-        for: 6h
+      - alert: PrepaidNoContactRouteAccounts
+        expr: observability_state{domain="prepaid_enforcement",signal="no_contact_route"} > 0
+        for: 1h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: support-collections
+        annotations:
+          summary: "Prepaid customers entered enforcement with no contact route"
+          description: >
+            Enforcement progressed (timer armed) for accounts with no
+            deliverable customer channel; each has an owned staff work item
+            in admin alerts that needs a contact route within its SLA.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: PrepaidNoticeDeliveryUnavailable
+        expr: observability_state{domain="prepaid_enforcement",signal="delivery_unavailable"} > 0
+        for: 3h
         labels:
           severity: warning
           area: prepaid-enforcement
           owner: financial-collections
         annotations:
-          summary: "Prepaid enforcement stalled on undeliverable notices"
+          summary: "Prepaid warning notices are blocked by delivery policy"
           description: >
-            Accounts without a deliverable warning channel are not
-            progressing toward enforcement. These need a contact route or the
-            typed notice-outcome progression that replaces this state.
+            Customer addresses exist but every resolved channel was blocked
+            by notification policy. Enforcement still progresses; check the
+            notification channel policy and suppression lists.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: PrepaidNoticeShieldPersistent
+        expr: observability_state{domain="prepaid_enforcement",signal="notice_suppressed"} > 0
+        for: 24h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid enforcement deferred by customer-impact shields for a day"
+          description: >
+            Outage or infra-ticket shields have deferred enforcement notices
+            for over 24 hours. Shields expire after
+            billing.notice_shield_max_hours (default 72h); a persistent count
+            means live incidents/tickets keep renewing — verify they are
+            genuine and being worked.
           runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
