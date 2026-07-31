@@ -368,9 +368,9 @@ This document captures feature observations from 42 screenshots of legacy BSS's 
 **Proposed improvements for DotMac Sub:**
 
 - [ ] Add an in-app help/documentation link from the admin sidebar that opens contextual help for the current page
-- [ ] Create a searchable knowledge base or help center integrated into the admin UI
+- [x] Create a searchable knowledge base or help center integrated into the admin UI
 - [ ] Add "Getting Started" guided setup wizard for new deployments
-- [ ] Include FAQ section accessible from the admin help menu
+- [x] Include FAQ section accessible from the admin help menu
 - [ ] Add contextual help tooltips on complex form fields referencing relevant documentation
 
 ---

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 VERIFY_ACTION_KEY = "payment_proof.verify"
 REJECT_ACTION_KEY = "payment_proof.reject"
+CORRECT_DUPLICATE_ACTION_KEY = "payment_proof.correct_duplicate"
 
 
 @dataclass(frozen=True)
@@ -247,6 +248,74 @@ def _review_actions(
     return tuple(bound_actions)
 
 
+def _duplicate_correction_actions(
+    db: Session,
+    proof: PaymentProof,
+    *,
+    can_correct: bool,
+) -> tuple[ActionForm, ...]:
+    if not can_correct or proof.status is not PaymentProofStatus.verified:
+        return ()
+    candidates = payment_proofs_service.duplicate_correction_candidates(db, proof.id)
+    if not candidates:
+        return ()
+    options = tuple(
+        ActionOption(
+            value=str(candidate.proof_id),
+            label=(
+                f"{candidate.currency} {candidate.amount:,.2f} · "
+                f"{candidate.reference or 'no reference'} · "
+                f"{candidate.created_at:%Y-%m-%d %H:%M}"
+            ),
+        )
+        for candidate in candidates
+    )
+    return (
+        ActionForm(
+            key=CORRECT_DUPLICATE_ACTION_KEY,
+            title="Correct duplicate verification",
+            description=(
+                "Use only when this verified proof represents payment already "
+                "recorded by an earlier verified proof."
+            ),
+            action_url=(
+                f"/admin/billing/payment-proofs/{proof.id}/duplicate-correction/preview"
+            ),
+            submit_label="Review duplicate correction",
+            fields=(
+                ActionField(
+                    key="original_proof_id",
+                    label="Original verified proof to retain",
+                    kind=ActionFieldKind.select,
+                    required=True,
+                    options=options,
+                    help_text=(
+                        "Compare both receipts and bank evidence before selecting "
+                        "the original settlement."
+                    ),
+                ),
+                ActionField(
+                    key="reason",
+                    label="Correction reason",
+                    kind=ActionFieldKind.textarea,
+                    required=True,
+                    max_length=500,
+                    rows=3,
+                    placeholder=(
+                        "Explain how the second verification duplicated the "
+                        "earlier payment."
+                    ),
+                ),
+            ),
+            tone=ActionTone.negative,
+            impact=(
+                "The next screen previews the exact balance, invoice, payment, "
+                "and audit effects. Nothing changes until confirmation."
+            ),
+        ),
+    )
+
+
 def review_error_submission(
     *,
     action_key: str,
@@ -310,6 +379,7 @@ def detail_data(
     *,
     proof_id: str,
     can_review: bool = False,
+    can_correct: bool = False,
     submission: ActionFormSubmission | None = None,
 ) -> dict[str, object] | None:
     """Build template context for the payment proof detail page."""
@@ -332,6 +402,7 @@ def detail_data(
         submission=submission,
     )
     reviewer = _reviewer_identity(db, actor_id=proof.verified_by)
+    correction = payment_proofs_service.get_duplicate_correction(db, proof.id)
 
     return {
         "proof": proof,
@@ -343,6 +414,12 @@ def detail_data(
         "file_is_image": suffix in _IMAGE_SUFFIXES,
         "file_is_pdf": suffix == ".pdf",
         "review_actions": review_actions,
+        "correction_actions": _duplicate_correction_actions(
+            db,
+            proof,
+            can_correct=can_correct,
+        ),
+        "correction": correction,
         "review_outcome": proof.status != PaymentProofStatus.submitted,
     }
 
@@ -391,3 +468,41 @@ def reject_proof(
         verified_by=verified_by,
         review_notes=review_notes,
     ).to_dict()
+
+
+def preview_duplicate_correction(
+    db: Session,
+    *,
+    proof_id: UUID,
+    original_proof_id: UUID,
+    reason: str,
+) -> payment_proofs_service.DuplicateProofCorrectionPreview:
+    return payment_proofs_service.preview_duplicate_correction(
+        db,
+        duplicate_proof_id=proof_id,
+        original_proof_id=original_proof_id,
+        reason=reason,
+    )
+
+
+def correct_duplicate_payment_proof(
+    db: Session,
+    *,
+    context: CommandContext,
+    proof_id: UUID,
+    original_proof_id: UUID,
+    actor_id: str,
+    reason: str,
+    preview_fingerprint: str,
+) -> payment_proofs_service.DuplicateProofCorrectionResult:
+    return payment_proofs_service.correct_duplicate_payment_proof(
+        db,
+        context=context,
+        command=payment_proofs_service.CorrectDuplicatePaymentProofCommand(
+            duplicate_proof_id=proof_id,
+            original_proof_id=original_proof_id,
+            actor_id=actor_id,
+            reason=reason,
+            preview_fingerprint=preview_fingerprint,
+        ),
+    )

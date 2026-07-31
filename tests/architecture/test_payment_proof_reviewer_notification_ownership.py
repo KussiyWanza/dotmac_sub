@@ -69,6 +69,7 @@ def test_payment_proof_commands_are_transport_neutral_and_complete_once() -> Non
             "submit_direct_transfer_proof",
             "verify_proof",
             "reject_proof",
+            "correct_duplicate_payment_proof",
         }
     }
 
@@ -77,9 +78,10 @@ def test_payment_proof_commands_are_transport_neutral_and_complete_once() -> Non
         "submit_direct_transfer_proof",
         "verify_proof",
         "reject_proof",
+        "correct_duplicate_payment_proof",
     }
     assert all("context" in arguments for arguments in public_commands.values())
-    assert source.count("execute_owner_command(") == 4
+    assert source.count("execute_owner_command(") == 5
     assert "commit" not in calls
     assert "rollback" not in calls
     assert "begin_nested" not in calls
@@ -95,6 +97,7 @@ def test_payment_proof_owner_stages_named_transition_events() -> None:
         "payment_proof.submitted",
         "payment_proof.verified",
         "payment_proof.rejected",
+        "payment_proof.corrected",
         "withholding_tax.receivable_recorded",
     ):
         assert event_name in event_types

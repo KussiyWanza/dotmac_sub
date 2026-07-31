@@ -15,6 +15,13 @@ _CONFLICT_SUFFIXES = (
     ".deposit_settlement_rejected",
     ".active_caller_transaction",
     ".nested_owner_command",
+    ".already_corrected",
+    ".correction_original_was_corrected",
+    ".correction_duplicate_not_verified",
+    ".correction_original_not_verified",
+    ".correction_reversal_unavailable",
+    ".correction_idempotency_conflict",
+    ".correction_stale_preview",
 )
 _INTERNAL_SUFFIXES = (
     ".command_contract_violation",

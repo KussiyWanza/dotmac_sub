@@ -79,6 +79,14 @@ class TestAdminWebRouteRegistration:
         assert ("/billing/payment-proofs/{proof_id}/file", "GET") in routes
         assert ("/billing/payment-proofs/{proof_id}/verify", "POST") in routes
         assert ("/billing/payment-proofs/{proof_id}/reject", "POST") in routes
+        assert (
+            "/billing/payment-proofs/{proof_id}/duplicate-correction/preview",
+            "POST",
+        ) in routes
+        assert (
+            "/billing/payment-proofs/{proof_id}/duplicate-correction",
+            "POST",
+        ) in routes
 
     def test_router_is_mounted_on_admin(self) -> None:
         from app.web.admin import router as admin_router
@@ -180,6 +188,73 @@ class TestAdminWebVerifyRejectHandlers:
         kwargs = service.reject_proof.call_args.kwargs
         assert kwargs["review_notes"] == "No matching transfer"
         assert kwargs["verified_by"] == "admin-2"
+        assert response.status_code == 303
+
+
+class TestDuplicateCorrectionHandlers:
+    def test_preview_requires_payment_update_permission(self) -> None:
+        from app.web.admin.billing_payment_proofs import (
+            payment_proof_duplicate_correction_preview,
+        )
+
+        with (
+            patch(
+                "app.web.admin.billing_payment_proofs.has_permission",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc,
+        ):
+            payment_proof_duplicate_correction_preview(
+                request=MagicMock(),
+                proof_id=uuid.uuid4(),
+                original_proof_id=uuid.uuid4(),
+                reason="Duplicate receipt confirmed against bank evidence.",
+                db=_clean_session_mock(),
+                auth={"principal_id": str(uuid.uuid4())},
+            )
+
+        assert exc.value.status_code == 403
+
+    def test_confirmation_delegates_to_owner_and_redirects(self) -> None:
+        from app.web.admin.billing_payment_proofs import (
+            payment_proof_duplicate_correction,
+        )
+
+        proof_id = uuid.uuid4()
+        original_id = uuid.uuid4()
+        actor_id = uuid.uuid4()
+        result = MagicMock(payment_reversal_id=uuid.uuid4())
+        db = _clean_session_mock()
+        with (
+            patch(
+                "app.web.admin.billing_payment_proofs.has_permission",
+                return_value=True,
+            ),
+            patch(
+                "app.web.admin.billing_payment_proofs.web_payment_proofs_service"
+            ) as service,
+            patch(
+                "app.web.admin.billing_payment_proofs.db_session_adapter"
+            ) as session_adapter,
+        ):
+            service.correct_duplicate_payment_proof.return_value = result
+            response = payment_proof_duplicate_correction(
+                request=MagicMock(),
+                proof_id=proof_id,
+                original_proof_id=original_id,
+                reason="Duplicate receipt confirmed against bank evidence.",
+                preview_fingerprint="a" * 64,
+                idempotency_key="proof-correction-handler-test",
+                db=db,
+                auth={"principal_id": str(actor_id)},
+            )
+
+        session_adapter.release_read_transaction.assert_called_once_with(db)
+        service.correct_duplicate_payment_proof.assert_called_once()
+        call = service.correct_duplicate_payment_proof.call_args.kwargs
+        assert call["proof_id"] == proof_id
+        assert call["original_proof_id"] == original_id
+        assert call["actor_id"] == str(actor_id)
         assert response.status_code == 303
 
 
