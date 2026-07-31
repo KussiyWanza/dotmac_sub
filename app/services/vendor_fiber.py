@@ -18,7 +18,16 @@ from app.models.fiber_change_request import FiberChangeRequest
 from app.models.vendor_routes import InstallationProject
 from app.models.work_order import WorkOrder
 from app.services.common import coerce_uuid
-from app.services.network import fiber_splice_plans, fiber_splice_proposals
+from app.services.network import (
+    fiber_inventory_proposals,
+    fiber_job_evidence,
+    fiber_splice_plans,
+    fiber_splice_proposals,
+)
+from app.services.network.fiber_inventory_proposals import (
+    CableRegistrationReceipt,
+    StrandDamageReceipt,
+)
 from app.services.network.fiber_splice_proposals import (
     SpliceProposalError,
     SpliceProposalReceipt,
@@ -121,6 +130,94 @@ def get_splice_plan(
         "plan": view.to_dict() if view else None,
         "diff": diff.to_dict() if diff else None,
     }
+
+
+def register_cable(
+    db: Session,
+    *,
+    vendor_id: str,
+    vendor_user_id: str | None,
+    work_order_id: str,
+    name: str,
+    fiber_count: int,
+    segment_type: str | None = None,
+    cable_type: str | None = None,
+    fibers_per_tube: int | None = None,
+    color_standard: str | None = None,
+    length_m: float | None = None,
+    notes: str | None = None,
+) -> CableRegistrationReceipt:
+    """Register cable the vendor built as a reviewed (inactive) change request."""
+
+    vendor_uuid = coerce_uuid(vendor_id)
+    work_order = _scoped_vendor_work_order(db, vendor_uuid, work_order_id)
+    actor = VendorActor(
+        vendor_id=vendor_uuid,
+        vendor_user_id=coerce_uuid(vendor_user_id) if vendor_user_id else None,
+    )
+    return fiber_inventory_proposals.register_cable(
+        db,
+        actor=actor,
+        name=name,
+        fiber_count=fiber_count,
+        segment_type=segment_type,
+        cable_type=cable_type,
+        fibers_per_tube=fibers_per_tube,
+        color_standard=color_standard,
+        length_m=length_m,
+        notes=notes,
+        work_order=work_order,
+    )
+
+
+def report_strand_damage(
+    db: Session,
+    *,
+    vendor_id: str,
+    vendor_user_id: str | None,
+    work_order_id: str,
+    note: str,
+    strand_id: str | None = None,
+    segment_id: str | None = None,
+    tube_number: int | None = None,
+) -> StrandDamageReceipt:
+    """Report strand or tube damage found on the assigned project."""
+
+    vendor_uuid = coerce_uuid(vendor_id)
+    work_order = _scoped_vendor_work_order(db, vendor_uuid, work_order_id)
+    actor = VendorActor(
+        vendor_id=vendor_uuid,
+        vendor_user_id=coerce_uuid(vendor_user_id) if vendor_user_id else None,
+    )
+    return fiber_inventory_proposals.report_strand_damage(
+        db,
+        actor=actor,
+        note=note,
+        strand_id=strand_id,
+        segment_id=segment_id,
+        tube_number=tube_number,
+        work_order=work_order,
+    )
+
+
+def get_job_evidence(
+    db: Session,
+    *,
+    vendor_id: str,
+    work_order_id: str,
+) -> dict:
+    """One scoped view of every piece of fiber evidence on the vendor's job."""
+
+    from app.services.field.transitions import resolve_fiber_as_built_evidence
+
+    vendor_uuid = coerce_uuid(vendor_id)
+    work_order = _scoped_vendor_work_order(db, vendor_uuid, work_order_id)
+    summary = fiber_job_evidence.summarize(db, work_order)
+    evidence = resolve_fiber_as_built_evidence(db, work_order)
+    payload = summary.to_dict()
+    payload["as_built_required"] = evidence.required
+    payload["as_built_satisfied"] = evidence.satisfied
+    return payload
 
 
 def list_splice_proposals(

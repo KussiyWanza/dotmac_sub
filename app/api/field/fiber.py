@@ -4,16 +4,23 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.schemas.common import ListResponse
 from app.schemas.field import (
+    FieldCableRegistrationCreate,
+    FieldCableRegistrationResponse,
     FieldFiberCustomerTraceRead,
     FieldFiberSourceObservationCreate,
     FieldFiberSourceObservationRead,
     FieldFiberTestCreate,
     FieldFiberTestRead,
     FieldFiberWorkOrderEvidenceMapRead,
+    FieldJobEvidenceRead,
+    FieldOntAttachmentCreate,
+    FieldOntAttachmentResponse,
     FieldSpliceCreate,
     FieldSplicePlanResponse,
     FieldSpliceProposalResponse,
     FieldSpliceProposalStatusRead,
+    FieldStrandDamageCreate,
+    FieldStrandDamageResponse,
 )
 from app.services.auth_dependencies import require_user_auth
 from app.services.field import fiber as field_fiber
@@ -151,6 +158,87 @@ def list_field_fiber_source_observations(
         staged_feature_id=staged_feature_id,
     )
     return {"items": items, "count": len(items), "limit": len(items), "offset": 0}
+
+
+@router.post(
+    "/ont-attachments",
+    response_model=FieldOntAttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def propose_field_ont_attachment(
+    payload: FieldOntAttachmentCreate,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    receipt = field_fiber.propose_ont_attachment(
+        db,
+        auth,
+        crm_work_order_id=payload.work_order_id,
+        ont_unit_id=str(payload.ont_unit_id),
+        splitter_port_id=str(payload.splitter_port_id),
+        note=payload.note,
+    )
+    return receipt.to_dict()
+
+
+@router.post(
+    "/cable-registrations",
+    response_model=FieldCableRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_field_cable(
+    payload: FieldCableRegistrationCreate,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    receipt = field_fiber.register_cable(
+        db,
+        auth,
+        name=payload.name,
+        fiber_count=payload.fiber_count,
+        segment_type=payload.segment_type,
+        cable_type=payload.cable_type,
+        fibers_per_tube=payload.fibers_per_tube,
+        color_standard=payload.color_standard,
+        length_m=payload.length_m,
+        notes=payload.notes,
+        work_order_id=payload.work_order_id,
+    )
+    return receipt.to_dict()
+
+
+@router.post(
+    "/strand-damage-reports",
+    response_model=FieldStrandDamageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def report_field_strand_damage(
+    payload: FieldStrandDamageCreate,
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    receipt = field_fiber.report_strand_damage(
+        db,
+        auth,
+        note=payload.note,
+        strand_id=str(payload.strand_id) if payload.strand_id else None,
+        segment_id=str(payload.segment_id) if payload.segment_id else None,
+        tube_number=payload.tube_number,
+        work_order_id=payload.work_order_id,
+    )
+    return receipt.to_dict()
+
+
+@router.get(
+    "/job-evidence",
+    response_model=FieldJobEvidenceRead,
+)
+def get_field_job_evidence(
+    work_order_id: str = Query(min_length=1, max_length=64),
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    return field_fiber.get_job_evidence(db, auth, crm_work_order_id=work_order_id)
 
 
 @router.get(

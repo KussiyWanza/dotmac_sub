@@ -63,6 +63,9 @@ def _geojson_to_geom(geojson: dict) -> object:
 
 def _prepare_payload(model, payload: dict) -> dict:
     data = dict(payload or {})
+    # Reserved intake-provenance section: retained on the stored request for
+    # audit, never applied to the asset.
+    data.pop("provenance", None)
     geojson_value = data.pop("geojson", None)
     if geojson_value:
         if hasattr(model, "route_geom"):

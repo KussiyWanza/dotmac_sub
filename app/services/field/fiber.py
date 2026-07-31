@@ -40,15 +40,24 @@ from app.services.fiber_topology import (
 )
 from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.network import (
+    fiber_access_attachments,
+    fiber_inventory_proposals,
+    fiber_job_evidence,
     fiber_splice_plans,
     fiber_splice_proposals,
     fiber_test_acceptance,
     fiber_topology_field_observations,
     fiber_topology_work_order_evidence_map,
 )
+from app.services.network.fiber_access_attachments import FiberAccessAttachmentError
 from app.services.network.fiber_color_code import (
     StrandColorCode,
     derive_segment_strand_colors,
+)
+from app.services.network.fiber_inventory_proposals import (
+    CableRegistrationReceipt,
+    FiberInventoryProposalError,
+    StrandDamageReceipt,
 )
 from app.services.network.fiber_splice_plans import SplicePlanError
 from app.services.network.fiber_splice_proposals import (
@@ -482,6 +491,181 @@ def list_customer_traces(
             )
         )
     return results
+
+
+@dataclass(frozen=True)
+class FieldOntAttachmentReceipt:
+    """Typed acknowledgement for a proposed install-time ONT attachment."""
+
+    decision_id: uuid.UUID
+    status: str
+    ont_unit_id: uuid.UUID
+    splitter_port_id: uuid.UUID
+    work_order_public_id: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision_id": self.decision_id,
+            "status": self.status,
+            "ont_unit_id": self.ont_unit_id,
+            "splitter_port_id": self.splitter_port_id,
+            "work_order_public_id": self.work_order_public_id,
+        }
+
+
+def propose_ont_attachment(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    crm_work_order_id: str,
+    ont_unit_id: str,
+    splitter_port_id: str,
+    note: str | None = None,
+) -> FieldOntAttachmentReceipt:
+    """Capture the splitter output port chosen at install as a reviewed
+    ONT-leaf-output attachment proposal (owner:
+    ``network.fiber_access_attachments``)."""
+
+    profile = _profile_from_principal(db, principal)
+    work_order = _scoped_work_order(db, profile, crm_work_order_id)
+    ont_uuid = _uuid_or_422(ont_unit_id, "ont_unit_id")
+    port_uuid = _uuid_or_422(splitter_port_id, "splitter_port_id")
+    assignment = (
+        db.query(OntAssignment)
+        .filter(OntAssignment.ont_unit_id == ont_uuid)
+        .filter(OntAssignment.subscriber_id == work_order.subscriber_id)
+        .filter(OntAssignment.active.is_(True))
+        .first()
+    )
+    if assignment is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active ONT assignment links this ONT to the job customer",
+        )
+    try:
+        decision = fiber_access_attachments.propose_access_attachment(
+            db,
+            "ont_output",
+            "attach",
+            subject_id=ont_uuid,
+            target_splitter_port_id=port_uuid,
+            proposed_by=f"field-technician:{profile.id}",
+            reason=note
+            or f"Install splitter-port capture for work order {work_order.public_id}",
+        )
+    except FiberAccessAttachmentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FieldOntAttachmentReceipt(
+        decision_id=decision.id,
+        status=decision.status,
+        ont_unit_id=ont_uuid,
+        splitter_port_id=port_uuid,
+        work_order_public_id=work_order.public_id,
+    )
+
+
+def register_cable(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    name: str,
+    fiber_count: int,
+    segment_type: str | None = None,
+    cable_type: str | None = None,
+    fibers_per_tube: int | None = None,
+    color_standard: str | None = None,
+    length_m: float | None = None,
+    notes: str | None = None,
+    work_order_id: str | None = None,
+) -> CableRegistrationReceipt:
+    """Register a newly built cable as a reviewed (inactive) change request."""
+
+    profile = _profile_from_principal(db, principal)
+    work_order = (
+        _scoped_work_order(db, profile, work_order_id) if work_order_id else None
+    )
+    actor = FieldTechnicianActor(
+        technician_id=profile.id,
+        person_id=profile.person_id,
+        system_user_id=profile.system_user_id,
+    )
+    try:
+        return fiber_inventory_proposals.register_cable(
+            db,
+            actor=actor,
+            name=name,
+            fiber_count=fiber_count,
+            segment_type=segment_type,
+            cable_type=cable_type,
+            fibers_per_tube=fibers_per_tube,
+            color_standard=color_standard,
+            length_m=length_m,
+            notes=notes,
+            work_order=work_order,
+        )
+    except FiberInventoryProposalError as exc:
+        raise HTTPException(
+            status_code=_PROPOSAL_ERROR_STATUS.get(exc.kind, 422),
+            detail=exc.message,
+        ) from exc
+
+
+def report_strand_damage(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    note: str,
+    strand_id: str | None = None,
+    segment_id: str | None = None,
+    tube_number: int | None = None,
+    work_order_id: str | None = None,
+) -> StrandDamageReceipt:
+    """Report damage on one exact strand or one derived tube for review."""
+
+    profile = _profile_from_principal(db, principal)
+    work_order = (
+        _scoped_work_order(db, profile, work_order_id) if work_order_id else None
+    )
+    actor = FieldTechnicianActor(
+        technician_id=profile.id,
+        person_id=profile.person_id,
+        system_user_id=profile.system_user_id,
+    )
+    try:
+        return fiber_inventory_proposals.report_strand_damage(
+            db,
+            actor=actor,
+            note=note,
+            strand_id=strand_id,
+            segment_id=segment_id,
+            tube_number=tube_number,
+            work_order=work_order,
+        )
+    except FiberInventoryProposalError as exc:
+        raise HTTPException(
+            status_code=_PROPOSAL_ERROR_STATUS.get(exc.kind, 422),
+            detail=exc.message,
+        ) from exc
+
+
+def get_job_evidence(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    crm_work_order_id: str,
+) -> dict[str, Any]:
+    """One scoped view of every piece of fiber evidence on this job."""
+
+    from app.services.field.transitions import resolve_fiber_as_built_evidence
+
+    profile = _profile_from_principal(db, principal)
+    work_order = _scoped_work_order(db, profile, crm_work_order_id)
+    summary = fiber_job_evidence.summarize(db, work_order)
+    evidence = resolve_fiber_as_built_evidence(db, work_order)
+    payload = summary.to_dict()
+    payload["as_built_required"] = evidence.required
+    payload["as_built_satisfied"] = evidence.satisfied
+    return payload
 
 
 def get_splice_plan(

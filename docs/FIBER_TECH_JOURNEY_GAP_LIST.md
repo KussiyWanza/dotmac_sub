@@ -18,10 +18,10 @@ working tree on 2026-07-31.
 | **F6** | ODF detail invisible to technicians | **Closed 2026-07-31** (trace annotation) |
 | **F7** | No splice plan / cut sheet (design-first flow) | **Closed 2026-07-31** |
 | **F8** | Test acceptance is self-asserted | **Closed 2026-07-31** |
-| **F9** | Install last mile not captured from the field | Open |
-| **F10** | Field cannot record cable/closure/damage | Open |
-| **F11** | Buffer tube not a physical entity | Open (mitigated by F5 derivation) |
-| **F12** | Evidence map covers only staged-verification jobs | Open |
+| **F9** | Install last mile not captured from the field | **Closed 2026-07-31** |
+| **F10** | Field cannot record cable/closure/damage | **Closed 2026-07-31** |
+| **F11** | Buffer tube not a physical entity | **Resolved 2026-07-31** (derivation + tube-scoped ops) |
+| **F12** | Evidence map covers only staged-verification jobs | **Closed 2026-07-31** |
 
 ## Closed in this change (2026-07-31)
 
@@ -72,52 +72,42 @@ working tree on 2026-07-31.
   surfaces margin against the latest measured ONT Rx on the field customer
   trace. Before/after baselining remains a future refinement.
 
+- **F9** — `POST /field/fiber/ont-attachments`: the installer records the
+  splitter output port chosen at the FAT as a reviewed ONT-leaf-output
+  attachment proposal (owner `network.fiber_access_attachments`), scoped to
+  an active ONT assignment of the job's customer. Drop-cable registration is
+  covered by F10's cable registration.
+
+- **F10** — field and vendor reviewed inventory intake
+  (`app/services/network/fiber_inventory_proposals.py`, review stays with
+  `network.fiber_asset_changes`): `POST …/fiber/cable-registrations`
+  registers a newly built cable as an **inactive** segment change request
+  with declared construction and typed provenance (activation remains with
+  the reviewed connectivity flow); `POST …/fiber/strand-damage-reports`
+  files reviewed damage-status updates for one exact strand or one derived
+  tube. The change owner retains a reserved `provenance` payload section
+  for audit without applying it to the asset.
+
+- **F11** — resolved by derivation plus tube-scoped operations: F5 derives
+  tube identity from declared construction, and F10's tube-scoped damage
+  reports make that identity operational (a pinched tube marks its derived
+  strands damaged in one report). **Trigger for a physical tube entity:** a
+  requirement to carry state on the tube itself (tube-level slack loops,
+  tube-level capacity planning, or tube splicing as a first-class record).
+  Until such a requirement exists, an entity would be dead data.
+
+- **F12** — `network.fiber_job_evidence` (contracted read-only projection):
+  `GET /field/fiber/job-evidence` and `GET /vendor/fiber/job-evidence`
+  aggregate, for any scoped work order, fiber tests (with derived-verdict
+  failures and assertion conflicts), source observations, splice proposals
+  by review status, unplanned splices, live cut-sheet progress,
+  attachments, pending inventory proposals, and the as-built gate state.
+  The staged-verification evidence map remains authoritative for its
+  campaign.
+
 ## Open gaps
 
-### F9 — Install last mile not captured from the field
-
-Field equipment flow assigns the ONT, but the splitter output port chosen at
-the FAT and the drop segment are admin-API records
-(`domains_network_fiber`). The hand-made physical connection most likely to be
-wrong in the database is the one the installer cannot record.
-
-**Owner:** `network.fiber_access_attachments` (propose/approve already
-exists for splitter-port attachments).
-**Fix:** field endpoints proposing splitter-port attachment + drop capture on
-install work orders, entering the same review path.
-
-### F10 — Field cannot record cable/closure/damage
-
-Closures, trays, strands, segments, and access points are admin-only CRUD;
-the change-request enum supports update/delete but field/vendor intake only
-files create-splice. A crew hanging new cable cannot register it; a tech
-finding a damaged core cannot mark the strand damaged or report a cut.
-
-**Owner:** `fiber_change_requests` (reviewed inventory operations exist —
-`_reviewed_inventory` covers segments/strands under review).
-**Fix:** field/vendor proposal endpoints for new cable registration and
-strand-status changes (damaged/cut evidence), reviewed like splices.
-
-### F11 — Buffer tube is not a physical entity
-
-F5 derives tube identity from declared construction, which covers the
-field-language need. There is still no tube entity for tube-level events
-(a whole tube cut/pinched, tube-level slack loops), so tube-scoped damage or
-capacity planning cannot be expressed.
-
-**Fix:** only if tube-level operations become real: a tube entity between
-segment and strand, populated from construction, with strands keyed to tubes.
-
-### F12 — Evidence map covers only staged-verification jobs
-
-`get_work_order_evidence_map` fails closed unless the work order carries
-staged-feature observations, so ordinary install/repair jobs get no "what
-evidence exists for this job" view. Fiber tests, splice proposals (now
-linked to work orders), and attachments are not aggregated anywhere
-technician-facing.
-
-**Owner:** `network.fiber_topology_work_order_evidence_map` for the staged
-campaign; a general per-job evidence projection is a separate read-only owner.
-**Fix:** job evidence summary endpoint aggregating tests, observations,
-splice proposals, and attachments for any scoped work order (the completion
-gate of F3 already counts them — project the same resolution).
+None. The technician journey gaps F1–F12 are closed; remaining refinements
+are tracked inline above (before/after test baselining under F8, the tube
+entity trigger under F11, and admin web UI for authoring cut sheets under
+F7's API-first note).

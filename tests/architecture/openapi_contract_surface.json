@@ -4234,6 +4234,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/fiber/job-evidence": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:work_order_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "f7b1396608e7",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/fiber/source-observations": {
    "params": [
     "header:authorization",
@@ -10582,6 +10594,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/vendor/fiber/job-evidence": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:work_order_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "3a8a4e5f23dc",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/vendor/fiber/splice-plan": {
    "params": [
     "header:authorization",
@@ -14279,6 +14303,28 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/field/fiber/cable-registrations": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "7639193abb5f",
+   "responses": {
+    "201": "0563128245a6",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/fiber/ont-attachments": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "94e5bcce765f",
+   "responses": {
+    "201": "bd4547e77066",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/field/fiber/source-observations": {
    "params": [
     "header:authorization",
@@ -14298,6 +14344,17 @@
    "request": "326fc462c951",
    "responses": {
     "201": "3ee431517735",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/field/fiber/strand-damage-reports": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "03de413df98b",
+   "responses": {
+    "201": "328ec8787b09",
     "422": "a11c9d9b2af8"
    }
   },
@@ -17896,6 +17953,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/vendor/fiber/cable-registrations": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "27c4c044ea9b",
+   "responses": {
+    "201": "a500b95bbe5f",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/vendor/fiber/splices": {
    "params": [
     "header:authorization",
@@ -17904,6 +17972,17 @@
    "request": "577cbcf33139",
    "responses": {
     "201": "06ccc45b153c",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/vendor/fiber/strand-damage-reports": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "bcd34f5b3235",
+   "responses": {
+    "201": "6ea28440654e",
     "422": "a11c9d9b2af8"
    }
   },
@@ -18824,6 +18903,8 @@
   "FiberTerminationPointRead": "eef2a7ac34e4",
   "FiberTerminationPointUpdate": "ebdbeb8a047e",
   "FieldAttachmentRead": "a4167d819d47",
+  "FieldCableRegistrationCreate": "2fe2e6d32087",
+  "FieldCableRegistrationResponse": "7e0dd2969fbb",
   "FieldCompletionRequirements": "3a2d8a58716d",
   "FieldConfigRead": "d4e4b3f9ed87",
   "FieldCustomer": "405b26a4eb46",
@@ -18855,9 +18936,11 @@
   "FieldJobDestinationsResponse": "b0d6b9d2b637",
   "FieldJobDetail": "5cee8339ca38",
   "FieldJobEventRead": "c97a477db35c",
+  "FieldJobEvidenceRead": "c37c8f9f1567",
   "FieldJobHistoryItem": "08b99aec055d",
   "FieldJobLocation": "715fe3012dbd",
   "FieldJobLocationUpdate": "c5160a318073",
+  "FieldJobPlanSummaryRead": "804740090c93",
   "FieldJobSummary": "4e501c02cf74",
   "FieldLinkBudgetComponentRead": "8f2c11d8a0f2",
   "FieldLinkBudgetRead": "0fe4def40cc4",
@@ -18886,6 +18969,8 @@
   "FieldMovementRead": "e6afbc3e60fc",
   "FieldNoteCreate": "38437360dd97",
   "FieldNoteRead": "8ea021422bdc",
+  "FieldOntAttachmentCreate": "08943292b127",
+  "FieldOntAttachmentResponse": "0ee79354d07e",
   "FieldOpenTicketItem": "62da6daad4b4",
   "FieldPresenceRead": "31fcf7833415",
   "FieldProjectContext": "8effc9cd5e23",
@@ -18897,9 +18982,12 @@
   "FieldSiteContact": "8cc0e1d26e4c",
   "FieldSpliceCreate": "991d41ae9074",
   "FieldSplicePlanResponse": "6f26a47688a4",
+  "FieldSpliceProposalCountsRead": "d5b700a6faf3",
   "FieldSpliceProposalResponse": "e3c1ae20c879",
   "FieldSpliceProposalStatusRead": "d2f245e52faa",
   "FieldStrandColorRead": "513278787501",
+  "FieldStrandDamageCreate": "0825ed214e54",
+  "FieldStrandDamageResponse": "850551f328f4",
   "FieldStrandTerminationDetailRead": "eb451174c33f",
   "FieldTicketContext": "c0ae335ff056",
   "FieldTransitionRequest": "4312e6ac3192",
@@ -19823,9 +19911,13 @@
   "VendorAdvanceCreate": "285e6ca64aa0",
   "VendorAsBuiltCreate": "bcfa19ce3157",
   "VendorAsBuiltLineCreate": "e4f5e52d0c93",
+  "VendorCableRegistrationCreate": "ee72bea4f388",
+  "VendorCableRegistrationResponse": "bc2f112de4d5",
   "VendorCapabilityCreate": "5bda8a17f6b0",
   "VendorCapabilityRead": "910c9e5aaf0a",
   "VendorCapabilityUpdate": "1530a7cc897f",
+  "VendorJobEvidenceRead": "2d66a85061b0",
+  "VendorJobPlanSummaryRead": "907e36fa7375",
   "VendorMaterialReleaseCreate": "fc371c7f8878",
   "VendorMaterialReleaseItemCreate": "265a29450d05",
   "VendorPurchaseInvoiceCreate": "19fbbc4e1285",
@@ -19842,9 +19934,12 @@
   "VendorRouteRevisionCreate": "c47a23ac2e0a",
   "VendorSpliceCreate": "812732d6c5b1",
   "VendorSplicePlanResponse": "594ea04ecb75",
+  "VendorSpliceProposalCountsRead": "b3d0912044f8",
   "VendorSpliceProposalResponse": "e3cd2725003c",
   "VendorSpliceProposalStatusRead": "7345a794f8d4",
   "VendorStrandColorRead": "3848bff3ab0d",
+  "VendorStrandDamageCreate": "e488839369cb",
+  "VendorStrandDamageResponse": "967987a89305",
   "VendorSubmissionConfirm": "02e3d0612139",
   "VerifyEmailRequest": "aedd7a91b07e",
   "VerifyEmailResponse": "1fae1392036c",

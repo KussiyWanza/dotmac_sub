@@ -12287,6 +12287,112 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.fiber_job_evidence",
+                module="app.services.network.fiber_job_evidence",
+                owns=("per-job fiber evidence summary projection",),
+                depends_on=(
+                    "network.fiber_asset_changes",
+                    "network.fiber_splice_plans",
+                ),
+                notes=(
+                    "Read-only aggregation of the fiber evidence naming one "
+                    "native work order: tests with derived-verdict failures and "
+                    "assertion conflicts, topology source observations, splice "
+                    "proposals by review status, live cut-sheet progress, "
+                    "attachments, and pending inventory proposals. Every fact "
+                    "belongs to its named owner; this projection only counts and "
+                    "labels, and decides nothing."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-job fiber evidence summary projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "owner-recorded fiber evidence facts",
+                                "reviewed splice change-request state",
+                                "live cut-sheet progress",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="owner-recorded fiber evidence facts",
+                            owner="network.fiber_job_evidence",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "FieldFiberTestResult, "
+                                "FiberTopologyFieldObservation, and "
+                                "FieldAttachment rows naming the exact work order"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="reviewed splice change-request state",
+                            owner="network.fiber_asset_changes",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "fiber_splice, fiber_segment, and fiber_strand "
+                                "change requests with typed work-order provenance"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live cut-sheet progress",
+                            owner="network.fiber_splice_plans",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "the work order's live plan view and derived "
+                                "execution counts"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure aggregation over committed state; nothing is written."
+                        ),
+                        locking="None; the projection reads committed state only.",
+                        idempotency=(
+                            "Deterministic for identical committed inputs; safe to "
+                            "recompute at any time."
+                        ),
+                        retries="Safe to re-read; no side effects exist.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner=(
+                            "field and vendor transports surface the summary as "
+                            "data; scoping errors belong to their job resolvers"
+                        ),
+                        fail_closed_on=(
+                            "unscoped work orders (transports resolve scope "
+                            "before this projection runs)",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        old_owner=None,
+                        new_owner="network.fiber_job_evidence",
+                        verification=(
+                            "Focused summary-count and gate-composition tests."
+                        ),
+                        cutover_gate=(
+                            "Native new projection; the staged-verification "
+                            "evidence map remains authoritative for its campaign."
+                        ),
+                        fallback_retirement=(
+                            "No fallback exists; owners remain the source of "
+                            "every underlying fact."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/FIBER_TECH_JOURNEY_GAP_LIST.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_fiber_field_inventory_journey.py",),
+                ),
+            ),
+            SOTService(
                 name="network.fiber_test_acceptance",
                 module="app.services.network.fiber_test_acceptance",
                 owns=(
