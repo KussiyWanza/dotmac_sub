@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.network import FiberSplicePlanDiffRead, FiberSplicePlanRead
 from app.schemas.status_presentation import StatusPresentation
 
 
@@ -701,6 +702,7 @@ class FieldSpliceCreate(BaseModel):
     loss_db: float | None = Field(default=None, ge=0, le=5)
     note: str | None = Field(default=None, max_length=2000)
     work_order_id: str | None = Field(default=None, min_length=1, max_length=64)
+    plan_item_id: UUID | None = None
 
 
 class FieldStrandColorRead(BaseModel):
@@ -724,6 +726,8 @@ class FieldSpliceProposalResponse(BaseModel):
     work_order_public_id: str | None = None
     from_strand_colors: FieldStrandColorRead | None = None
     to_strand_colors: FieldStrandColorRead | None = None
+    plan_id: UUID | None = None
+    plan_item_id: UUID | None = None
 
 
 class FieldSpliceProposalStatusRead(BaseModel):
@@ -740,6 +744,8 @@ class FieldSpliceProposalStatusRead(BaseModel):
     work_order_public_id: str | None = None
     from_strand_colors: FieldStrandColorRead | None = None
     to_strand_colors: FieldStrandColorRead | None = None
+    plan_id: UUID | None = None
+    plan_item_id: UUID | None = None
     review_notes: str | None = None
     reviewed_at: datetime | None = None
     applied_at: datetime | None = None
@@ -772,6 +778,14 @@ class FieldFiberOntLiveRead(BaseModel):
     olt_status_seen_at: datetime | None = None
     rx_signal_dbm: float | None = None
     rx_observed_at: datetime | None = None
+
+
+class FieldSplicePlanResponse(BaseModel):
+    """The job's live cut sheet and planned-vs-as-built diff (None when absent)."""
+
+    work_order_id: str
+    plan: FiberSplicePlanRead | None = None
+    diff: FiberSplicePlanDiffRead | None = None
 
 
 class FieldStrandTerminationDetailRead(BaseModel):

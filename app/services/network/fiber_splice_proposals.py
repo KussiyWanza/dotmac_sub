@@ -32,12 +32,14 @@ from app.models.network import (
 from app.models.work_order import WorkOrder
 from app.services import fiber_change_requests
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
-from app.services.network import fiber_physical_continuity
+from app.services.network import fiber_physical_continuity, fiber_splice_plans
 from app.services.network.fiber_color_code import (
     StrandColorCode,
     derive_segment_strand_colors,
 )
+from app.services.owner_commands import CommandContext
 
 _SPLICEABLE_STRAND_STATUSES = {
     FiberStrandStatus.available,
@@ -104,6 +106,8 @@ class SpliceProposalReceipt:
     work_order_public_id: str | None
     from_strand_colors: StrandColorCode | None
     to_strand_colors: StrandColorCode | None
+    plan_id: uuid.UUID | None
+    plan_item_id: uuid.UUID | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +126,8 @@ class SpliceProposalReceipt:
             "to_strand_colors": self.to_strand_colors.to_dict()
             if self.to_strand_colors
             else None,
+            "plan_id": self.plan_id,
+            "plan_item_id": self.plan_item_id,
         }
 
 
@@ -142,6 +148,8 @@ class SpliceProposalStatus:
     work_order_public_id: str | None
     from_strand_colors: StrandColorCode | None
     to_strand_colors: StrandColorCode | None
+    plan_id: uuid.UUID | None
+    plan_item_id: uuid.UUID | None
     review_notes: str | None
     reviewed_at: datetime | None
     applied_at: datetime | None
@@ -166,6 +174,8 @@ class SpliceProposalStatus:
             "to_strand_colors": self.to_strand_colors.to_dict()
             if self.to_strand_colors
             else None,
+            "plan_id": self.plan_id,
+            "plan_item_id": self.plan_item_id,
             "review_notes": self.review_notes,
             "reviewed_at": self.reviewed_at,
             "applied_at": self.applied_at,
@@ -238,6 +248,8 @@ def proposal_receipt(
             payload.get("from_strand_colors")
         ),
         to_strand_colors=StrandColorCode.from_payload(payload.get("to_strand_colors")),
+        plan_id=_uuid_or_none(payload.get("plan_id")),
+        plan_item_id=_uuid_or_none(payload.get("plan_item_id")),
     )
 
 
@@ -260,6 +272,8 @@ def proposal_status(request: FiberChangeRequest) -> SpliceProposalStatus:
             payload.get("from_strand_colors")
         ),
         to_strand_colors=StrandColorCode.from_payload(payload.get("to_strand_colors")),
+        plan_id=_uuid_or_none(payload.get("plan_id")),
+        plan_item_id=_uuid_or_none(payload.get("plan_item_id")),
         review_notes=request.review_notes,
         reviewed_at=request.reviewed_at,
         applied_at=request.applied_at,
@@ -312,6 +326,7 @@ def propose_splice(
     loss_db: float | None = None,
     note: str | None = None,
     work_order: WorkOrder | None = None,
+    plan_item_id: str | None = None,
 ) -> SpliceProposalReceipt:
     """Validate and file one reviewed splice proposal for the given actor."""
 
@@ -379,6 +394,28 @@ def propose_splice(
         } == pair:
             return proposal_receipt(request, replayed=True)
 
+    plan_item = None
+    if plan_item_id is not None:
+        if work_order is None:
+            raise _invalid(
+                "plan_requires_work_order",
+                "Executing a plan item requires the plan's work order",
+            )
+        plan_item = fiber_splice_plans.resolve_item_for_execution(
+            db,
+            plan_item_id=plan_item_id,
+            work_order_uuid=work_order.id,
+            closure_id=closure.id,
+            pair=pair,
+        )
+    elif work_order is not None:
+        plan_item = fiber_splice_plans.match_item_for_execution(
+            db,
+            work_order_uuid=work_order.id,
+            closure_id=closure.id,
+            pair=pair,
+        )
+
     proposed_by, default_reason, actor_payload = _actor_provenance(actor)
     try:
         decision = fiber_physical_continuity.propose_physical_link(
@@ -419,6 +456,8 @@ def propose_splice(
         "work_order_public_id": work_order.public_id if work_order else None,
         "from_strand_colors": from_colors.to_dict() if from_colors else None,
         "to_strand_colors": to_colors.to_dict() if to_colors else None,
+        "plan_id": str(plan_item.plan_id) if plan_item else None,
+        "plan_item_id": str(plan_item.id) if plan_item else None,
         "physical_link_decision_id": str(decision.id),
         **actor_payload,
     }
@@ -433,4 +472,18 @@ def propose_splice(
         if isinstance(actor, VendorActor)
         else None,
     )
+    if plan_item is not None:
+        execution_context = CommandContext.system(
+            actor=proposed_by,
+            scope="network.fiber_splice_plans",
+            reason="link the executing splice proposal to its plan item",
+            idempotency_key=f"splice-plan-exec:{plan_item.id}:{request.id}",
+        )
+        db_session_adapter.release_read_transaction(db)
+        fiber_splice_plans.record_execution(
+            db,
+            context=execution_context,
+            item=plan_item,
+            change_request=request,
+        )
     return proposal_receipt(request, replayed=False)

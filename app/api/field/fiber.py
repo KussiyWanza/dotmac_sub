@@ -11,6 +11,7 @@ from app.schemas.field import (
     FieldFiberTestRead,
     FieldFiberWorkOrderEvidenceMapRead,
     FieldSpliceCreate,
+    FieldSplicePlanResponse,
     FieldSpliceProposalResponse,
     FieldSpliceProposalStatusRead,
 )
@@ -44,6 +45,7 @@ def propose_field_splice(
         loss_db=payload.loss_db,
         note=payload.note,
         work_order_id=payload.work_order_id,
+        plan_item_id=str(payload.plan_item_id) if payload.plan_item_id else None,
     )
     return receipt.to_dict()
 
@@ -149,6 +151,18 @@ def list_field_fiber_source_observations(
         staged_feature_id=staged_feature_id,
     )
     return {"items": items, "count": len(items), "limit": len(items), "offset": 0}
+
+
+@router.get(
+    "/splice-plan",
+    response_model=FieldSplicePlanResponse,
+)
+def get_field_splice_plan(
+    work_order_id: str = Query(min_length=1, max_length=64),
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    return field_fiber.get_splice_plan(db, auth, crm_work_order_id=work_order_id)
 
 
 @router.get(

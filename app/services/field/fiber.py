@@ -40,6 +40,7 @@ from app.services.fiber_topology import (
 )
 from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.network import (
+    fiber_splice_plans,
     fiber_splice_proposals,
     fiber_topology_field_observations,
     fiber_topology_work_order_evidence_map,
@@ -48,6 +49,7 @@ from app.services.network.fiber_color_code import (
     StrandColorCode,
     derive_segment_strand_colors,
 )
+from app.services.network.fiber_splice_plans import SplicePlanError
 from app.services.network.fiber_splice_proposals import (
     FieldTechnicianActor,
     SpliceProposalError,
@@ -84,6 +86,7 @@ def propose_splice(
     loss_db: float | None = None,
     note: str | None = None,
     work_order_id: str | None = None,
+    plan_item_id: str | None = None,
 ) -> SpliceProposalReceipt:
     profile = _profile_from_principal(db, principal)
     work_order = (
@@ -109,8 +112,9 @@ def propose_splice(
             loss_db=loss_db,
             note=note,
             work_order=work_order,
+            plan_item_id=plan_item_id,
         )
-    except SpliceProposalError as exc:
+    except (SpliceProposalError, SplicePlanError) as exc:
         raise HTTPException(
             status_code=_PROPOSAL_ERROR_STATUS.get(exc.kind, 422),
             detail=exc.message,
@@ -455,6 +459,29 @@ def list_customer_traces(
             )
         )
     return results
+
+
+def get_splice_plan(
+    db: Session,
+    principal: dict[str, Any],
+    *,
+    crm_work_order_id: str,
+) -> dict[str, Any]:
+    """Project the job's live cut sheet and planned-vs-as-built diff.
+
+    Read-only adapter over the plan owner; returns typed views serialized at
+    this boundary. ``plan`` and ``diff`` are None when no live plan exists.
+    """
+
+    profile = _profile_from_principal(db, principal)
+    work_order = _scoped_work_order(db, profile, crm_work_order_id)
+    view = fiber_splice_plans.view_for_work_order(db, work_order.id)
+    diff = fiber_splice_plans.diff_for_work_order(db, work_order.id)
+    return {
+        "work_order_id": work_order.public_id,
+        "plan": view.to_dict() if view else None,
+        "diff": diff.to_dict() if diff else None,
+    }
 
 
 _MAX_TERMINATIONS_PER_SEGMENT = 24

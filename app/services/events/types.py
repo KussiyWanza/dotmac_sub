@@ -234,6 +234,11 @@ class EventType(enum.Enum):
     ont_commissioning_requested = "ont.commissioning_requested"
     ont_commissioning_state_changed = "ont.commissioning_state_changed"
 
+    # Fiber splice plans (cut sheets)
+    fiber_splice_plan_issued = "fiber.splice_plan_issued"
+    fiber_splice_plan_cancelled = "fiber.splice_plan_cancelled"
+    fiber_splice_plan_item_executed = "fiber.splice_plan_item_executed"
+
     # ONT credential changes (audit events)
     ont_pppoe_credentials_set = "ont.pppoe_credentials_set"
     # Emitted when the derived CPE dialer projection is converged back onto the

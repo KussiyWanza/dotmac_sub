@@ -415,6 +415,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "DELETE /api/v1/fiber-splice-plans/{plan_id}/items/{item_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:item_id!",
+    "path:plan_id!"
+   ],
+   "request": null,
+   "responses": {
+    "204": "cc5fd302f9c4",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "DELETE /api/v1/fiber-splice-trays/{tray_id}": {
    "params": [
     "header:authorization",
@@ -3958,6 +3971,30 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/fiber-splice-plans/{plan_id}": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:plan_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "118956c80d07",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/fiber-splice-plans/{plan_id}/diff": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:plan_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "808fe9fa2192",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/fiber-splice-trays": {
    "params": [
     "header:authorization",
@@ -4207,6 +4244,18 @@
    "request": null,
    "responses": {
     "200": "27ad61ef5aed",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/fiber/splice-plan": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:work_order_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "7071ad2fbd03",
     "422": "a11c9d9b2af8"
    }
   },
@@ -10533,6 +10582,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/vendor/fiber/splice-plan": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:work_order_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "57720f162ef3",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/vendor/fiber/splices": {
    "params": [
     "header:authorization",
@@ -14067,6 +14128,53 @@
    "request": "673149017aaf",
    "responses": {
     "201": "001a965a8f73",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/fiber-splice-plans": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "8fd32d79128e",
+   "responses": {
+    "201": "118956c80d07",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/fiber-splice-plans/{plan_id}/cancel": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:plan_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "118956c80d07",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/fiber-splice-plans/{plan_id}/issue": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:plan_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "118956c80d07",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "POST /api/v1/fiber-splice-plans/{plan_id}/items": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:plan_id!"
+   ],
+   "request": "8d93a586487c",
+   "responses": {
+    "201": "118956c80d07",
     "422": "a11c9d9b2af8"
    }
   },
@@ -18697,6 +18805,12 @@
   "FiberSpliceClosureRead": "f3e259b998dc",
   "FiberSpliceClosureUpdate": "975b7183647a",
   "FiberSpliceCreate": "2168a22ec85c",
+  "FiberSplicePlanCreate": "4f655a779710",
+  "FiberSplicePlanDiffRead": "0839205036c1",
+  "FiberSplicePlanItemCreate": "52d04078f6c9",
+  "FiberSplicePlanItemExecutionRead": "50392bf4db31",
+  "FiberSplicePlanItemRead": "fd27590ff44d",
+  "FiberSplicePlanRead": "cf9b68d97c00",
   "FiberSpliceRead": "badb3ea96632",
   "FiberSpliceTrayCreate": "b7b9ddbcce44",
   "FiberSpliceTrayRead": "f3ff5f594554",
@@ -18779,9 +18893,10 @@
   "FieldScheduleEntry": "0f58d72b4cd7",
   "FieldSegmentPhysicalDetailRead": "034a27917beb",
   "FieldSiteContact": "8cc0e1d26e4c",
-  "FieldSpliceCreate": "01f4db0e2a40",
-  "FieldSpliceProposalResponse": "f69a65b93ae7",
-  "FieldSpliceProposalStatusRead": "8ab1ea4e5501",
+  "FieldSpliceCreate": "991d41ae9074",
+  "FieldSplicePlanResponse": "6f26a47688a4",
+  "FieldSpliceProposalResponse": "e3c1ae20c879",
+  "FieldSpliceProposalStatusRead": "d2f245e52faa",
   "FieldStrandColorRead": "513278787501",
   "FieldStrandTerminationDetailRead": "eb451174c33f",
   "FieldTicketContext": "c0ae335ff056",
@@ -19571,6 +19686,7 @@
   "StatusIcon": "a2f487075407",
   "StatusPresentation": "849b7d3979d4",
   "StatusTone": "97e30697e883",
+  "StrandColorRead": "0a01ac8172ae",
   "SubscriberAccountStatusConfirmRequest": "ed2d2f9f7ae3",
   "SubscriberAccountStatusOutcomeRead": "2262fe8d6d0d",
   "SubscriberAccountStatusPreviewRead": "704a6b05ad00",
@@ -19720,9 +19836,10 @@
   "VendorQuoteLineUpdate": "d9d1913e8bd3",
   "VendorReview": "74e7731221a0",
   "VendorRouteRevisionCreate": "c47a23ac2e0a",
-  "VendorSpliceCreate": "7ae1c24f6171",
-  "VendorSpliceProposalResponse": "0e8bc8042651",
-  "VendorSpliceProposalStatusRead": "4beb26df669c",
+  "VendorSpliceCreate": "812732d6c5b1",
+  "VendorSplicePlanResponse": "594ea04ecb75",
+  "VendorSpliceProposalResponse": "e3cd2725003c",
+  "VendorSpliceProposalStatusRead": "7345a794f8d4",
   "VendorStrandColorRead": "3848bff3ab0d",
   "VendorSubmissionConfirm": "02e3d0612139",
   "VerifyEmailRequest": "aedd7a91b07e",
