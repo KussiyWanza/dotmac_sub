@@ -76,3 +76,39 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     assert (
         "A failed staging deployment never authorizes promotion to `main`." in runbook
     )
+
+
+def test_runbook_records_the_merge_method_per_pull_request_kind() -> None:
+    """Squash-merging a promotion stops main from being an ancestor of dev.
+
+    The next promotion opened with head=dev then conflicts on version metadata,
+    which is what produced the repeated reconciliation commits this rule ends.
+    """
+
+    runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
+
+    assert "## Merge methods" in runbook
+    assert "| Promotion, `dev` into `main` | **Merge commit** |" in runbook
+    assert "| Reconciliation, `main` into `dev` | **Merge commit** |" in runbook
+    assert "| Feature or fix into `dev` | Squash |" in runbook
+    assert "git merge-base --is-ancestor origin/main origin/dev" in runbook
+
+
+def test_dev_first_gate_refuses_pull_requests_that_bypass_staging() -> None:
+    workflow = _read(".github/workflows/dev-first-gate.yml")
+
+    assert yaml.safe_load(workflow)
+    assert "branches: [main]" in workflow
+
+    # Exactly these heads reach main. `dev` is matched exactly, so a branch
+    # merely starting with "dev" (develop, dev-experiment) is still refused.
+    assert "dev|agent/promote-*|agent/reconcile-*|promote/*|reconcile/*)" in workflow
+
+    # A production incident must never be blocked outright, and the escape
+    # hatch has to be visible rather than silent.
+    assert "dev-first:override" in workflow
+    assert "::warning::Dev-first gate overridden" in workflow
+
+    # The failure has to teach the flow; a bare non-zero exit does not.
+    assert "gh pr edit ${PR_NUMBER} --base dev" in workflow
+    assert "docs/runbooks/STAGING_PROMOTION.md" in workflow
