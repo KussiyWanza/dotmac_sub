@@ -9,7 +9,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import NoReturn, TypeVar
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.domain_settings import SettingDomain
@@ -1246,18 +1246,20 @@ class VendorPortalOperations:
                 InstallationProject.bidding_close_at >= now,
             )
         else:
-            query = query.outerjoin(
-                ProjectQuote, ProjectQuote.project_id == InstallationProject.id
-            ).filter(
+            vendor_uuid = coerce_uuid(vendor_id)
+            vendor_quote_exists = exists().where(
+                ProjectQuote.project_id == InstallationProject.id,
+                ProjectQuote.vendor_id == vendor_uuid,
+            )
+            query = query.filter(
                 or_(
-                    InstallationProject.assigned_vendor_id == coerce_uuid(vendor_id),
-                    ProjectQuote.vendor_id == coerce_uuid(vendor_id),
+                    InstallationProject.assigned_vendor_id == vendor_uuid,
+                    vendor_quote_exists,
                 )
             )
         rows = (
             query.filter(InstallationProject.is_active.is_(True))
             .order_by(InstallationProject.updated_at.desc())
-            .distinct()
             .offset(offset)
             .limit(limit)
             .all()
