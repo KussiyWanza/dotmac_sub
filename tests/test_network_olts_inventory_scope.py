@@ -8,7 +8,7 @@ from starlette.requests import Request
 from app.models.network import OLTDevice, OntUnit
 from app.models.ont_autofind import OltAutofindCandidate
 from app.models.subscriber import UserType
-from app.services.network.ont_provisioning_commands import ProvisioningCommandResult
+from app.services.network.ont_authorization_contracts import OntAuthorizationAdmission
 
 
 def _request(*, htmx: bool = False) -> Request:
@@ -82,9 +82,9 @@ def test_returned_inventory_ont_authorize_allows_active_candidate(
 
     captured: dict[str, object] = {}
 
-    def _fake_request(*_args, **kwargs):
-        captured.update(kwargs)
-        return ProvisioningCommandResult(True, True, "accepted")
+    def _fake_request(_db, command):
+        captured["command"] = command
+        return OntAuthorizationAdmission(True, True, "accepted")
 
     monkeypatch.setattr(
         network_olts_inventory,
@@ -122,7 +122,7 @@ def test_returned_inventory_ont_authorize_allows_active_candidate(
 
     assert response.status_code == 303
     assert "Authorization+started" in response.headers["location"]
-    assert captured["scoped_ont_id"] == str(ont.id)
+    assert captured["command"].ont_id == ont.id
 
 
 def test_moved_ont_authorize_allows_active_candidate_with_previous_olt(
@@ -157,9 +157,9 @@ def test_moved_ont_authorize_allows_active_candidate_with_previous_olt(
 
     captured: dict[str, object] = {}
 
-    def _fake_request(*_args, **kwargs):
-        captured.update(kwargs)
-        return ProvisioningCommandResult(True, True, "accepted")
+    def _fake_request(_db, command):
+        captured["command"] = command
+        return OntAuthorizationAdmission(True, True, "accepted")
 
     monkeypatch.setattr(
         network_olts_inventory,
@@ -197,7 +197,7 @@ def test_moved_ont_authorize_allows_active_candidate_with_previous_olt(
 
     assert response.status_code == 303
     assert "Authorization+started" in response.headers["location"]
-    assert captured["scoped_ont_id"] == str(ont.id)
+    assert captured["command"].ont_id == ont.id
 
 
 def test_returned_inventory_hex_ont_authorize_allows_ascii_candidate(
@@ -222,9 +222,9 @@ def test_returned_inventory_hex_ont_authorize_allows_ascii_candidate(
 
     captured: dict[str, object] = {}
 
-    def _fake_request(*_args, **kwargs):
-        captured.update(kwargs)
-        return ProvisioningCommandResult(True, True, "accepted")
+    def _fake_request(_db, command):
+        captured["command"] = command
+        return OntAuthorizationAdmission(True, True, "accepted")
 
     monkeypatch.setattr(
         network_olts_inventory,
@@ -262,7 +262,7 @@ def test_returned_inventory_hex_ont_authorize_allows_ascii_candidate(
 
     assert response.status_code == 303
     assert "Authorization+started" in response.headers["location"]
-    assert captured["scoped_ont_id"] == str(ont.id)
+    assert captured["command"].ont_id == ont.id
 
 
 def test_reseller_authorize_without_scoped_ont_is_rejected(monkeypatch) -> None:

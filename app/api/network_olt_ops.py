@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas.network_olt_ops import (
+    OltAuthorizationAdmissionRead,
+    OltAuthorizationOperationResponse,
     OltAuthorizeOntRequest,
     OltCliCommandRequest,
     OltOntStatusBySerialRequest,
@@ -15,7 +19,13 @@ from app.schemas.network_olt_ops import (
     OltTr069ProfileCreateRequest,
 )
 from app.services.auth_dependencies import require_permission
+from app.services.domain_errors import DomainError
 from app.services.network import olt_api_operations
+from app.services.network.action_logging import actor_label
+from app.services.network.ont_authorization_contracts import (
+    RequestAssignedOntAuthorization,
+)
+from app.services.owner_commands import CommandContext
 
 router = APIRouter(tags=["network-olt-operations"])
 
@@ -25,30 +35,46 @@ router = APIRouter(tags=["network-olt-operations"])
 
 @router.post(
     "/olt-devices/{olt_id}/authorize-ont",
-    response_model=OltOperationResponse,
+    response_model=OltAuthorizationOperationResponse,
     status_code=202,
+    summary="Authorize and provision an assigned ONT",
     dependencies=[Depends(require_permission("network:olt:write"))],
 )
-def authorize_ont(
+def authorize_and_provision_ont(
     request: Request,
-    olt_id: str,
+    olt_id: UUID,
     payload: OltAuthorizeOntRequest,
     db: Session = Depends(get_db),
-) -> OltOperationResponse:
-    result = olt_api_operations.authorize_ont(
-        db,
-        olt_id,
-        fsp=payload.fsp,
-        serial_number=payload.serial_number,
-        force_reauthorize=payload.force_reauthorize,
-        request=request,
-    )
+) -> OltAuthorizationOperationResponse:
+    try:
+        result = olt_api_operations.authorize_and_provision_ont(
+            db,
+            RequestAssignedOntAuthorization.from_transport(
+                context=CommandContext.system(
+                    actor=actor_label(request),
+                    scope="network:ont:authorize",
+                    reason="API requested assigned ONT authorization",
+                ),
+                ont_id=payload.ont_id,
+                olt_id=olt_id,
+                fsp=payload.fsp,
+                serial_number=payload.serial_number,
+                force_reauthorize=payload.force_reauthorize,
+            ),
+        )
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
     if not result.success:
         raise HTTPException(status_code=422, detail=result.message)
-    return OltOperationResponse(
+    return OltAuthorizationOperationResponse(
         success=result.success,
         message=result.message,
-        data=result.data,
+        data=OltAuthorizationAdmissionRead(
+            operation_id=result.operation_id,
+            dispatch_id=result.dispatch_id,
+            waiting=result.waiting,
+            duplicate=result.duplicate,
+        ),
     )
 
 

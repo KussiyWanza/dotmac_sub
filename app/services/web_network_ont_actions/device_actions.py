@@ -385,7 +385,14 @@ def execute_reauthorize(
     Commits on success.
     """
     from app.models.network import OntUnit
-    from app.services.network.ont_authorization import authorize_ont
+    from app.services.domain_errors import DomainError
+    from app.services.network.ont_authorization_contracts import (
+        RequestAssignedOntAuthorization,
+    )
+    from app.services.network.ont_provisioning_commands import (
+        request_ont_authorization,
+    )
+    from app.services.owner_commands import CommandContext
 
     ont = db.get(OntUnit, ont_id)
     if not ont:
@@ -399,20 +406,26 @@ def execute_reauthorize(
     if not fsp:
         return ActionResult(success=False, message="ONT missing port assignment (FSP)")
 
-    # Call authorize with force=True
-    auth_result = authorize_ont(
-        db,
-        str(ont.olt_device_id),
-        fsp,
-        ont.serial_number or "",
-        force_reauthorize=True,
-        request=request,
-    )
-    auth_ok = auth_result.success
-    auth_msg = auth_result.message
-
-    if auth_ok:
-        db.commit()
+    try:
+        command = request_ont_authorization(
+            db,
+            RequestAssignedOntAuthorization.from_transport(
+                context=CommandContext.system(
+                    actor=actor_name_from_request(request),
+                    scope="network:ont:authorize",
+                    reason="operator requested assigned ONT reauthorization",
+                ),
+                ont_id=str(ont.id),
+                olt_id=str(ont.olt_device_id),
+                fsp=fsp,
+                serial_number=ont.serial_number or "",
+                force_reauthorize=True,
+            ),
+        )
+    except DomainError as exc:
+        return ActionResult(success=False, message=exc.message)
+    auth_ok = command.accepted
+    auth_msg = command.message
 
     _log_action_audit(
         db,
@@ -422,7 +435,20 @@ def execute_reauthorize(
         metadata={"success": auth_ok, "message": auth_msg, "fsp": fsp},
     )
 
-    return ActionResult(success=auth_ok, message=auth_msg)
+    return ActionResult(
+        success=auth_ok,
+        message=auth_msg,
+        waiting=command.waiting,
+        data={
+            "operation_id": (
+                str(command.operation_id) if command.operation_id is not None else None
+            ),
+            "dispatch_id": (
+                str(command.dispatch_id) if command.dispatch_id is not None else None
+            ),
+            "duplicate": command.duplicate,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

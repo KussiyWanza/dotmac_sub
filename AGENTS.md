@@ -45,6 +45,14 @@ authoritative documents in the same change that updates the contract.
 
 ## Coding rules
 
+- Typed contracts are mandatory for every implementation change: features,
+  fixes, migrations, jobs, scripts, routes, tasks, webhooks, integrations, and
+  tests must use the same typed command/query/event/value-object boundary they
+  exercise. There is no "small change" or "internal process" exception.
+- A change that touches an untyped cross-component boundary migrates that
+  boundary in the same change. Leaving it untyped requires an explicitly
+  approved architecture decision naming the owner, rationale, drift control,
+  and retirement plan.
 - Public commands and queries use typed inputs and typed outcomes.
 - New and materially changed owner interfaces use precise identifier,
   collection, optional, enum, value-object, and provenance types. Do not expose

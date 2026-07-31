@@ -15858,7 +15858,7 @@
    ],
    "request": "1095d7c556e5",
    "responses": {
-    "202": "8d4c37ce42db",
+    "202": "d15575e17d48",
     "422": "a11c9d9b2af8"
    }
   },
@@ -19325,7 +19325,9 @@
   "OfferVersionPriceUpdate": "76a6a7553426",
   "OfferVersionRead": "0e8e6d32a5a2",
   "OfferVersionUpdate": "b47aa4d646f1",
-  "OltAuthorizeOntRequest": "2bf6a637b8a6",
+  "OltAuthorizationAdmissionRead": "574983f3378e",
+  "OltAuthorizationOperationResponse": "22cd268c8f06",
+  "OltAuthorizeOntRequest": "9f708145d6e3",
   "OltCardCreate": "b8aaf9180956",
   "OltCardPortCreate": "986b66f6dcae",
   "OltCardPortRead": "891b301c6b6f",

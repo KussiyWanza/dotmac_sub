@@ -2,10 +2,12 @@
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from app.celery_app import celery_app
 from app.services.db_session_adapter import db_session_adapter
 from app.services.network_operation_dispatch import managed_network_operation_dispatch
+from app.services.owner_commands import CommandContext
 
 logger = logging.getLogger(__name__)
 
@@ -29,48 +31,117 @@ def authorize_ont(
         # Pre-cutover envelopes are converted to durable commands; they never
         # enter device code without an outbox execution claim.
         with db_session_adapter.session() as db:
+            from app.services.domain_errors import DomainError
+            from app.services.network.ont_authorization_contracts import (
+                RequestAssignedOntAuthorization,
+            )
             from app.services.network.ont_provisioning_commands import (
                 request_ont_authorization,
             )
 
-            command = request_ont_authorization(
-                db,
-                olt_id=olt_id,
-                fsp=fsp,
-                serial_number=serial_number,
-                force_reauthorize=force_reauthorize,
-                preset_id=preset_id,
-                scoped_ont_id=scoped_ont_id,
-                initiated_by=initiated_by,
-            )
+            try:
+                request_command = RequestAssignedOntAuthorization.from_transport(
+                    context=CommandContext.system(
+                        actor=initiated_by or "system",
+                        scope="network:ont:authorize",
+                        reason="rehome pre-cutover assigned authorization envelope",
+                    ),
+                    ont_id=scoped_ont_id or "",
+                    olt_id=olt_id,
+                    fsp=fsp,
+                    serial_number=serial_number,
+                    force_reauthorize=force_reauthorize,
+                    preset_id=preset_id,
+                )
+            except DomainError as exc:
+                return {
+                    "success": False,
+                    "waiting": False,
+                    "message": exc.message,
+                    "operation_id": None,
+                    "dispatch_id": None,
+                    "duplicate": False,
+                    "legacy_envelope_rehomed": False,
+                }
+            command = request_ont_authorization(db, request_command)
             return {
                 "success": command.accepted,
                 "waiting": command.waiting,
                 "message": command.message,
-                "operation_id": command.operation_id,
-                "dispatch_id": command.dispatch_id,
+                "operation_id": (
+                    str(command.operation_id)
+                    if command.operation_id is not None
+                    else None
+                ),
+                "dispatch_id": (
+                    str(command.dispatch_id)
+                    if command.dispatch_id is not None
+                    else None
+                ),
                 "duplicate": command.duplicate,
                 "legacy_envelope_rehomed": True,
             }
     if not operation_id:
-        raise ValueError("Tracked authorization operation is required.")
+        raise ValueError("Tracked assigned ONT authorization operation is required.")
+
+    if not scoped_ont_id:
+        # Admitted before the assigned-authorization contract existed, so it
+        # carries no ONT and can never satisfy it. Terminalize through the
+        # owner instead of raising: an unhandled raise here leaves the
+        # operation non-terminal forever, looking queued rather than dead.
+        with db_session_adapter.session() as db:
+            from app.services.network.ont_provisioning_execution import (
+                fail_unexecutable_authorization,
+            )
+
+            try:
+                unexecutable_id = UUID(operation_id)
+            except ValueError:
+                raise ValueError(
+                    "Tracked assigned ONT authorization operation must be a UUID."
+                ) from None
+            outcome = fail_unexecutable_authorization(
+                db,
+                operation_id=unexecutable_id,
+                message=(
+                    "Authorize & provision requires an assigned ONT. This "
+                    "operation predates that requirement and cannot be "
+                    "executed; reissue it as Authorize & provision on the "
+                    "assigned device, or use Commission ONT."
+                ),
+            )
+            return outcome.to_dict()
 
     with db_session_adapter.session() as db:
         try:
+            from app.services.network.ont_authorization_contracts import (
+                ExecuteAssignedOntAuthorization,
+            )
             from app.services.network.ont_provisioning_execution import (
                 execute_ont_authorization,
             )
 
-            return execute_ont_authorization(
+            operation_uuid = UUID(operation_id)
+            outcome = execute_ont_authorization(
                 db,
-                olt_id=olt_id,
-                fsp=fsp,
-                serial_number=serial_number,
-                force_reauthorize=force_reauthorize,
-                preset_id=preset_id,
-                initiated_by=initiated_by,
-                operation_id=operation_id,
+                ExecuteAssignedOntAuthorization.from_transport(
+                    context=CommandContext.system(
+                        actor=initiated_by or "system",
+                        scope="network:ont:authorize",
+                        reason="execute durable assigned ONT authorization",
+                        command_id=operation_uuid,
+                        correlation_id=operation_uuid,
+                    ),
+                    operation_id=operation_uuid,
+                    ont_id=scoped_ont_id,
+                    olt_id=olt_id,
+                    fsp=fsp,
+                    serial_number=serial_number,
+                    force_reauthorize=force_reauthorize,
+                    preset_id=preset_id,
+                ),
             )
+            return outcome.to_dict()
         except Exception:
             logger.exception(
                 "Background ONT authorization failed olt_id=%s fsp=%s serial=%s",

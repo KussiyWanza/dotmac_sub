@@ -35,6 +35,11 @@ from app.services.network import olt_web_topology as olt_web_topology_service
 from app.services.network.action_logging import actor_label, log_network_action_result
 from app.services.network.olt_inventory import get_olt_or_none
 from app.services.network.olt_lifecycle import get_deletion_impact
+from app.services.network.ont_authorization_contracts import (
+    OntFsp,
+    OntSerialNumber,
+    RequestAssignedOntAuthorization,
+)
 from app.services.network.ont_commissioning import (
     RequestOntCommissioning,
     request_ont_commissioning,
@@ -1352,8 +1357,8 @@ def olt_commission_ont(
                     ),
                     candidate_id=parsed_candidate_id,
                     expected_olt_id=parsed_olt_id,
-                    expected_fsp=expected_fsp,
-                    expected_serial=expected_serial,
+                    expected_fsp=OntFsp.parse(expected_fsp),
+                    expected_serial=OntSerialNumber.parse(expected_serial),
                     reason=reason,
                     reference=reference or None,
                 ),
@@ -1483,13 +1488,19 @@ def olt_authorize_ont(
     try:
         command = request_ont_authorization(
             db,
-            olt_id=olt_id,
-            fsp=fsp,
-            serial_number=serial_number,
-            force_reauthorize=force,
-            preset_id=effective_preset_id,
-            scoped_ont_id=scoped_ont_id or None,
-            initiated_by=actor_label(request),
+            RequestAssignedOntAuthorization.from_transport(
+                context=CommandContext.system(
+                    actor=actor_label(request),
+                    scope="network:ont:authorize",
+                    reason="operator requested assigned ONT authorization",
+                ),
+                ont_id=scoped_ont_id,
+                olt_id=olt_id,
+                fsp=fsp,
+                serial_number=serial_number,
+                force_reauthorize=force,
+                preset_id=effective_preset_id,
+            ),
         )
     except Exception as exc:
         logger.exception(

@@ -9,8 +9,6 @@ from sqlalchemy.orm import Session
 from app.services.adapters import AdapterResult, adapter_registry
 
 if TYPE_CHECKING:
-    from starlette.requests import Request
-
     from app.models.network import OLTDevice, OltFirmwareImage
 
 
@@ -39,35 +37,6 @@ class OltActionAdapter:
         if success:
             return AdapterResult.ok(message, data=payload)
         return AdapterResult.fail(message, data=payload)
-
-    def authorize_ont(
-        self,
-        db: Session,
-        *,
-        olt_id: str,
-        fsp: str,
-        serial_number: str,
-        force_reauthorize: bool = False,
-        preset_id: str | None = None,
-        request: Request | None = None,
-    ) -> AdapterResult:
-        from app.services.network import ont_authorization
-
-        result = ont_authorization.authorize_ont(
-            db,
-            olt_id,
-            fsp,
-            serial_number,
-            force_reauthorize=force_reauthorize,
-            preset_id=preset_id,
-            request=request,
-        )
-        data: dict[str, Any] = {}
-        if result.ont_unit_id:
-            data["ont_unit_id"] = result.ont_unit_id
-        if result.success:
-            return AdapterResult.ok(result.message, data=data)
-        return AdapterResult.fail(result.message, data=data)
 
     def get_olt_firmware_images(
         self, db: Session, olt_id: str

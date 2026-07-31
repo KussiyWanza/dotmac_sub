@@ -62,6 +62,29 @@ line/service mappings, referenced DBA profiles, and the OLT TR-069 profile.
 Customer internet traffic tables and WAN profiles are not commissioning
 dependencies and remain part of the full **Authorize & provision** audit.
 
+The authorization implementation exposes two named capabilities rather than a
+public provisioning boolean. `authorize_and_provision_ont` is reachable only
+from the exact-assignment command executor.
+`register_ont_for_commissioning` is reachable only from this commissioning
+owner. Reauthorization also delegates to the exact-assignment command owner;
+adapters cannot invoke registration directly.
+
+The boundary is typed end to end:
+
+- `RequestAssignedOntAuthorization` owns assigned-command admission;
+- `ExecuteAssignedOntAuthorization` carries the admitted ONT, operation,
+  OLT/F/S/P/serial target, force policy, preset, and `CommandContext`;
+- `RegisterCommissioningOnt` carries the exact commissioning intent and
+  operation;
+- `OntFsp`, `OntSerialNumber`, and `OntAuthorizationTarget` prevent primitive
+  identity bags;
+- typed admission, assignment-decision, workflow, and execution outcomes remain
+  intact until explicit persistence or transport serialization.
+
+The execution owner repeats the exact active-assignment/PON decision immediately
+before device I/O, so assignment drift between admission and worker execution
+fails closed without an OLT write.
+
 The restricted `BatchedMgmtSpec` always sets
 `internet_config_ip_index=None` and `wan_config_profile_id=None`. Command-batch
 validation and result validation both reject internet-config or WAN-config

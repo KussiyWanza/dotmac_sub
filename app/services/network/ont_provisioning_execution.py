@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import random
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -13,9 +16,57 @@ from app.models.network_operation import (
     NetworkOperationStatus,
     NetworkOperationType,
 )
+from app.services.network.ont_authorization_contracts import (
+    AuthorizationWorkflowStatus,
+    ExecuteAssignedOntAuthorization,
+)
+
+if TYPE_CHECKING:
+    from app.services.network.ont_authorization import AuthorizationWorkflowResult
 
 logger = logging.getLogger(__name__)
 _retry_jitter_random = random.SystemRandom()
+
+
+@dataclass(frozen=True, slots=True)
+class OntAuthorizationExecutionOutcome:
+    """Typed result of one durable assigned-authorization execution."""
+
+    authorization: AuthorizationWorkflowResult
+    operation_id: UUID
+    message: str
+    status: AuthorizationWorkflowStatus
+    partial_success: bool
+    follow_up_operation_id: UUID | None = None
+    follow_up_dispatch_id: UUID | None = None
+    follow_up_queued: bool | None = None
+    follow_up_duplicate: bool | None = None
+
+    def to_dict(
+        self,
+        *,
+        base: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        payload = dict(base or {})
+        payload.update(self.authorization.to_dict())
+        payload.update(
+            {
+                "operation_id": str(self.operation_id),
+                "message": self.message,
+                "status": self.status.value,
+                "partial_success": self.partial_success,
+            }
+        )
+        if self.follow_up_operation_id is not None:
+            payload["follow_up_operation_id"] = str(self.follow_up_operation_id)
+            payload["follow_up_dispatch_id"] = (
+                str(self.follow_up_dispatch_id)
+                if self.follow_up_dispatch_id is not None
+                else None
+            )
+            payload["follow_up_queued"] = self.follow_up_queued
+            payload["follow_up_duplicate"] = self.follow_up_duplicate
+        return payload
 
 
 def preview_ont_provisioning(db, ont_id: str):
@@ -129,71 +180,146 @@ def complete_waiting_bootstrap_after_inform(
     return True
 
 
-def execute_ont_authorization(
+def fail_unexecutable_authorization(
     db,
     *,
-    olt_id: str,
-    fsp: str,
-    serial_number: str,
-    force_reauthorize: bool = False,
-    preset_id: str | None = None,
-    initiated_by: str | None = None,
-    operation_id: str,
-) -> dict[str, Any]:
-    """Execute one previously accepted authorization operation."""
-    from app.services.network.ont_authorization import authorize_ont
+    operation_id: UUID,
+    message: str,
+) -> OntAuthorizationExecutionOutcome:
+    """Terminalize an accepted operation the typed contract can never execute.
+
+    An operation admitted before the assigned-authorization contract existed
+    can lack the ONT that contract requires. Refusing it by raising would leave
+    it non-terminal forever — invisible work that looks queued rather than
+    dead — so it fails closed here on the same path a rejected assignment
+    decision uses.
+    """
+    from app.services.network.ont_authorization import AuthorizationWorkflowResult
+    from app.services.network_operations import network_operations
+
+    tracked_id = str(operation_id)
+    operation = network_operations.get(db, tracked_id)
+    outcome = OntAuthorizationExecutionOutcome(
+        authorization=AuthorizationWorkflowResult(
+            success=False,
+            message=message,
+            status=AuthorizationWorkflowStatus.ERROR,
+        ),
+        operation_id=operation_id,
+        message=message,
+        status=AuthorizationWorkflowStatus.ERROR,
+        partial_success=False,
+    )
+    network_operations.mark_failed(
+        db,
+        tracked_id,
+        message,
+        output_payload=outcome.to_dict(base=operation.output_payload or {}),
+    )
+    db.commit()
+    return outcome
+
+
+def execute_ont_authorization(
+    db,
+    command: ExecuteAssignedOntAuthorization,
+) -> OntAuthorizationExecutionOutcome:
+    """Execute one typed authorization command after fresh assignment admission."""
+    from app.services.network.ont_authorization import (
+        AuthorizationWorkflowResult,
+        authorize_and_provision_ont,
+    )
     from app.services.network.ont_provisioning_commands import (
+        evaluate_assigned_authorization,
         request_bootstrap_verification,
     )
     from app.services.network_operations import network_operations
 
+    operation_id = str(command.operation_id)
+    operation = network_operations.get(db, operation_id)
+    decision = evaluate_assigned_authorization(
+        db,
+        ont_id=command.ont_id,
+        target=command.target,
+    )
+    if not decision.allowed:
+        authorization = AuthorizationWorkflowResult(
+            success=False,
+            message=decision.message,
+            status=AuthorizationWorkflowStatus.ERROR,
+        )
+        outcome = OntAuthorizationExecutionOutcome(
+            authorization=authorization,
+            operation_id=command.operation_id,
+            message=decision.message,
+            status=AuthorizationWorkflowStatus.ERROR,
+            partial_success=False,
+        )
+        network_operations.mark_failed(
+            db,
+            operation_id,
+            decision.message,
+            output_payload=outcome.to_dict(base=operation.output_payload or {}),
+        )
+        db.commit()
+        return outcome
+
     network_operations.mark_running(db, operation_id)
     db.commit()
 
-    result = authorize_ont(
-        db,
-        olt_id,
-        fsp,
-        serial_number,
-        force_reauthorize=force_reauthorize,
-        preset_id=preset_id,
-        request=None,
-        # Lets the authorization owner commit ``completed_authorization`` the
-        # moment the OLT accepts the write, independently of this payload.
-        operation_id=operation_id,
-    )
+    result = authorize_and_provision_ont(db, command)
     # Merge onto whatever the authorization owner already committed (notably the
     # landed ``device_authorization`` evidence) so terminalizing the operation
     # never erases the fact that the OLT write succeeded.
     operation = network_operations.get(db, operation_id)
-    payload: dict[str, Any] = {**(operation.output_payload or {}), **result.to_dict()}
-    payload["operation_id"] = operation_id
     follow_up = None
+    message = result.message
+    status = result.status
+    partial_success = result.partial_success
 
     if result.success and result.ont_unit_id:
         follow_up = request_bootstrap_verification(
             db,
-            ont_id=result.ont_unit_id,
+            ont_id=str(result.ont_unit_id),
             parent_operation_id=operation_id,
-            initiated_by=initiated_by,
+            initiated_by=command.context.actor,
         )
-        payload["follow_up_operation_id"] = follow_up.operation_id
-        payload["follow_up_dispatch_id"] = follow_up.dispatch_id
-        payload["follow_up_queued"] = follow_up.accepted
-        payload["follow_up_duplicate"] = follow_up.duplicate
 
     if result.success:
         if follow_up is not None and not follow_up.accepted:
-            payload["status"] = "warning"
-            payload["partial_success"] = True
-            payload["message"] = (
+            status = AuthorizationWorkflowStatus.WARNING
+            partial_success = True
+            message = (
                 f"{result.message} TR-069 bootstrap follow-up failed: "
                 f"{follow_up.message}"
             )
+    outcome = OntAuthorizationExecutionOutcome(
+        authorization=result,
+        operation_id=command.operation_id,
+        message=message,
+        status=status,
+        partial_success=partial_success,
+        follow_up_operation_id=(
+            UUID(follow_up.operation_id)
+            if follow_up is not None and follow_up.operation_id is not None
+            else None
+        ),
+        follow_up_dispatch_id=(
+            UUID(follow_up.dispatch_id)
+            if follow_up is not None and follow_up.dispatch_id is not None
+            else None
+        ),
+        follow_up_queued=follow_up.accepted if follow_up is not None else None,
+        follow_up_duplicate=follow_up.duplicate if follow_up is not None else None,
+    )
+    payload = outcome.to_dict(base=operation.output_payload or {})
+
+    if result.success:
+        if follow_up is not None and not follow_up.accepted:
             network_operations.mark_warning(
                 db,
                 operation_id,
-                str(payload["message"]),
+                message,
                 output_payload=payload,
             )
         else:
@@ -215,7 +341,7 @@ def execute_ont_authorization(
             output_payload=payload,
         )
     db.commit()
-    return payload
+    return outcome
 
 
 def execute_ont_provisioning(

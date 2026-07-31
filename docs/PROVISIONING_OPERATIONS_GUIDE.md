@@ -185,6 +185,12 @@ authorization endpoint. Refresh live autofind and use **Commission ONT**. Normal
 authorization intentionally fails closed when the exact active assignment,
 modeled PON, OLT, or F/S/P is missing or disagrees.
 
+There is no operator or API switch for “authorize only.” The assigned workflow
+always applies the full OLT service baseline, while **Commission ONT** owns the
+separate management-only lifecycle. **Re-authorize** is also assignment-gated;
+if it reports a missing assignment, correct the assignment or use commissioning
+instead of attempting a direct OLT registration.
+
 ---
 
 ## 3. Managing ONTs
@@ -601,6 +607,12 @@ On MA5608T, `display ont autofind <F/S/P>` is not a supported command. Sub reads
 OLT/F/S/P/serial before commissioning. If the cached row and live location
 disagree, refresh Autofind and review the new port; never authorize from the
 stale row.
+
+There is no operator, API, task, or service switch for registration-only
+authorization. Assigned authorization requires an exact typed ONT/OLT/F/S/P/
+serial command and rechecks the active assignment immediately before the OLT
+write. An assignment-free candidate must use **Commission ONT**; reauthorization
+uses the same assigned-command gate.
 
 ### TR-069 Bootstrap Timeout (Step 9 Fails)
 

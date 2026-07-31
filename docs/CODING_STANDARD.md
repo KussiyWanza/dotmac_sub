@@ -313,6 +313,17 @@ memory. Store only an OpenBao path or approved local pointer.
 
 ## 13. Typing, imports, and module shape
 
+- Typed contracts are a release gate for every implementation change, including
+  fixes, migrations, jobs, scripts, routes, tasks, webhooks, integrations, and
+  tests. A small diff, an internal caller, or a temporary workflow is not an
+  exception.
+- Any cross-component boundary touched by a change must leave that change with
+  an immutable typed input, typed outcome or error, precise domain identifiers,
+  and typed provenance. Mocks and tests construct those same contracts instead
+  of bypassing them with primitive bags.
+- Existing untyped boundaries are migrated when touched. A deviation requires
+  an explicitly approved architecture decision naming the owner, rationale,
+  drift prevention, compatibility/cutover plan, and retirement condition.
 - New and migrated owner modules use strict typing.
 - Use the actual domain identifier type, such as `UUID`, inside owner contracts;
   transport strings are parsed once at the adapter boundary.

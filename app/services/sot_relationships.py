@@ -13759,9 +13759,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "network.operation_dispatch",
                 ),
                 notes=(
-                    "Admin, API, and bulk adapters submit typed intent here. "
-                    "They never publish provisioning device tasks directly, and "
-                    "workers never create their own operation after broker delivery."
+                    "Assigned authorization adapters submit only "
+                    "RequestAssignedOntAuthorization with CommandContext and an exact "
+                    "UUID/OLT/F/S/P/serial value-object target; admission returns "
+                    "OntAuthorizationAdmission. The owner evaluates the active "
+                    "assignment and exact PON before staging the operation and typed "
+                    "dispatch. Admin, API, and bulk adapters never publish provisioning "
+                    "device tasks directly, and workers never create their own operation "
+                    "after broker delivery."
                 ),
             ),
             SOTService(
@@ -13776,14 +13781,19 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
                 depends_on=(
                     "network.ont_provisioning_commands",
+                    "network.identity",
                     "network.operation_ledger",
                 ),
                 notes=(
-                    "Celery tasks claim a durable dispatch and delegate here. "
-                    "Inform-driven confirmation and scheduled verification share "
-                    "the same parent/child completion projection. A pre-cutover "
-                    "broker envelope may only re-submit intent to the command "
-                    "owner and cannot enter device code."
+                    "Celery tasks claim a durable dispatch, reconstruct "
+                    "ExecuteAssignedOntAuthorization, and delegate here. The execution "
+                    "owner repeats the exact assignment/PON decision immediately before "
+                    "device I/O and returns OntAuthorizationExecutionOutcome; stale "
+                    "assignment fails closed without an OLT write. Inform-driven "
+                    "confirmation and scheduled verification share the same parent/child "
+                    "completion projection. A pre-cutover broker envelope may only "
+                    "re-submit typed assigned intent to the command owner and cannot "
+                    "enter device code."
                 ),
             ),
             SOTService(
@@ -13812,7 +13822,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "F/S/P filtering where scoped Huawei syntax is unsupported. "
                     "Its dependency audit includes only registration and management "
                     "profiles; customer traffic-table and WAN inventories remain "
-                    "normal authorization dependencies. "
+                    "normal authorization dependencies. Separate named capabilities "
+                    "replace a public provisioning switch: only this owner may request "
+                    "commissioning registration, while assigned authorization and "
+                    "reauthorization enter through the exact-assignment command owner. "
                     "It never creates an assignment or applies internet, PPPoE, "
                     "WAN, LAN, or Wi-Fi intent. Assignment converts a "
                     "management-ready intent; expiry without assignment stages "

@@ -7,14 +7,17 @@ API and web paths can share audited workflows and readback reconciliation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.models.network import OLTDevice
 from app.services.network import olt_operations
-from app.services.network.action_logging import actor_label
 from app.services.network.olt import OLTDevices
+from app.services.network.ont_authorization_contracts import (
+    RequestAssignedOntAuthorization,
+)
 from app.services.network.ont_provisioning_commands import request_ont_authorization
 
 
@@ -25,36 +28,34 @@ class OltApiWriteResult:
     data: dict[str, object] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OltAuthorizationApiResult:
+    """Typed authorization acceptance projected by the HTTP adapter."""
+
+    success: bool
+    message: str
+    operation_id: UUID | None
+    dispatch_id: UUID | None
+    waiting: bool
+    duplicate: bool
+
+
 def load_olt(db: Session, olt_id: str) -> OLTDevice:
     return OLTDevices.get(db, olt_id)  # type: ignore[return-value]
 
 
-def authorize_ont(
+def authorize_and_provision_ont(
     db: Session,
-    olt_id: str,
-    *,
-    fsp: str,
-    serial_number: str,
-    force_reauthorize: bool = False,
-    request: Request | None = None,
-) -> OltApiWriteResult:
-    command = request_ont_authorization(
-        db,
-        olt_id=olt_id,
-        fsp=fsp,
-        serial_number=serial_number,
-        force_reauthorize=force_reauthorize,
-        initiated_by=actor_label(request) if request is not None else "api",
-    )
-    return OltApiWriteResult(
-        command.accepted,
-        command.message,
-        {
-            "operation_id": command.operation_id,
-            "dispatch_id": command.dispatch_id,
-            "waiting": command.waiting,
-            "duplicate": command.duplicate,
-        },
+    command: RequestAssignedOntAuthorization,
+) -> OltAuthorizationApiResult:
+    admission = request_ont_authorization(db, command)
+    return OltAuthorizationApiResult(
+        success=admission.accepted,
+        message=admission.message,
+        operation_id=admission.operation_id,
+        dispatch_id=admission.dispatch_id,
+        waiting=admission.waiting,
+        duplicate=admission.duplicate,
     )
 
 

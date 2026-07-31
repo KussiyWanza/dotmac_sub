@@ -41,7 +41,6 @@ ACS_WRITE_BACKLOG = {
 
 CANONICAL_OLT_WRITERS = {
     "app/services/network/reconcile/applier.py",
-    "app/services/olt_action_adapter.py",
 }
 OLT_WRITE_BACKLOG = {
     "app/api/network_olt_ops.py",

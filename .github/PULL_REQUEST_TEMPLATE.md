@@ -8,6 +8,20 @@
 - Tests run:
 - Manual checks:
 
+## Typed Contracts
+
+- [ ] Every changed cross-component boundary uses a typed immutable input and a
+  typed outcome or domain error; transport strings and mappings are converted
+  only at adapters.
+- [ ] Domain identifiers, closed values, optionality, collections, and
+  provenance use precise types (`UUID`, enums, value objects, `CommandContext`),
+  not `Any`, bare containers, primitive bags, or magic strings.
+- [ ] Tests and mocks construct the same typed contracts as production callers.
+- [ ] Any touched legacy untyped boundary was migrated in this change, or an
+  approved architecture decision and retirement plan is linked here.
+
+- Typed-contract evidence or approved deviation:
+
 ## Version Impact
 
 Apply exactly one label when this PR changes deployable behavior or shipped artifacts:
