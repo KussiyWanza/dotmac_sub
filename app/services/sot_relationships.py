@@ -9271,6 +9271,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Reviewed confirmation consumes payment settlements first and "
                     "then records only the exact remainder as typed opening-funding "
                     "consumption; opening funding is never represented as a Payment. "
+                    "When an active reviewed opening baseline exists, current "
+                    "account-credit evidence is scoped to native payment and ledger "
+                    "facts crossing its position timestamp; pre-boundary mirror rows "
+                    "are absorbed by the signed opening and cannot be reused or "
+                    "quarantined again. "
                     "Automatic funding changes create a durable operator exception "
                     "instead of silently leaving an authoritatively funded draft. "
                     "Every existing draft blocks the parallel invoice-less renewal "
@@ -9354,9 +9359,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.account_credit_applications",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source=(
-                                "exact active succeeded settlement capacity, current "
-                                "account-credit projection, source payments, and "
-                                "shortfall"
+                                "exact active succeeded settlement capacity and "
+                                "account-credit facts crossing the active reviewed "
+                                "opening-position boundary when present, source "
+                                "payments, and shortfall; pre-boundary mirror residue "
+                                "is excluded"
                             ),
                         ),
                         AuthorityInput(
@@ -9452,7 +9459,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         retryable_codes=(),
                         fail_closed_on=(
                             "any funding shortfall including NGN 0.50",
-                            "legacy or unbacked account credit",
+                            "unbacked account credit crossing the active reviewed "
+                            "opening-position boundary, or any unbacked account "
+                            "credit when no active baseline exists",
                             "multiple drafts or positive lines",
                             "partial or ambiguous entitlement overlap",
                             "stale preview, changed payment capacity, or already "
@@ -9513,7 +9522,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.prepaid_draft_reconciliation",
                         verification=(
                             "Exact mixed funding, partial funding, fifty-kobo "
-                            "shortfall, unbacked or reversed payment evidence, "
+                            "shortfall, pre-boundary residue absorption, post-boundary "
+                            "unbacked or reversed payment evidence, "
                             "direct-renewal overlap, multiple drafts, stale preview, "
                             "replay, concurrency, lapsed re-anchoring, opening-funding "
                             "double-spend, Restore guard, and architecture tests."

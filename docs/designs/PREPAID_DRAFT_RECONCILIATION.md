@@ -51,12 +51,20 @@ renewal:
   spending either source;
 - any shortfall, including NGN 0.50: keep the draft unchanged and do not create
   entitlement;
-- visible but legacy/unbacked credit: keep the draft unchanged for evidence
-  reconstruction;
+- unbacked credit whose economic timestamp or Sub creation time crosses the
+  active reviewed opening-position boundary: keep the draft unchanged for
+  evidence reconstruction;
 - one exact direct-renewal debit and entitlement overlapping the draft: close
   the duplicate draft through the invoice owner with zero economic delta;
 - multiple drafts, mixed lines, partial activity, or ambiguous coverage:
   require manual review.
+
+When an active reviewed opening baseline exists, account-credit classification
+uses only native payment and ledger facts crossing its timestamp. Pre-boundary
+rows are already absorbed into the signed opening amount: they are neither
+reused as Payments nor quarantined again as current unbacked credit. Without an
+active baseline, the generic all-history payment-backed classification remains
+unchanged.
 
 No path rounds a shortfall, invents a payment, represents opening funding as a
 Payment, marks an underfunded invoice paid, double-spends an opening baseline,
@@ -81,8 +89,8 @@ records, and opening baseline in that order. Inside one owner transaction it:
    service and RADIUS projection; and
 7. stages audit, event, and exception-resolution evidence before one commit.
 
-Any stale preview, consumed baseline, reversal, ambiguous ledger credit,
-multiple draft, or partial result rolls the whole transaction back.
+Any stale preview, consumed baseline, reversal, post-boundary ambiguous ledger
+credit, multiple draft, or partial result rolls the whole transaction back.
 
 Generic subscription Restore is not a financial repair path. An active prepaid
 financial lock makes Restore ineligible and the admin UI sends the operator to

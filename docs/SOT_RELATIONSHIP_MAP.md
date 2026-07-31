@@ -981,6 +981,12 @@ detailed security and delivery boundary is
    economic timestamp or its Sub `created_at` is later, so late-entered,
    backdated money is not hidden by the opening position. They never replay the
    archived mirror or older duplicate projections.
+   `financial.prepaid_draft_reconciliation` applies the same boundary when it
+   combines payment-backed account credit with reviewed opening funding:
+   pre-boundary payment and ledger rows are absorbed by the signed opening and
+   cannot be reused or reclassified as current unbacked credit. Unbacked facts
+   crossing the boundary still fail closed, and accounts without an active
+   baseline retain the generic all-history account-credit classification.
    Portal outstanding-balance views consume its collection-blocking
    value; a capped invoice display list never caps or redefines the amount.
    Billing reporting applies the same collectible/non-proforma boundary and

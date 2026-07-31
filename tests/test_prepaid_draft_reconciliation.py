@@ -84,14 +84,21 @@ def _draft(db, account, subscription, *, total: Decimal) -> Invoice:
     return invoice
 
 
-def _payment(db, account, *, amount: Decimal):
+def _payment(
+    db,
+    account,
+    *,
+    amount: Decimal,
+    paid_at: datetime = datetime(2026, 7, 23, 10, tzinfo=UTC),
+):
     payment = Payment(
         account_id=account.id,
         amount=amount,
         currency="NGN",
         status=PaymentStatus.succeeded,
-        paid_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
+        paid_at=paid_at,
         is_active=True,
+        created_at=paid_at,
     )
     db.add(payment)
     db.flush()
@@ -104,6 +111,8 @@ def _payment(db, account, *, amount: Decimal):
         currency="NGN",
         memo="Reviewed test payment",
         is_active=True,
+        effective_date=paid_at,
+        created_at=paid_at,
     )
     db.add(entry)
     db.flush()
@@ -117,6 +126,7 @@ def _payment(db, account, *, amount: Decimal):
             currency="NGN",
             origin=PaymentSettlementOrigin.system,
             idempotency_key=f"pytest-prepaid-draft-payment-{payment.id}",
+            created_at=paid_at,
         )
     )
     db.commit()
@@ -230,6 +240,86 @@ def test_reviewed_opening_funding_settles_exact_remainder_atomically(
     assert entitlement.source_invoice_id == invoice.id
     assert subscription.next_billing_at == entitlement.ends_at
     assert prepaid_available_balance(db_session, subscriber.id) == Decimal("0.00")
+
+
+def test_prebaseline_credit_is_absorbed_by_reviewed_opening_boundary(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+    prebaseline_payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("5000.00"),
+        paid_at=datetime(2026, 3, 10, 10, tzinfo=UTC),
+    )
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.other,
+            amount=Decimal("118760.64"),
+            currency="NGN",
+            memo="Pre-cutover mirror residue",
+            affects_customer_position=True,
+            is_active=True,
+            effective_date=datetime(2026, 3, 11, 10, tzinfo=UTC),
+            created_at=datetime(2026, 3, 11, 10, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("18760.64"),
+    )
+    postbaseline_payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("2000.00"),
+    )
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable
+    assert preview.recommended_action is PrepaidDraftAction.settle_paid
+    assert preview.payment_backed_credit == Decimal("2000.00")
+    assert preview.opening_funding_available == Decimal("18760.64")
+    assert preview.opening_funding_required == Decimal("16812.50")
+    assert preview.unbacked_credit == Decimal("0.00")
+    assert preview.shortfall == Decimal("16812.50")
+    invoice_id = invoice.id
+    prebaseline_payment_id = prebaseline_payment.id
+    postbaseline_payment_id = postbaseline_payment.id
+    db_session.commit()
+
+    result = reconcile_prepaid_draft_invoice(
+        db_session,
+        _command(
+            invoice_id,
+            preview.fingerprint,
+            key=f"pytest-prepaid-boundary-{invoice_id}",
+        ),
+    )
+
+    db_session.refresh(invoice)
+    allocations = db_session.query(PaymentAllocation).all()
+    consumption = db_session.query(PrepaidOpeningFundingConsumption).one()
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert result.payment_applied_amount == Decimal("2000.00")
+    assert result.opening_funding_applied_amount == Decimal("16812.50")
+    assert consumption.amount == Decimal("16812.50")
+    assert len(allocations) == 1
+    assert allocations[0].payment_id == postbaseline_payment_id
+    assert allocations[0].payment_id != prebaseline_payment_id
+    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("1948.14")
 
 
 def test_opening_funding_shortfall_stays_unmodified(
