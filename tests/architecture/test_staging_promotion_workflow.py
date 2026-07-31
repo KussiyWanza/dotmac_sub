@@ -94,6 +94,28 @@ def test_runbook_records_the_merge_method_per_pull_request_kind() -> None:
     assert "git merge-base --is-ancestor origin/main origin/dev" in runbook
 
 
+def test_runbook_requires_fast_forwarding_dev_after_a_promotion() -> None:
+    """The promotion merge commit exists only on main, leaving dev behind.
+
+    Ancestry therefore breaks again the moment a promotion lands, and the next
+    one re-enters the reconciliation path the merge-method rule exists to
+    remove. Observed live on 2026-07-31 promoting 7.77.3.
+    """
+
+    runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
+
+    assert "Fast-forward `dev` to `main`" in runbook
+    # The step belongs in the numbered sequence, not only in a later section,
+    # because that is what someone actually follows during a release.
+    sequence = runbook[
+        runbook.index("## Promotion sequence") : runbook.index("## Merge methods")
+    ]
+    assert "Fast-forward `dev` to `main`" in sequence
+    # A fast-forward, not a force push — branch protection forbids the latter.
+    assert "refs/heads/dev" in runbook
+    assert "not a force" in runbook
+
+
 def test_runbook_warns_that_merging_a_promotion_deletes_dev() -> None:
     """delete_branch_on_merge deletes the head branch, and a promotion's head is dev.
 

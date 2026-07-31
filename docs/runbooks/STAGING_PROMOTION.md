@@ -31,10 +31,14 @@ Overridden work reaches production without staging having run it, so reconcile
    promotion PR uses `version:none` with a body explaining that the version was
    already established and validated on dev. **Merge it with a merge commit,
    never a squash** — see "Merge methods" below.
-8. Require main CI and the main GHCR build to pass. Only the default branch may
+8. **Fast-forward `dev` to `main` as soon as the promotion merges.** The merge
+   commit exists only on `main`, so `dev` is left one commit behind and the
+   ancestry check starts failing again until this is done — see "Fast-forward
+   `dev` to `main` immediately after a promotion merges" below.
+9. Require main CI and the main GHCR build to pass. Only the default branch may
    receive the moving `latest` image tag.
-9. Deploy the immutable main image to production only after Michael explicitly
-   requests the named production host.
+10. Deploy the immutable main image to production only after Michael explicitly
+    requests the named production host.
 
 The main build remains separate from the dev build. GitHub Actions layer
 caching makes the second build faster while preserving commit-specific OCI
@@ -72,6 +76,36 @@ git merge-base --is-ancestor origin/main origin/dev && echo ok
 
 If that fails, the branches have already diverged. Do not open the promotion
 from `dev`. Reconcile first, as described in the next section.
+
+### Fast-forward `dev` to `main` immediately after a promotion merges
+
+A merge-commit promotion creates a commit **on `main` only**. `main` becomes
+merge(`main`, `dev`), while `dev` stays at the commit that was promoted — one of
+that merge's own parents. So the moment the promotion lands, `main` is no longer
+an ancestor of `dev`, and the ancestry check above starts failing again.
+
+This is not divergence and does not need reconciliation. `dev` is simply behind
+by the merge commit, and `dev`'s head is still an ancestor of `main`'s. Close it
+with a fast-forward, which branch protection allows because it is not a force
+push:
+
+```
+git fetch origin main
+git push origin "$(git rev-parse origin/main)":refs/heads/dev
+```
+
+Verify both invariants afterwards:
+
+```
+git merge-base --is-ancestor origin/main origin/dev && echo ok
+gh api repos/michaelayoade/dotmac_sub/compare/main...dev \
+  --jq '"\(.status) ahead=\(.ahead_by) behind=\(.behind_by)"'   # identical 0 0
+```
+
+Skip this and the next promotion re-enters the reconciliation path the merge
+methods above exist to eliminate — the branches drift apart one merge commit per
+release, which is slower to notice than a squash-driven divergence because the
+trees stay identical while only the history separates.
 
 ### Merging a promotion deletes `dev` unless `dev` is protected
 
