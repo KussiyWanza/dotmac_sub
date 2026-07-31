@@ -806,6 +806,23 @@ class FieldSegmentPhysicalDetailRead(BaseModel):
     terminations: list[FieldStrandTerminationDetailRead] = Field(default_factory=list)
 
 
+class FieldLinkBudgetComponentRead(BaseModel):
+    name: str
+    loss_db: float
+    basis: str
+
+
+class FieldLinkBudgetRead(BaseModel):
+    expected_loss_db: float
+    complete: bool
+    components: list[FieldLinkBudgetComponentRead] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    measured_rx_dbm: float | None = None
+    assumed_tx_dbm: float | None = None
+    margin_db: float | None = None
+    policy_version: int
+
+
 class FieldFiberCustomerTraceRead(BaseModel):
     subscription_id: UUID
     customer_label: str
@@ -821,6 +838,7 @@ class FieldFiberCustomerTraceRead(BaseModel):
     upstream_message: str
     ont_live: FieldFiberOntLiveRead | None = None
     physical_details: list[FieldSegmentPhysicalDetailRead] = Field(default_factory=list)
+    link_budget: FieldLinkBudgetRead | None = None
 
 
 class FieldFiberTestCreate(BaseModel):
@@ -860,6 +878,12 @@ class FieldFiberTestRead(BaseModel):
     notes: str | None = None
     client_ref: UUID | None = None
     created_at: datetime
+    derived_passed: bool | None = None
+    derived_verdict: str | None = None
+    applied_minimum_db: float | None = None
+    applied_maximum_db: float | None = None
+    acceptance_policy_version: int | None = None
+    assertion_conflict: bool = False
 
 
 class FieldFiberSourceObservationCreate(BaseModel):

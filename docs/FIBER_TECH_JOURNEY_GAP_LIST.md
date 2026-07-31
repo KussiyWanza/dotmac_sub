@@ -17,7 +17,7 @@ working tree on 2026-07-31.
 | **F5** | No tube/core color language in capture or review | **Closed 2026-07-31** (derived) |
 | **F6** | ODF detail invisible to technicians | **Closed 2026-07-31** (trace annotation) |
 | **F7** | No splice plan / cut sheet (design-first flow) | **Closed 2026-07-31** |
-| **F8** | Test acceptance is self-asserted | Open |
+| **F8** | Test acceptance is self-asserted | **Closed 2026-07-31** |
 | **F9** | Install last mile not captured from the field | Open |
 | **F10** | Field cannot record cable/closure/damage | Open |
 | **F11** | Buffer tube not a physical entity | Open (mitigated by F5 derivation) |
@@ -60,20 +60,19 @@ working tree on 2026-07-31.
   unplanned), and a completion gate: a work order with an issued plan cannot
   complete until every item has an executing proposal.
 
+- **F8** — `network.fiber_test_acceptance` (contracted POLICY owner,
+  migration 450): typed per-test-type thresholds (insertion loss/OTDR event
+  loss ≤ 0.30 dB, GPON class B+ receive window −28…−8 dBm, reflectance
+  ≤ −35 dB; continuity/other carry an explicit `no_policy` verdict). The
+  derived verdict is snapshotted beside the technician's untouched assertion
+  with the policy version and applied bounds; `assertion_conflict` flags
+  disagreement. A link-budget resolver derives expected downstream loss from
+  the canonical trace (reviewed splitter losses + traced lengths at a named
+  dB/km figure), labels incomplete traces, names every assumption, and
+  surfaces margin against the latest measured ONT Rx on the field customer
+  trace. Before/after baselining remains a future refinement.
+
 ## Open gaps
-
-### F8 — Test acceptance is self-asserted
-
-`FieldFiberTestResult.passed` is set by the technician. No per-test-type
-thresholds (max splice loss, ORL), no link-budget validation against the trace
-(expected loss from splitter ratios + splice count + distance vs measured dB),
-no before/after baselines. `topology.splice_inference` already detects Rx
-droop from telemetry; the acceptance side has no policy owner.
-
-**Owner:** a fiber test-acceptance policy service; observations stay facts,
-the policy derives pass/fail.
-**Fix:** typed acceptance thresholds per test type, derived verdict recorded
-beside the tech's assertion, link-budget comparison sourced from the trace.
 
 ### F9 — Install last mile not captured from the field
 

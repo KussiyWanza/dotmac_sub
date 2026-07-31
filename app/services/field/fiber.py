@@ -42,6 +42,7 @@ from app.services.field.jobs import _profile_from_principal, _scoped_query
 from app.services.network import (
     fiber_splice_plans,
     fiber_splice_proposals,
+    fiber_test_acceptance,
     fiber_topology_field_observations,
     fiber_topology_work_order_evidence_map,
 )
@@ -175,6 +176,9 @@ def record_test(
         ):
             raise HTTPException(status_code=404, detail="Attachment not found")
 
+    acceptance = fiber_test_acceptance.derive_verdict(
+        test_type=test_type, value_db=value_db
+    )
     result = FieldFiberTestResult(
         work_order_mirror_id=row.id,
         asset_type=normalized_type,
@@ -192,6 +196,15 @@ def record_test(
         measured_at=measured_at,
         notes=notes,
         client_ref=client_uuid,
+        derived_passed=acceptance.passed,
+        derived_verdict=acceptance.verdict.value,
+        applied_minimum_db=acceptance.threshold.minimum
+        if acceptance.threshold
+        else None,
+        applied_maximum_db=acceptance.threshold.maximum
+        if acceptance.threshold
+        else None,
+        acceptance_policy_version=acceptance.policy_version,
     )
     db.add(result)
     try:
@@ -412,6 +425,7 @@ class FieldCustomerFiberTrace:
     trace: FiberSubscriptionTrace
     ont_live: FieldOntLiveStatus | None
     physical_details: tuple[FieldSegmentPhysicalDetail, ...]
+    link_budget: fiber_test_acceptance.FiberLinkBudget | None
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.trace.to_dict()
@@ -419,6 +433,9 @@ class FieldCustomerFiberTrace:
         payload["physical_details"] = [
             detail.to_dict() for detail in self.physical_details
         ]
+        payload["link_budget"] = (
+            self.link_budget.to_dict() if self.link_budget else None
+        )
         return payload
 
 
@@ -451,11 +468,17 @@ def list_customer_traces(
     results: list[FieldCustomerFiberTrace] = []
     for subscription in subscriptions:
         trace = trace_fiber_subscription(db, subscription.id)
+        ont_live = _latest_ont_live(db, subscription.id)
         results.append(
             FieldCustomerFiberTrace(
                 trace=trace,
-                ont_live=_latest_ont_live(db, subscription.id),
+                ont_live=ont_live,
                 physical_details=_segment_physical_details(db, trace),
+                link_budget=fiber_test_acceptance.derive_link_budget(
+                    db,
+                    trace,
+                    measured_rx_dbm=ont_live.rx_signal_dbm if ont_live else None,
+                ),
             )
         )
     return results

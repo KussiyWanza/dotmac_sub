@@ -12287,6 +12287,130 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.fiber_test_acceptance",
+                module="app.services.network.fiber_test_acceptance",
+                owns=(
+                    "derived fiber test acceptance verdicts",
+                    "expected downstream link budget derivation",
+                ),
+                depends_on=("network.fiber_topology",),
+                notes=(
+                    "Observations stay facts: the technician's measurement and "
+                    "self-assessment are never altered. This policy derives a "
+                    "typed verdict from declared per-test-type thresholds "
+                    "(snapshotted beside the assertion with the policy version at "
+                    "capture time) and an expected downstream link budget from "
+                    "the canonical trace with every assumption named. Unknown "
+                    "test types and incomplete inputs yield explicit no_policy / "
+                    "incomplete outcomes, never a guess."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="derived fiber test acceptance verdicts",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "declared acceptance thresholds",
+                                "field fiber test measurement facts",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="expected downstream link budget derivation",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "declared acceptance thresholds",
+                                "canonical customer trace evidence",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="declared acceptance thresholds",
+                            owner="network.fiber_test_acceptance",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "versioned typed threshold table and planning "
+                                "coefficients declared in the policy module"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="field fiber test measurement facts",
+                            owner="network.fiber_test_acceptance",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "FieldFiberTestResult measurements captured by the "
+                                "scoped field transport; the capture path stores "
+                                "the derived snapshot beside the assertion"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer trace evidence",
+                            owner="network.fiber_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "trace_fiber_subscription hops, reviewed splitter "
+                                "stage losses, and traced segment lengths"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure derivation: verdicts and budgets are computed "
+                            "from inputs without mutating state; the field capture "
+                            "path persists the verdict snapshot inside its own "
+                            "existing transaction."
+                        ),
+                        locking="None; derivation reads committed state only.",
+                        idempotency=(
+                            "Deterministic for identical inputs and policy "
+                            "version; snapshots carry the version so replays are "
+                            "distinguishable from policy changes."
+                        ),
+                        retries=(
+                            "Safe to recompute at any time; recorded snapshots "
+                            "are never rewritten by recomputation."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner=(
+                            "field/vendor transports surface derived outcomes as "
+                            "data; no transport error mapping is required"
+                        ),
+                        fail_closed_on=(
+                            "unknown test types (explicit no_policy verdict)",
+                            "missing measurements (explicit no_measurement verdict)",
+                            "incomplete traces (budget labelled incomplete, "
+                            "never presented as the whole path)",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        old_owner=None,
+                        new_owner="network.fiber_test_acceptance",
+                        verification=(
+                            "Focused verdict-matrix, capture-snapshot, conflict, "
+                            "and link-budget tests."
+                        ),
+                        cutover_gate=(
+                            "Native new authority; the technician assertion "
+                            "remains recorded and unaltered beside the verdict."
+                        ),
+                        fallback_retirement=(
+                            "No fallback exists; tests without policy coverage "
+                            "carry an explicit no_policy verdict."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/FIBER_TECH_JOURNEY_GAP_LIST.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_fiber_test_acceptance.py",),
+                ),
+            ),
+            SOTService(
                 name="network.fiber_splice_plans",
                 module="app.services.network.fiber_splice_plans",
                 owns=(
