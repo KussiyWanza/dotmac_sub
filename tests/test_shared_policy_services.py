@@ -132,11 +132,11 @@ def test_billing_communication_policy_batches_outage_and_ticket_suppression(
     clean = SimpleNamespace(id="sub-clean", subscriber_id="acct-clean")
     monkeypatch.setattr(
         "app.services.billing_communication_policy.active_outage_subscription_ids",
-        lambda session: {"sub-outage"},
+        lambda session, manual_open_max_hours=None: {"sub-outage"},
     )
     monkeypatch.setattr(
         "app.services.billing_communication_policy.subscribers_with_open_infrastructure_down_tickets",
-        lambda session, subscriber_ids: {"acct-ticket"},
+        lambda session, subscriber_ids, max_age_hours=None: {"acct-ticket"},
     )
 
     decisions = billing_communication_decisions(db_session, [outage, ticket, clean])

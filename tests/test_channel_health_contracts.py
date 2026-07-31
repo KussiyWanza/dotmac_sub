@@ -59,6 +59,43 @@ def test_registry_rejects_missing_and_implicitly_disabled_channels():
     ):
         channel_health_contracts.parse_channel_health_contracts(missing)
 
+
+def test_stored_registry_predating_new_channels_is_backfilled_with_defaults():
+    stored = deepcopy(channel_health_contracts.DEFAULT_CHANNEL_HEALTH_CONTRACTS)
+    stored["channels"] = [
+        item
+        for item in stored["channels"]
+        if item["channel"] not in {"facebook_comment", "instagram_comment"}
+    ]
+
+    contracts = channel_health_contracts.parse_channel_health_contracts(
+        channel_health_contracts.backfill_missing_supported_channels(stored)
+    )
+
+    channels = {contract.channel for contract in contracts}
+    assert channels == set(channel_health_contracts.SUPPORTED_EXTERNAL_CHANNELS)
+    backfilled = next(c for c in contracts if c.channel == "facebook_comment")
+    assert backfilled.enabled is False
+    assert backfilled.disabled_reason
+    # The stored registry itself must stay untouched.
+    assert (
+        len(stored["channels"])
+        == len(channel_health_contracts.SUPPORTED_EXTERNAL_CHANNELS) - 2
+    )
+
+
+def test_backfill_leaves_malformed_registries_for_the_parser_to_reject():
+    assert channel_health_contracts.backfill_missing_supported_channels(None) is None
+    malformed = {"version": 2, "channels": "nope"}
+    assert (
+        channel_health_contracts.backfill_missing_supported_channels(malformed)
+        is malformed
+    )
+    with pytest.raises(channel_health_contracts.ChannelHealthContractError):
+        channel_health_contracts.parse_channel_health_contracts(
+            channel_health_contracts.backfill_missing_supported_channels(malformed)
+        )
+
     implicit = deepcopy(channel_health_contracts.DEFAULT_CHANNEL_HEALTH_CONTRACTS)
     implicit["channels"][0].pop("disabled_reason")
     with pytest.raises(

@@ -353,3 +353,37 @@ def test_scheduled_run_persists_blocking_quarantine_through_the_owner(
     assert second.quarantined_blocking == 1
     assert db_session.query(PrepaidCoverageReconciliationRun).count() == 1
     assert db_session.query(ServiceEntitlement).count() == 0
+
+
+def test_blocking_quarantine_creates_and_resolves_owned_work_item(
+    db_session, subscriber_account, subscription
+):
+    from app.models.admin_alert import AdminAlert
+    from app.services.collections.scheduled import _QUARANTINE_FINDING_PREFIX
+
+    _prepare(db_session, subscriber_account, subscription)
+    invoice, _line = _paid_invoice(db_session, subscriber_account, subscription)
+    invoice.billing_period_end = invoice.billing_period_start
+    db_session.commit()
+
+    repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    fingerprint = f"{_QUARANTINE_FINDING_PREFIX}{subscriber_account.id}"
+    alert = (
+        db_session.query(AdminAlert).filter(AdminAlert.fingerprint == fingerprint).one()
+    )
+    assert alert.status.value == "open"
+    assert alert.details["owner"] == "finance-billing"
+    assert alert.details["reason_codes"] == ["malformed_paid_invoice_period"]
+    assert alert.details["sla_due_at"]
+
+    # Correcting the evidence makes it exact; the next pass repairs it and
+    # the work item closes because the account left quarantine.
+    invoice.billing_period_end = NOW + timedelta(days=30)
+    db_session.commit()
+    outcome = repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    assert outcome.entitlements_created == 1
+    assert outcome.quarantined_blocking == 0
+    db_session.refresh(alert)
+    assert alert.status.value == "resolved"

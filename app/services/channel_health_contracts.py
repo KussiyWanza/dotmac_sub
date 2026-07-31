@@ -9,6 +9,8 @@ Prometheus rules, and individual collectors cannot become parallel policy owners
 
 from __future__ import annotations
 
+import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -18,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from app.models.domain_settings import SettingDomain
 from app.timezone import APP_TIMEZONE_NAME
+
+logger = logging.getLogger(__name__)
 
 CHANNEL_HEALTH_CONTRACTS_SETTING = "channel_health_contracts"
 SUPPORTED_EXTERNAL_CHANNELS = (
@@ -309,6 +313,37 @@ def parse_channel_health_contracts(raw: object) -> tuple[ChannelHealthContract, 
     return tuple(sorted(contracts, key=lambda contract: contract.channel))
 
 
+def backfill_missing_supported_channels(raw: object) -> object:
+    """Fill in channels added to the supported set after a registry was stored.
+
+    A stored registry that predates a newly supported channel would otherwise
+    fail closed and take the whole channel-observability domain to ``error``.
+    Each missing channel inherits its shipped default contract, which is
+    explicitly disabled with a reason — operational intent stays declared and
+    the operator can enable it deliberately. Anything structurally malformed
+    passes through untouched so parsing still rejects it.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("channels"), list):
+        return raw
+    items = raw["channels"]
+    present = {item.get("channel") for item in items if isinstance(item, dict)}
+    missing = [
+        channel for channel in SUPPORTED_EXTERNAL_CHANNELS if channel not in present
+    ]
+    if not missing:
+        return raw
+    defaults = {
+        item["channel"]: item for item in DEFAULT_CHANNEL_HEALTH_CONTRACTS["channels"]
+    }
+    logger.warning(
+        "channel_health_contracts_backfilled_defaults: %s", ", ".join(missing)
+    )
+    return {
+        **raw,
+        "channels": [*items, *(deepcopy(defaults[channel]) for channel in missing)],
+    }
+
+
 def load_channel_health_contracts(db: Session) -> tuple[ChannelHealthContract, ...]:
     from app.services.settings_spec import resolve_value
 
@@ -317,7 +352,7 @@ def load_channel_health_contracts(db: Session) -> tuple[ChannelHealthContract, .
         SettingDomain.network_monitoring,
         CHANNEL_HEALTH_CONTRACTS_SETTING,
     )
-    return parse_channel_health_contracts(raw)
+    return parse_channel_health_contracts(backfill_missing_supported_channels(raw))
 
 
 def _at_local_date(local: datetime, clock: time, *, days: int = 0) -> datetime:
