@@ -9552,6 +9552,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "quarantined again. "
                     "Automatic funding changes create a durable operator exception "
                     "instead of silently leaving an authoritatively funded draft. "
+                    "The admin invoice adapter presents the same exact classifier "
+                    "output and submits an actor-bound, signed, fingerprinted review "
+                    "to this owner; it does not maintain a second settlement path. "
                     "Every existing draft blocks the parallel invoice-less renewal "
                     "path, and generic Restore cannot bypass an unresolved prepaid "
                     "financial lock."
@@ -9729,7 +9732,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_draft_reconciliation.active_caller_transaction",
                             "financial.prepaid_draft_reconciliation.nested_transaction_completion",
                         ),
-                        mapping_owner="billing reconciliation CLI and funding-change adapters",
+                        mapping_owner=(
+                            "billing reconciliation CLI, admin invoice, and "
+                            "funding-change adapters"
+                        ),
                         retryable_codes=(),
                         fail_closed_on=(
                             "any funding shortfall including NGN 0.50",
@@ -9804,12 +9810,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         cutover_gate=(
                             "Funding-change handling checks the authoritative draft "
-                            "before direct renewal; the reviewed CLI defaults to dry-run."
+                            "before direct renewal; the reviewed CLI defaults to dry-run; "
+                            "the invoice page confirms only signed owner previews."
                         ),
                         fallback_retirement=(
                             "Remove the compatibility issue-then-return helper after "
                             "all remaining callers use the classifier and the backlog "
-                            "has been reviewed."
+                            "has been reviewed. The prepaid-recovery settlement writer "
+                            "and invoice-page adapter are retired."
                         ),
                     ),
                     steward="billing operations",
@@ -9820,6 +9828,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_prepaid_draft_reconciliation.py",
+                        "tests/test_web_prepaid_draft_reconciliation.py",
                         "tests/test_prepaid_service_renewals.py",
                         "tests/test_subscription_lifecycle_commands.py",
                         "tests/integration/test_prepaid_draft_reconciliation_concurrency.py",
@@ -10125,24 +10134,20 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
-                owns=(
-                    "suspended prepaid replacement-cycle draft creation",
-                    "full settlement and restoration of a prepaid recovery invoice",
-                ),
+                owns=("suspended prepaid replacement-cycle draft creation",),
                 depends_on=(
                     "access.subscription_lifecycle",
                     "events.dispatcher",
                     "financial.access_resolution",
-                    "financial.account_credit_applications",
                     "financial.invoices",
                     "financial.prepaid_service_renewals",
                 ),
                 notes=(
                     "This recovery-only coordinator creates a replacement full-cycle "
-                    "draft from the confirmed Bill Now instant. It never voids a prior "
-                    "invoice or spends generic balance. Settlement uses only confirmed "
-                    "unallocated payment evidence, derives exact paid-invoice coverage, "
-                    "and then asks the financial-access owner to resolve eligible locks."
+                    "draft from the confirmed Bill Now instant. It never voids, settles, "
+                    "or restores from a prior invoice or displayed balance. The resulting "
+                    "draft is classified and reconciled only by "
+                    "financial.prepaid_draft_reconciliation."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10154,17 +10159,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "active prepaid enforcement lock",
                                 "contracted prepaid renewal price",
                                 "open recovery-invoice evidence",
-                            ),
-                        ),
-                        ConcernContract(
-                            name="full settlement and restoration of a prepaid recovery invoice",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
-                            input_names=(
-                                "locked recovery invoice and service scope",
-                                "active prepaid enforcement lock",
-                                "confirmed unallocated payment credit",
-                                "paid-invoice entitlement protocol",
-                                "financial access restoration protocol",
                             ),
                         ),
                     ),
@@ -10193,52 +10187,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="active invoice line metadata for the exact subscription and recovery-cycle intent",
                         ),
-                        AuthorityInput(
-                            name="locked recovery invoice and service scope",
-                            owner="financial.prepaid_recovery_billing",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="locked Invoice and exact active recovery InvoiceLine subscription link",
-                        ),
-                        AuthorityInput(
-                            name="confirmed unallocated payment credit",
-                            owner="financial.account_credit_applications",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="succeeded native payment allocation capacity and matching account-credit ledger position",
-                        ),
-                        AuthorityInput(
-                            name="paid-invoice entitlement protocol",
-                            owner="financial.prepaid_service_renewals",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source="paid prepaid InvoiceLine period metadata to ServiceEntitlement and next-billing anchor protocol",
-                        ),
-                        AuthorityInput(
-                            name="financial access restoration protocol",
-                            owner="financial.access_resolution",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source="locked financial restoration preview/confirmation and remaining-lock gate",
-                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
-                            "Each confirmation enters execute_owner_command once on a "
-                            "transaction-free session; preview is read-only and all "
-                            "invoice, allocation, entitlement, anchor, and restoration "
-                            "effects flush and commit together."
+                            "Draft confirmation enters execute_owner_command once on a "
+                            "transaction-free session; preview is read-only and the "
+                            "replacement invoice aggregate commits together."
                         ),
                         locking=(
-                            "Account is locked first, then the exact subscription and "
-                            "invoice. Active recovery-invoice lookup is repeated under "
-                            "those locks before every write."
+                            "Account is locked first, then the exact subscription. Active "
+                            "recovery-invoice lookup is repeated under those locks before "
+                            "the draft is written."
                         ),
                         idempotency=(
                             "Recovery draft fingerprint identifies one period and an open "
-                            "invoice prevents duplicate active recovery cycles; paid invoice "
-                            "replay returns its stable successful outcome."
+                            "invoice prevents duplicate active recovery cycles."
                         ),
                         retries=(
-                            "A stale preview or changed payment capacity is rejected for a "
-                            "fresh preview; no partial payment allocation is attempted."
+                            "A stale price, service, or period preview is rejected for a "
+                            "fresh preview; this owner performs no settlement."
                         ),
                     ),
                     errors=ErrorContract(
@@ -10254,23 +10222,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_recovery_billing.unsupported_cycle",
                             "financial.prepaid_recovery_billing.invalid_charge",
                             "financial.prepaid_recovery_billing.stale_preview",
-                            "financial.prepaid_recovery_billing.invoice_not_found",
-                            "financial.prepaid_recovery_billing.not_recovery_invoice",
-                            "financial.prepaid_recovery_billing.invoice_scope_mismatch",
-                            "financial.prepaid_recovery_billing.invoice_not_draft",
-                            "financial.prepaid_recovery_billing.insufficient_confirmed_credit",
-                            "financial.prepaid_recovery_billing.settlement_incomplete",
                         ),
-                        mapping_owner="admin catalog and billing invoice adapters",
+                        mapping_owner="admin catalog adapter",
                         fail_closed_on=(
                             "missing prepaid lock or suspended service state",
                             "an existing active recovery invoice",
-                            "stale price, service, invoice, or funding evidence",
-                            "credit that cannot settle the exact invoice in full",
+                            "stale price, service, or period evidence",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("invoice_created", "subscription_resumed"),
+                        event_types=("invoice_created",),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -10279,8 +10240,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "is introduced by this coordinator."
                         ),
                         replay=(
-                            "Invoice line period metadata, payment allocations, and paid "
-                            "invoice entitlement evidence reconstruct completed recovery."
+                            "Invoice line period metadata and the draft fingerprint "
+                            "reconstruct completed recovery-draft creation."
                         ),
                     ),
                     migration=MigrationContract(
@@ -10288,15 +10249,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.prepaid_recovery_billing",
                         verification=(
                             "Focused command, UI visibility, stale-preview, duplicate, "
-                            "insufficient-credit, paid-entitlement, and restoration tests."
+                            "price, period, and invoice-creation tests."
                         ),
                         cutover_gate=(
-                            "Admin Bill Now and prepaid recovery Pay Now routes invoke "
-                            "only this coordinator."
+                            "Admin Bill Now invokes only this coordinator; invoice-page "
+                            "reconciliation invokes only financial.prepaid_draft_reconciliation."
                         ),
                         fallback_retirement=(
-                            "No adapter may manufacture a prepaid recovery invoice or "
-                            "restore a service from a displayed balance."
+                            "The recovery-specific settlement writer is removed. No adapter "
+                            "may manufacture a recovery invoice or restore from displayed balance."
                         ),
                     ),
                     steward="billing operations",

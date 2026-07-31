@@ -4,7 +4,7 @@ import secrets
 from urllib.parse import quote_plus
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -14,6 +14,9 @@ from app.services import (
     web_billing_invoice_actions as web_billing_invoice_actions_service,
 )
 from app.services import web_billing_invoices as web_billing_invoices_service
+from app.services import (
+    web_prepaid_draft_reconciliation as web_prepaid_draft_reconciliation_service,
+)
 from app.services.auth_dependencies import require_permission
 from app.services.domain_errors import DomainError
 
@@ -29,6 +32,51 @@ def _actor_id(request: Request) -> str | None:
         return None
     value = current_user.get("actor_id") or current_user.get("subscriber_id")
     return str(value) if value else None
+
+
+def _principal_actor(auth: dict) -> str:
+    principal_id = str(auth.get("principal_id") or "").strip()
+    if not principal_id:
+        raise HTTPException(status_code=403, detail="Authorized actor is missing")
+    principal_type = str(auth.get("principal_type") or "user").strip()
+    return f"{principal_type}:{principal_id}"
+
+
+def _prepaid_review_error_status(error: DomainError) -> int:
+    if error.code.endswith(".invoice_not_found"):
+        return 404
+    if error.code.endswith(
+        (
+            ".stale_preview",
+            ".expired_confirmation",
+            ".confirmation_context_changed",
+            ".active_caller_transaction",
+        )
+    ):
+        return 409
+    return 400
+
+
+def _render_prepaid_review(
+    request: Request,
+    *,
+    db: Session,
+    review: web_prepaid_draft_reconciliation_service.PrepaidDraftAdminReview,
+    status_code: int = 200,
+) -> Response:
+    from app.web.admin import get_current_user, get_sidebar_stats
+
+    return templates.TemplateResponse(
+        "admin/billing/prepaid_pay_now_confirm.html",
+        {
+            "request": request,
+            "review": review,
+            "invoice_id": review.preview.invoice_id,
+            "current_user": get_current_user(request),
+            "sidebar_stats": get_sidebar_stats(db),
+        },
+        status_code=status_code,
+    )
 
 
 @router.post(
@@ -89,62 +137,75 @@ def invoice_detail(
 
 
 @router.post(
-    "/invoices/{invoice_id:uuid}/prepaid-pay-now/preview",
+    "/invoices/{invoice_id:uuid}/prepaid-draft-reconciliation/preview",
     response_class=HTMLResponse,
-    dependencies=[Depends(require_permission("billing:invoice:update"))],
 )
-def invoice_prepaid_pay_now_preview(
-    request: Request, invoice_id: UUID, db: Session = Depends(get_db)
+def invoice_prepaid_draft_reconciliation_preview(
+    request: Request,
+    invoice_id: UUID,
+    auth: dict = Depends(require_permission("billing:invoice:update")),
+    db: Session = Depends(get_db),
 ) -> Response:
     try:
-        preview_context = (
-            web_billing_invoices_service.prepaid_recovery_pay_now_preview_context(
-                db, invoice_id=str(invoice_id)
-            )
+        review = web_prepaid_draft_reconciliation_service.build_admin_review(
+            db,
+            invoice_id=invoice_id,
+            actor=_principal_actor(auth),
         )
     except DomainError as exc:
         return RedirectResponse(
             f"/admin/billing/invoices/{invoice_id}?error={quote_plus(exc.message)}",
             status_code=303,
         )
-    from app.web.admin import get_current_user, get_sidebar_stats
-
-    return templates.TemplateResponse(
-        "admin/billing/prepaid_pay_now_confirm.html",
-        {
-            "request": request,
-            **preview_context,
-            "invoice_id": invoice_id,
-            "current_user": get_current_user(request),
-            "sidebar_stats": get_sidebar_stats(db),
-        },
-    )
+    return _render_prepaid_review(request, db=db, review=review)
 
 
 @router.post(
-    "/invoices/{invoice_id:uuid}/prepaid-pay-now/confirm",
-    dependencies=[Depends(require_permission("billing:invoice:update"))],
+    "/invoices/{invoice_id:uuid}/prepaid-draft-reconciliation/confirm",
 )
-def invoice_prepaid_pay_now_confirm(
+def invoice_prepaid_draft_reconciliation_confirm(
     request: Request,
     invoice_id: UUID,
     preview_fingerprint: str = Form(...),
+    confirmation_token: str = Form(...),
+    confirmed: str | None = Form(None),
+    reason: str = Form(""),
+    auth: dict = Depends(require_permission("billing:invoice:update")),
     db: Session = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
+    actor = _principal_actor(auth)
     try:
-        web_billing_invoices_service.confirm_prepaid_recovery_pay_now(
+        web_prepaid_draft_reconciliation_service.confirm_admin_review(
             db,
-            invoice_id=str(invoice_id),
-            fingerprint=preview_fingerprint,
-            actor_id=_actor_id(request),
+            invoice_id=invoice_id,
+            actor=actor,
+            preview_fingerprint=preview_fingerprint,
+            confirmation_token=confirmation_token,
+            confirmed=confirmed,
+            reason=reason,
         )
     except DomainError as exc:
-        return RedirectResponse(
-            f"/admin/billing/invoices/{invoice_id}?error={quote_plus(exc.message)}",
-            status_code=303,
+        try:
+            review = web_prepaid_draft_reconciliation_service.rebuild_review_with_error(
+                db,
+                invoice_id=invoice_id,
+                actor=actor,
+                reason=reason,
+                error=exc,
+            )
+        except DomainError:
+            return RedirectResponse(
+                f"/admin/billing/invoices/{invoice_id}?error={quote_plus(exc.message)}",
+                status_code=303,
+            )
+        return _render_prepaid_review(
+            request,
+            db=db,
+            review=review,
+            status_code=_prepaid_review_error_status(exc),
         )
     return RedirectResponse(
-        f"/admin/billing/invoices/{invoice_id}?notice=Recovery+invoice+settled",
+        f"/admin/billing/invoices/{invoice_id}?notice=Prepaid+draft+reconciled",
         status_code=303,
     )
 

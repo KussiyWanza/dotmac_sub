@@ -134,6 +134,19 @@ entitlement/anchor projection, eligible access restoration, audit/event
 evidence, exception resolution, metadata, and idempotency reservation commit
 together.
 
+The admin invoice page is the interactive adapter to the same owner. It shows
+the exact payment-backed, reviewed-opening, unbacked, and shortfall amounts plus
+the recommended action and evidence identifiers. An authorized operator must
+provide a reason and explicitly confirm the review. A short-lived signed token
+binds the actor, invoice, owner fingerprint, and effective timestamp; the token
+identifier becomes the stable idempotency key. Expired, altered, or stale
+reviews fail closed and issue a fresh preview without changing the invoice.
+
+The retired prepaid-recovery settlement command is not a fallback. Recovery
+draft creation remains owned by `financial.prepaid_recovery_billing`, while
+every resulting prepaid draft is classified and reconciled here regardless of
+which approved path created it.
+
 ## Rollout
 
 1. Deploy the funding-change draft-first guard.
