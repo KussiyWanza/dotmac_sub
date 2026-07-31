@@ -9,6 +9,7 @@ from app.models.network import (
     OltServiceProfile,
 )
 from app.services.network.olt_config_pack_live_audit import (
+    OltDependencyAuditScope,
     audit_olt_config_pack_live,
     extract_dba_profile_ids,
     parse_line_profile_detail,
@@ -157,6 +158,80 @@ def test_live_audit_validates_profile_dependencies(monkeypatch, db_session) -> N
     assert audit.observed["required_wan_config_profile_ids"] == [0]
     assert audit.observed["missing_wan_config_profile_ids"] == []
     assert audit.observed["required_dba_profile_ids"] == [50]
+
+
+def test_management_only_audit_skips_customer_service_inventories(
+    monkeypatch,
+    db_session,
+) -> None:
+    olt = OLTDevice(
+        name="Management-only Audit OLT",
+        config_pack={
+            "tr069_olt_profile_id": 2,
+            "wan_config_profile_id": 9,
+            "internet_traffic_table_inbound": 6,
+        },
+    )
+    db_session.add(olt)
+    db_session.flush()
+    db_session.add_all(
+        [
+            OltLineProfile(
+                olt_id=olt.id,
+                profile_id=40,
+                name="HG8546M",
+                raw_config="tcont 1 dba-profile-id 50",
+            ),
+            OltServiceProfile(olt_id=olt.id, profile_id=41, name="HG8546M"),
+        ]
+    )
+    db_session.flush()
+    db_session.add(
+        OltOnuTypeProfileMapping(
+            olt_id=olt.id,
+            equipment_id="HG8546M",
+            line_profile_id=40,
+            service_profile_id=41,
+            wan_config_profile_id=9,
+        )
+    )
+    db_session.flush()
+
+    monkeypatch.setattr(
+        "app.services.network.olt_config_pack_live_audit.get_tr069_server_profiles",
+        lambda _olt: (
+            True,
+            "ok",
+            [SimpleNamespace(profile_id=2, name="ACS", acs_url="")],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.network.olt_config_pack_live_audit.get_dba_profiles",
+        lambda _olt: (True, "ok", [SimpleNamespace(profile_id=50)]),
+    )
+
+    def unexpected_customer_service_inventory(_olt):
+        raise AssertionError("management-only audit read a customer service inventory")
+
+    monkeypatch.setattr(
+        "app.services.network.olt_config_pack_live_audit.get_traffic_tables",
+        unexpected_customer_service_inventory,
+    )
+    monkeypatch.setattr(
+        "app.services.network.olt_config_pack_live_audit.get_wan_profiles",
+        unexpected_customer_service_inventory,
+    )
+
+    audit = audit_olt_config_pack_live(
+        db_session,
+        str(olt.id),
+        scope=OltDependencyAuditScope.MANAGEMENT_ONLY,
+    )
+
+    assert audit.is_valid is True
+    assert audit.observed["dependency_scope"] == "management_only"
+    assert audit.observed["required_traffic_table_ids"] == {}
+    assert audit.observed["required_wan_config_profile_ids"] == []
 
 
 def test_live_audit_detects_missing_wan_profile_zero(monkeypatch, db_session) -> None:

@@ -39,6 +39,7 @@ from app.models.ont_commissioning import (
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
+from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
 from app.services.network.serial_utils import (
     canonical as canonical_serial,
 )
@@ -747,6 +748,7 @@ def execute_ont_commissioning(
             provision=False,
             operation_id=operation_id,
             allow_registration_move=False,
+            dependency_scope=OltDependencyAuditScope.MANAGEMENT_ONLY,
         )
         if result.completed_authorization:
             # The device write is authoritative external evidence even when

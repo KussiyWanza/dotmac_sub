@@ -13613,6 +13613,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "authorization. Each intent binds one live autofind serial, "
                     "OLT, and F/S/P, expires after a bounded interval, and permits "
                     "only OLT registration plus management VLAN/IPHOST/TR-069. "
+                    "Model-aware live reads use global autofind plus exact parsed "
+                    "F/S/P filtering where scoped Huawei syntax is unsupported. "
+                    "Its dependency audit includes only registration and management "
+                    "profiles; customer traffic-table and WAN inventories remain "
+                    "normal authorization dependencies. "
                     "It never creates an assignment or applies internet, PPPoE, "
                     "WAN, LAN, or Wi-Fi intent. Assignment converts a "
                     "management-ready intent; expiry without assignment stages "
@@ -13673,8 +13678,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="external:huawei_olt",
                             kind=AuthorityKind.EXTERNAL_OBSERVATION,
                             source=(
-                                "display ont autofind read immediately before the "
-                                "first commissioning device write"
+                                "model-supported display ont autofind read immediately "
+                                "before the first commissioning device write, filtered "
+                                "to the exact parsed OLT/F/S/P/serial"
                             ),
                         ),
                         AuthorityInput(
@@ -13784,7 +13790,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "stale or mismatched live autofind target",
                             "existing active assignment",
                             "registration on a different F/S/P",
-                            "missing management prerequisites",
+                            "missing registration or management-only prerequisites",
                             "any internet, WAN, PPPoE, LAN, or Wi-Fi command",
                             "identity drift before cleanup",
                         ),

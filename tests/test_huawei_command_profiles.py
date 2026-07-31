@@ -15,6 +15,7 @@ def test_ma5608t_v800r013_uses_space_separated_display_ont_info():
     profile = get_huawei_command_profile(olt)
 
     assert profile.requires_slow_send is True
+    assert profile.supports_scoped_autofind is False
     assert profile.display_ont_info("0/1/7", 5) == "display ont info 0 1 7 5"
     assert (
         profile.display_ont_optical_info("0/1/7", 5)
@@ -38,6 +39,7 @@ def test_ma5800_v100r019_uses_slash_fsp_display_ont_info():
     profile = get_huawei_command_profile(olt)
 
     assert profile.requires_slow_send is False
+    assert profile.supports_scoped_autofind is True
     assert profile.display_ont_info("0/1", 0) == "display ont info 0/1 0"
     assert profile.display_ont_info_all("0/1") == "display ont info 0/1 all"
     assert (

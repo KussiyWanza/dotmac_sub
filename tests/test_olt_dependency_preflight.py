@@ -97,6 +97,45 @@ def test_validate_olt_profile_dependencies_uses_recent_success_cache(
     assert second.audit == {"is_valid": True, "calls": 1}
 
 
+def test_dependency_success_cache_isolated_by_scope(monkeypatch) -> None:
+    from app.services.network import olt_dependency_preflight
+    from app.services.network.olt_config_pack_live_audit import (
+        OltDependencyAuditScope,
+    )
+
+    scopes = []
+
+    def _audit(*_args, scope, **_kwargs):
+        scopes.append(scope)
+        return SimpleNamespace(
+            is_valid=True,
+            errors=[],
+            to_dict=lambda: {"is_valid": True, "scope": scope.value},
+        )
+
+    monkeypatch.setattr(olt_dependency_preflight, "audit_olt_config_pack_live", _audit)
+    olt_dependency_preflight._success_cache.clear()
+
+    management = olt_dependency_preflight.validate_olt_profile_dependencies(
+        SimpleNamespace(),
+        olt_id="olt-1",
+        operation="management-only commissioning",
+        scope=OltDependencyAuditScope.MANAGEMENT_ONLY,
+    )
+    full = olt_dependency_preflight.validate_olt_profile_dependencies(
+        SimpleNamespace(),
+        olt_id="olt-1",
+        operation="authorization",
+    )
+
+    assert management.audit == {"is_valid": True, "scope": "management_only"}
+    assert full.audit == {"is_valid": True, "scope": "full"}
+    assert scopes == [
+        OltDependencyAuditScope.MANAGEMENT_ONLY,
+        OltDependencyAuditScope.FULL,
+    ]
+
+
 def test_cached_only_dependency_validation_falls_back_to_live_audit_on_cache_miss(
     monkeypatch,
 ) -> None:

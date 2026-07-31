@@ -36,6 +36,7 @@ from app.services.network.huawei_cli_response import (
     is_huawei_serial_already_registered,
     project_huawei_result_evidence,
 )
+from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
 from app.services.network.olt_inventory import get_olt_or_none
 from app.services.network.olt_web_audit import log_olt_audit_event
 from app.services.network.serial_utils import (
@@ -161,6 +162,7 @@ def _validate_authorization_dependencies(
     db: Session,
     *,
     olt_id: str,
+    scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
 ) -> str | None:
     """Return a blocking message when OLT profile dependencies are invalid."""
     from app.services.network.olt_dependency_preflight import (
@@ -170,7 +172,12 @@ def _validate_authorization_dependencies(
     result = validate_olt_profile_dependencies(
         db,
         olt_id=olt_id,
-        operation="authorization",
+        operation=(
+            "management-only commissioning"
+            if scope is OltDependencyAuditScope.MANAGEMENT_ONLY
+            else "authorization"
+        ),
+        scope=scope,
     )
     if result.success:
         return None
@@ -881,6 +888,7 @@ def authorize_autofind_ont(
     preset_id: str | None = None,
     operation_id: str | None = None,
     allow_registration_move: bool = True,
+    dependency_scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
 ) -> AuthorizationWorkflowResult:
     """Authorize an ONT on an OLT and persist ONT inventory state."""
     from app.services.network.olt_profile_resolution import (
@@ -985,7 +993,11 @@ def authorize_autofind_ont(
                 prior=prior,
             )
 
-    dependency_error = _validate_authorization_dependencies(db, olt_id=str(olt.id))
+    dependency_error = _validate_authorization_dependencies(
+        db,
+        olt_id=str(olt.id),
+        scope=dependency_scope,
+    )
     if dependency_error is not None:
         add_step(
             "Validate OLT Profile Dependencies", False, dependency_error, started_at
@@ -1251,6 +1263,7 @@ def authorize_ont(
     provision: bool = True,
     operation_id: str | None = None,
     allow_registration_move: bool = True,
+    dependency_scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
 ) -> AuthorizationWorkflowResult:
     """Authorize ONT on the OLT, apply the OLT baseline, and audit log.
 
@@ -1274,6 +1287,9 @@ def authorize_ont(
         operation_id: Tracked operation to record the landed device
             authorization against, so a later reader can tell "OLT authorized,
             local projection failed" from "OLT rejected the command".
+        dependency_scope: Live dependency set required by this authorization
+            workflow. Normal service authorization uses the full scope;
+            commissioning uses only registration and management dependencies.
     """
     from app.services.network.ont_provision_steps import apply_authorization_baseline
 
@@ -1300,6 +1316,7 @@ def authorize_ont(
         preset_id=preset_id,
         operation_id=operation_id,
         allow_registration_move=allow_registration_move,
+        dependency_scope=dependency_scope,
     )
     record_phase("core_authorization", phase_started, success=result.success)
     result.phase_timings = phase_timings

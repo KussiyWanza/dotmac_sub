@@ -175,6 +175,10 @@ For unregistered ONTs:
 7. Commissioning expires after 24 hours. Assign a management-ready ONT before
    expiry; otherwise the reconciler returns it to inventory. A cleanup failure
    stays visible and blocks assignment until reviewed.
+8. Commissioning validates only dependencies it can write: authorization
+   line/service mappings, referenced DBA profiles, management configuration,
+   and the OLT TR-069 profile. Internet traffic tables and WAN profiles remain
+   required by the normal assigned **Authorize & provision** workflow.
 
 Do not retry a spinning or failed unassigned authorization through the raw
 authorization endpoint. Refresh live autofind and use **Commission ONT**. Normal
@@ -591,6 +595,12 @@ response, or unrecognized detail block is an unavailable observation and must
 fail closed. Do not force reauthorization or delete the suspected registration
 until a successful lookup or registered-ONT inventory read identifies its
 current F/S/P and ONT-ID; investigate physical/offline state separately.
+
+On MA5608T, `display ont autofind <F/S/P>` is not a supported command. Sub reads
+`display ont autofind all` and filters the parsed result to the exact requested
+OLT/F/S/P/serial before commissioning. If the cached row and live location
+disagree, refresh Autofind and review the new port; never authorize from the
+stale row.
 
 ### TR-069 Bootstrap Timeout (Step 9 Fails)
 

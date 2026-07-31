@@ -16,6 +16,7 @@ class HuaweiCommandProfile:
     identity_fingerprint: str | None = None
     requires_slow_send: bool = True
     supports_slash_fsp_display: bool = False
+    supports_scoped_autofind: bool = True
 
     def display_ont_info(self, fsp: str, ont_id: int) -> str:
         frame, slot, port = _split_fsp(fsp, allow_board=True)
@@ -88,6 +89,10 @@ def get_huawei_command_profile(olt: OLTDevice) -> HuaweiCommandProfile:
         supports_slash_fsp_display=(
             capabilities.supports_slash_fsp_display or "MA5800" in model
         ),
+        # MA5608T rejects ``display ont autofind <F/S/P>`` with
+        # ``unknown_command``. Its global inventory command is supported and
+        # callers filter the parsed observation back to the requested F/S/P.
+        supports_scoped_autofind="MA5608T" not in model,
     )
 
 
