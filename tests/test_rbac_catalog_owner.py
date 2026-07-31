@@ -177,6 +177,121 @@ def test_assigned_role_identity_and_active_state_are_protected(db_session) -> No
     assert db_session.get(Role, role_id).is_active is True
 
 
+@pytest.mark.parametrize("submitted_name", ["NOC", "noc"])
+def test_assigned_legacy_role_can_update_permissions_without_rename(
+    db_session, submitted_name
+) -> None:
+    role = Role(name="NOC", is_active=True)
+    permission = Permission(key="network:noc_read", is_active=True)
+    user = SystemUser(
+        first_name="NOC",
+        last_name="Operator",
+        email=f"noc-{uuid4().hex}@dotmac.io",
+        is_active=True,
+    )
+    db_session.add_all((role, permission, user))
+    db_session.flush()
+    role_id = role.id
+    permission_id = permission.id
+    db_session.add(SystemUserRole(system_user_id=user.id, role_id=role_id))
+    db_session.commit()
+
+    result = rbac_catalog.update_role(
+        db_session,
+        rbac_catalog.UpdateRoleCommand(
+            context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
+            role_id=role_id,
+            name=submitted_name,
+            permission_ids=(permission_id,),
+        ),
+    )
+
+    assert result.name == "NOC"
+    assert result.permission_ids == (permission_id,)
+    audit = db_session.query(AuditEvent).filter_by(entity_id=str(role_id)).one()
+    assert audit.metadata_["role_name"] == "NOC"
+
+
+def test_real_assigned_legacy_role_rename_rolls_back_permission_changes(
+    db_session,
+) -> None:
+    role = Role(name="NOC", is_active=True)
+    old_permission = Permission(key="network:noc_read", is_active=True)
+    new_permission = Permission(key="network:noc_update", is_active=True)
+    user = SystemUser(
+        first_name="NOC",
+        last_name="Operator",
+        email=f"noc-rename-{uuid4().hex}@dotmac.io",
+        is_active=True,
+    )
+    db_session.add_all((role, old_permission, new_permission, user))
+    db_session.flush()
+    role_id = role.id
+    old_permission_id = old_permission.id
+    new_permission_id = new_permission.id
+    db_session.add_all(
+        (
+            SystemUserRole(system_user_id=user.id, role_id=role_id),
+            RolePermission(role_id=role_id, permission_id=old_permission_id),
+        )
+    )
+    db_session.commit()
+
+    with pytest.raises(rbac_catalog.RbacCatalogError) as captured:
+        rbac_catalog.update_role(
+            db_session,
+            rbac_catalog.UpdateRoleCommand(
+                context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
+                role_id=role_id,
+                name="network_admin",
+                permission_ids=(new_permission_id,),
+            ),
+        )
+
+    assert captured.value.code == "auth.rbac_catalog.role_in_use"
+    assert db_session.get(Role, role_id).name == "NOC"
+    persisted_permission_ids = tuple(
+        db_session.scalars(
+            select(RolePermission.permission_id).where(
+                RolePermission.role_id == role_id
+            )
+        )
+    )
+    assert persisted_permission_ids == (old_permission_id,)
+
+
+def test_unassigned_legacy_role_can_be_renamed_and_normalized_duplicates_fail(
+    db_session,
+) -> None:
+    legacy = Role(name="legacy_noc", is_active=True)
+    duplicate = Role(name=" network_admin ", is_active=True)
+    db_session.add_all((legacy, duplicate))
+    db_session.flush()
+    legacy_id = legacy.id
+    db_session.commit()
+
+    renamed = rbac_catalog.update_role(
+        db_session,
+        rbac_catalog.UpdateRoleCommand(
+            context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
+            role_id=legacy_id,
+            name="noc_team",
+        ),
+    )
+    assert renamed.name == "noc_team"
+
+    with pytest.raises(rbac_catalog.RbacCatalogError) as captured:
+        rbac_catalog.update_role(
+            db_session,
+            rbac_catalog.UpdateRoleCommand(
+                context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
+                role_id=legacy_id,
+                name="NETWORK_ADMIN",
+            ),
+        )
+    assert captured.value.code == "auth.rbac_catalog.role_conflict"
+
+
 def test_admin_identity_and_non_assignable_permission_policy_are_protected(
     db_session,
 ) -> None:
