@@ -17,11 +17,13 @@ processed in its own committed unit so one bad row cannot abort the batch.
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -439,14 +441,40 @@ def _process_account(
     return "ok"
 
 
+def _safe_rollback(db: Session) -> None:
+    """Roll back, invalidating the connection when rollback itself fails.
+
+    A Celery soft-timeout signal can interrupt psycopg mid-command; a plain
+    ROLLBACK on that connection raises ``another command is already in
+    progress`` and would escape the per-account handler, killing the whole
+    run unreported. Invalidate hands the session a fresh connection instead.
+    """
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception(
+            "prepaid_balance_sweep_rollback_failed: invalidating connection"
+        )
+        try:
+            db.invalidate()
+        except Exception:
+            logger.exception("prepaid_balance_sweep_invalidate_failed")
+
+
 def run_prepaid_balance_sweep(
-    db: Session, *, now: datetime | None = None
+    db: Session,
+    *,
+    now: datetime | None = None,
+    deadline: datetime | None = None,
 ) -> dict[str, int | str]:
     """Reconcile every active prepaid account against its balance threshold.
 
     The lifecycle is permanently active. Commits per account so a single
     failure never aborts the batch; quarantine and evidence failures remain
-    account-scoped.
+    account-scoped. When ``deadline`` is set, accounts that do not fit the
+    budget are deferred to the next run (counted as ``budget_deferred``) so
+    the run always ends cleanly and publishes its snapshot; iteration order
+    is shuffled so a persistent tail cannot be starved across runs.
     """
     run_at = now or datetime.now(UTC)
     cfg = resolve_prepaid_enforcement_policy(db)
@@ -465,6 +493,7 @@ def run_prepaid_balance_sweep(
         "no_contact_route": 0,
         "delivery_unavailable": 0,
         "state_drift": 0,
+        "budget_deferred": 0,
         "ok": 0,
         "errors": 0,
     }
@@ -482,7 +511,21 @@ def run_prepaid_balance_sweep(
     stats["accounts_scanned"] = len(account_ids)
     stats["funding_quarantined"] = len(quarantined_ids)
     no_contact_account_ids: set[str] = set()
-    for account_id in enforceable_ids:
+    account_order = sorted(enforceable_ids, key=str)
+    # Fair coverage under a budget: a fixed order would starve the same tail
+    # every run once the cohort outgrows the budget.
+    random.shuffle(account_order)
+    for position, account_id in enumerate(account_order):
+        if deadline is not None and datetime.now(UTC) >= deadline:
+            deferred = len(account_order) - position
+            stats["budget_deferred"] = int(stats["budget_deferred"]) + deferred
+            logger.warning(
+                "prepaid_balance_sweep_budget_exhausted: deferred=%d of %d "
+                "accounts to the next run",
+                deferred,
+                len(account_order),
+            )
+            break
         try:
             account = db.execute(
                 select(Subscriber)
@@ -502,8 +545,21 @@ def run_prepaid_balance_sweep(
                 no_contact_account_ids.add(str(account.id))
             db.commit()
             stats[outcome] = int(stats.get(outcome, 0)) + 1
+        except SoftTimeLimitExceeded:
+            # The worker's soft limit fired before our own deadline (or none
+            # was set): stop DB work immediately, count the remainder as
+            # deferred, and let the run end by publishing its snapshot.
+            _safe_rollback(db)
+            deferred = len(account_order) - position
+            stats["budget_deferred"] = int(stats["budget_deferred"]) + deferred
+            stats["errors"] = int(stats["errors"]) + 1
+            logger.exception(
+                "prepaid_balance_sweep_soft_time_limit: deferred=%d accounts",
+                deferred,
+            )
+            break
         except Exception:
-            db.rollback()
+            _safe_rollback(db)
             stats["errors"] = int(stats["errors"]) + 1
             logger.exception(
                 "prepaid_balance_sweep_account_failed",
@@ -537,7 +593,7 @@ def run_prepaid_balance_sweep(
         )
         db.commit()
     except Exception:
-        db.rollback()
+        _safe_rollback(db)
         logger.exception("prepaid_balance_sweep_finding_resolution_failed")
     logger.info("prepaid_balance_sweep completed: %s", stats)
     return stats

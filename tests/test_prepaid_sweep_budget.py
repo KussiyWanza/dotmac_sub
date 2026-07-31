@@ -1,0 +1,86 @@
+"""The prepaid sweep always ends cleanly inside its wall-clock budget.
+
+Production incident 2026-07-31: the first post-release sweep run exceeded the
+Celery soft time limit mid-query; the interrupt left the connection
+mid-command, the per-account rollback then failed, and the whole run died
+without publishing its snapshot. Work that does not fit the budget must be
+deferred to the next run instead — the run itself must always finish and
+report.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from app.models.catalog import BillingMode, SubscriptionStatus
+from app.models.subscriber import SubscriberStatus
+from app.services.collections.prepaid_balance_sweep import run_prepaid_balance_sweep
+from app.services.collections.scheduled import repair_prepaid_coverage_evidence
+from tests.prepaid_funding_helpers import (
+    ensure_test_prepaid_contract,
+    materialize_test_prepaid_opening_balance,
+)
+
+_MONDAY_NOON = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+
+
+def _prepare(db, account, subscription) -> None:
+    account.billing_mode = BillingMode.prepaid
+    account.min_balance = Decimal("100.00")
+    account.splynx_customer_id = None
+    account.deposit = None
+    account.status = SubscriberStatus.active
+    account.is_active = True
+    account.billing_enabled = True
+    account.grace_period_days = 1
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.active
+    subscription.next_billing_at = None
+    ensure_test_prepaid_contract(db, subscription)
+    db.commit()
+    materialize_test_prepaid_opening_balance(db, account.id, Decimal("0.00"))
+
+
+def test_exhausted_budget_defers_accounts_and_still_completes(
+    db_session, subscriber_account, subscription
+):
+    _prepare(db_session, subscriber_account, subscription)
+
+    expired = _MONDAY_NOON - timedelta(seconds=1)
+    result = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON, deadline=expired)
+
+    # The run returned normally: nothing processed, everything deferred.
+    assert result["budget_deferred"] == result["accounts_scanned"] > 0
+    assert result["errors"] == 0
+    assert result["warned"] == 0
+    db_session.refresh(subscriber_account)
+    assert subscriber_account.prepaid_low_balance_at is None
+
+
+def test_open_deadline_processes_the_full_cohort(
+    db_session, subscriber_account, subscription
+):
+    _prepare(db_session, subscriber_account, subscription)
+
+    deadline = datetime.now(UTC) + timedelta(hours=1)
+    result = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON, deadline=deadline)
+
+    assert result["budget_deferred"] == 0
+    db_session.refresh(subscriber_account)
+    # The low-balance account was actually processed: its timer armed.
+    assert subscriber_account.prepaid_low_balance_at is not None
+
+
+def test_repair_defers_chunks_past_deadline(db_session):
+    expired = datetime.now(UTC) - timedelta(seconds=1)
+
+    outcome = repair_prepaid_coverage_evidence(db_session, deadline=expired)
+
+    # Whatever the cohort contains, nothing may be attempted past the
+    # deadline; the outcome still reports normally instead of raising.
+    assert outcome.entitlements_created == 0
+    assert outcome.deferred_subscriptions == outcome.repairable + (
+        outcome.quarantined_blocking
+    )
+    assert outcome.status.value in {"ok", "stale_preview"}

@@ -899,6 +899,19 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=300,
         max_value=3600,
     ),
+    # Wall-clock budget for one sweep run (repair pass + account loop). It
+    # must stay under the Celery soft time limit so the run always ends by
+    # publishing its snapshot; accounts that do not fit are deferred to the
+    # next run and counted as budget_deferred.
+    SettingSpec(
+        domain=SettingDomain.collections,
+        key="prepaid_balance_sweep_budget_seconds",
+        env_var="PREPAID_BALANCE_SWEEP_BUDGET_SECONDS",
+        value_type=SettingValueType.integer,
+        default=720,
+        min_value=60,
+        label="Prepaid sweep run budget (seconds)",
+    ),
     SettingSpec(
         domain=SettingDomain.collections,
         key="billing_notif_send_hour",

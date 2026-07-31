@@ -149,6 +149,23 @@ groups:
             notification channel policy and suppression lists.
           runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
 
+      - alert: PrepaidSweepBudgetDeferredPersistent
+        expr: observability_state{domain="prepaid_enforcement",signal="budget_deferred"} > 0
+        for: 6h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid sweep cannot cover its cohort within the run budget"
+          description: >
+            Every recent sweep run deferred accounts because the cohort no
+            longer fits collections.prepaid_balance_sweep_budget_seconds.
+            Rotation keeps coverage fair, but sustained deferral means the
+            per-account cost or cohort size grew — raise the budget/limits
+            or reduce per-account work.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
       - alert: PrepaidNoticeShieldPersistent
         expr: observability_state{domain="prepaid_enforcement",signal="notice_suppressed"} > 0
         for: 24h
