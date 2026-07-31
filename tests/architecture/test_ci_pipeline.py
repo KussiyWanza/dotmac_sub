@@ -161,6 +161,39 @@ def test_ci_change_classifier_fetches_missing_comparison_base() -> None:
     assert classifier.index(targeted_fetch) < classifier.index(path_diff)
 
 
+def test_ci_change_classifier_does_not_resolve_a_base_from_shallow_roots() -> None:
+    """`git rev-list --max-parents=0 HEAD` returns two shas for a merge commit.
+
+    Under `fetch-depth: 2` the shallow clone grafts both parents of a merge
+    commit, so both look parentless. The two shas were then interpolated into a
+    single refspec and the job died with `fatal: invalid refspec`, which
+    happened for real when a branch was created at a promotion merge commit.
+
+    With no base there is nothing to diff, so the classifier must fail safe to
+    application rather than invent one.
+    """
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    classifier = workflow[
+        workflow.index("  changes:\n") : workflow.index("  python-environment:\n")
+    ]
+    # Assert against what actually runs. The comment explaining why this
+    # fallback was removed necessarily names the command it removed.
+    executed = "\n".join(
+        line for line in classifier.splitlines() if not line.strip().startswith("#")
+    )
+
+    assert "--max-parents=0" not in executed
+
+    zero_sha_guard = '[ "$base" = "0000000000000000000000000000000000000000" ]'
+    assert zero_sha_guard in executed
+
+    # The no-base branch must short-circuit to application before any git
+    # command consumes "$base"; running everything is the safe default.
+    tail = executed[executed.index(zero_sha_guard) :]
+    assert tail.index("application=true") < tail.index('git cat-file -e "$base')
+
+
 def test_production_dependency_group_excludes_ci_tools() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))
