@@ -3417,8 +3417,11 @@ writers are retired; historical rows remain readable evidence.
    owner command may change only `Subscription.ipv4_address`, then stages a
    durable event that asks `access.radius_projection` to rebuild the exact login
    and `access.session_enforcement` to disconnect only sessions still framed
-   with the old address. Normal provisioning and admin assignment writers
-   remain explicit migration debt until the runtime cutover described in
+   with the old address. The admin subscription **Replace service IPv4 only**
+   action is cut over to these two reviewed commands and never enters account,
+   offer, recurring add-on, invoice, adjustment, or billing-cadence writes.
+   Remaining provisioning and network-admin assignment writers remain explicit
+   migration debt until the runtime cutover described in
    `docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md`.
 48a. `network.cpe_dialer_credential`
    (`app/services/cpe_dialer_credential_reconcile.py`): owns the derived CPE

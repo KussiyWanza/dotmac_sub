@@ -474,7 +474,24 @@
                 {% set initial_ipv4_addresses = subscription.ipv4_addresses if subscription.ipv4_addresses else ([subscription.ipv4_address] if subscription.ipv4_address else ['']) %}
                 {% set initial_ipv4_block_ids = subscription.ipv4_block_ids if subscription.ipv4_block_ids else [] %}
                 <div class="space-y-3">
-                    <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200">IPv4 Allocation</h3>
+                    <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200">IPv4 Allocation</h3>
+                            {% if subscription.id %}
+                            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                Address replacement changes IPAM and RADIUS only. It does not purchase or change an IP add-on, create an invoice line, or restart the billing period.
+                            </p>
+                            {% endif %}
+                        </div>
+                        {% if subscription.id %}
+                        <button type="submit"
+                            formaction="/admin/catalog/subscriptions/{{ subscription.id }}/ipv4/replace"
+                            formmethod="post"
+                            class="inline-flex shrink-0 items-center justify-center rounded-lg border border-primary-300 bg-primary-50 px-3 py-2 text-sm font-semibold text-primary-700 hover:bg-primary-100 dark:border-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+                            Replace service IPv4 only
+                        </button>
+                        {% endif %}
+                    </div>
                     {% if not ipv4_blocks %}
                     <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
                         No active IPv4 ranges are available for subscription provisioning.

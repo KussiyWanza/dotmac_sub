@@ -921,6 +921,27 @@ def catalog_subscription_force_reauth(
 
 
 @router.post(
+    "/subscriptions/{subscription_id}/ipv4/replace",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_replace_ipv4(
+    request: Request,
+    subscription_id: str,
+    form: FormData = Depends(parse_form_data),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    redirect_url = (
+        web_catalog_subscription_workflows_service.handle_subscription_ipv4_replacement(
+            db,
+            subscription_id=subscription_id,
+            form=form,
+            actor_id=_get_actor_id(request),
+        )
+    )
+    return RedirectResponse(redirect_url, status_code=303)
+
+
+@router.post(
     "/subscriptions/{subscription_id}/edit",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("catalog:write"))],

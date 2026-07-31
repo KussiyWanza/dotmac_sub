@@ -14806,7 +14806,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Subscription.ipv4_address copy; its durable event delegates "
                     "RADIUS and old-IP session consequences to their owners. Normal "
                     "provisioning writers remain declared migration debt until the "
-                    "later runtime cutover."
+                    "later runtime cutover. The admin subscription replacement "
+                    "adapter is cut over to the two reviewed owner commands and is "
+                    "isolated from recurring add-on and billing writes."
                 ),
                 contract=ServiceContract(
                     concerns=(

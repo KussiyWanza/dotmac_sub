@@ -15,6 +15,10 @@ OWNER = ROOT / "app/services/ip_assignment_lifecycle.py"
 SCRIPT = ROOT / "scripts/one_off/repair_ipam_to_served.py"
 LIFECYCLE_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_assignment.py"
 PROJECTION_SCRIPT = ROOT / "scripts/one_off/repair_service_ipv4_projection.py"
+WEB_ADAPTER = ROOT / "app/services/web_catalog_subscriptions.py"
+WEB_WORKFLOW = ROOT / "app/services/web_catalog_subscription_workflows.py"
+ADMIN_ROUTE = ROOT / "app/web/admin/catalog.py"
+SUBSCRIPTION_FORM = ROOT / "templates/admin/catalog/subscription_form.html"
 
 # The complete set of modules allowed to construct an IPAssignment while the
 # lifecycle owner is in its SHADOWING phase. Everything other than the owner is
@@ -105,6 +109,39 @@ def test_projection_operator_adapter_is_dry_run_first_and_fingerprint_gated() ->
     assert "preview_service_ipv4_projection_repair(" in source
     assert "repair_service_ipv4_projection(" in source
     assert ".commit(" not in source
+
+
+def test_admin_ipv4_replacement_is_owner_backed_and_billing_isolated() -> None:
+    adapter_tree = ast.parse(WEB_ADAPTER.read_text(encoding="utf-8"))
+    replacement = next(
+        node
+        for node in adapter_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "replace_subscription_ipv4_with_owner"
+    )
+    replacement_source = ast.unparse(replacement)
+    assert "preview_service_ipv4_assignment_repair(" in replacement_source
+    assert "repair_service_ipv4_assignment(" in replacement_source
+    assert "preview_service_ipv4_projection_repair(" in replacement_source
+    assert "repair_service_ipv4_projection(" in replacement_source
+    assert "sync_public_ip_addon_for_subscription(" not in replacement_source
+    assert "update_subscription(" not in replacement_source
+
+    generic_update = next(
+        node
+        for node in adapter_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "update_subscription_with_audit"
+    )
+    assert "_sync_ipv4_assignments_for_subscription(" not in ast.unparse(generic_update)
+
+    workflow_source = WEB_WORKFLOW.read_text(encoding="utf-8")
+    route_source = ADMIN_ROUTE.read_text(encoding="utf-8")
+    template_source = SUBSCRIPTION_FORM.read_text(encoding="utf-8")
+    assert "handle_subscription_ipv4_replacement(" in workflow_source
+    assert '"/subscriptions/{subscription_id}/ipv4/replace"' in route_source
+    assert "/ipv4/replace" in template_source
+    assert "It does not purchase or change an IP add-on" in template_source
 
 
 def test_ip_assignment_writers_are_pinned_during_shadowing() -> None:

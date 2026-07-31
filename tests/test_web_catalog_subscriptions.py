@@ -2,13 +2,14 @@ import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from starlette.datastructures import FormData
 
-from app.models.billing import TaxRate
+from app.models.billing import AccountAdjustment, InvoiceLine, TaxRate
 from app.models.catalog import (
     AccessCredential,
     AddOn,
@@ -1181,7 +1182,7 @@ def test_create_subscription_with_audit_uses_requested_free_ipv4(
     assert assignment.ipv4_address.address == "10.80.0.5"
 
 
-def test_update_subscription_with_audit_persists_added_ipv4_assignment(
+def test_replace_subscription_ipv4_uses_ipam_owner_without_billing(
     db_session,
     subscriber,
     catalog_offer,
@@ -1216,29 +1217,99 @@ def test_update_subscription_with_audit_persists_added_ipv4_assignment(
             offer_id=catalog_offer.id,
         ),
     )
-
-    updated = web_catalog_subscriptions_service.update_subscription_with_audit(
-        db_session,
-        str(subscription.id),
-        {"login": "10004167"},
-        "",
-        [str(block.id)],
-        ["10.82.0.5"],
-        None,
-        None,
+    subscription.status = SubscriptionStatus.active
+    subscription.login = "10004167"
+    subscription.ipv4_address = "10.82.0.4"
+    subscription.billing_mode = BillingMode.postpaid
+    catalog_offer.billing_mode = BillingMode.prepaid
+    current_address = IPv4Address(
+        address="10.82.0.4",
+        pool_id=pool.id,
+        allocation_type="static",
     )
+    target_address = IPv4Address(
+        address="10.82.0.5",
+        pool_id=pool.id,
+        allocation_type="static",
+    )
+    db_session.add_all([current_address, target_address])
+    db_session.flush()
+    current_assignment = IPAssignment(
+        subscriber_id=subscriber.id,
+        subscription_id=subscription.id,
+        ip_version=IPVersion.ipv4,
+        ipv4_address_id=current_address.id,
+        is_active=True,
+    )
+    ip_add_on = _public_ip_addon(db_session, name="Paid /28 IP", ip_prefix_length=28)
+    entitlement = SubscriptionAddOn(
+        subscription_id=subscription.id,
+        add_on_id=ip_add_on.id,
+        quantity=1,
+        start_at=datetime(2026, 7, 5, tzinfo=UTC),
+    )
+    db_session.add_all([current_assignment, entitlement])
+    db_session.commit()
+    entitlement_id = entitlement.id
+    adjustment_count = db_session.query(AccountAdjustment).count()
+    invoice_line_count = db_session.query(InvoiceLine).count()
 
-    db_session.refresh(updated)
-    assert updated.ipv4_address == "10.82.0.5"
+    with (
+        patch(
+            "app.services.ip_consistency_audit._external_ip_state",
+            return_value=({"10004167": "10.82.0.4"}, {"10004167"}, 0),
+        ),
+        patch(
+            "app.services.radius_projection_planner.plan_login_radius_projections",
+            return_value={
+                "10004167": SimpleNamespace(
+                    subscription_id=str(subscription.id),
+                    plan=SimpleNamespace(mode="active", write_radreply=True),
+                )
+            },
+        ),
+        patch("app.services.ip_assignment_lifecycle.emit_event"),
+        patch.object(
+            web_catalog_subscriptions_service,
+            "update_subscription",
+            side_effect=AssertionError("subscription update entered"),
+        ),
+        patch.object(
+            web_catalog_subscriptions_service,
+            "sync_public_ip_addon_for_subscription",
+            side_effect=AssertionError("billing add-on sync entered"),
+        ),
+    ):
+        replaced_ip = (
+            web_catalog_subscriptions_service.replace_subscription_ipv4_with_owner(
+                db_session,
+                subscription_id=str(subscription.id),
+                selector=str(block.id),
+                requested_ip="10.82.0.5",
+                actor_id="admin-test",
+            )
+        )
+
+    assert replaced_ip == "10.82.0.5"
+    db_session.refresh(subscription)
+    db_session.refresh(current_assignment)
+    assert subscription.ipv4_address == "10.82.0.5"
+    assert current_assignment.is_active is False
 
     assignment = (
         db_session.query(IPAssignment)
-        .filter(IPAssignment.subscriber_id == updated.subscriber_id)
+        .filter(IPAssignment.subscriber_id == subscriber.id)
         .filter(IPAssignment.is_active.is_(True))
         .one()
     )
     assert assignment.ipv4_address is not None
     assert assignment.ipv4_address.address == "10.82.0.5"
+    db_session.refresh(entitlement)
+    assert entitlement.id == entitlement_id
+    assert entitlement.quantity == 1
+    assert entitlement.end_at is None
+    assert db_session.query(AccountAdjustment).count() == adjustment_count
+    assert db_session.query(InvoiceLine).count() == invoice_line_count
 
 
 def test_update_subscription_preserves_ipv4_when_assignment_omitted(
@@ -1285,7 +1356,7 @@ def test_update_subscription_preserves_ipv4_when_assignment_omitted(
     assert assignment.is_active is True
 
 
-def test_update_subscription_rejects_placeholder_ipv4_assignment(
+def test_generic_update_rejects_ipv4_assignment_before_technical_write(
     db_session,
     subscriber,
     catalog_offer,
@@ -1317,7 +1388,8 @@ def test_update_subscription_rejects_placeholder_ipv4_assignment(
         ),
     )
 
-    with pytest.raises(ValueError, match="not assignable"):
+    original_login = subscription.login
+    with pytest.raises(ValueError, match="Use Replace service IPv4"):
         web_catalog_subscriptions_service.update_subscription_with_audit(
             db_session,
             str(subscription.id),
@@ -1328,6 +1400,8 @@ def test_update_subscription_rejects_placeholder_ipv4_assignment(
             None,
             None,
         )
+    db_session.refresh(subscription)
+    assert subscription.login == original_login
 
 
 def test_edit_form_data_includes_active_ipv4_assignments(
@@ -2570,7 +2644,7 @@ def test_edit_form_data_includes_active_public_ip_addon(
     assert form_data["ip_addon_quantity"] == "4"
 
 
-def test_update_subscription_with_audit_deallocates_removed_ipv4_assignments(
+def test_generic_update_cannot_deallocate_ipv4_assignments(
     db_session,
     subscriber,
     catalog_offer,
@@ -2626,39 +2700,35 @@ def test_update_subscription_with_audit_deallocates_removed_ipv4_assignments(
     db_session.commit()
     db_session.refresh(subscription)
 
-    updated = web_catalog_subscriptions_service.update_subscription_with_audit(
-        db_session,
-        str(subscription.id),
-        {"login": "10004167"},
-        "",
-        [str(first_block.id)],
-        ["10.84.0.1"],
-        None,
-        None,
-    )
+    original_login = subscription.login
+    with pytest.raises(ValueError, match="Use Replace service IPv4"):
+        web_catalog_subscriptions_service.update_subscription_with_audit(
+            db_session,
+            str(subscription.id),
+            {"login": "10004167"},
+            "",
+            [str(first_block.id)],
+            ["10.84.0.1"],
+            None,
+            None,
+        )
 
-    db_session.refresh(updated)
-    assert updated.ipv4_address == "10.84.0.1"
+    db_session.refresh(subscription)
+    assert subscription.login == original_login
+    assert subscription.ipv4_address == "10.84.0.1"
 
     active_assignments = (
         db_session.query(IPAssignment)
-        .filter(IPAssignment.subscriber_id == updated.subscriber_id)
+        .filter(IPAssignment.subscriber_id == subscription.subscriber_id)
         .filter(IPAssignment.is_active.is_(True))
         .all()
     )
-    assert len(active_assignments) == 1
-    assert active_assignments[0].ipv4_address is not None
-    assert active_assignments[0].ipv4_address.address == "10.84.0.1"
-
-    inactive_assignments = (
-        db_session.query(IPAssignment)
-        .filter(IPAssignment.subscriber_id == updated.subscriber_id)
-        .filter(IPAssignment.is_active.is_(False))
-        .all()
-    )
-    assert len(inactive_assignments) == 1
-    assert inactive_assignments[0].ipv4_address is not None
-    assert inactive_assignments[0].ipv4_address.address == "10.84.0.5"
+    assert len(active_assignments) == 2
+    assert {
+        assignment.ipv4_address.address
+        for assignment in active_assignments
+        if assignment.ipv4_address is not None
+    } == {"10.84.0.1", "10.84.0.5"}
 
 
 @patch("app.services.radius.reconcile_subscription_connectivity")

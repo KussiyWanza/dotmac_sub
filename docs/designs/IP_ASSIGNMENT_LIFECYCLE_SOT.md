@@ -29,6 +29,14 @@ session observations agree with the fingerprinted preview. Its transactional
 event delegates external RADIUS repair and old-IP-only session
 reauthentication to their canonical owners after commit.
 
+The administrative subscription form uses a dedicated **Replace service IPv4
+only** action. That adapter confirms the selected address through the reviewed
+assignment owner and then confirms the exact served projection through the
+projection owner. It does not submit account, offer, billing mode, recurring
+add-on, billing contract, adjustment, invoice, or cadence fields. Replacing an
+address therefore preserves the customer's existing commercial entitlement
+and paid service period.
+
 ## Command contract
 
 `preview_service_ipv4_assignment_repair` is read-only. Its SHA-256 binds:
@@ -79,7 +87,8 @@ canceled or expired services may use the release action.
 
 Old writers remain migration debt during this shadowing slice:
 
-- generic `IPAssignments` CRUD;
+- generic `IPAssignments` CRUD used by subscription creation and remaining
+  network administration tools;
 - provisioning allocation/reactivation helpers;
 - admin IP assignment and bulk import;
 - ONT WAN claims;
@@ -90,6 +99,11 @@ They continue operating until their callers can enter a clean owner-command
 boundary. They must not be treated as precedent or expanded. The later runtime
 cutover migrates these callers, adds field-level architecture guards, and
 removes subscriber-grain inference and helper transaction completion.
+
+The generic subscription-edit IPv4 writer is cut over. Generic Save rejects a
+changed address and directs the operator to the dedicated replacement action;
+it cannot invoke legacy IP CRUD. The replacement action is intentionally
+separate from additional routed-block add-on purchase or quantity changes.
 
 ## Projection cutover
 

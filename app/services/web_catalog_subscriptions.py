@@ -84,9 +84,19 @@ from app.services.billing_adapter import (
 )
 from app.services.billing_settings import resolve_payment_due_days
 from app.services.credential_crypto import decrypt_credential
+from app.services.ip_assignment_lifecycle import (
+    IPv4ServedProjectionDecision,
+    RepairServiceIPv4AssignmentCommand,
+    RepairServiceIPv4ProjectionCommand,
+    preview_service_ipv4_assignment_repair,
+    preview_service_ipv4_projection_repair,
+    repair_service_ipv4_assignment,
+    repair_service_ipv4_projection,
+)
 from app.services.network.radius_sessions import (
     latest_open_accounting_session_for_subscription,
 )
+from app.services.owner_commands import CommandContext
 from app.timezone import APP_TIMEZONE_NAME, format_in_app_timezone
 
 logger = logging.getLogger(__name__)
@@ -1790,6 +1800,196 @@ def _sync_ipv4_assignments_for_subscription(
             continue
         network_service.ip_assignments.delete(db, str(assignment.id))
     return desired_ips
+
+
+def active_service_ipv4_address(db: Session, subscription_id: str) -> str | None:
+    """Return the one exact active service IPv4, or fail on ledger ambiguity."""
+
+    rows = list(
+        db.execute(
+            select(IPAssignment, IPv4Address.address)
+            .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
+            .where(
+                IPAssignment.subscription_id == UUID(subscription_id),
+                IPAssignment.ip_version == IPVersion.ipv4,
+                IPAssignment.is_active.is_(True),
+            )
+            .order_by(IPAssignment.id)
+        ).all()
+    )
+    if len(rows) > 1:
+        raise ValueError(
+            "This service has multiple active IPv4 assignments. Review IPAM "
+            "before replacing its address."
+        )
+    return str(rows[0][1]) if rows else None
+
+
+def replace_subscription_ipv4_with_owner(
+    db: Session,
+    *,
+    subscription_id: str,
+    selector: str,
+    requested_ip: str,
+    actor_id: str | None,
+) -> str:
+    """Replace one active service IPv4 without entering a billing owner.
+
+    The admin action is an adapter around the fingerprinted assignment and
+    served-projection owners. It never updates SubscriptionAddOn, billing
+    contracts, adjustments, invoices, cadence, account, offer, or billing mode.
+    """
+
+    actor = str(actor_id or "").strip()
+    if not actor:
+        raise ValueError("Authenticated actor required for IPv4 replacement.")
+    normalized_selector = str(selector or "").strip()
+    normalized_ip = str(requested_ip or "").strip()
+    if not normalized_selector or not normalized_ip:
+        raise ValueError("Select an IPv4 block and address to replace the service IP.")
+
+    subscription_uuid = UUID(subscription_id)
+    subscription = db.get(Subscription, subscription_uuid)
+    if subscription is None:
+        raise ValueError("Subscription not found.")
+    if subscription.status is not SubscriptionStatus.active:
+        raise ValueError(
+            "Service IPv4 replacement currently requires an active subscription."
+        )
+
+    active_assignments = list(
+        db.scalars(
+            select(IPAssignment)
+            .where(
+                IPAssignment.subscription_id == subscription_uuid,
+                IPAssignment.ip_version == IPVersion.ipv4,
+                IPAssignment.is_active.is_(True),
+            )
+            .order_by(IPAssignment.id)
+        ).all()
+    )
+    if len(active_assignments) > 1:
+        raise ValueError(
+            "This service has multiple active IPv4 assignments. Review IPAM "
+            "before replacing its address."
+        )
+    current_assignment = active_assignments[0] if active_assignments else None
+    current_address = (
+        str(current_assignment.ipv4_address.address)
+        if current_assignment is not None and current_assignment.ipv4_address
+        else None
+    )
+    if current_address == normalized_ip:
+        return normalized_ip
+
+    target, _, _ = _resolve_ipv4_for_selector(
+        db,
+        selector=normalized_selector,
+        requested_ip=normalized_ip,
+    )
+    if target is None:
+        raise ValueError("The selected IPv4 address is no longer available.")
+
+    if current_assignment is not None:
+        current_projection = preview_service_ipv4_projection_repair(
+            db,
+            subscription_id=subscription_uuid,
+            assignment_id=current_assignment.id,
+        )
+        if current_projection.decision not in {
+            IPv4ServedProjectionDecision.noop,
+            IPv4ServedProjectionDecision.ready,
+        }:
+            raise ValueError(
+                "The current IPAM, served-IP, or RADIUS evidence is not aligned "
+                f"({current_projection.decision.value}). Repair the drift before "
+                "replacing the address."
+            )
+
+    assignment_preview = preview_service_ipv4_assignment_repair(
+        db,
+        subscription_id=subscription_uuid,
+        desired_address_id=target.id,
+        deactivate_assignment_ids=(
+            (current_assignment.id,) if current_assignment is not None else ()
+        ),
+    )
+    if not assignment_preview.applicable:
+        raise ValueError(
+            "The selected IPv4 replacement is not safe to apply "
+            f"({assignment_preview.decision.value})."
+        )
+    target_id = target.id
+    assignment_fingerprint = assignment_preview.fingerprint
+    deactivate_assignment_ids = assignment_preview.deactivate_assignment_ids
+    command_id = uuid4()
+    correlation_id = command_id
+    db.commit()
+
+    assignment_outcome = repair_service_ipv4_assignment(
+        db,
+        RepairServiceIPv4AssignmentCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=correlation_id,
+                actor=actor,
+                scope="catalog:subscription:ipv4:replace",
+                reason=(
+                    f"Administrator replaced the exact service IPv4 with "
+                    f"{normalized_ip}; commercial IP entitlement unchanged"
+                ),
+                idempotency_key=f"admin-ipv4-assignment:{command_id}",
+            ),
+            subscription_id=subscription_uuid,
+            desired_address_id=target_id,
+            deactivate_assignment_ids=deactivate_assignment_ids,
+            preview_fingerprint=assignment_fingerprint,
+        ),
+    )
+    if assignment_outcome.desired_assignment_id is None:
+        raise ValueError("IPv4 assignment owner did not return a desired assignment.")
+
+    projection_preview = preview_service_ipv4_projection_repair(
+        db,
+        subscription_id=subscription_uuid,
+        assignment_id=assignment_outcome.desired_assignment_id,
+    )
+    if projection_preview.decision is IPv4ServedProjectionDecision.noop:
+        db.commit()
+        return normalized_ip
+    if not projection_preview.applicable:
+        decision = projection_preview.decision.value
+        db.rollback()
+        raise ValueError(
+            "IPAM was updated, but the served-IP projection requires operator "
+            f"review ({decision})."
+        )
+    projection_fingerprint = projection_preview.fingerprint
+    desired_assignment_id = assignment_outcome.desired_assignment_id
+    db.commit()
+
+    projection_command_id = uuid4()
+    repair_service_ipv4_projection(
+        db,
+        RepairServiceIPv4ProjectionCommand(
+            context=CommandContext(
+                command_id=projection_command_id,
+                correlation_id=correlation_id,
+                causation_id=command_id,
+                actor=actor,
+                scope="catalog:subscription:ipv4:replace",
+                reason=(
+                    f"Project the exact service IPv4 replacement to {normalized_ip}; "
+                    "commercial IP entitlement unchanged"
+                ),
+                idempotency_key=f"admin-ipv4-projection:{command_id}",
+            ),
+            subscription_id=subscription_uuid,
+            assignment_id=desired_assignment_id,
+            preview_fingerprint=projection_fingerprint,
+        ),
+    )
+    return normalized_ip
 
 
 def _additional_route_form_rows(
@@ -4391,10 +4591,20 @@ def update_subscription_with_audit(
     Returns the updated subscription ORM object.
     """
     before = catalog_service.subscriptions.get(db=db, subscription_id=subscription_id)
+    manage_ipv4_assignment = ipv4_assignment_submitted or bool(
+        ipv4_block_ids or ipv4_addresses
+    )
+    if manage_ipv4_assignment:
+        raise ValueError(
+            "Use Replace service IPv4 so IPAM and RADIUS change without "
+            "entering subscription or billing updates."
+        )
     # Generic edits own technical metadata only; lifecycle and commercial facts
     # change through subscription_lifecycle_commands.
     payload_data = dict(payload_data)
     for protected_field in (
+        "subscriber_id",
+        "account_id",
         "offer_id",
         "billing_mode",
         "status",
@@ -4407,22 +4617,7 @@ def update_subscription_with_audit(
         payload_data.pop(protected_field, None)
     update_subscription(db, subscription_id, payload_data)
     after = catalog_service.subscriptions.get(db=db, subscription_id=subscription_id)
-    manage_ipv4_assignment = ipv4_assignment_submitted or bool(
-        ipv4_block_ids or ipv4_addresses
-    )
-    allocated_ips = _sync_ipv4_assignments_for_subscription(
-        db,
-        subscription_obj=after,
-        block_ids=ipv4_block_ids,
-        selected_ips=ipv4_addresses,
-        assignment_submitted=manage_ipv4_assignment,
-    )
-    if manage_ipv4_assignment and allocated_ips:
-        primary_ipv4 = allocated_ips[0]
-        if (after.ipv4_address or "") != primary_ipv4:
-            after.ipv4_address = primary_ipv4
-            db.commit()
-            db.refresh(after)
+    allocated_ips: list[str] = []
     additional_routes: list[str] = []
     desired_additional_routes: list[tuple[str, int, int]] = []
     additional_routes_supplied = additional_route_cidrs is not None
