@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.schemas.common import ListResponse
 from app.schemas.field import (
+    FieldFiberCustomerTraceRead,
     FieldFiberSourceObservationCreate,
     FieldFiberSourceObservationRead,
     FieldFiberTestCreate,
@@ -11,6 +12,7 @@ from app.schemas.field import (
     FieldFiberWorkOrderEvidenceMapRead,
     FieldSpliceCreate,
     FieldSpliceProposalResponse,
+    FieldSpliceProposalStatusRead,
 )
 from app.services.auth_dependencies import require_user_auth
 from app.services.field import fiber as field_fiber
@@ -28,7 +30,7 @@ def propose_field_splice(
     auth: dict = Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    return field_fiber.propose_splice(
+    receipt = field_fiber.propose_splice(
         db,
         auth,
         closure_id=str(payload.closure_id),
@@ -41,7 +43,9 @@ def propose_field_splice(
         splice_type=payload.splice_type,
         loss_db=payload.loss_db,
         note=payload.note,
+        work_order_id=payload.work_order_id,
     )
+    return receipt.to_dict()
 
 
 @router.post(
@@ -145,6 +149,38 @@ def list_field_fiber_source_observations(
         staged_feature_id=staged_feature_id,
     )
     return {"items": items, "count": len(items), "limit": len(items), "offset": 0}
+
+
+@router.get(
+    "/customer-trace",
+    response_model=ListResponse[FieldFiberCustomerTraceRead],
+)
+def list_field_fiber_customer_traces(
+    work_order_id: str = Query(min_length=1, max_length=64),
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    traces = field_fiber.list_customer_traces(
+        db,
+        auth,
+        crm_work_order_id=work_order_id,
+    )
+    items = [trace.to_dict() for trace in traces]
+    return {"items": items, "count": len(items), "limit": len(items), "offset": 0}
+
+
+@router.get(
+    "/splice-proposals",
+    response_model=ListResponse[FieldSpliceProposalStatusRead],
+)
+def list_field_splice_proposals(
+    limit: int = Query(default=50, ge=1, le=200),
+    auth: dict = Depends(require_user_auth),
+    db: Session = Depends(get_db),
+):
+    proposals = field_fiber.list_splice_proposals(db, auth, limit=limit)
+    items = [proposal.to_dict() for proposal in proposals]
+    return {"items": items, "count": len(items), "limit": limit, "offset": 0}
 
 
 @router.get(

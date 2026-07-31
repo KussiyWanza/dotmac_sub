@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import select
@@ -36,6 +37,13 @@ from app.services.network.olt_ssh_profiles import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class OltDependencyAuditScope(StrEnum):
+    """Live dependency sets required by one OLT write workflow."""
+
+    FULL = "full"
+    MANAGEMENT_ONLY = "management_only"
 
 
 @dataclass(frozen=True)
@@ -294,8 +302,14 @@ def suggest_compatible_line_profiles(
     )
 
 
-def audit_olt_config_pack_live(db: Session, olt_id: str) -> OltConfigPackLiveAudit:
+def audit_olt_config_pack_live(
+    db: Session,
+    olt_id: str,
+    *,
+    scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
+) -> OltConfigPackLiveAudit:
     """Compare one OLT's saved config pack with live OLT profile output."""
+    scope = OltDependencyAuditScope(scope)
     olt = db.get(OLTDevice, str(olt_id))
     if olt is None:
         return OltConfigPackLiveAudit(
@@ -310,6 +324,7 @@ def audit_olt_config_pack_live(db: Session, olt_id: str) -> OltConfigPackLiveAud
         olt_name=olt.name or str(olt.id),
         success=False,
     )
+    audit.observed["dependency_scope"] = scope.value
     pack = resolve_olt_config_pack(db, str(olt.id))
     if pack is None:
         audit.errors.append("OLT config pack could not be resolved")
@@ -332,16 +347,24 @@ def audit_olt_config_pack_live(db: Session, olt_id: str) -> OltConfigPackLiveAud
     audit.errors.extend(imported_errors)
     audit.warnings.extend(imported_warnings)
     required_tr069_id = int(pack.tr069_olt_profile_id)  # type: ignore[arg-type]
-    required_traffic_ids = _required_traffic_table_ids(pack)
-    required_wan_profile_ids = sorted(
-        {
-            profile_id
-            for profile_id in [
-                pack.wan_config_profile_id,
-                *audit.observed.get("mapping_wan_config_profile_ids", []),
-            ]
-            if profile_id is not None
-        }
+    required_traffic_ids = (
+        _required_traffic_table_ids(pack)
+        if scope is OltDependencyAuditScope.FULL
+        else {}
+    )
+    required_wan_profile_ids = (
+        sorted(
+            {
+                profile_id
+                for profile_id in [
+                    pack.wan_config_profile_id,
+                    *audit.observed.get("mapping_wan_config_profile_ids", []),
+                ]
+                if profile_id is not None
+            }
+        )
+        if scope is OltDependencyAuditScope.FULL
+        else []
     )
 
     # Live inventory reads can take long enough for PostgreSQL's
@@ -399,15 +422,18 @@ def audit_olt_config_pack_live(db: Session, olt_id: str) -> OltConfigPackLiveAud
             + ", ".join(str(profile_id) for profile_id in missing_dba_ids)
         )
 
-    ok, message, traffic_tables = get_traffic_tables(olt)
-    if not ok:
-        audit.errors.append(f"Live traffic table inventory failed: {message}")
-    live_traffic_ids = {table.index for table in traffic_tables}
-    missing_traffic_fields = {
-        field: table_id
-        for field, table_id in required_traffic_ids.items()
-        if ok and table_id not in live_traffic_ids
-    }
+    live_traffic_ids: set[int] = set()
+    missing_traffic_fields: dict[str, int] = {}
+    if scope is OltDependencyAuditScope.FULL:
+        ok, message, traffic_tables = get_traffic_tables(olt)
+        if not ok:
+            audit.errors.append(f"Live traffic table inventory failed: {message}")
+        live_traffic_ids = {table.index for table in traffic_tables}
+        missing_traffic_fields = {
+            field: table_id
+            for field, table_id in required_traffic_ids.items()
+            if ok and table_id not in live_traffic_ids
+        }
     audit.observed.update(
         {
             "required_traffic_table_ids": required_traffic_ids,
@@ -424,18 +450,23 @@ def audit_olt_config_pack_live(db: Session, olt_id: str) -> OltConfigPackLiveAud
             )
         )
 
-    ok, message, wan_profiles = get_wan_profiles(olt)
-    if not ok:
-        audit.errors.append(f"Live WAN profile inventory failed: {message}")
-    live_wan_ids = {profile.profile_id for profile in wan_profiles}
-    allowed_missing_wan_ids = (
-        {0} if getattr(pack, "allow_zero_wan_config_profile_id", False) else set()
-    )
-    missing_wan_profile_ids = (
-        sorted(set(required_wan_profile_ids) - live_wan_ids - allowed_missing_wan_ids)
-        if ok
-        else []
-    )
+    live_wan_ids: set[int] = set()
+    missing_wan_profile_ids: list[int] = []
+    if scope is OltDependencyAuditScope.FULL:
+        ok, message, wan_profiles = get_wan_profiles(olt)
+        if not ok:
+            audit.errors.append(f"Live WAN profile inventory failed: {message}")
+        live_wan_ids = {profile.profile_id for profile in wan_profiles}
+        allowed_missing_wan_ids = (
+            {0} if getattr(pack, "allow_zero_wan_config_profile_id", False) else set()
+        )
+        missing_wan_profile_ids = (
+            sorted(
+                set(required_wan_profile_ids) - live_wan_ids - allowed_missing_wan_ids
+            )
+            if ok
+            else []
+        )
     audit.observed.update(
         {
             "required_wan_config_profile_ids": required_wan_profile_ids,

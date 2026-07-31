@@ -13,6 +13,10 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.domain_settings import SettingDomain
+from app.models.fiber_change_request import (
+    FiberChangeRequest,
+    FiberChangeRequestStatus,
+)
 from app.models.vendor_routes import (
     AsBuiltRoute,
     AsBuiltRouteStatus,
@@ -343,6 +347,28 @@ def _as_built_submission_eligibility(
     return True, None
 
 
+def _pending_vendor_splice_count(
+    db: Session,
+    project: InstallationProject,
+    work_orders: list[WorkOrder],
+) -> int:
+    """Count this vendor's unreviewed splice proposals naming project work orders."""
+
+    if project.assigned_vendor_id is None or not work_orders:
+        return 0
+    work_order_ids = {str(row.id) for row in work_orders}
+    rows = (
+        db.query(FiberChangeRequest)
+        .filter(FiberChangeRequest.asset_type == "fiber_splice")
+        .filter(FiberChangeRequest.status == FiberChangeRequestStatus.pending)
+        .filter(FiberChangeRequest.requested_by_vendor_id == project.assigned_vendor_id)
+        .all()
+    )
+    return sum(
+        1 for row in rows if (row.payload or {}).get("work_order_id") in work_order_ids
+    )
+
+
 def _verification_evidence_policy(
     db: Session,
     project: InstallationProject,
@@ -394,10 +420,19 @@ def _verification_evidence_policy(
             f"(currently {latest.status.replace('_', ' ')})"
         )
 
+    pending_splice_count = _pending_vendor_splice_count(db, project, work_orders)
+    if eligible and pending_splice_count:
+        eligible = False
+        blocked_reason = (
+            "Vendor-proposed splice records must be reviewed before verification "
+            f"({pending_splice_count} pending)"
+        )
+
     return {
         "required": required,
         "eligible": eligible,
         "reason": blocked_reason,
+        "pending_splice_change_requests": pending_splice_count,
         "source": "work_order" if work_orders else "default_enabled",
         "work_orders": [
             {

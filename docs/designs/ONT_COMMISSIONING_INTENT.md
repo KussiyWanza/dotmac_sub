@@ -16,7 +16,8 @@ expiry, assignment conversion, and cleanup admission. It consumes:
 
 - the operator's permission, reason, optional work-order/ticket reference, and
   exact selected candidate;
-- an immediate live Huawei autofind observation for the exact OLT/F/S/P/serial;
+- an immediate model-supported live Huawei autofind observation filtered to the
+  exact OLT/F/S/P/serial;
 - canonical OLT, ONT, PON, and active-assignment identity;
 - config-pack management VLAN, imported GEM/priority, management IPAM, ACS, and
   OLT TR-069 profile;
@@ -56,6 +57,11 @@ Commissioning may perform only:
 4. OLT TR-069 profile binding;
 5. bounded observation of GenieACS readiness.
 
+Before registration it runs the management-only dependency audit: imported
+line/service mappings, referenced DBA profiles, and the OLT TR-069 profile.
+Customer internet traffic tables and WAN profiles are not commissioning
+dependencies and remain part of the full **Authorize & provision** audit.
+
 The restricted `BatchedMgmtSpec` always sets
 `internet_config_ip_index=None` and `wan_config_profile_id=None`. Command-batch
 validation and result validation both reject internet-config or WAN-config
@@ -69,8 +75,12 @@ saved service application unless an active assignment exists.
 
 Commissioning admission locks the exact autofind candidate. Immediately before
 the first OLT write, the worker reads live autofind and fails closed if the
-serial is absent or appears on another F/S/P. It also disables the legacy
-automatic “remove old registration and move” behavior.
+serial is absent or appears on another F/S/P. Huawei command selection is
+model-aware: MA5608T uses `display ont autofind all`, then the parsed observation
+is filtered in-process to the requested F/S/P because that shelf rejects
+`display ont autofind <F/S/P>`. The cached candidate never substitutes for this
+live exact check. Commissioning also disables the legacy automatic “remove old
+registration and move” behavior.
 
 The assignment owner locks the ONT and rejects assignment while commissioning
 is authorizing, awaiting ACS, or cleaning up. Assignment is allowed only after

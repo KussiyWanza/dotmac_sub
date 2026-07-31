@@ -243,14 +243,25 @@ User clicks "Authorize & provision"
 User with network:ont:commission clicks "Commission ONT"
     → network.ont_commissioning stores exact candidate + reason + 24h expiry
     → durable commission operation/dispatch
-    → worker re-reads exact live OLT autofind
-    → authorize_ont(provision=False, allow_registration_move=False)
+    → worker re-reads model-supported live OLT autofind and filters exact F/S/P
+    → management-only dependency audit (line/service + DBA + TR-069)
+    → authorize_ont(
+         provision=False,
+         allow_registration_move=False,
+         dependency_scope=management_only
+      )
     → restricted management batch:
          management VLAN service-port + IPHOST + TR-069 profile only
          no internet-config, WAN, PPPoE, LAN, or Wi-Fi
     → bounded ACS observation / Inform marks management_ready
     → assignment converts ownership, or expiry stages safe inventory cleanup
 ```
+
+MA5608T uses the supported global `display ont autofind all` observation and
+filters it in application code to the exact requested F/S/P and canonical
+serial. The unsupported per-port command is never attempted. Normal assigned
+authorization retains the full live dependency audit, including customer
+traffic-table and WAN-profile inventories.
 
 ### 2. ACS Configuration Push Flow
 

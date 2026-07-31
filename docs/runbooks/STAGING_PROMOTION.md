@@ -73,6 +73,45 @@ git merge-base --is-ancestor origin/main origin/dev && echo ok
 If that fails, the branches have already diverged. Do not open the promotion
 from `dev`. Reconcile first, as described in the next section.
 
+### Merging a promotion deletes `dev` unless `dev` is protected
+
+The repository sets `delete_branch_on_merge: true`, which deletes the **head**
+branch of every merged pull request. That is what you want for topic branches.
+A promotion PR's head is `dev`, so merging one deletes `dev`.
+
+Passing or omitting `--delete-branch` on `gh pr merge` makes no difference. That
+flag only controls whether the CLI removes your *local* branch; the remote
+deletion comes from the repository setting.
+
+`dev` is protected against deletion and force-pushes, and GitHub silently skips
+auto-deletion for protected branches, so this is handled. Do not remove that
+protection. If a long-lived branch is ever added — a release or maintenance
+branch that pull requests will be opened *from* — protect it the same way
+before the first such pull request merges:
+
+```
+gh api -X PUT repos/michaelayoade/dotmac_sub/branches/<branch>/protection --input - <<'JSON'
+{"required_status_checks":null,"enforce_admins":false,
+ "required_pull_request_reviews":null,"restrictions":null,
+ "allow_deletions":false,"allow_force_pushes":false}
+JSON
+```
+
+If it does happen, nothing is lost: the deleted branch's head is a parent of the
+new merge commit, so every commit is still reachable. Recreate it at the base
+branch's **new head**, not at its own former head — the former head would leave
+the branches diverged again, while the merge commit makes them identical, which
+is the correct post-promotion state:
+
+```
+git push origin <new-main-sha>:refs/heads/dev
+```
+
+Watch for the misleading first symptom: `git fetch --prune` drops
+`origin/dev` and later commands fail with `fatal: Not a valid object name
+origin/dev`, which reads like a stale ref or a fetch race. Confirm against
+`git ls-remote --heads origin` or the branches API before concluding either way.
+
 ## When `main` receives commits directly
 
 Anything merged straight into `main` — a hotfix, or a pull request opened

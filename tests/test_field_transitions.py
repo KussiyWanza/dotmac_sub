@@ -390,3 +390,108 @@ def test_transition_api(db_session):
     assert body["job"]["status"] == "in_progress"
     assert body["event"]["event"] == "start"
     assert body["replayed"] is False
+
+
+def test_project_work_order_completion_requires_fiber_as_built_evidence(
+    db_session, fake_uploads
+):
+    from app.models.field_fiber import FieldFiberTestResult
+    from app.models.project import Project
+    from app.services.field.transitions import resolve_fiber_as_built_evidence
+
+    user = _user(db_session, "FiberAsBuilt")
+    profile = _profile(db_session, user, crm_person_id="crm-fiber-asbuilt")
+    subscriber = _subscriber(db_session)
+    project = Project(name="OSP build phase 2")
+    db_session.add(project)
+    db_session.flush()
+    row = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-fiber-asbuilt",
+        status="in_progress",
+        assigned_to_crm_person_id="crm-fiber-asbuilt",
+        project_id=project.id,
+    )
+    db_session.commit()
+
+    _attach_photo(db_session, user, "wo-fiber-asbuilt")
+
+    evidence = resolve_fiber_as_built_evidence(db_session, row)
+    assert evidence.required is True
+    assert evidence.satisfied is False
+
+    with pytest.raises(HTTPException) as exc:
+        field_transitions.apply(
+            db_session,
+            _auth(user),
+            "wo-fiber-asbuilt",
+            event="complete",
+            client_event_id=uuid4(),
+            payload={"signature_unavailable_reason": "Plant work, no customer"},
+        )
+
+    assert exc.value.status_code == 422
+    assert "fiber" in exc.value.detail
+
+    db_session.add(
+        FieldFiberTestResult(
+            work_order_mirror_id=row.id,
+            asset_type="fiber_access_point",
+            asset_id=uuid4(),
+            test_type="optical_power",
+            value_db=-21.3,
+            unit="dBm",
+            passed=True,
+            measured_by_technician_id=profile.id,
+            measured_by_person_id=user.id,
+        )
+    )
+    db_session.commit()
+
+    evidence = resolve_fiber_as_built_evidence(db_session, row)
+    assert evidence.satisfied is True
+    assert evidence.fiber_test_count == 1
+
+    completed = field_transitions.apply(
+        db_session,
+        _auth(user),
+        "wo-fiber-asbuilt",
+        event="complete",
+        client_event_id=uuid4(),
+        payload={"signature_unavailable_reason": "Plant work, no customer"},
+    )
+    assert completed["job"].status == "completed"
+
+
+def test_non_project_work_order_completion_skips_fiber_as_built_gate(
+    db_session, fake_uploads
+):
+    from app.services.field.transitions import resolve_fiber_as_built_evidence
+
+    user = _user(db_session, "NoProject")
+    _profile(db_session, user, crm_person_id="crm-no-project")
+    subscriber = _subscriber(db_session)
+    row = _work_order(
+        db_session,
+        subscriber,
+        crm_work_order_id="wo-no-project",
+        status="in_progress",
+        assigned_to_crm_person_id="crm-no-project",
+    )
+    db_session.commit()
+
+    evidence = resolve_fiber_as_built_evidence(db_session, row)
+    assert evidence.required is False
+    assert evidence.satisfied is True
+
+    _attach_photo(db_session, user, "wo-no-project")
+    completed = field_transitions.apply(
+        db_session,
+        _auth(user),
+        "wo-no-project",
+        event="complete",
+        client_event_id=uuid4(),
+        payload={"signature_unavailable_reason": "Customer unavailable"},
+    )
+    assert completed["job"].status == "completed"

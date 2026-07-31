@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -11,7 +12,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.domain_settings import DomainSetting, SettingDomain
+from app.models.fiber_change_request import FiberChangeRequest
+from app.models.fiber_topology_field_observation import FiberTopologyFieldObservation
 from app.models.field_attachment import FieldAttachment
+from app.models.field_fiber import FieldFiberTestResult
 from app.models.field_job_event import FIELD_JOB_EVENTS, FieldJobEvent
 from app.models.field_worklog import FieldWorkLog
 from app.models.work_order import WorkOrder
@@ -376,6 +380,65 @@ def resolve_completion_requirements(db: Session) -> FieldCompletionRequirements:
     )
 
 
+@dataclass(frozen=True)
+class FieldFiberAsBuiltEvidence:
+    """Recorded fiber as-built evidence for one project-scoped work order.
+
+    The requirement applies only to work orders that both declare
+    ``requires_as_built_evidence`` and belong to a native project — the same
+    population whose vendor deliverables are gated by project verification.
+    """
+
+    required: bool
+    fiber_test_count: int
+    source_observation_count: int
+    splice_proposal_count: int
+
+    @property
+    def satisfied(self) -> bool:
+        return not self.required or bool(
+            self.fiber_test_count
+            or self.source_observation_count
+            or self.splice_proposal_count
+        )
+
+
+def resolve_fiber_as_built_evidence(
+    db: Session, row: WorkOrder
+) -> FieldFiberAsBuiltEvidence:
+    """Count the fiber evidence records naming this exact work order."""
+    required = bool(row.requires_as_built_evidence and row.project_id is not None)
+    if not required:
+        return FieldFiberAsBuiltEvidence(
+            required=False,
+            fiber_test_count=0,
+            source_observation_count=0,
+            splice_proposal_count=0,
+        )
+    fiber_test_count = (
+        db.query(FieldFiberTestResult)
+        .filter(FieldFiberTestResult.work_order_mirror_id == row.id)
+        .count()
+    )
+    source_observation_count = (
+        db.query(FiberTopologyFieldObservation)
+        .filter(FiberTopologyFieldObservation.work_order_id == row.id)
+        .count()
+    )
+    splice_proposal_count = (
+        db.query(FiberChangeRequest)
+        .filter(FiberChangeRequest.asset_type == "fiber_splice")
+        .filter(FiberChangeRequest.payload["work_order_id"].as_string() == str(row.id))
+        .count()
+    )
+    return FieldFiberAsBuiltEvidence(
+        required=True,
+        fiber_test_count=fiber_test_count,
+        source_observation_count=source_observation_count,
+        splice_proposal_count=splice_proposal_count,
+    )
+
+
 def _check_completion_gate(
     db: Session, row: WorkOrder, payload: dict[str, Any]
 ) -> None:
@@ -406,6 +469,16 @@ def _check_completion_gate(
         raise HTTPException(
             status_code=422,
             detail="Completion requires a customer signature or a signature_unavailable_reason",
+        )
+    fiber_evidence = resolve_fiber_as_built_evidence(db, row)
+    if not fiber_evidence.satisfied:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Completion of this project work order requires recorded fiber "
+                "as-built evidence: a fiber test, a source observation, or a "
+                "splice proposal linked to this work order"
+            ),
         )
 
 

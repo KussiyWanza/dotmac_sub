@@ -4185,6 +4185,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/field/fiber/customer-trace": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:work_order_id!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "869d97f3d7c5",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/field/fiber/source-observations": {
    "params": [
     "header:authorization",
@@ -4195,6 +4207,18 @@
    "request": null,
    "responses": {
     "200": "27ad61ef5aed",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/field/fiber/splice-proposals": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit"
+   ],
+   "request": null,
+   "responses": {
+    "200": "f05542f5f2d2",
     "422": "a11c9d9b2af8"
    }
   },
@@ -10506,6 +10530,18 @@
    "request": null,
    "responses": {
     "200": "a2431939694c",
+    "422": "a11c9d9b2af8"
+   }
+  },
+  "GET /api/v1/vendor/fiber/splices": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit"
+   ],
+   "request": null,
+   "responses": {
+    "200": "0716c41f02f1",
     "422": "a11c9d9b2af8"
    }
   },
@@ -17752,6 +17788,17 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/vendor/fiber/splices": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key"
+   ],
+   "request": "577cbcf33139",
+   "responses": {
+    "201": "06ccc45b153c",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/vendor/material-releases": {
    "params": [
     "header:authorization",
@@ -18676,10 +18723,14 @@
   "FieldExpenseRequestItemCreate": "3b23aa8d5a6d",
   "FieldExpenseRequestItemRead": "515094e4452b",
   "FieldExpenseRequestRead": "48008f260a1d",
+  "FieldFiberCustomerTraceRead": "721ba2118658",
+  "FieldFiberOntLiveRead": "b56481e9b334",
   "FieldFiberSourceObservationCreate": "e2926b09d191",
   "FieldFiberSourceObservationRead": "4a4b72d2ca4b",
   "FieldFiberTestCreate": "b388fcf3af18",
   "FieldFiberTestRead": "b2d8303425cc",
+  "FieldFiberTraceGap": "668b2dbd2701",
+  "FieldFiberTraceHop": "f2baf185ff39",
   "FieldFiberWorkOrderEvidenceMapRead": "d7fb7077bef9",
   "FieldInventoryItemRead": "954925e3505a",
   "FieldInventoryLocationRead": "6a267e02541f",
@@ -18726,9 +18777,13 @@
   "FieldRouteResponse": "ca3ca3598973",
   "FieldRouteStop": "1ac93ec2753b",
   "FieldScheduleEntry": "0f58d72b4cd7",
+  "FieldSegmentPhysicalDetailRead": "034a27917beb",
   "FieldSiteContact": "8cc0e1d26e4c",
-  "FieldSpliceCreate": "651ae1968189",
-  "FieldSpliceProposalResponse": "23adb03b959f",
+  "FieldSpliceCreate": "01f4db0e2a40",
+  "FieldSpliceProposalResponse": "f69a65b93ae7",
+  "FieldSpliceProposalStatusRead": "8ab1ea4e5501",
+  "FieldStrandColorRead": "513278787501",
+  "FieldStrandTerminationDetailRead": "eb451174c33f",
   "FieldTicketContext": "c0ae335ff056",
   "FieldTransitionRequest": "4312e6ac3192",
   "FieldTransitionResponse": "1bd156602fd1",
@@ -18944,6 +18999,7 @@
   "ListResponse_FieldAttachmentRead_": "6b63585cb6fe",
   "ListResponse_FieldEquipmentCustodyRead_": "3ca9545967e8",
   "ListResponse_FieldExpenseRequestRead_": "1a0780401fd8",
+  "ListResponse_FieldFiberCustomerTraceRead_": "a780397774e9",
   "ListResponse_FieldFiberSourceObservationRead_": "5ad0239abaf9",
   "ListResponse_FieldFiberTestRead_": "195e32620d17",
   "ListResponse_FieldInventoryItemRead_": "f0d2b5d1ed42",
@@ -18952,6 +19008,7 @@
   "ListResponse_FieldManagerJob_": "f4743f92cdc7",
   "ListResponse_FieldMapAsset_": "75c0191b67cd",
   "ListResponse_FieldMaterialRequestRead_": "c4d2256ca6c8",
+  "ListResponse_FieldSpliceProposalStatusRead_": "1d8a0087b80c",
   "ListResponse_GeoAreaRead_": "a24d775b02c5",
   "ListResponse_GeoFeatureRead_": "3294a477c3f2",
   "ListResponse_GeoLayerRead_": "399f2ef3fcbc",
@@ -19066,6 +19123,7 @@
   "ListResponse_UsageRecordRead_": "a0b8d664ee8c",
   "ListResponse_UserCredentialRead_": "deb3f29fb1bc",
   "ListResponse_VendorPurchaseInvoiceRead_": "9e603348ec06",
+  "ListResponse_VendorSpliceProposalStatusRead_": "aad8d53f6e00",
   "ListResponse_VlanRead_": "bc02d9fb7a40",
   "ListResponse_WorkOrderAssignmentQueueRead_": "09219459d168",
   "ListResponse_WorkOrderHeaderRead_": "31c7a849dee1",
@@ -19662,6 +19720,10 @@
   "VendorQuoteLineUpdate": "d9d1913e8bd3",
   "VendorReview": "74e7731221a0",
   "VendorRouteRevisionCreate": "c47a23ac2e0a",
+  "VendorSpliceCreate": "7ae1c24f6171",
+  "VendorSpliceProposalResponse": "0e8bc8042651",
+  "VendorSpliceProposalStatusRead": "4beb26df669c",
+  "VendorStrandColorRead": "3848bff3ab0d",
   "VendorSubmissionConfirm": "02e3d0612139",
   "VerifyEmailRequest": "aedd7a91b07e",
   "VerifyEmailResponse": "1fae1392036c",

@@ -31,6 +31,7 @@ from app.services.network.olt_batched_mgmt import (
     BatchedMgmtSpec,
     build_management_command_batch,
 )
+from app.services.network.olt_config_pack_live_audit import OltDependencyAuditScope
 from app.services.network.ont_commissioning import (
     RequestOntCommissioning,
     _exact_live_autofind_preflight,
@@ -439,16 +440,22 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
         "app.services.network.ont_commissioning._exact_live_autofind_preflight",
         lambda _intent, _olt: (True, "exact"),
     )
-    monkeypatch.setattr(
-        "app.services.network.ont_authorization.authorize_ont",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    authorization_kwargs = {}
+
+    def fail_local_inventory(*_args, **kwargs):
+        authorization_kwargs.update(kwargs)
+        return SimpleNamespace(
             success=False,
             message="OLT authorization succeeded; local inventory failed",
             ont_unit_id=None,
             ont_id_on_olt=7,
             completed_authorization=True,
             local_inventory_failed=True,
-        ),
+        )
+
+    monkeypatch.setattr(
+        "app.services.network.ont_authorization.authorize_ont",
+        fail_local_inventory,
     )
 
     result = execute_ont_commissioning(
@@ -462,6 +469,10 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
     assert intent is not None
     assert intent.device_authorized_at is not None
     assert intent.ont_unit_id is None
+    assert (
+        authorization_kwargs["dependency_scope"]
+        is OltDependencyAuditScope.MANAGEMENT_ONLY
+    )
     intent.created_at = datetime.now(UTC) - timedelta(hours=2)
     intent.expires_at = datetime.now(UTC) - timedelta(minutes=1)
     db_session.commit()

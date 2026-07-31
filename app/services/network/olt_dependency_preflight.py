@@ -10,11 +10,17 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.services.network.olt_config_pack_live_audit import audit_olt_config_pack_live
+from app.services.network.olt_config_pack_live_audit import (
+    OltDependencyAuditScope,
+    audit_olt_config_pack_live,
+)
 
 _SUCCESS_CACHE_TTL_SECONDS = 5 * 60
 _success_cache_lock = Lock()
-_success_cache: dict[str, tuple[float, OltDependencyPreflightResult]] = {}
+_success_cache: dict[
+    tuple[str, OltDependencyAuditScope],
+    tuple[float, OltDependencyPreflightResult],
+] = {}
 
 
 @dataclass
@@ -41,10 +47,11 @@ def _clone_result(
 def get_cached_olt_dependency_validation(
     olt_id: str,
     *,
+    scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
     max_age_sec: int = _SUCCESS_CACHE_TTL_SECONDS,
 ) -> OltDependencyPreflightResult | None:
     """Return a recent successful live audit result when available."""
-    cache_key = str(olt_id)
+    cache_key = (str(olt_id), OltDependencyAuditScope(scope))
     with _success_cache_lock:
         cached = _success_cache.get(cache_key)
         if cached is None:
@@ -66,14 +73,16 @@ def validate_olt_profile_dependencies(
     *,
     olt_id: str,
     operation: str,
+    scope: OltDependencyAuditScope = OltDependencyAuditScope.FULL,
 ) -> OltDependencyPreflightResult:
     """Validate live OLT profile dependencies before any OLT write operation."""
-    cache_key = str(olt_id)
-    cached = get_cached_olt_dependency_validation(cache_key)
+    scope = OltDependencyAuditScope(scope)
+    cache_key = (str(olt_id), scope)
+    cached = get_cached_olt_dependency_validation(olt_id, scope=scope)
     if cached is not None:
         return cached
 
-    audit = audit_olt_config_pack_live(db, olt_id)
+    audit = audit_olt_config_pack_live(db, olt_id, scope=scope)
     if audit.is_valid:
         result = OltDependencyPreflightResult(
             success=True,
