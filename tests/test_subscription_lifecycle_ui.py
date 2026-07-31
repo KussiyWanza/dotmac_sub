@@ -218,3 +218,36 @@ def test_subscription_detail_does_not_use_legacy_single_action_paths():
     assert "/change-plan-quote" not in source
     assert "confirm(" not in source
     assert "onsubmit=" not in source
+
+
+def test_lifecycle_reason_does_not_invalidate_preview_before_confirmation():
+    templates = (
+        (
+            Path("templates/admin/catalog/subscription_detail.html"),
+            "lifecycle-reason",
+            "lifecycle-effective-at",
+        ),
+        (
+            Path("templates/admin/catalog/subscriptions.html"),
+            "bulk-reason",
+            "bulk-effective-at",
+        ),
+    )
+
+    for path, reason_id, effective_at_id in templates:
+        source = path.read_text()
+        reason_control = source.split(f'id="{reason_id}"', 1)[1].split(">", 1)[0]
+        effective_at_control = source.split(f'id="{effective_at_id}"', 1)[1].split(
+            ">", 1
+        )[0]
+        preview_logic = source.split("async refreshPreview()", 1)[1].split(
+            "async executeLifecycle()", 1
+        )[0]
+
+        assert 'x-model="reason"' in reason_control
+        assert "refreshPreview()" not in reason_control
+        assert '@input="refreshPreview()"' in effective_at_control
+        assert '@change="refreshPreview()"' not in effective_at_control
+        assert preview_logic.index(
+            "this.previewLoading = false;"
+        ) < preview_logic.index("if (!this.kind")

@@ -157,12 +157,14 @@
                     </div>
                     <div x-show="effectiveTiming === 'scheduled'" x-cloak>
                         <label for="lifecycle-effective-at" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Effective date and time</label>
-                        <input id="lifecycle-effective-at" type="datetime-local" x-model="effectiveAt" @change="refreshPreview()"
+                        <input id="lifecycle-effective-at" type="datetime-local" x-model="effectiveAt" @input="refreshPreview()"
                                class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                     </div>
                     <div>
                         <label for="lifecycle-reason" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Reason</label>
-                        <textarea id="lifecycle-reason" x-model="reason" @change="refreshPreview()" rows="2"
+                        {# Reason is command evidence, not a preview decision input. Refreshing
+                           on blur disables Confirm before the same click can execute. #}
+                        <textarea id="lifecycle-reason" x-model="reason" rows="2"
                                   class="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                                   placeholder="Operational reason for this change"></textarea>
                     </div>
@@ -303,6 +305,7 @@
                     this.preview = null;
                     this.idempotencyKey = '';
                     this.errorMessage = '';
+                    this.previewLoading = false;
                     if (!this.kind || (this.kind === 'change_plan' && !this.targetOfferId)) return;
                     if (this.effectiveTiming === 'scheduled' && !this.effectiveAt) return;
                     this.previewLoading = true;
