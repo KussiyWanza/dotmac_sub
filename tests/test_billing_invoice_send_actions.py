@@ -9,6 +9,13 @@ from app.models.billing import (
     InvoicePdfExportStatus,
     InvoiceStatus,
 )
+from app.models.notification import NotificationChannel, NotificationStatus
+from app.services.communication_intents import (
+    CommunicationAttachment,
+    CommunicationAttachmentKind,
+    CommunicationIntent,
+    submit,
+)
 from app.services.web_billing_invoice_bulk import (
     BulkInvoiceActionResult,
     bulk_mark_paid,
@@ -86,6 +93,56 @@ def test_invoice_notification_delegates_once_to_canonical_event_owner(
             "invoice_id": str(invoice.id),
             "reason": "admin_invoice_send",
             "commit": True,
+        }
+    ]
+
+
+def test_invoice_pdf_attachment_reference_is_durable_on_email_delivery(
+    db_session, subscriber
+):
+    invoice = Invoice(
+        account_id=subscriber.id,
+        invoice_number="INV-ATTACH-1",
+        status=InvoiceStatus.issued,
+        subtotal=Decimal("15000.00"),
+        tax_total=Decimal("0.00"),
+        total=Decimal("15000.00"),
+        balance_due=Decimal("15000.00"),
+    )
+    db_session.add(invoice)
+    db_session.commit()
+
+    result = submit(
+        db_session,
+        CommunicationIntent(
+            subscriber_id=subscriber.id,
+            event_type="invoice_sent",
+            category="billing",
+            subject="Invoice attached",
+            body="Your invoice is attached.",
+            channels=(NotificationChannel.email,),
+            recipients={NotificationChannel.email: subscriber.email},
+            include_reseller=False,
+            persist_policy_suppressions=False,
+            attachments=(
+                CommunicationAttachment(
+                    kind=CommunicationAttachmentKind.invoice_pdf,
+                    entity_id=invoice.id,
+                    filename="invoice-INV-ATTACH-1.pdf",
+                ),
+            ),
+        ),
+    )
+
+    assert len(result.deliveries) == 1
+    delivery = result.deliveries[0]
+    assert delivery.status == NotificationStatus.queued
+    assert delivery.metadata_["attachments"] == [
+        {
+            "kind": "invoice_pdf",
+            "entity_id": str(invoice.id),
+            "filename": "invoice-INV-ATTACH-1.pdf",
+            "content_type": "application/pdf",
         }
     ]
 

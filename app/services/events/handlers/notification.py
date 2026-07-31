@@ -16,7 +16,12 @@ from app.models.notification import (
     NotificationTemplate,
 )
 from app.schemas.notification import NotificationCreate
-from app.services.communication_intents import CommunicationIntent, submit
+from app.services.communication_intents import (
+    CommunicationAttachment,
+    CommunicationAttachmentKind,
+    CommunicationIntent,
+    submit,
+)
 from app.services.customer_notification_policy import (
     channel_disabled_in_config,
     resolve_subscriber_id_for_recipient,
@@ -189,6 +194,18 @@ EVENT_NOTIFICATION_SPECS: dict[EventType, EventNotificationSpec] = {
             "Dear {subscriber_name},\n\n"
             "Your {offer_name} subscription will expire soon. "
             "Please renew to avoid interruption."
+        ),
+    ),
+    EventType.subscription_renewal_invoice_ready: EventNotificationSpec(
+        template_code="subscription_renewal_invoice_ready",
+        category="billing",
+        subject="Renewal invoice #{invoice_number} is ready",
+        body=(
+            "Dear {subscriber_name},\n\n"
+            "Your current service remains active until {renewal_period_start}. "
+            "Invoice #{invoice_number} for {renewal_period_start} to "
+            "{renewal_period_end} is ready. You can pay now to continue without "
+            "interruption.\n\nView and pay: {invoice_url}"
         ),
     ),
     EventType.subscription_expired: EventNotificationSpec(
@@ -654,6 +671,34 @@ class NotificationHandler:
                 )
                 queued_count = 1
             else:
+                attachments: tuple[CommunicationAttachment, ...] = ()
+                if (
+                    channel == NotificationChannel.email
+                    and event.event_type
+                    in {
+                        EventType.invoice_sent,
+                        EventType.subscription_renewal_invoice_ready,
+                    }
+                    and event.invoice_id is not None
+                ):
+                    from app.models.billing import Invoice
+                    from app.services.billing_invoice_pdf import download_filename
+
+                    invoice = db.get(Invoice, event.invoice_id)
+                    if invoice is None or invoice.account_id != subscriber_id:
+                        logger.error(
+                            "Suppressed invoice attachment delivery for event %s: "
+                            "invoice scope could not be verified",
+                            event.event_id,
+                        )
+                        continue
+                    attachments = (
+                        CommunicationAttachment(
+                            kind=CommunicationAttachmentKind.invoice_pdf,
+                            entity_id=invoice.id,
+                            filename=download_filename(invoice),
+                        ),
+                    )
                 result = submit(
                     db,
                     CommunicationIntent(
@@ -667,6 +712,7 @@ class NotificationHandler:
                         channels=(channel,),
                         persist_policy_suppressions=False,
                         recipients={channel: recipient},
+                        attachments=attachments,
                         dedupe_key=(
                             f"event-notification:{event.event_id}:"
                             f"{spec.template_code}:{channel.value}"
@@ -895,6 +941,14 @@ class NotificationHandler:
                     event.invoice_id,
                     exc_info=True,
                 )
+
+        if event.invoice_id:
+            from app.services.branding_config import get_brand
+
+            app_url = str(get_brand().get("app_url") or "").rstrip("/")
+            context.setdefault(
+                "invoice_url", f"{app_url}/portal/billing/invoices/{event.invoice_id}"
+            )
 
         if event.subscription_id:
             try:

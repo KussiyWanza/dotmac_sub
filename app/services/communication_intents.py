@@ -23,11 +23,35 @@ from app.services.customer_notification_policy import (
 )
 from app.services.notification_channel_policy import resolve_notification_channels
 
+MAX_EMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
 
 class CommunicationClass(enum.StrEnum):
     transactional = "transactional"
     marketing = "marketing"
     operational = "operational"
+
+
+class CommunicationAttachmentKind(enum.StrEnum):
+    invoice_pdf = "invoice_pdf"
+
+
+@dataclass(frozen=True)
+class CommunicationAttachment:
+    """Durable reference to content materialized only during delivery."""
+
+    kind: CommunicationAttachmentKind
+    entity_id: UUID
+    filename: str
+    content_type: str = "application/pdf"
+
+    def to_metadata(self) -> dict[str, str]:
+        return {
+            "kind": self.kind.value,
+            "entity_id": str(self.entity_id),
+            "filename": self.filename,
+            "content_type": self.content_type,
+        }
 
 
 @dataclass(frozen=True)
@@ -49,6 +73,7 @@ class CommunicationIntent:
     audience_id: UUID | None = None
     resolve_subscriber_identity: bool = True
     metadata: dict[str, object] = field(default_factory=dict)
+    attachments: tuple[CommunicationAttachment, ...] = ()
     dedupe_key: str | None = None
     send_at: datetime | None = None
     requested_status: NotificationStatus = NotificationStatus.queued
@@ -151,6 +176,15 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
         raise ValueError("Internal communication cannot use customer policies")
     if intent.audience_type != "subscriber" and intent.audience_id is None:
         raise ValueError("Internal communication requires an audience identifier")
+    if intent.attachments and NotificationChannel.email not in (
+        intent.channels or intent.default_channels
+    ):
+        raise ValueError("Communication attachments require an email channel")
+
+    attachment_metadata = [item.to_metadata() for item in intent.attachments]
+    attachment_envelope: dict[str, object] = (
+        {"attachments": attachment_metadata} if attachment_metadata else {}
+    )
 
     resolved_subscriber_id = intent.subscriber_id
     if (
@@ -215,6 +249,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
         scheduled_for=intent.send_at,
         metadata_={
             **intent.metadata,
+            **attachment_envelope,
             "audience_type": intent.audience_type,
             "audience_id": str(intent.audience_id) if intent.audience_id else None,
         },
@@ -278,7 +313,10 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
                     status=intent.requested_status,
                     send_at=intent.send_at,
                     last_error=intent.requested_last_error,
-                    metadata_=dict(intent.metadata),
+                    metadata_={
+                        **intent.metadata,
+                        **attachment_envelope,
+                    },
                 )
                 if intent.audience_type == "subscriber":
                     notification = (
@@ -331,6 +369,7 @@ def submit(db: Session, intent: CommunicationIntent) -> CommunicationIntentResul
                         send_at=intent.send_at,
                         metadata_={
                             **intent.metadata,
+                            **attachment_envelope,
                             "subject_subscriber_id": str(subscriber.id)
                             if subscriber
                             else None,

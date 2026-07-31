@@ -9,6 +9,7 @@ from app.models.notification import (
     NotificationStatus,
 )
 from app.services.branding_config import get_brand
+from app.services.communication_attachments import CommunicationAttachmentError
 from app.tasks.notifications import (
     _deliver_notification_queue,
     deliver_inbound_smtp_health_probe,
@@ -215,6 +216,55 @@ def test_deliver_notification_queue_sends_html_email_with_text_part(
     assert email.status == NotificationStatus.delivered
     assert "<p>Your <strong>invoice</strong> is ready.</p>" in captured["body_html"]
     assert captured["body_text"] == "Your invoice is ready."
+
+
+def test_required_invoice_attachment_failure_does_not_send_body_only_email(
+    db_session, monkeypatch
+):
+    from app.tasks.notifications import _deliver_notification_queue_stats
+
+    email = _queued_notification(
+        channel=NotificationChannel.email,
+        recipient="cust@example.com",
+        body="Your invoice is attached.",
+    )
+    email.category = "billing"
+    email.event_type = "invoice_sent"
+    email.metadata_ = {
+        "attachments": [
+            {
+                "kind": "invoice_pdf",
+                "entity_id": "00000000-0000-0000-0000-000000000001",
+                "filename": "invoice.pdf",
+                "content_type": "application/pdf",
+            }
+        ]
+    }
+    db_session.add(email)
+    db_session.commit()
+
+    def _failed_attachment(*_args, **_kwargs):
+        raise CommunicationAttachmentError("invoice_pdf_generation_failed")
+
+    monkeypatch.setattr(
+        "app.tasks.notifications.communication_attachments.resolve_email_attachments",
+        _failed_attachment,
+    )
+
+    def _unexpected_send(**_kwargs):
+        raise AssertionError("body-only invoice email must not be sent")
+
+    monkeypatch.setattr(
+        "app.tasks.notifications.email_service.send_email", _unexpected_send
+    )
+
+    stats = _deliver_notification_queue_stats(db_session, batch_size=10)
+
+    db_session.refresh(email)
+    assert stats["retried"] == 1
+    assert stats["delivered"] == 0
+    assert email.status == NotificationStatus.failed
+    assert email.last_error == "invoice_pdf_generation_failed"
 
 
 def test_deliver_notification_queue_processes_push_channel(db_session, monkeypatch):

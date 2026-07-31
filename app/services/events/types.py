@@ -39,6 +39,7 @@ class EventType(enum.Enum):
     subscription_upgraded = "subscription.upgraded"
     subscription_downgraded = "subscription.downgraded"
     subscription_expiring = "subscription.expiring"
+    subscription_renewal_invoice_ready = "subscription.renewal_invoice_ready"
     subscription_expired = "subscription.expired"
     subscription_suspension_warning = "subscription.suspension_warning"
     subscription_deleted = "subscription.deleted"

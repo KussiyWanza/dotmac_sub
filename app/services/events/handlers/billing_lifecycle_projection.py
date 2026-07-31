@@ -29,6 +29,10 @@ HANDLED_EVENT_TYPES = frozenset(
         EventType.custom,
         EventType.account_credit_deposited,
         EventType.payment_received,
+        EventType.prepaid_service_renewed,
+        EventType.subscription_created,
+        EventType.subscription_activated,
+        EventType.subscription_resumed,
     }
 )
 
@@ -39,6 +43,7 @@ _PENDING_TERMS_EFFECTIVE_TRIGGER = "billing.contracts.pending_terms_effective_du
 _CONTRACT_OUTPUT = "billing.contracts.shadow_recorded"
 _OBLIGATION_OUTPUT = "billing.obligations.shadow_scheduled"
 _WALLED_HEALING_TRIGGER = "financial.walled_account_healing_due"
+_ADVANCE_RENEWAL_TRIGGER = "financial.advance_renewal_invoice_due"
 
 
 class BillingLifecycleProjectionHandler:
@@ -50,12 +55,28 @@ class BillingLifecycleProjectionHandler:
             EventType.payment_received,
         }:
             self._schedule_walled_account_healing(db, event)
+            if event.subscription_id is not None:
+                self._schedule_advance_renewal(db, event)
+            return
+        if event.event_type in {
+            EventType.prepaid_service_renewed,
+            EventType.subscription_created,
+            EventType.subscription_activated,
+            EventType.subscription_resumed,
+        }:
+            self._schedule_advance_renewal(db, event)
             return
         if (
             event.event_type is EventType.custom
             and event.payload.get("trigger") == _WALLED_HEALING_TRIGGER
         ):
             self._consume_walled_account_healing(db, event)
+            return
+        if (
+            event.event_type is EventType.custom
+            and event.payload.get("trigger") == _ADVANCE_RENEWAL_TRIGGER
+        ):
+            self._consume_advance_renewal(db, event)
             return
         output = event.payload.get("output")
         trigger = event.payload.get("trigger")
@@ -114,6 +135,59 @@ class BillingLifecycleProjectionHandler:
                     event,
                     str(event.account_id),
                     reason="recheck exact access state after settled funding",
+                ),
+            )
+
+    def _schedule_advance_renewal(self, db: Session, event: Event) -> None:
+        if event.subscription_id is None:
+            return
+        from app.services.advance_renewal_invoicing import (
+            ScheduleAdvanceRenewalTimerCommand,
+            schedule_advance_renewal_timer,
+        )
+
+        with _owner_session(db) as owner_db:
+            schedule_advance_renewal_timer(
+                owner_db,
+                ScheduleAdvanceRenewalTimerCommand(
+                    context=self._context(event, str(event.subscription_id)),
+                    subscription_id=event.subscription_id,
+                ),
+            )
+
+    def _consume_advance_renewal(self, db: Session, event: Event) -> None:
+        from app.services.advance_renewal_invoicing import (
+            GenerateAdvanceRenewalInvoiceCommand,
+            generate_advance_renewal_invoice,
+        )
+
+        subscription_id = self._uuid(
+            str(event.payload.get("entity_id") or ""),
+            field="entity_id",
+            event=event,
+            consumer="financial.advance_renewal_invoicing",
+        )
+        timer_id = self._uuid(
+            str(event.payload.get("timer_id") or ""),
+            field="timer_id",
+            event=event,
+            consumer="financial.advance_renewal_invoicing",
+        )
+        due_at = datetime.fromisoformat(str(event.payload.get("due_at") or ""))
+        with _owner_session(db) as owner_db:
+            generate_advance_renewal_invoice(
+                owner_db,
+                GenerateAdvanceRenewalInvoiceCommand(
+                    context=self._context(event, str(subscription_id)),
+                    subscription_id=subscription_id,
+                    evaluated_at=due_at,
+                    timer_id=timer_id,
+                    timer_generation=self._integer(
+                        event.payload.get("generation"),
+                        field="generation",
+                        event=event,
+                        consumer="financial.advance_renewal_invoicing",
+                    ),
                 ),
             )
 

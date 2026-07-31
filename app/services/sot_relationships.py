@@ -6520,6 +6520,168 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.advance_renewal_invoicing",
+                module="app.services.advance_renewal_invoicing",
+                owns=(
+                    "per-subscription advance renewal timer",
+                    "idempotent advance renewal invoice and notification request",
+                ),
+                depends_on=(
+                    "access.subscription_lifecycle",
+                    "auth.permission_gate",
+                    "communications.intents",
+                    "control.settings_spec",
+                    "events.dispatcher",
+                    "financial.billing_automation",
+                    "financial.invoices",
+                    "financial.prepaid_service_coverage",
+                    "financial.prepaid_service_renewals",
+                    "runtime.durable_timers",
+                ),
+                notes=(
+                    "The feature is disabled with no notice-day value until an "
+                    "operator explicitly configures both controls. Invoice issue "
+                    "time never becomes service-period start; the exact current "
+                    "coverage boundary owns the future period. Invoice creation "
+                    "does not advance next_billing_at."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-subscription advance renewal timer",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "explicit renewal notice configuration",
+                                "canonical subscription lifecycle and billing anchor",
+                            ),
+                            canonical_writer="financial.advance_renewal_invoicing",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "idempotent advance renewal invoice and notification request"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "authenticated advance renewal command",
+                                "explicit renewal notice configuration",
+                                "canonical subscription lifecycle and billing anchor",
+                                "authoritative prepaid coverage evidence",
+                                "canonical recurring charge preview",
+                                "canonical future-period invoice",
+                            ),
+                            canonical_writer="financial.advance_renewal_invoicing",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated advance renewal command",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "GenerateAdvanceRenewalInvoiceCommand with system "
+                                "CommandContext and deterministic period identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="explicit renewal notice configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "billing.renewal_invoice_notice_enabled and nullable "
+                                "billing.renewal_invoice_notice_days"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical subscription lifecycle and billing anchor",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active Subscription and next_billing_at projection",
+                        ),
+                        AuthorityInput(
+                            name="authoritative prepaid coverage evidence",
+                            owner="financial.prepaid_service_coverage",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active funded entitlement or explicit service grant interval",
+                        ),
+                        AuthorityInput(
+                            name="canonical recurring charge preview",
+                            owner="financial.billing_automation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="typed prepaid or postpaid exact-period charge preview",
+                        ),
+                        AuthorityInput(
+                            name="canonical future-period invoice",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="issued Invoice and uniquely keyed subscription-period lines",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each subscription command enters execute_owner_command once; "
+                            "invoice, lines, audit, and event are staged atomically."
+                        ),
+                        locking=(
+                            "Locks the subscription, rechecks the notice date, and relies "
+                            "on unique active billing_line_key arbitration."
+                        ),
+                        idempotency=(
+                            "Subscription, exact period, and component form the durable key; "
+                            "matching replay returns the existing invoice."
+                        ),
+                        retries="The scheduler retries a complete owner command after rollback.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.advance_renewal_invoicing.configuration_unavailable",
+                            "financial.advance_renewal_invoicing.coverage_ambiguous",
+                            "financial.advance_renewal_invoicing.coverage_anchor_drift",
+                            "financial.advance_renewal_invoicing.currency_conflict",
+                            "financial.advance_renewal_invoicing.invoice_drift",
+                            "financial.advance_renewal_invoicing.missing_renewal_boundary",
+                            "financial.advance_renewal_invoicing.outside_notice_date",
+                            "financial.advance_renewal_invoicing.period_drift",
+                            "financial.advance_renewal_invoicing.subscription_not_eligible",
+                            "financial.advance_renewal_invoicing.terminal_subscription",
+                            *owner_command_boundary_error_codes(
+                                "financial.advance_renewal_invoicing"
+                            ),
+                        ),
+                        mapping_owner="billing lifecycle event adapter",
+                        fail_closed_on=(
+                            "missing or invalid configuration",
+                            "ambiguous coverage or anchor drift",
+                            "future-period invoice conflict",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("subscription.renewal_invoice_ready",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility="Additive payload evolution within schema version 1.",
+                        replay="Communication intent deduplicates by event and channel.",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="none; additive explicitly disabled capability",
+                        new_owner="financial.advance_renewal_invoicing",
+                        verification="Date, idempotency, notification, PDF, and architecture tests.",
+                        cutover_gate="Operator supplies notice days and explicitly enables it.",
+                        fallback_retirement="No implicit day or generic expiry-task fallback exists.",
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/designs/ADVANCE_RENEWAL_INVOICING.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_advance_renewal_invoicing.py",
+                        "tests/architecture/test_advance_renewal_invoicing_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.invoices",
                 module="app.services.billing.invoices",
                 owns=(
@@ -15955,12 +16117,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "communication intent lifecycle",
                     "recipient and channel delivery expansion",
                     "intent delivery outcome projection",
+                    "durable delivery attachment reference contract",
                 ),
                 depends_on=(
                     "communications.channel_policy",
                     "communications.customer_policy",
                     "communications.eligibility",
                     "communications.notification_service",
+                    "financial.invoices",
+                ),
+                notes=(
+                    "Invoice email attachments persist only a typed invoice-PDF "
+                    "reference. The delivery worker revalidates account scope and "
+                    "materializes bytes through the canonical billing invoice PDF "
+                    "service immediately before SMTP transport. Required attachment "
+                    "failure retries the complete delivery; body-only fallback is "
+                    "forbidden."
                 ),
             ),
             SOTService(
