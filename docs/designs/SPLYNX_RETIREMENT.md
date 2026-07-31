@@ -54,6 +54,15 @@ evidence, even though their runtime models remain retired. Retention does not
 restore Splynx as an authority or write path. It prevents a code-cleanup change
 from silently becoming a historical-data deletion.
 
+Retained customer deletion evidence has one compatibility policy owned by
+`customer.account_visibility`. An explicit `splynx_deleted=true` classifies the
+legacy import as deleted, while an explicit `splynx_deleted=false` keeps the
+canonical customer discoverable even when its current lifecycle is legitimately
+canceled or inactive. Only an absent or unrecognized flag may use the legacy
+canceled/inactive plus historical-status inference. `splynx_status` remains
+historical migration evidence and never overrides the current lifecycle owned by
+Sub.
+
 The three approved retirement targets are re-counted at deploy time. Any
 non-empty target fails loudly instead of losing data.
 

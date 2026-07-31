@@ -20,7 +20,7 @@ from app.models.subscriber import (
 from app.schemas.status_presentation import StatusPresentation
 from app.schemas.subscriber import SubscriberAccountCreate, SubscriberUpdate
 from app.services import billing as billing_service
-from app.services import display_format
+from app.services import customer_account_visibility, display_format
 from app.services import subscriber as subscriber_service
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.audit_helpers import build_changes_metadata, log_audit_event
@@ -102,7 +102,7 @@ def build_accounts_list_data(
         balance_subquery, balance_subquery.c.account_id == Subscriber.id
     )
     base_query = base_query.filter(
-        not_(subscriber_service.splynx_deleted_import_clause())
+        not_(customer_account_visibility.splynx_deleted_import_clause())
     )
     if customer_ref:
         subscriber_ids = web_billing_customers_service.subscriber_ids_for_customer(

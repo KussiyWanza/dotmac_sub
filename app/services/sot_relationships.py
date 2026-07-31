@@ -407,6 +407,118 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.account_visibility",
+                module="app.services.customer_account_visibility",
+                owns=("legacy imported Subscriber deletion classification",),
+                depends_on=(
+                    "customer.accounts",
+                    "access.subscription_lifecycle",
+                ),
+                notes=(
+                    "An explicit retained splynx_deleted value is authoritative for "
+                    "legacy import deletion classification. The canceled/inactive "
+                    "historical-status compatibility inference runs only when that "
+                    "value is absent or unrecognized; historical Splynx status never "
+                    "overrides canonical current lifecycle state."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=("legacy imported Subscriber deletion classification"),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical Subscriber account record",
+                                "canonical Subscriber lifecycle projection",
+                                "retained Splynx deletion observation",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical Subscriber account record",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "canonical Subscriber identity and retained legacy "
+                                "system provenance"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Subscriber lifecycle projection",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "Subscriber status and active flag projected from "
+                                "canonical subscription lifecycle state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="retained Splynx deletion observation",
+                            owner="external:splynx_import",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "splynx_deleted and historical splynx_status values "
+                                "retained in Subscriber metadata at migration"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Callers own the session; object and SQL classifiers read "
+                            "committed Subscriber facts without mutation or transaction "
+                            "completion."
+                        ),
+                        locking=(
+                            "No read locks are required because the classifier does not "
+                            "write lifecycle or provenance state."
+                        ),
+                        idempotency=(
+                            "The same account, lifecycle, and retained import evidence "
+                            "produce the same deletion classification."
+                        ),
+                        retries="Read-only classification is safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner=(
+                            "customer list, reporting, and subscriber query adapters"
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "inline legacy Splynx deletion inference in customer list "
+                            "and reporting callers"
+                        ),
+                        new_owner="customer.account_visibility",
+                        verification=(
+                            "Object/SQL classifier parity and customer-list visibility "
+                            "regression tests"
+                        ),
+                        cutover_gate=(
+                            "All imported-customer visibility consumers use the shared "
+                            "classifier and explicit false evidence wins"
+                        ),
+                        fallback_retirement=(
+                            "Only absent or unrecognized deletion observations retain "
+                            "the compatibility inference until those imports are "
+                            "adjudicated or backfilled"
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=(
+                        "docs/designs/SPLYNX_RETIREMENT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_subscriber_splynx_soft_delete.py",
+                        "tests/test_web_customer_lists.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="customer.crm_subscriber_provisioning",
                 module="app.services.crm_subscriber_provisioning",
                 owns=("authenticated CRM Subscriber provisioning coordination",),
@@ -28683,7 +28795,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin customer row and page projection",
                     "legacy customer offset API compatibility mapping",
                 ),
-                depends_on=("ui.list_contracts",),
+                depends_on=(
+                    "ui.list_contracts",
+                    "customer.account_visibility",
+                ),
             ),
             SOTService(
                 name="ui.subscriber_list_projection",

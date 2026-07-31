@@ -40,6 +40,7 @@ from app.services.common import (
     coerce_uuid,
     validate_enum,
 )
+from app.services.customer_account_visibility import splynx_deleted_import_clause
 from app.services.customer_identifiers import account_number_from_subscriber_number
 from app.services.customer_identity_normalization import (
     normalize_email_identifier,
@@ -118,52 +119,6 @@ def _subscriber_category_clause():
 
 def _is_business_clause():
     return _subscriber_category_clause() == SubscriberCategory.business.value
-
-
-def _metadata_flag(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(value, int):
-        return value == 1
-    return False
-
-
-def is_splynx_deleted_import(subscriber: Subscriber) -> bool:
-    """Return whether a subscriber represents a legacy soft-deleted import."""
-    metadata = subscriber.metadata_ or {}
-    if _metadata_flag(metadata.get("splynx_deleted")):
-        return True
-    if not getattr(subscriber, "splynx_customer_id", None):
-        return False
-    if subscriber.is_active:
-        return False
-    if subscriber.status != SubscriberStatus.canceled:
-        return False
-    raw_status = str(metadata.get("splynx_status") or "").strip().lower()
-    return raw_status not in {"", "deleted", "canceled"}
-
-
-def _metadata_text_clause(key: str):
-    return func.lower(
-        func.trim(func.coalesce(Subscriber.metadata_[key].as_string(), ""))
-    )
-
-
-def splynx_deleted_import_clause():
-    """Return a SQL clause matching legacy soft-deleted imported subscribers."""
-    splynx_deleted = _metadata_text_clause("splynx_deleted")
-    splynx_status = _metadata_text_clause("splynx_status")
-    return or_(
-        splynx_deleted.in_(("1", "true", "yes", "on")),
-        and_(
-            Subscriber.splynx_customer_id.is_not(None),
-            Subscriber.is_active.is_(False),
-            Subscriber.status == SubscriberStatus.canceled,
-            not_(splynx_status.in_(("", "deleted", "canceled"))),
-        ),
-    )
 
 
 def visible_subscriber_clause():

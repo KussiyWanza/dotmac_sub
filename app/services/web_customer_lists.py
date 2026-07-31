@@ -23,6 +23,7 @@ from app.models.subscriber import (
     SubscriberStatus,
     UserType,
 )
+from app.services.customer_account_visibility import splynx_deleted_import_clause
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -31,7 +32,6 @@ from app.services.list_query import (
     SortDirection,
 )
 from app.services.status_presentation import account_status_presentation
-from app.services.subscriber import splynx_deleted_import_clause
 
 _SUBSCRIBER_CATEGORY_COL: Any = Subscriber.metadata_["subscriber_category"].as_string()
 _UNSPECIFIED_IPV4 = ParsedIPv4Address(0)

@@ -207,6 +207,7 @@ do not hand-edit these rows.
 
 | Service | Concern | Role | Authoritative inputs | Transaction | Migration | Steward | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `customer.account_visibility` | legacy imported Subscriber deletion classification | `policy` | canonical Subscriber account record ← `customer.accounts`<br>canonical Subscriber lifecycle projection ← `access.subscription_lifecycle`<br>retained Splynx deletion observation ← `external:splynx_import` | `read_only` | `complete` | customer operations | `docs/designs/SPLYNX_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_subscriber_splynx_soft_delete.py`<br>`tests/test_web_customer_lists.py` |
 | `customer.crm_subscriber_provisioning` | authenticated CRM Subscriber provisioning coordination | `application_coordinator` | authenticated CRM provisioning command evidence ← `customer.crm_subscriber_provisioning`<br>retained exact CRM Subscriber provenance ← `customer.crm_subscriber_provisioning`<br>canonical Subscriber account state ← `customer.accounts` | `coordinator_managed` | `cutover_ready` | customer operations | `docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/CODING_STANDARD.md`<br>`tests/test_crm_subscriber_provisioning.py`<br>`tests/test_crm_api.py`<br>`tests/architecture/test_crm_customer_boundary.py` |
 | `customer.billing_approval` | atomic account billing-approval and lifecycle transition | `application_coordinator` | account billing-approval command evidence ← `customer.billing_approval`<br>canonical account billing-approval fact ← `customer.billing_approval`<br>canonical account lifecycle state ← `access.subscription_lifecycle`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle` | `coordinator_managed` | `complete` | customer and billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/adr/0003-permanent-customer-financial-lifecycle.md`<br>`tests/test_account_billing_approval.py`<br>`tests/architecture/test_account_billing_approval_boundary.py` |
 | `customer.billing_approval` | account billing-approval drift reconciliation | `application_coordinator` | account billing-approval command evidence ← `customer.billing_approval`<br>canonical account billing-approval fact ← `customer.billing_approval`<br>canonical account lifecycle state ← `access.subscription_lifecycle`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>effective subscription billing treatment ← `financial.subscription_billing_treatments` | `coordinator_managed` | `complete` | customer and billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`docs/adr/0003-permanent-customer-financial-lifecycle.md`<br>`tests/test_account_billing_approval.py`<br>`tests/architecture/test_account_billing_approval_boundary.py` |
@@ -2056,17 +2057,22 @@ Tax-accounting migration record:
    `access.subscription_lifecycle` and stages `subscriber.created`; callers do
    not construct Subscriber rows directly. Existing direct constructors remain
    explicit shrink-only migration debt, not approved parallel owners.
-2. Customer context owns identity, account, billing, service, support, and
+2. `customer.account_visibility` owns legacy imported Subscriber deletion
+   classification. Explicit retained `splynx_deleted` evidence wins; only an
+   absent or unrecognized flag may use the canceled/inactive plus historical
+   status compatibility inference. Historical `splynx_status` evidence does not
+   override the lifecycle projected by `access.subscription_lifecycle`.
+3. Customer context owns identity, account, billing, service, support, and
 network summary composition.
-3. Customer network context owns the raw customer-to-network footprint.
-4. Network access path owns the customer service path.
-5. `customer.profile_commands` owns admin customer profile edits and explicit
+4. Customer network context owns the raw customer-to-network footprint.
+5. Network access path owns the customer service path.
+6. `customer.profile_commands` owns admin customer profile edits and explicit
    person-to-business customer conversion. Normal person edit submission must
    not mutate account type; conversion is a dedicated command with its own
    validation and audit trail. `customer.name_repairs` separately owns exact,
    audit-evidenced legacy Subscriber name remediation until Party name
    projection cutover; no webhook, CLI, or generic profile helper writes it.
-6. `customer.account_status_actions` owns reviewed administrative account
+7. `customer.account_status_actions` owns reviewed administrative account
    lifecycle previews and confirmations. Its `unsuspend` action is distinct
    from broad activation: it clears only an explicit suspended override,
    resolves same-source administrative locks, restores only services held by
@@ -2186,7 +2192,8 @@ will reject.
    filters, stable sort, row projection, and filtered count.
 3. `ui.customer_list_projection` is the first migrated resource. The live admin
    customer route and Jinja table consume `ListQuery` and `PageMeta` from
-   `app.services.web_customer_lists`.
+   `app.services.web_customer_lists`; imported-customer inclusion delegates to
+   `customer.account_visibility`.
 4. The configurable-table customer data endpoint is now a compatibility
    projection over `app.services.web_customer_lists`. `app.services.table_config`
    still owns saved column visibility/order and serialization, but it does not
