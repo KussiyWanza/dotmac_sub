@@ -17,6 +17,7 @@ from app.models.network import (
 )
 from app.models.network_operation import (
     NetworkOperation,
+    NetworkOperationDispatch,
     NetworkOperationStatus,
     NetworkOperationTargetType,
     NetworkOperationType,
@@ -31,6 +32,7 @@ from app.services.network.olt_batched_mgmt import (
     BatchedMgmtSpec,
     build_management_command_batch,
 )
+from app.services.network.olt_protocol_adapters import OltConnectionConfig
 from app.services.network.ont_authorization_contracts import (
     OntFsp,
     OntSerialNumber,
@@ -45,6 +47,7 @@ from app.services.network.ont_commissioning import (
     complete_commissioning_after_inform,
     execute_ont_commissioning,
     reconcile_ont_commissioning,
+    record_external_write_reconciliation_required,
     request_ont_commissioning,
 )
 from app.services.network.ont_provisioning_commands import request_ont_authorization
@@ -82,6 +85,18 @@ def _candidate(db_session, *, serial: str = "HWTC7D4607C3", fsp: str = "0/1/3"):
             fsp=fsp,
         ),
     )
+
+
+def test_detached_olt_config_access_does_not_reopen_transaction(db_session):
+    olt, _candidate_row, _target = _candidate(db_session)
+    config = OltConnectionConfig.from_model(olt)
+    olt_id = olt.id
+    db_session.commit()
+
+    assert db_session.in_transaction() is False
+    assert config.id == olt_id
+    assert config.name.startswith("commissioning-olt-")
+    assert db_session.in_transaction() is False
 
 
 def _request(
@@ -242,7 +257,12 @@ def test_live_autofind_preflight_requires_exact_fsp_and_serial(
         ),
     )
 
-    ok, message = _exact_live_autofind_preflight(intent, olt)
+    olt_config = OltConnectionConfig.from_model(olt)
+    ok, message = _exact_live_autofind_preflight(
+        canonical_serial_value=intent.canonical_serial,
+        fsp=intent.fsp,
+        olt_config=olt_config,
+    )
 
     assert ok is False
     assert "no OLT write was attempted" in message
@@ -416,6 +436,87 @@ def test_reconciler_converts_management_ready_intent_to_assignment(db_session):
     )
 
 
+def test_reconciler_redrives_recorded_partial_authorization_once(db_session):
+    _olt, _candidate_row, target = _candidate(db_session, fsp="0/1/13")
+    ont = OntUnit(
+        serial_number=target.serial,
+        olt_device_id=target.olt_id,
+        board="0/1",
+        port="13",
+        external_id="1",
+        is_active=True,
+    )
+    db_session.add(ont)
+    db_session.flush()
+    prior = NetworkOperation(
+        operation_type=NetworkOperationType.ont_commission,
+        target_type=NetworkOperationTargetType.olt,
+        target_id=target.olt_id,
+        status=NetworkOperationStatus.failed,
+        max_retries=3,
+        input_payload={
+            "intent_id": "pending",
+            "olt_id": str(target.olt_id),
+            "fsp": target.fsp,
+            "serial_number": target.serial,
+        },
+    )
+    db_session.add(prior)
+    db_session.flush()
+    intent = OntCommissioningIntent(
+        autofind_candidate_id=target.candidate_id,
+        ont_unit_id=ont.id,
+        olt_id=target.olt_id,
+        canonical_serial=target.serial,
+        fsp=target.fsp,
+        state=OntCommissioningState.failed,
+        reason="partial success",
+        requested_by="noc.operator",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        device_authorized_at=datetime.now(UTC) - timedelta(minutes=5),
+        latest_operation_id=prior.id,
+        failure_code="external_write_reconciliation_required",
+    )
+    db_session.add(intent)
+    db_session.flush()
+    intent_id = intent.id
+    prior_id = prior.id
+    db_session.commit()
+
+    reconcile_ont_commissioning(
+        db_session,
+        context=CommandContext.system(
+            actor="test-reconciler",
+            scope="network:ont:commission",
+            reason="recover recorded partial authorization",
+        ),
+    )
+    recovered = db_session.get(OntCommissioningIntent, intent_id)
+    recovery_id = recovered.latest_operation_id
+    assert recovered.state is OntCommissioningState.authorizing
+    assert recovery_id != prior_id
+    assert db_session.get(NetworkOperation, recovery_id).redrive_of_id == prior_id
+    assert (
+        db_session.query(NetworkOperationDispatch)
+        .filter_by(operation_id=recovery_id)
+        .count()
+        == 1
+    )
+    db_session.commit()
+
+    reconcile_ont_commissioning(
+        db_session,
+        context=CommandContext.system(
+            actor="test-reconciler",
+            scope="network:ont:commission",
+            reason="replay partial authorization reconciliation",
+        ),
+    )
+    assert db_session.get(OntCommissioningIntent, intent_id).latest_operation_id == (
+        recovery_id
+    )
+
+
 def test_reconciler_expires_intent_without_device_write_or_cleanup(db_session):
     _olt, _candidate_row, target = _candidate(db_session)
     intent = OntCommissioningIntent(
@@ -457,9 +558,14 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
 ):
     _olt, _candidate_row, target = _candidate(db_session)
     admission = request_ont_commissioning(db_session, _request(target))
+
+    def exact_preflight_without_transaction(**_kwargs):
+        assert db_session.in_transaction() is False
+        return True, "exact"
+
     monkeypatch.setattr(
         "app.services.network.ont_commissioning._exact_live_autofind_preflight",
-        lambda _intent, _olt: (True, "exact"),
+        exact_preflight_without_transaction,
     )
     authorization_commands: list[RegisterCommissioningOnt] = []
 
@@ -518,6 +624,35 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
     assert stored.cleanup_operation_id is None
 
 
+def test_reliability_handler_records_external_write_with_fresh_session(db_session):
+    _olt, _candidate_row, target = _candidate(db_session)
+    admission = request_ont_commissioning(db_session, _request(target))
+    intent = db_session.get(OntCommissioningIntent, admission.intent_id)
+    operation = db_session.get(NetworkOperation, admission.operation_id)
+    assert intent is not None
+    assert operation is not None
+    intent.state = OntCommissioningState.authorizing
+    intent.device_authorized_at = datetime.now(UTC)
+    operation.status = NetworkOperationStatus.running
+    db_session.commit()
+
+    recorded = record_external_write_reconciliation_required(
+        db_session,
+        intent_id=str(admission.intent_id),
+        operation_id=str(admission.operation_id),
+    )
+
+    stored_intent = db_session.get(OntCommissioningIntent, admission.intent_id)
+    stored_operation = db_session.get(NetworkOperation, admission.operation_id)
+    assert recorded is True
+    assert stored_intent is not None
+    assert stored_intent.state is OntCommissioningState.failed
+    assert stored_intent.failure_code == "external_write_reconciliation_required"
+    assert stored_operation is not None
+    assert stored_operation.status is NetworkOperationStatus.failed
+    assert stored_operation.output_payload["reconciliation_required"] is True
+
+
 def test_cleanup_fails_closed_when_projected_fsp_drifted(db_session):
     _olt, _candidate_row, target = _candidate(db_session)
     ont = OntUnit(
@@ -566,4 +701,61 @@ def test_cleanup_fails_closed_when_projected_fsp_drifted(db_session):
     assert stored.state is OntCommissioningState.cleanup_pending
     assert db_session.get(NetworkOperation, operation.id).status is (
         NetworkOperationStatus.failed
+    )
+
+
+def test_cleanup_normalizes_board_that_already_contains_frame_prefix(
+    db_session, monkeypatch
+):
+    _olt, _candidate_row, target = _candidate(db_session, fsp="0/1/13")
+    ont = OntUnit(
+        serial_number=target.serial,
+        olt_device_id=target.olt_id,
+        board="0/1",
+        port="13",
+        is_active=True,
+    )
+    db_session.add(ont)
+    db_session.flush()
+    operation = NetworkOperation(
+        operation_type=NetworkOperationType.ont_commission_cleanup,
+        target_type=NetworkOperationTargetType.ont,
+        target_id=ont.id,
+        status=NetworkOperationStatus.pending,
+    )
+    db_session.add(operation)
+    db_session.flush()
+    intent = OntCommissioningIntent(
+        autofind_candidate_id=target.candidate_id,
+        ont_unit_id=ont.id,
+        olt_id=target.olt_id,
+        canonical_serial=target.serial,
+        fsp=target.fsp,
+        state=OntCommissioningState.cleanup_pending,
+        reason="test canonical FSP cleanup",
+        requested_by="noc.operator",
+        created_at=datetime.now(UTC) - timedelta(hours=2),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        device_authorized_at=datetime.now(UTC) - timedelta(hours=1),
+        cleanup_operation_id=operation.id,
+    )
+    db_session.add(intent)
+    db_session.flush()
+    intent_id = intent.id
+    operation_id = operation.id
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.network.ont_inventory.return_ont_to_inventory",
+        lambda _db, _ont_id: SimpleNamespace(success=True, message="returned"),
+    )
+
+    result = cleanup_ont_commissioning(
+        db_session,
+        intent_id=str(intent_id),
+        operation_id=str(operation_id),
+    )
+
+    assert result["success"] is True
+    assert db_session.get(OntCommissioningIntent, intent_id).state is (
+        OntCommissioningState.expired
     )

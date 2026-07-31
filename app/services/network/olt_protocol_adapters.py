@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from uuid import UUID
 
 from app.services.adapters.base import AdapterResult
 from app.services.network.huawei_cli_response import (
@@ -30,6 +31,33 @@ if TYPE_CHECKING:
     from app.services.network.olt_batched_mgmt import BatchedMgmtSpec
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class OltConnectionConfig:
+    """Detached connection values safe to use outside a database transaction."""
+
+    id: UUID
+    name: str
+    hostname: str | None
+    mgmt_ip: str | None
+    model: str | None
+    ssh_username: str | None
+    ssh_password: str | None
+    ssh_port: int | None
+
+    @classmethod
+    def from_model(cls, olt: OLTDevice) -> OltConnectionConfig:
+        return cls(
+            id=olt.id,
+            name=olt.name,
+            hostname=olt.hostname,
+            mgmt_ip=olt.mgmt_ip,
+            model=olt.model,
+            ssh_username=olt.ssh_username,
+            ssh_password=olt.ssh_password,
+            ssh_port=olt.ssh_port,
+        )
 
 
 # ============================================================================
@@ -1058,3 +1086,11 @@ def get_protocol_adapter(olt: OLTDevice) -> OltProtocolAdapterContract:
         OltProtocolAdapter instance
     """
     return OltProtocolAdapter(olt)
+
+
+def get_protocol_adapter_from_config(
+    config: OltConnectionConfig,
+) -> OltProtocolAdapterContract:
+    """Build an adapter from detached values without retaining an ORM entity."""
+
+    return get_protocol_adapter(cast("OLTDevice", config))

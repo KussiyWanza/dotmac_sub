@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -64,6 +64,8 @@ from app.services.owner_commands import (
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+    from app.services.network.olt_protocol_adapters import OltConnectionConfig
 
 DEFAULT_COMMISSIONING_TTL = timedelta(hours=24)
 MAX_COMMISSIONING_TTL = timedelta(hours=72)
@@ -513,20 +515,22 @@ def stage_commissioning_verification(
 
 
 def _exact_live_autofind_preflight(
-    intent: OntCommissioningIntent,
-    olt: OLTDevice,
+    *,
+    canonical_serial_value: str,
+    fsp: str,
+    olt_config: OltConnectionConfig,
 ) -> tuple[bool, str]:
     from app.services.network.olt_ssh_ont.autofind import query_ont_autofind
 
-    ok, message, entries = query_ont_autofind(olt, port=intent.fsp)
+    ok, message, entries = query_ont_autofind(cast(OLTDevice, olt_config), port=fsp)
     if not ok:
         return False, message
     match = next(
         (
             entry
             for entry in entries
-            if entry.fsp.strip() == intent.fsp
-            and intent.canonical_serial
+            if entry.fsp.strip() == fsp
+            and canonical_serial_value
             in {
                 canonical_serial(entry.serial_number),
                 canonical_serial(entry.serial_hex),
@@ -538,7 +542,7 @@ def _exact_live_autofind_preflight(
         return (
             False,
             "The ONT is no longer present in live autofind on the exact "
-            f"target {intent.fsp}; no OLT write was attempted.",
+            f"target {fsp}; no OLT write was attempted.",
         )
     return True, "Exact live autofind target confirmed."
 
@@ -684,6 +688,51 @@ def _fail_execution(
     }
 
 
+def record_external_write_reconciliation_required(
+    db: Session,
+    *,
+    intent_id: str,
+    operation_id: str,
+) -> bool:
+    """Record partial external success using a fresh reliability session."""
+
+    intent = db.get(OntCommissioningIntent, _uuid(intent_id, "intent_id"))
+    if (
+        intent is None
+        or str(intent.latest_operation_id) != operation_id
+        or intent.device_authorized_at is None
+        or intent.state is not OntCommissioningState.authorizing
+    ):
+        db.rollback()
+        return False
+    _transition(
+        db,
+        intent,
+        OntCommissioningState.failed,
+        actor="system",
+        failure_code="external_write_reconciliation_required",
+        failure_message=(
+            "OLT authorization completed, but commissioning lost its database "
+            "session before management readiness was persisted."
+        ),
+    )
+    operation = db.get(NetworkOperation, _uuid(operation_id, "operation_id"))
+    if operation is not None and operation.status in _OPERATION_ACTIVE_STATES:
+        network_operations.mark_failed(
+            db,
+            operation_id,
+            intent.failure_message or "External write requires reconciliation.",
+            output_payload={
+                **(operation.output_payload or {}),
+                "success": False,
+                "failure_code": "external_write_reconciliation_required",
+                "reconciliation_required": True,
+            },
+        )
+    db.commit()
+    return True
+
+
 def execute_ont_commissioning(
     db: Session,
     *,
@@ -731,9 +780,31 @@ def execute_ont_commissioning(
             message="An assignment now exists; use the assigned authorization workflow.",
         )
 
+    from app.services.network.olt_protocol_adapters import OltConnectionConfig
+
+    authorization_olt_config = OltConnectionConfig.from_model(olt)
+    authorization_serial = intent.canonical_serial
+    authorization_fsp = intent.fsp
+    authorization_intent_id = intent.id
+    authorization_olt_id = intent.olt_id
+    authorization_candidate_id = intent.autofind_candidate_id
+    authorization_ont_unit_id = intent.ont_unit_id
+    authorization_already_recorded = intent.device_authorized_at is not None
+    operation_actor = operation.initiated_by or "system"
+    db.commit()
+
     ont_id_on_olt: int
-    if intent.device_authorized_at is None:
-        live_ok, live_message = _exact_live_autofind_preflight(intent, olt)
+    if not authorization_already_recorded:
+        if db.in_transaction():
+            raise _error(
+                "unsafe_external_transaction",
+                "Live OLT preflight cannot run inside a database transaction.",
+            )
+        live_ok, live_message = _exact_live_autofind_preflight(
+            canonical_serial_value=authorization_serial,
+            fsp=authorization_fsp,
+            olt_config=authorization_olt_config,
+        )
         if not live_ok:
             return _fail_execution(
                 db,
@@ -750,19 +821,19 @@ def execute_ont_commissioning(
             db,
             RegisterCommissioningOnt(
                 context=CommandContext.system(
-                    actor=operation.initiated_by or "system",
+                    actor=operation_actor,
                     scope="network:ont:commission",
                     reason="execute durable management-only ONT commissioning",
                     command_id=_uuid(operation_id, "operation_id"),
                     correlation_id=_uuid(operation_id, "operation_id"),
-                    causation_id=intent.id,
+                    causation_id=authorization_intent_id,
                 ),
                 operation_id=_uuid(operation_id, "operation_id"),
-                intent_id=intent.id,
+                intent_id=authorization_intent_id,
                 target=OntAuthorizationTarget.from_transport(
-                    olt_id=intent.olt_id,
-                    fsp=intent.fsp,
-                    serial_number=intent.canonical_serial,
+                    olt_id=authorization_olt_id,
+                    fsp=authorization_fsp,
+                    serial_number=authorization_serial,
                 ),
             ),
         )
@@ -771,7 +842,7 @@ def execute_ont_commissioning(
             # the local inventory projection failed. Persist it before mapping
             # the workflow failure so expiry can never misclassify this as a
             # no-write intent and silently skip cleanup.
-            intent = db.get(OntCommissioningIntent, intent.id)
+            intent = db.get(OntCommissioningIntent, authorization_intent_id)
             assert intent is not None
             intent.device_authorized_at = intent.device_authorized_at or datetime.now(
                 UTC
@@ -791,13 +862,13 @@ def execute_ont_commissioning(
                 ),
                 message=result.message,
             )
-        intent = db.get(OntCommissioningIntent, intent.id)
+        intent = db.get(OntCommissioningIntent, authorization_intent_id)
         assert intent is not None
         intent.ont_unit_id = _uuid(result.ont_unit_id, "ont_unit_id")
         intent.device_authorized_at = intent.device_authorized_at or datetime.now(UTC)
         candidate = (
-            db.get(OltAutofindCandidate, intent.autofind_candidate_id)
-            if intent.autofind_candidate_id
+            db.get(OltAutofindCandidate, authorization_candidate_id)
+            if authorization_candidate_id
             else None
         )
         if candidate is not None:
@@ -806,7 +877,7 @@ def execute_ont_commissioning(
         db.commit()
         ont_id_on_olt = result.ont_id_on_olt
     else:
-        ont = db.get(OntUnit, intent.ont_unit_id)
+        ont = db.get(OntUnit, authorization_ont_unit_id)
         if ont is None:
             return _fail_execution(
                 db,
@@ -857,12 +928,24 @@ def execute_ont_commissioning(
             code=exc.code.rsplit(".", 1)[-1],
             message=exc.message,
         )
+    from app.services.network.olt_protocol_adapters import OltConnectionConfig
+
+    olt_config = OltConnectionConfig.from_model(olt)
     # IPAM reservation must land before the external OLT write.
     db.commit()
+    if db.in_transaction():
+        raise _error(
+            "unsafe_external_transaction",
+            "Management configuration cannot run inside a database transaction.",
+        )
 
-    from app.services.network.olt_protocol_adapters import get_protocol_adapter
+    from app.services.network.olt_protocol_adapters import (
+        get_protocol_adapter_from_config,
+    )
 
-    management_result = get_protocol_adapter(olt).configure_management_batch(spec)
+    management_result = get_protocol_adapter_from_config(
+        olt_config
+    ).configure_management_batch(spec)
     completed_steps = list((management_result.data or {}).get("steps_completed", []))
     forbidden_steps = [
         step
@@ -1130,6 +1213,73 @@ def _reconcile(
                 )
                 assigned += 1
             continue
+        prior = (
+            db.get(NetworkOperation, intent.latest_operation_id)
+            if intent.latest_operation_id
+            else None
+        )
+        if (
+            _aware_utc(intent.expires_at) > now
+            and intent.device_authorized_at is not None
+            and intent.ont_unit_id is not None
+            and prior is not None
+            and prior.status is NetworkOperationStatus.failed
+            and intent.failure_code == "external_write_reconciliation_required"
+        ):
+            from app.services.network.parsers import normalize_fsp
+
+            ont = db.get(OntUnit, intent.ont_unit_id)
+            current_fsp = (
+                normalize_fsp(f"{ont.board}/{ont.port}")
+                if ont is not None and ont.board is not None and ont.port is not None
+                else None
+            )
+            if (
+                ont is None
+                or canonical_serial(ont.serial_number) != intent.canonical_serial
+                or ont.olt_device_id != intent.olt_id
+                or current_fsp != intent.fsp
+            ):
+                _transition(
+                    db,
+                    intent,
+                    OntCommissioningState.cleanup_pending,
+                    actor=context.actor,
+                    failure_code="cleanup_identity_mismatch",
+                    failure_message=(
+                        "Recorded authorization evidence conflicts with current "
+                        "ONT inventory; automatic recovery stopped."
+                    ),
+                )
+                continue
+            recovery, replayed = network_operations.start_redrive(
+                db,
+                prior,
+                correlation_key=f"ont_commission_recovery:{intent.id}:{prior.id}",
+                input_payload={
+                    **(prior.input_payload or {}),
+                    "intent_id": str(intent.id),
+                    "authorization_already_recorded": True,
+                },
+                reason="resume management after recorded OLT authorization",
+                reviewed_head=f"{intent.state.value}:{intent.device_authorized_at.isoformat()}",
+                idempotency_key=f"commissioning-partial-success:{intent.id}:{prior.id}",
+                initiated_by=context.actor,
+            )
+            if not replayed:
+                stage_dispatch(
+                    db,
+                    recovery,
+                    NetworkOperationCommand.ont_commission_v1,
+                )
+            intent.latest_operation_id = recovery.id
+            _transition(
+                db,
+                intent,
+                OntCommissioningState.authorizing,
+                actor=context.actor,
+            )
+            continue
         if _aware_utc(intent.expires_at) > now:
             continue
         if intent.device_authorized_at is None:
@@ -1284,8 +1434,10 @@ def cleanup_ont_commissioning(
             "intent_id": intent_id,
             "message": "Cleanup canceled because an active assignment now exists.",
         }
+    from app.services.network.parsers import normalize_fsp
+
     current_fsp = (
-        f"0/{ont.board}/{ont.port}"
+        normalize_fsp(f"{ont.board}/{ont.port}")
         if ont.board is not None and ont.port is not None
         else None
     )
@@ -1320,11 +1472,12 @@ def cleanup_ont_commissioning(
         OntCommissioningState.cleanup_running,
         actor="system",
     )
+    cleanup_ont_id = ont.id
     db.commit()
 
     from app.services.network.ont_inventory import return_ont_to_inventory
 
-    result = return_ont_to_inventory(db, str(ont.id))
+    result = return_ont_to_inventory(db, str(cleanup_ont_id))
     intent = db.get(OntCommissioningIntent, _uuid(intent_id, "intent_id"))
     assert intent is not None
     if not result.success:
@@ -1358,7 +1511,7 @@ def cleanup_ont_commissioning(
         output_payload={
             "success": True,
             "intent_id": intent_id,
-            "ont_unit_id": str(ont.id),
+            "ont_unit_id": str(cleanup_ont_id),
             "message": result.message,
         },
     )
@@ -1415,6 +1568,8 @@ def active_candidate_for_ont(
 
     if ont.olt_device_id is None:
         return None
+    from app.services.network.parsers import normalize_fsp
+
     candidates = db.scalars(
         select(OltAutofindCandidate)
         .where(
@@ -1424,7 +1579,7 @@ def active_candidate_for_ont(
         .order_by(OltAutofindCandidate.last_seen_at.desc())
     ).all()
     expected_fsp = (
-        f"0/{ont.board}/{ont.port}"
+        normalize_fsp(f"{ont.board}/{ont.port}")
         if ont.board is not None and ont.port is not None
         else None
     )
