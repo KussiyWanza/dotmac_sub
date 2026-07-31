@@ -19,6 +19,7 @@ from app.models.prepaid_coverage import (
     PrepaidCoverageReconciliationRun,
 )
 from app.models.subscriber import SubscriberStatus
+from app.services.collections.scheduled import repair_prepaid_coverage_evidence
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_coverage_reconciliation import (
     CoverageReconciliationDecision,
@@ -259,3 +260,96 @@ def test_confirmation_rejects_stale_preview(
 
     assert exc.value.code.endswith("stale_preview")
     assert db_session.query(PrepaidCoverageReconciliationRun).count() == 0
+
+
+def test_scheduled_run_repairs_exact_evidence_without_an_operator(
+    db_session, subscriber_account, subscription
+):
+    _prepare(db_session, subscriber_account, subscription)
+    invoice, line = _paid_invoice(db_session, subscriber_account, subscription)
+
+    outcome = repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    assert outcome.repairable == 1
+    assert outcome.entitlements_created == 1
+    assert outcome.status.value == "ok"
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert entitlement.source_invoice_id == invoice.id
+    assert entitlement.source_invoice_line_id == line.id
+    run = db_session.query(PrepaidCoverageReconciliationRun).one()
+    assert run.actor == "task:prepaid-coverage-repair"
+
+    # The repaired subscription is now covered, so the threshold owner never
+    # consults the enforcement blockers for it again.
+    from app.services.prepaid_service_coverage import (
+        resolve_prepaid_service_coverage,
+    )
+
+    coverage = resolve_prepaid_service_coverage(db_session, [subscription], as_of=NOW)
+    assert coverage[subscription.id].covered is True
+
+
+def test_scheduled_run_is_a_noop_when_nothing_is_repairable(
+    db_session, subscriber_account, subscription
+):
+    _prepare(db_session, subscriber_account, subscription)
+    _paid_invoice(db_session, subscriber_account, subscription)
+
+    first = repair_prepaid_coverage_evidence(db_session, now=NOW)
+    second = repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    assert first.entitlements_created == 1
+    assert second.repairable == 0
+    assert second.entitlements_created == 0
+    assert db_session.query(ServiceEntitlement).count() == 1
+    assert db_session.query(PrepaidCoverageReconciliationRun).count() == 1
+
+
+def test_scheduled_run_ignores_nonblocking_quarantine(
+    db_session, subscriber_account, subscription
+):
+    # A future billing anchor without evidence is quarantined by the preview
+    # but does not block enforcement, so the runner must not confirm it into
+    # run evidence on every sweep.
+    _prepare(db_session, subscriber_account, subscription)
+
+    outcome = repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    assert outcome.repairable == 0
+    assert outcome.quarantined == 1
+    assert outcome.quarantined_blocking == 0
+    assert outcome.entitlements_created == 0
+    assert db_session.query(ServiceEntitlement).count() == 0
+    assert db_session.query(PrepaidCoverageReconciliationRun).count() == 0
+
+
+def test_scheduled_run_persists_blocking_quarantine_through_the_owner(
+    db_session, subscriber_account, subscription, caplog
+):
+    _prepare(db_session, subscriber_account, subscription)
+    # Malformed paid-invoice period: exact money evidence that cannot be
+    # projected, which blocks adverse enforcement until a human resolves it.
+    invoice, _line = _paid_invoice(db_session, subscriber_account, subscription)
+    invoice.billing_period_end = invoice.billing_period_start
+    db_session.commit()
+
+    with caplog.at_level("ERROR"):
+        first = repair_prepaid_coverage_evidence(db_session, now=NOW)
+    second = repair_prepaid_coverage_evidence(db_session, now=NOW)
+
+    assert first.quarantined_blocking == 1
+    assert first.entitlements_created == 0
+    assert any(
+        "prepaid_coverage_quarantined_evidence_requires_review" in record.message
+        for record in caplog.records
+    )
+    # The owner recorded immutable evidence for the quarantined item, and the
+    # unchanged evidence replays the same run instead of multiplying records.
+    run = db_session.query(PrepaidCoverageReconciliationRun).one()
+    item = db_session.query(PrepaidCoverageReconciliationItem).one()
+    assert run.quarantined_count == 1
+    assert item.decision == "quarantined"
+    assert item.reason_code == "malformed_paid_invoice_period"
+    assert second.quarantined_blocking == 1
+    assert db_session.query(PrepaidCoverageReconciliationRun).count() == 1
+    assert db_session.query(ServiceEntitlement).count() == 0

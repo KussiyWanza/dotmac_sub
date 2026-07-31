@@ -36,8 +36,9 @@
         <button type="button"
                 :disabled="!selectedId || !ticketDraft.title.trim()"
                 @click="$el.closest('section').querySelector('form').requestSubmit()"
-                class="min-h-11 rounded-xl bg-amber-500 px-4 text-sm font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50">
-            Create ticket
+                class="inbox-create-ticket-action inline-flex min-h-11 items-center gap-1.5 rounded-xl px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-50">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
+            <span>Create ticket</span>
         </button>
     </footer>
 </section>

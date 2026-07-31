@@ -53,6 +53,9 @@ def test_commissioning_cannot_manufacture_a_customer_assignment() -> None:
     source = inspect.getsource(ont_commissioning)
 
     assert "OntAssignment(" not in source
+    assert "OltConnectionConfig.from_model" in source
+    assert "get_protocol_adapter_from_config" in source
+    assert 'f"0/{ont.board}/{ont.port}"' not in source
     assert ".assign(" not in source
     assert "internet_config_ip_index=None" in source
     assert "wan_config_profile_id=None" in source
@@ -212,6 +215,11 @@ def test_commission_verify_cleanup_are_versioned_durable_commands() -> None:
         NetworkOperationCommand.ont_commission_cleanup_v1.value
         == "ont_commission_cleanup.v1"
     )
+    task_source = (PROJECT_ROOT / "app/tasks/ont_commissioning.py").read_text(
+        encoding="utf-8"
+    )
+    assert "record_external_write_reconciliation_required" in task_source
+    assert "with db_session_adapter.session() as recovery_db" in task_source
 
 
 def test_commissioning_reconciler_is_permanent_and_contracted() -> None:

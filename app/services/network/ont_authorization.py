@@ -934,7 +934,10 @@ def _authorize_registration(
         AuthorizationProfileResolution,
         resolve_authorization_profiles_from_import,
     )
-    from app.services.network.olt_protocol_adapters import get_protocol_adapter
+    from app.services.network.olt_protocol_adapters import (
+        OltConnectionConfig,
+        get_protocol_adapter_from_config,
+    )
     from app.services.network.olt_write_reconciliation import verify_ont_absent
 
     steps: list[AuthorizationStepResult] = []
@@ -1051,7 +1054,7 @@ def _authorize_registration(
             status=AuthorizationWorkflowStatus.ERROR,
         )
 
-    adapter = get_protocol_adapter(olt)
+    adapter = get_protocol_adapter_from_config(OltConnectionConfig.from_model(olt))
     _commit_without_expiring(db)
 
     # Handle force reauthorize - remove existing registration first

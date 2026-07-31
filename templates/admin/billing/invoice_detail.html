@@ -67,10 +67,10 @@
                     Record Payment
                 </a>
                 {% endif %}
-                {% if prepaid_recovery_settlement and invoice.status.value == 'draft' %}
-                <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/prepaid-pay-now/preview">
+                {% if prepaid_draft_reconciliation_preview and status_val == 'draft' and can(request, 'billing:invoice:update') %}
+                <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/prepaid-draft-reconciliation/preview">
                     {% include "components/forms/csrf_input.html" %}
-                    <button type="submit" class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20">Pay now from account credit</button>
+                    <button type="submit" class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm font-medium text-emerald-700 transition hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20">Reconcile prepaid draft</button>
                 </form>
                 {% endif %}
                 {% if status_val in ['issued', 'overdue', 'partially_paid'] and not is_proforma %}

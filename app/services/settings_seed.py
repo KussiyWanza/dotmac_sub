@@ -717,6 +717,19 @@ def _seed_missing_notification_templates(db: Session) -> int:
             ),
         },
         {
+            "code": "subscription_renewal_invoice_ready",
+            "name": "Advance Renewal Invoice Ready",
+            "channel": NotificationChannel.email,
+            "subject": "Renewal invoice #{invoice_number} is ready",
+            "body": (
+                "Dear {subscriber_name},\n\n"
+                "Your current service remains active until {renewal_period_start}. "
+                "Invoice #{invoice_number} for {renewal_period_start} to "
+                "{renewal_period_end} is ready. You can pay now to continue "
+                "without interruption.\n\nView and pay: {invoice_url}"
+            ),
+        },
+        {
             "code": "subscription_expiring",
             "name": "Subscription Expiring SMS",
             "channel": NotificationChannel.sms,

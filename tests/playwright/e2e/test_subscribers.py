@@ -75,6 +75,9 @@ class TestSubscriberForm:
 class TestSubscriberDetail:
     """Tests for the subscriber detail page."""
 
+    _BILLING_CARD_VIEWPORTS = (375, 640, 768, 1024, 1280, 1536, 1920)
+    _MAXIMUM_MONEY_DISPLAY = "₦9,999,999,999.99"
+
     def test_subscriber_detail_page(self, admin_page: Page, settings, test_identities):
         """Subscriber detail page should load for test customer."""
         customer = test_identities["customer"]
@@ -104,6 +107,64 @@ class TestSubscriberDetail:
         detail = SubscriberDetailPage(admin_page, settings.base_url)
         detail.goto(subscriber_id)
         detail.expect_loaded()
+
+    def test_billing_summary_values_stay_inside_their_cards(
+        self, admin_page: Page, settings, test_identities
+    ):
+        """Maximum-length money must not overlap at supported viewports."""
+        customer = test_identities["customer"]
+        subscriber_id = customer["subscriber"]["id"]
+
+        detail = SubscriberDetailPage(admin_page, settings.base_url)
+        detail.goto(subscriber_id)
+        detail.expect_loaded()
+        admin_page.get_by_role("button", name="Billing", exact=True).click()
+
+        cards = admin_page.get_by_test_id("billing-overview-cards")
+        values = admin_page.get_by_test_id("billing-overview-value")
+        expect(cards).to_be_visible()
+        expect(values).to_have_count(5)
+
+        for viewport_width in self._BILLING_CARD_VIEWPORTS:
+            admin_page.set_viewport_size({"width": viewport_width, "height": 900})
+            values.evaluate_all(
+                "(nodes, amount) => nodes.forEach((node) => {"
+                " node.textContent = amount;"
+                "})",
+                self._MAXIMUM_MONEY_DISPLAY,
+            )
+            admin_page.evaluate("() => document.fonts.ready")
+
+            violations = cards.evaluate(
+                """grid => {
+                    const tolerance = 1;
+                    const cards = [...grid.querySelectorAll(
+                        '[data-testid="billing-overview-card"]'
+                    )];
+                    return cards.flatMap((card, index) => {
+                        const value = card.querySelector(
+                            '[data-testid="billing-overview-value"]'
+                        );
+                        const cardRect = card.getBoundingClientRect();
+                        const range = document.createRange();
+                        range.selectNodeContents(value);
+                        const outside = [...range.getClientRects()].some(
+                            rect => rect.left < cardRect.left - tolerance
+                                || rect.right > cardRect.right + tolerance
+                        );
+                        return outside ? [{
+                            index,
+                            cardLeft: cardRect.left,
+                            cardRight: cardRect.right,
+                            value: value.textContent,
+                        }] : [];
+                    });
+                }"""
+            )
+
+            assert violations == [], (
+                f"billing values overflow at {viewport_width}px: {violations}"
+            )
 
 
 class TestSubscriberEdit:

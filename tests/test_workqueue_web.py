@@ -56,6 +56,19 @@ def test_workqueue_forms_keep_csrf_and_idempotency_evidence():
     ).read_text(encoding="utf-8")
 
 
+def test_workqueue_cards_use_responsive_three_column_grids():
+    root = Path("templates/admin/workqueue")
+    right_now = (root / "_right_now.html").read_text(encoding="utf-8")
+    section = (root / "_section.html").read_text(encoding="utf-8")
+    row = (root / "_row.html").read_text(encoding="utf-8")
+
+    responsive_grid = "grid gap-3 md:grid-cols-2 xl:grid-cols-3"
+    assert responsive_grid in right_now
+    assert responsive_grid in section
+    assert "flex h-full min-w-0 flex-col" in row
+    assert "lg:grid-cols-[" not in row
+
+
 def test_web_projection_exposes_identity_state_urgency_owner_hint_and_next_action(
     db_session,
 ):

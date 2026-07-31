@@ -17,6 +17,7 @@ from app.services import team_inbox_projection
 CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 COMMENT_THREAD = Path("templates/admin/inbox/_comment_thread.html").read_text()
 DRAWER = Path("templates/admin/inbox/_contact_drawer.html").read_text()
+EMPTY_STATE = Path("templates/admin/inbox/_empty_state.html").read_text()
 CONTACT_PREVIEW = Path("templates/admin/inbox/_contact_preview.html").read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
@@ -242,7 +243,7 @@ def test_live_indicator_and_search_match_the_sidebar_contract():
     search_marker = 'id="inbox-conversation-search"'
     assert SIDEBAR.index("</header>") < SIDEBAR.index(search_marker)
     assert SIDEBAR.index(search_marker) < SIDEBAR.index(
-        'aria-label="Inbox summary filters"'
+        'aria-controls="inbox-stats-filters"'
     )
     assert 'placeholder="Search conversations..."' in SIDEBAR
     assert '@input.debounce.300ms="searchConversations($el.value)"' in SIDEBAR
@@ -262,6 +263,25 @@ def test_live_indicator_and_search_match_the_sidebar_contract():
     assert 'url.searchParams.delete("page")' in body
     assert "conversation_id" in body
     assert 'target: "#inbox-sidebar-content"' in body
+
+
+def test_stats_filters_scroll_without_hiding_the_conversation_queue():
+    summary_filters = SIDEBAR.index('aria-label="Inbox summary filters"')
+    secondary_filters = SIDEBAR.index('aria-label="Secondary inbox filters"')
+    filter_panel = SIDEBAR.index('id="inbox-stats-filters"')
+    filter_form = SIDEBAR.index('id="inbox-filter-form"')
+    assert filter_panel < summary_filters < secondary_filters < filter_form
+    assert 'class="inbox-filter-scroll space-y-3 pt-2"' in SIDEBAR
+    assert filter_panel < SIDEBAR.index('id="inbox-conversation-queue"')
+    for contract in (
+        "max-height: min(30dvh, 22rem)",
+        "overflow-y: auto",
+        "overscroll-behavior: contain",
+        "scrollbar-gutter: stable",
+        "#inbox-conversation-queue",
+        "min-height: 8rem",
+    ):
+        assert contract in REPLICA_CSS
 
 
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():
@@ -315,7 +335,7 @@ def test_new_conversation_modal_matches_layout_and_live_channel_contract():
         "bg-slate-950/70",
         "backdrop-blur-sm",
         "px-4 py-8",
-        "max-w-[672px]",
+        "max-w-2xl",
         "rounded-2xl",
         "border-slate-200/60",
         "dark:border-slate-700/60 dark:bg-slate-900",
@@ -361,9 +381,11 @@ def test_manager_dashboard_is_permission_gated_floating_and_non_blocking():
     marker = OVERLAYS.index('id="inbox-manager-dashboard"')
     panel = OVERLAYS[marker : marker + 18000]
     for contract in (
-        "fixed inset-x-4 top-20",
+        "fixed left-1/2 top-1/2",
         "h-[calc(100vh-6rem)]",
-        "sm:left-auto sm:w-[448px]",
+        "w-[calc(100%-2rem)] max-w-2xl",
+        "-translate-x-1/2 -translate-y-1/2",
+        "scale-95 opacity-0",
         "rounded-xl border border-slate-200 bg-white",
         "dark:border-slate-700 dark:bg-slate-900",
         "grid grid-cols-2 gap-3",
@@ -460,6 +482,78 @@ def test_inbox_queue_row_has_exact_structure_states_and_channel_colours():
     assert "Sent to ticket" in QUEUE
     for priority in ("Low", "Medium", "High", "Urgent"):
         assert f'"{priority}"' in QUEUE
+
+
+def test_inbox_icons_match_the_crm_paths_without_text_substitutes():
+    chat_path = (
+        "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 "
+        "9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 "
+        "12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+    )
+    assert chat_path in SIDEBAR
+    assert chat_path in EMPTY_STATE
+    assert "M12 5v14m7-7H5" in SIDEBAR
+    assert "M12 5v14m7-7H5" in EMPTY_STATE
+    assert "M12 5v14m7-7H5" in OVERLAYS
+    assert "M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7" in SIDEBAR
+    assert "M12 6v6m0 0v6m0-6h6m-6 0H6" in EMPTY_STATE
+    assert "M16 7a4 4 0 11-8 0 4 4 0 018 0z" in CONVERSATION
+    assert "M12 19l9 2-9-18-9 18 9-2zm0 0v-8" in CONVERSATION
+    assert 'aria-label="Send message"' in CONVERSATION
+    assert "M5 12h14M13 5l7 7-7 7" not in CONVERSATION
+
+    for channel_path in (
+        "M3 8l7.89 5.26a2 2 0 002.22 0L21 8",
+        "M12.04 2c-5.46 0-9.91 4.45-9.91 9.91",
+        "M24 12.073c0-6.627-5.373-12-12-12",
+        "M12 0C8.74 0 8.333.015 7.053.072",
+    ):
+        assert channel_path in QUEUE
+    assert ">f</span>" not in QUEUE
+    assert '<rect x="4" y="4"' not in QUEUE
+    assert 'channel_icon("whatsapp", "h-3 w-3")' in FLOATING_SURFACES
+    assert "☎" not in FLOATING_SURFACES
+
+
+def test_channel_colours_are_page_scoped_and_cover_every_supported_alias():
+    expected_mappings = {
+        'data-inbox-channel="email"': "--channel-color: 139, 92, 246",
+        'data-inbox-channel="whatsapp"': "--channel-color: 34, 197, 94",
+        'data-inbox-channel="sms"': "--channel-color: 249, 115, 22",
+        'data-inbox-channel="phone"': "--channel-color: 249, 115, 22",
+        'data-inbox-channel="telegram"': "--channel-color: 14, 165, 233",
+        'data-inbox-channel="chat_widget"': "--channel-color: 245, 158, 11",
+        'data-inbox-channel="facebook_messenger"': "--channel-color: 24, 119, 242",
+        'data-inbox-channel="instagram_dm"': "--channel-color: 236, 72, 153",
+    }
+    for selector, colour in expected_mappings.items():
+        assert selector in REPLICA_CSS
+        assert colour in REPLICA_CSS
+
+    assert "[data-inbox-workspace] .inbox-channel-indicator" in REPLICA_CSS
+    assert "background: rgb(var(--channel-color))" in REPLICA_CSS
+    assert "box-shadow: 0 0 12px rgba(var(--channel-color), .4)" in REPLICA_CSS
+    assert "facebook_comment" in REPLICA_CSS
+    assert "instagram_comment" in REPLICA_CSS
+    assert 'data-inbox-channel="{{ timeline.channel_type }}"' in CONVERSATION
+    assert 'data-inbox-channel="{{ timeline.channel_type }}"' in DRAWER
+    assert 'data-inbox-channel="{{ channel_type }}"' in SIDEBAR
+    assert 'data-inbox-channel="{{ conversation.channel_type }}"' in OVERLAYS
+
+
+def test_ticket_and_send_actions_use_the_exact_cyan_treatment():
+    assert "background: #0891b2" in REPLICA_CSS
+    assert "background: #0e7490" in REPLICA_CSS
+    assert "inbox-create-ticket-action" in CONVERSATION
+    assert "inbox-create-ticket-action" in DRAWER
+    assert "inbox-create-ticket-action" in TICKET_PANEL
+    assert "M12 5v14m7-7H5" in CONVERSATION
+    assert "M12 5v14m7-7H5" in DRAWER
+    assert "M12 5v14m7-7H5" in TICKET_PANEL
+    assert "from-[#06B6D4] to-[#0891B2]" in CONVERSATION
+    assert "inbox-send-action" in CONVERSATION
+    assert "box-shadow: 0 10px 24px rgba(6, 182, 212, .3)" in REPLICA_CSS
+    assert ".inbox-send-action:focus-visible" in REPLICA_CSS
 
 
 def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():

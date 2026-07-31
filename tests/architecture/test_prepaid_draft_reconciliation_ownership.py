@@ -7,6 +7,7 @@ from app.services import (
     prepaid_draft_reconciliation,
     prepaid_service_renewals,
     subscription_lifecycle,
+    web_prepaid_draft_reconciliation,
 )
 from app.services.sot_manifest import (
     AuthorityMigrationState,
@@ -97,3 +98,13 @@ def test_reconciliation_cli_is_dry_run_first():
     assert "if args.apply:" in source
     assert "owner_command_session()" in source
     assert "read_session()" in source
+
+
+def test_admin_invoice_adapter_calls_only_the_authoritative_reconciler():
+    source = inspect.getsource(web_prepaid_draft_reconciliation)
+    invoice_adapter = (ROOT / "app/services/web_billing_invoices.py").read_text()
+
+    assert "preview_prepaid_draft_reconciliation(" in source
+    assert "reconcile_prepaid_draft_invoice(" in source
+    assert "settle_prepaid_recovery_invoice" not in source
+    assert "prepaid_recovery_billing" not in invoice_adapter

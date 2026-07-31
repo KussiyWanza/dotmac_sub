@@ -560,9 +560,10 @@ def update_role(db: Session, command: UpdateRoleCommand) -> RoleCatalogOutcome:
         role = _locked_role(db, command.role_id)
         changed = False
         if command.name is not None:
-            name = _normalize_role_name(command.name)
-            if name != role.name:
-                if role.name == "admin":
+            submitted_name = _normalize_role_name(command.name)
+            current_name = _normalize_role_name(role.name)
+            if submitted_name != current_name:
+                if current_name == "admin":
                     raise _error(
                         "protected_role",
                         "The canonical admin role cannot be renamed.",
@@ -577,14 +578,16 @@ def update_role(db: Session, command: UpdateRoleCommand) -> RoleCatalogOutcome:
                 duplicate = db.scalar(
                     select(Role.id).where(
                         Role.id != role.id,
-                        func.lower(func.trim(Role.name)) == name,
+                        func.lower(func.trim(Role.name)) == submitted_name,
                     )
                 )
                 if duplicate is not None:
                     raise _error(
-                        "role_conflict", "Role name already exists.", name=name
+                        "role_conflict",
+                        "Role name already exists.",
+                        name=submitted_name,
                     )
-                role.name = name
+                role.name = submitted_name
                 changed = True
         if command.update_description:
             description = _normalize_description(command.description)

@@ -1,34 +1,95 @@
 {% extends "layouts/admin.html" %}
+{% from "components/forms/action_form.html" import action_form %}
 
-{% block title %}Confirm prepaid invoice payment - Admin{% endblock %}
+{% block title %}Review prepaid draft reconciliation - Admin{% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-2xl space-y-6">
+{% set preview = review.preview %}
+<div class="mx-auto max-w-3xl space-y-6">
     <div>
-        <a href="/admin/billing/invoices/{{ invoice_id }}" class="text-sm text-emerald-600 hover:text-emerald-700">← Back to invoice</a>
-        <h1 class="mt-3 text-2xl font-bold text-slate-900 dark:text-white">Pay recovery invoice</h1>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">This action can use only confirmed, unallocated payment credit. Apply any credit note first.</p>
+        <a href="/admin/billing/invoices/{{ invoice_id }}" class="text-sm text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">← Back to invoice</a>
+        <h1 class="mt-3 text-2xl font-bold text-slate-900 dark:text-white">Reconcile prepaid draft</h1>
+        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            Review the authoritative funding sources and exact owner decision before confirming any financial or service change.
+        </p>
     </div>
 
-    <dl class="divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800">
-        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Invoice receivable</dt><dd class="font-mono font-semibold text-slate-900 dark:text-white">{{ '{:,.2f}'.format(prepaid_recovery_settlement.balance_due) }}</dd></div>
-        <div class="flex justify-between gap-6 p-4"><dt class="text-slate-500">Confirmed payment credit available</dt><dd class="font-mono font-semibold text-slate-900 dark:text-white">{{ '{:,.2f}'.format(prepaid_recovery_settlement.payment_backed_credit) }}</dd></div>
-    </dl>
+    <section class="rounded-lg border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="owner-decision-title">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 id="owner-decision-title" class="text-base font-semibold text-slate-900 dark:text-white">Owner decision</h2>
+                <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">{{ preview.reason }}</p>
+            </div>
+            <span class="rounded-full border border-slate-300 px-2.5 py-1 font-mono text-xs text-slate-700 dark:border-slate-600 dark:text-slate-200">{{ preview.disposition.value }}</span>
+        </div>
+        <dl class="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Invoice</dt>
+                <dd class="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-white">{{ preview.invoice_number or preview.invoice_id }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Recommended action</dt>
+                <dd class="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-white">{{ preview.recommended_action.value }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Reviewed effective time</dt>
+                <dd class="mt-1 font-mono text-sm text-slate-900 dark:text-white">{{ review.effective_at | app_datetime('%Y-%m-%d %H:%M:%S %Z', 'Unavailable') }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Preview fingerprint</dt>
+                <dd class="mt-1 break-all font-mono text-xs text-slate-700 dark:text-slate-200">{{ preview.fingerprint }}</dd>
+            </div>
+        </dl>
+        {% if review.confirmation_expires_at %}
+        <p class="mt-4 text-xs text-slate-500 dark:text-slate-400">
+            This actor-bound confirmation expires at {{ review.confirmation_expires_at | app_datetime('%H:%M:%S %Z', 'soon') }}. Expired or changed evidence requires a fresh preview.
+        </p>
+        {% endif %}
+    </section>
 
-    {% if prepaid_recovery_settlement.can_settle %}
-    <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-900/20 dark:text-emerald-100">
-        Payment will issue and fully settle this invoice, grant the exact service period, update the next due date, and then re-check all service locks before restoring access.
+    <section class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="funding-breakdown-title">
+        <div class="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
+            <h2 id="funding-breakdown-title" class="text-base font-semibold text-slate-900 dark:text-white">Authoritative funding breakdown</h2>
+        </div>
+        <dl class="divide-y divide-slate-200 dark:divide-slate-700">
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Invoice total</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.invoice_total) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Balance to reconcile</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.balance_due) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Confirmed payment-backed funding</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.payment_backed_credit) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Reviewed opening funding available</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.opening_funding_available) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Reviewed opening funding required</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.opening_funding_required) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Total authoritative funding</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.authoritative_funding) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Unbacked credit</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.unbacked_credit) }}</dd></div>
+            <div class="flex justify-between gap-6 px-5 py-3"><dt class="text-sm text-slate-600 dark:text-slate-300">Shortfall</dt><dd class="font-mono text-sm font-semibold tabular-nums text-slate-900 dark:text-white">{{ preview.currency }} {{ '{:,.2f}'.format(preview.shortfall) }}</dd></div>
+        </dl>
+    </section>
+
+    <details class="rounded-lg border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        <summary class="cursor-pointer text-sm font-semibold text-slate-900 dark:text-white">Evidence and consequences</summary>
+        <div class="mt-4 space-y-4 text-sm text-slate-600 dark:text-slate-300">
+            <div>
+                <h3 class="font-medium text-slate-900 dark:text-white">Evidence identifiers</h3>
+                <dl class="mt-2 space-y-2">
+                    <div><dt class="inline font-medium">Opening baseline:</dt> <dd class="inline break-all font-mono text-xs">{{ preview.opening_funding_baseline_id or 'Not used' }}</dd></div>
+                    <div><dt class="inline font-medium">Subscriptions:</dt> <dd class="inline break-all font-mono text-xs">{{ preview.subscription_ids | join(', ') if preview.subscription_ids else 'None' }}</dd></div>
+                    <div><dt class="inline font-medium">Existing entitlements:</dt> <dd class="inline break-all font-mono text-xs">{{ preview.entitlement_ids | join(', ') if preview.entitlement_ids else 'None' }}</dd></div>
+                    <div><dt class="inline font-medium">Renewal adjustments:</dt> <dd class="inline break-all font-mono text-xs">{{ preview.renewal_adjustment_ids | join(', ') if preview.renewal_adjustment_ids else 'None' }}</dd></div>
+                </dl>
+            </div>
+            <div>
+                <h3 class="font-medium text-slate-900 dark:text-white">Owner-controlled consequences</h3>
+                <ul class="mt-2 list-disc space-y-1 pl-5">
+                    {% for consequence in review.form_contract_state.consequences %}
+                    <li>{{ consequence.label }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </details>
+
+    {{ action_form(review.action_form) }}
+
+    <div class="flex justify-end">
+        <a href="/admin/billing/invoices/{{ invoice_id }}" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">Cancel and return to invoice</a>
     </div>
-    <form method="post" action="/admin/billing/invoices/{{ invoice_id }}/prepaid-pay-now/confirm" class="flex justify-end gap-3">
-        {% include "components/forms/csrf_input.html" %}
-        <input type="hidden" name="preview_fingerprint" value="{{ prepaid_recovery_settlement.fingerprint }}">
-        <a href="/admin/billing/invoices/{{ invoice_id }}" class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-200">Cancel</a>
-        <button type="submit" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">Pay now</button>
-    </form>
-    {% else %}
-    <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
-        There is not enough confirmed payment credit to settle the remaining receivable. No payment or access change can be made from this screen.
-    </div>
-    {% endif %}
 </div>
 {% endblock %}

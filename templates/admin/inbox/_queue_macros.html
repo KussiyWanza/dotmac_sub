@@ -3,6 +3,22 @@
 
 {% macro inbox_ts(dt) %}{% if dt %}{{ dt.strftime('%b %d, %H:%M') }}{% endif %}{% endmacro %}
 
+{% macro channel_icon(channel_type, class_name="h-3 w-3") %}
+{% if channel_type == "email" %}
+<svg class="{{ class_name }}" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8"/></svg>
+{% elif channel_type == "whatsapp" %}
+<svg class="{{ class_name }}" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2z"/></svg>
+{% elif channel_type in ["facebook", "facebook_messenger", "facebook_comment"] %}
+<svg class="{{ class_name }}" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+{% elif channel_type in ["instagram", "instagram_dm", "instagram_comment"] %}
+<svg class="{{ class_name }}" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C8.74 0 8.333.015 7.053.072 5.775.132 4.905.333 4.14.63c-.789.306-1.459.717-2.126 1.384S.935 3.35.63 4.14C.333 4.905.131 5.775.072 7.053.012 8.333 0 8.74 0 12s.015 3.667.072 4.947c.06 1.277.261 2.148.558 2.913.306.788.717 1.459 1.384 2.126.667.666 1.336 1.079 2.126 1.384.766.296 1.636.499 2.913.558C8.333 23.988 8.74 24 12 24s3.667-.015 4.947-.072c1.277-.06 2.148-.262 2.913-.558.788-.306 1.459-.718 2.126-1.384.666-.667 1.079-1.335 1.384-2.126.296-.765.499-1.636.558-2.913.06-1.28.072-1.687.072-4.947s-.015-3.667-.072-4.947c-.06-1.277-.262-2.149-.558-2.913-.306-.789-.718-1.459-1.384-2.126C21.319 1.347 20.651.935 19.86.63c-.765-.297-1.636-.499-2.913-.558C15.667.012 15.26 0 12 0z"/></svg>
+{% elif channel_type == "telegram" %}
+<svg class="{{ class_name }}" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l17-7-5 17-4-6-5 3 1-5-4-2z"/></svg>
+{% else %}
+<svg class="{{ class_name }}" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5h14v11H9l-4 3V5z"/></svg>
+{% endif %}
+{% endmacro %}
+
 {% macro conversation_queue_item(row, active_id="", agent_options=()) %}
 {% set contact_name = row.contact_name or row.contact_address or "Unknown contact" %}
 {% set contact_parts = contact_name.split() %}
@@ -36,9 +52,9 @@
     {% set unread_classes = "bg-gradient-to-r from-[#8B5CF6]/5 to-transparent" %}
 {% elif row.channel_type == "whatsapp" %}
     {% set unread_classes = "bg-gradient-to-r from-[#22C55E]/5 to-transparent" %}
-{% elif row.channel_type in ["facebook", "facebook_messenger"] %}
+{% elif row.channel_type in ["facebook", "facebook_messenger", "facebook_comment"] %}
     {% set unread_classes = "bg-gradient-to-r from-[#1877F2]/5 to-transparent" %}
-{% elif row.channel_type in ["instagram", "instagram_dm"] %}
+{% elif row.channel_type in ["instagram", "instagram_dm", "instagram_comment"] %}
     {% set unread_classes = "bg-gradient-to-r from-[#EC4899]/5 to-transparent" %}
 {% elif row.channel_type in ["chat_widget", "web_chat"] %}
     {% set unread_classes = "bg-gradient-to-r from-[#F59E0B]/5 to-transparent" %}
@@ -74,29 +90,10 @@
                 class="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#314158] to-[#1D293D] text-xs font-bold uppercase text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                 aria-label="Open contact details for {{ contact_name }}">
             {{ avatar_initials | upper }}
-            <span class="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full text-white ring-2 ring-white dark:ring-slate-900
-                {% if row.channel_type == 'email' %}bg-[#8B5CF6]
-                {% elif row.channel_type == 'whatsapp' %}bg-[#22C55E]
-                {% elif row.channel_type in ['facebook', 'facebook_messenger'] %}bg-[#1877F2]
-                {% elif row.channel_type in ['instagram', 'instagram_dm'] %}bg-[#EC4899]
-                {% elif row.channel_type in ['chat_widget', 'web_chat'] %}bg-[#F59E0B]
-                {% elif row.channel_type in ['sms', 'phone'] %}bg-[#F97316]
-                {% elif row.channel_type == 'telegram' %}bg-[#0EA5E9]
-                {% else %}bg-slate-500{% endif %}"
+            <span class="inbox-channel-indicator absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full text-white ring-2 ring-white dark:ring-slate-900"
+                data-inbox-channel="{{ row.channel_type }}"
                 title="{{ row.channel_type | replace('_', ' ') | title }}">
-                {% if row.channel_type == "email" %}
-                <svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M3 6l9 7 9-7v12H3V6z"/></svg>
-                {% elif row.channel_type == "whatsapp" %}
-                <svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 19l1.3-4A8 8 0 1110 19l-5 0z"/></svg>
-                {% elif row.channel_type in ["facebook", "facebook_messenger"] %}
-                <span class="text-[10px] font-black leading-none" aria-hidden="true">f</span>
-                {% elif row.channel_type in ["instagram", "instagram_dm"] %}
-                <svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4" stroke-width="3"/><circle cx="12" cy="12" r="3" stroke-width="3"/></svg>
-                {% elif row.channel_type == "telegram" %}
-                <svg class="h-2.5 w-2.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l17-7-5 17-4-6-5 3 1-5-4-2z"/></svg>
-                {% else %}
-                <svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 5h14v11H9l-4 3V5z"/></svg>
-                {% endif %}
+                {{ channel_icon(row.channel_type, "h-2.5 w-2.5") }}
             </span>
         </button>
 

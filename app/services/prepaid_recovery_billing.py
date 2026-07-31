@@ -1,10 +1,9 @@
 """Guarded administrative recovery billing for suspended prepaid services.
 
-This owner deliberately creates a *draft* renewal invoice.  It never voids an
-existing invoice, spends a generic displayed balance, or resumes access.  The
-separate settlement command only spends confirmed unallocated payment credit
-when it can settle the exact draft in full; it then derives the entitlement and
-asks financial-access resolution to clear only eligible locks.
+This owner deliberately creates a *draft* renewal invoice. It never voids an
+existing invoice, spends a generic displayed balance, settles a draft, or
+resumes access. All prepaid draft classification and reconciliation belongs to
+``financial.prepaid_draft_reconciliation``.
 """
 
 from __future__ import annotations
@@ -26,15 +25,10 @@ from app.models.catalog import (
     SubscriptionStatus,
     billing_cycle_noun,
 )
-from app.models.collections import FinancialAccessOrigin
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.schemas.billing import InvoiceCreate, SystemInvoiceLineCreate
-from app.services.billing._common import get_account_credit_balance, lock_account
+from app.services.billing._common import lock_account
 from app.services.billing.invoices import InvoiceLines, Invoices
-from app.services.billing.reconcile_unposted import (
-    _allocatable_payments,
-    settle_single_invoice_from_credit,
-)
 from app.services.common import round_money
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
@@ -49,11 +43,6 @@ _CREATE_DEFINITION = OwnerCommandDefinition(
     owner=_OWNER,
     concern="suspended prepaid replacement-cycle draft creation",
     name="create_prepaid_recovery_draft",
-)
-_SETTLE_DEFINITION = OwnerCommandDefinition(
-    owner=_OWNER,
-    concern="full settlement and restoration of a prepaid recovery invoice",
-    name="settle_prepaid_recovery_invoice",
 )
 _OPEN_INVOICE_STATUSES = frozenset(
     {
@@ -110,32 +99,6 @@ class PrepaidRecoveryDraftConfirmation:
     subscription_id: UUID
     starts_at: datetime
     fingerprint: str
-
-
-@dataclass(frozen=True, slots=True)
-class PrepaidRecoverySettlementPreview:
-    invoice_id: UUID
-    subscription_id: UUID
-    account_id: UUID
-    balance_due: Decimal
-    payment_backed_credit: Decimal
-    can_settle: bool
-    fingerprint: str
-
-
-@dataclass(frozen=True, slots=True)
-class PrepaidRecoverySettlementConfirmation:
-    invoice_id: UUID
-    fingerprint: str
-
-
-@dataclass(frozen=True, slots=True)
-class PrepaidRecoverySettlementResult:
-    invoice_id: UUID
-    subscription_id: UUID
-    amount_applied: Decimal
-    restored_subscriptions: int
-    replayed: bool
 
 
 def _locked_subscription(db: Session, subscription_id: UUID) -> Subscription:
@@ -329,162 +292,4 @@ def create_prepaid_recovery_draft(
 
     return execute_owner_command(
         db, definition=_CREATE_DEFINITION, context=context, operation=operation
-    )
-
-
-def _recovery_invoice(
-    db: Session, invoice_id: UUID, *, lock: bool = False
-) -> tuple[Invoice, Subscription]:
-    invoice_query = select(Invoice).where(Invoice.id == invoice_id)
-    if lock:
-        invoice_query = invoice_query.with_for_update()
-    invoice = db.scalar(invoice_query)
-    if invoice is None or not invoice.is_active:
-        _error("invoice_not_found", "Invoice was not found.")
-    line = db.scalar(
-        select(InvoiceLine).where(
-            InvoiceLine.invoice_id == invoice.id,
-            InvoiceLine.is_active.is_(True),
-            InvoiceLine.metadata_["kind"].astext == "prepaid_recovery_cycle",
-        )
-    )
-    if line is None or line.subscription_id is None:
-        _error(
-            "not_recovery_invoice", "This invoice is not a prepaid recovery invoice."
-        )
-    subscription = (
-        _locked_subscription(db, line.subscription_id)
-        if lock
-        else db.get(Subscription, line.subscription_id)
-    )
-    if subscription is None:
-        _error("subscription_not_found", "Subscription was not found.")
-    if subscription.subscriber_id != invoice.account_id:
-        _error(
-            "invoice_scope_mismatch",
-            "The invoice does not belong to the service account.",
-        )
-    return invoice, subscription
-
-
-def preview_prepaid_recovery_settlement(
-    db: Session, *, invoice_id: UUID
-) -> PrepaidRecoverySettlementPreview:
-    invoice, subscription = _recovery_invoice(db, invoice_id)
-    _validate_recovery_subscription(db, subscription)
-    if invoice.status == InvoiceStatus.paid and invoice.balance_due <= Decimal("0.00"):
-        return PrepaidRecoverySettlementPreview(
-            invoice.id,
-            subscription.id,
-            invoice.account_id,
-            Decimal("0.00"),
-            Decimal("0.00"),
-            True,
-            _fingerprint(invoice.id, "paid"),
-        )
-    if invoice.status != InvoiceStatus.draft:
-        _error(
-            "invoice_not_draft", "Only the recovery draft can be paid by this action."
-        )
-    balance_due = round_money(Decimal(str(invoice.balance_due)))
-    currency = invoice.currency or "NGN"
-    payment_backed = round_money(
-        sum(
-            (
-                room
-                for payment, room in _allocatable_payments(db, str(invoice.account_id))
-                if (payment.currency or "NGN") == currency
-            ),
-            Decimal("0.00"),
-        )
-    )
-    payment_backed = min(
-        payment_backed,
-        max(
-            get_account_credit_balance(db, str(invoice.account_id), currency=currency),
-            Decimal("0.00"),
-        ),
-    )
-    return PrepaidRecoverySettlementPreview(
-        invoice.id,
-        subscription.id,
-        invoice.account_id,
-        balance_due,
-        payment_backed,
-        payment_backed >= balance_due,
-        _fingerprint(
-            invoice.id,
-            invoice.updated_at,
-            subscription.updated_at,
-            balance_due,
-            payment_backed,
-            currency,
-        ),
-    )
-
-
-def settle_prepaid_recovery_invoice(
-    db: Session,
-    *,
-    context: CommandContext,
-    confirmation: PrepaidRecoverySettlementConfirmation,
-) -> PrepaidRecoverySettlementResult:
-    """Issue, fully settle, grant coverage, and restore only after exact payment evidence."""
-
-    def operation() -> PrepaidRecoverySettlementResult:
-        candidate = db.get(Invoice, confirmation.invoice_id)
-        if candidate is None:
-            _error("invoice_not_found", "Invoice was not found.")
-        lock_account(db, str(candidate.account_id))
-        invoice, subscription = _recovery_invoice(
-            db, confirmation.invoice_id, lock=True
-        )
-        if invoice.status == InvoiceStatus.paid and invoice.balance_due <= Decimal(
-            "0.00"
-        ):
-            return PrepaidRecoverySettlementResult(
-                invoice.id, subscription.id, Decimal("0.00"), 0, True
-            )
-        current = preview_prepaid_recovery_settlement(db, invoice_id=invoice.id)
-        if current.fingerprint != confirmation.fingerprint:
-            _error(
-                "stale_preview", "Invoice funding changed after preview; preview again."
-            )
-        if not current.can_settle:
-            _error(
-                "insufficient_confirmed_credit",
-                "Confirmed payment credit cannot fully settle this invoice.",
-            )
-        Invoices.issue_draft_system(
-            db,
-            str(invoice.id),
-            issued_at=datetime.now(UTC),
-            due_at=datetime.now(UTC),
-            reason="prepaid_recovery_invoice_pay_now",
-            apply_available_credit=False,
-        )
-        applied = settle_single_invoice_from_credit(db, invoice, only_if_full=True)
-        if invoice.status != InvoiceStatus.paid or invoice.balance_due > Decimal(
-            "0.00"
-        ):
-            _error(
-                "settlement_incomplete",
-                "The invoice could not be fully settled; no service was restored.",
-            )
-        from app.services.collections._core import restore_account_services
-
-        restored = restore_account_services(
-            db,
-            str(invoice.account_id),
-            invoice_id=str(invoice.id),
-            origin=FinancialAccessOrigin.financial_reconciliation,
-            idempotency_key=f"prepaid-recovery-restore:{invoice.id}",
-            resolved_by=f"prepaid_recovery_invoice:{invoice.id}",
-        )
-        return PrepaidRecoverySettlementResult(
-            invoice.id, subscription.id, applied, restored, False
-        )
-
-    return execute_owner_command(
-        db, definition=_SETTLE_DEFINITION, context=context, operation=operation
     )

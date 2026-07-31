@@ -94,6 +94,25 @@ service intent and never creates an `OntAssignment`.
 TR-069 Inform may mark the intent management-ready, but it does not trigger
 saved service application unless an active assignment exists.
 
+## External-operation transaction boundary
+
+OLT authorization and management configuration run only after their database
+phase has committed. The worker snapshots the required OLT connection and
+target values into immutable value objects, closes the transaction, performs
+the device operation, and then opens a fresh transaction to persist the
+result. Live ORM objects are never passed to an OLT adapter because an expired
+attribute read could silently reopen a transaction while the device call is in
+progress.
+
+Authorization evidence is persisted immediately after the OLT confirms the
+write. If the original session is lost afterward, the task opens a fresh
+reliability session and records
+`external_write_reconciliation_required`. The reconciler verifies the exact
+serial, OLT, canonical F/S/P, ONT inventory identity, and recorded operation,
+then idempotently redrives management-only commissioning without issuing a
+second authorization command. Conflicting evidence fails closed into cleanup
+review.
+
 ## Concurrency and cleanup
 
 Commissioning admission locks the exact autofind candidate. Immediately before
@@ -119,6 +138,10 @@ canonical inventory-return service to remove service ports, deauthorize the
 ONT, remove ACS state, release management IPAM, and restore rediscovery.
 Identity disagreement or cleanup failure remains durable `cleanup_pending`
 evidence and blocks assignment until reviewed.
+
+Authorization, reconciliation, and cleanup all compare the shared canonical
+F/S/P representation. A stored board such as `0/1` plus port `13` normalizes to
+`0/1/13`; callers must not prepend another frame segment.
 
 ## Migration and fallback retirement
 

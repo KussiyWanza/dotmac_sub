@@ -11,11 +11,11 @@
             <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-semibold text-slate-950 dark:text-white">{{ subscriber_summary.name if subscriber_summary else (timeline.contact_address or "Unknown contact") }}</p>
                 <p class="truncate text-xs text-slate-500">{{ subscriber_summary.email if subscriber_summary and subscriber_summary.email else timeline.contact_address }}</p>
-                {% if subscriber_summary and subscriber_summary.phone %}<a href="tel:{{ subscriber_summary.phone }}" class="mt-0.5 block text-xs text-amber-700 hover:underline dark:text-amber-300">{{ subscriber_summary.phone }}</a>{% endif %}
+                {% if subscriber_summary and subscriber_summary.phone %}<a href="tel:{{ subscriber_summary.phone }}" class="inbox-phone-channel mt-0.5 block text-xs hover:underline">{{ subscriber_summary.phone }}</a>{% endif %}
             </div>
         </div>
         <div class="mt-3 flex flex-wrap gap-1.5">
-            <span class="rounded-lg bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">{{ timeline.channel_type | replace('_',' ') | title }}</span>
+            <span class="inbox-channel-label rounded-lg px-2 py-1 text-xs font-medium" data-inbox-channel="{{ timeline.channel_type }}">{{ timeline.channel_type | replace('_',' ') | title }}</span>
             {% if subscriber_summary %}{{ status_badge(subscriber_summary.status.label, subscriber_summary.status.tone, size="sm", show_icon=False) }}{% endif %}
             {% if subscriber_summary and subscriber_summary.connection %}{{ status_badge("Online" if subscriber_summary.connection.online else "Offline", "positive" if subscriber_summary.connection.online else "negative", size="sm", show_icon=False) }}{% endif %}
         </div>
@@ -97,7 +97,10 @@
     {% call ctx_section("Tickets") %}
         <div class="space-y-2">
             <a href="/admin/support/tickets{% if timeline.subscriber_id %}?search={{ timeline.subscriber_id }}{% endif %}" class="flex min-h-10 items-center justify-between rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"><span>Active &amp; recent tickets</span><span aria-hidden="true">→</span></a>
-            <button type="button" @click="openTicketPanel()" class="min-h-10 w-full rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800 dark:bg-white dark:text-slate-900">Create ticket from conversation</button>
+            <button type="button" @click="openTicketPanel()" class="inbox-create-ticket-action inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
+                <span>Create ticket from conversation</span>
+            </button>
         </div>
     {% endcall %}
 

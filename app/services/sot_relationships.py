@@ -6520,6 +6520,168 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.advance_renewal_invoicing",
+                module="app.services.advance_renewal_invoicing",
+                owns=(
+                    "per-subscription advance renewal timer",
+                    "idempotent advance renewal invoice and notification request",
+                ),
+                depends_on=(
+                    "access.subscription_lifecycle",
+                    "auth.permission_gate",
+                    "communications.intents",
+                    "control.settings_spec",
+                    "events.dispatcher",
+                    "financial.billing_automation",
+                    "financial.invoices",
+                    "financial.prepaid_service_coverage",
+                    "financial.prepaid_service_renewals",
+                    "runtime.durable_timers",
+                ),
+                notes=(
+                    "The feature is disabled with no notice-day value until an "
+                    "operator explicitly configures both controls. Invoice issue "
+                    "time never becomes service-period start; the exact current "
+                    "coverage boundary owns the future period. Invoice creation "
+                    "does not advance next_billing_at."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-subscription advance renewal timer",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "explicit renewal notice configuration",
+                                "canonical subscription lifecycle and billing anchor",
+                            ),
+                            canonical_writer="financial.advance_renewal_invoicing",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "idempotent advance renewal invoice and notification request"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "authenticated advance renewal command",
+                                "explicit renewal notice configuration",
+                                "canonical subscription lifecycle and billing anchor",
+                                "authoritative prepaid coverage evidence",
+                                "canonical recurring charge preview",
+                                "canonical future-period invoice",
+                            ),
+                            canonical_writer="financial.advance_renewal_invoicing",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated advance renewal command",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "GenerateAdvanceRenewalInvoiceCommand with system "
+                                "CommandContext and deterministic period identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="explicit renewal notice configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "billing.renewal_invoice_notice_enabled and nullable "
+                                "billing.renewal_invoice_notice_days"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical subscription lifecycle and billing anchor",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active Subscription and next_billing_at projection",
+                        ),
+                        AuthorityInput(
+                            name="authoritative prepaid coverage evidence",
+                            owner="financial.prepaid_service_coverage",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active funded entitlement or explicit service grant interval",
+                        ),
+                        AuthorityInput(
+                            name="canonical recurring charge preview",
+                            owner="financial.billing_automation",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="typed prepaid or postpaid exact-period charge preview",
+                        ),
+                        AuthorityInput(
+                            name="canonical future-period invoice",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="issued Invoice and uniquely keyed subscription-period lines",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each subscription command enters execute_owner_command once; "
+                            "invoice, lines, audit, and event are staged atomically."
+                        ),
+                        locking=(
+                            "Locks the subscription, rechecks the notice date, and relies "
+                            "on unique active billing_line_key arbitration."
+                        ),
+                        idempotency=(
+                            "Subscription, exact period, and component form the durable key; "
+                            "matching replay returns the existing invoice."
+                        ),
+                        retries="The scheduler retries a complete owner command after rollback.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.advance_renewal_invoicing.configuration_unavailable",
+                            "financial.advance_renewal_invoicing.coverage_ambiguous",
+                            "financial.advance_renewal_invoicing.coverage_anchor_drift",
+                            "financial.advance_renewal_invoicing.currency_conflict",
+                            "financial.advance_renewal_invoicing.invoice_drift",
+                            "financial.advance_renewal_invoicing.missing_renewal_boundary",
+                            "financial.advance_renewal_invoicing.outside_notice_date",
+                            "financial.advance_renewal_invoicing.period_drift",
+                            "financial.advance_renewal_invoicing.subscription_not_eligible",
+                            "financial.advance_renewal_invoicing.terminal_subscription",
+                            *owner_command_boundary_error_codes(
+                                "financial.advance_renewal_invoicing"
+                            ),
+                        ),
+                        mapping_owner="billing lifecycle event adapter",
+                        fail_closed_on=(
+                            "missing or invalid configuration",
+                            "ambiguous coverage or anchor drift",
+                            "future-period invoice conflict",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("subscription.renewal_invoice_ready",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility="Additive payload evolution within schema version 1.",
+                        replay="Communication intent deduplicates by event and channel.",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="none; additive explicitly disabled capability",
+                        new_owner="financial.advance_renewal_invoicing",
+                        verification="Date, idempotency, notification, PDF, and architecture tests.",
+                        cutover_gate="Operator supplies notice days and explicitly enables it.",
+                        fallback_retirement="No implicit day or generic expiry-task fallback exists.",
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/designs/ADVANCE_RENEWAL_INVOICING.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_advance_renewal_invoicing.py",
+                        "tests/architecture/test_advance_renewal_invoicing_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.invoices",
                 module="app.services.billing.invoices",
                 owns=(
@@ -9390,6 +9552,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "quarantined again. "
                     "Automatic funding changes create a durable operator exception "
                     "instead of silently leaving an authoritatively funded draft. "
+                    "The admin invoice adapter presents the same exact classifier "
+                    "output and submits an actor-bound, signed, fingerprinted review "
+                    "to this owner; it does not maintain a second settlement path. "
                     "Every existing draft blocks the parallel invoice-less renewal "
                     "path, and generic Restore cannot bypass an unresolved prepaid "
                     "financial lock."
@@ -9567,7 +9732,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_draft_reconciliation.active_caller_transaction",
                             "financial.prepaid_draft_reconciliation.nested_transaction_completion",
                         ),
-                        mapping_owner="billing reconciliation CLI and funding-change adapters",
+                        mapping_owner=(
+                            "billing reconciliation CLI, admin invoice, and "
+                            "funding-change adapters"
+                        ),
                         retryable_codes=(),
                         fail_closed_on=(
                             "any funding shortfall including NGN 0.50",
@@ -9642,12 +9810,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         cutover_gate=(
                             "Funding-change handling checks the authoritative draft "
-                            "before direct renewal; the reviewed CLI defaults to dry-run."
+                            "before direct renewal; the reviewed CLI defaults to dry-run; "
+                            "the invoice page confirms only signed owner previews."
                         ),
                         fallback_retirement=(
                             "Remove the compatibility issue-then-return helper after "
                             "all remaining callers use the classifier and the backlog "
-                            "has been reviewed."
+                            "has been reviewed. The prepaid-recovery settlement writer "
+                            "and invoice-page adapter are retired."
                         ),
                     ),
                     steward="billing operations",
@@ -9658,6 +9828,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_prepaid_draft_reconciliation.py",
+                        "tests/test_web_prepaid_draft_reconciliation.py",
                         "tests/test_prepaid_service_renewals.py",
                         "tests/test_subscription_lifecycle_commands.py",
                         "tests/integration/test_prepaid_draft_reconciliation_concurrency.py",
@@ -9963,24 +10134,20 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
-                owns=(
-                    "suspended prepaid replacement-cycle draft creation",
-                    "full settlement and restoration of a prepaid recovery invoice",
-                ),
+                owns=("suspended prepaid replacement-cycle draft creation",),
                 depends_on=(
                     "access.subscription_lifecycle",
                     "events.dispatcher",
                     "financial.access_resolution",
-                    "financial.account_credit_applications",
                     "financial.invoices",
                     "financial.prepaid_service_renewals",
                 ),
                 notes=(
                     "This recovery-only coordinator creates a replacement full-cycle "
-                    "draft from the confirmed Bill Now instant. It never voids a prior "
-                    "invoice or spends generic balance. Settlement uses only confirmed "
-                    "unallocated payment evidence, derives exact paid-invoice coverage, "
-                    "and then asks the financial-access owner to resolve eligible locks."
+                    "draft from the confirmed Bill Now instant. It never voids, settles, "
+                    "or restores from a prior invoice or displayed balance. The resulting "
+                    "draft is classified and reconciled only by "
+                    "financial.prepaid_draft_reconciliation."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -9992,17 +10159,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "active prepaid enforcement lock",
                                 "contracted prepaid renewal price",
                                 "open recovery-invoice evidence",
-                            ),
-                        ),
-                        ConcernContract(
-                            name="full settlement and restoration of a prepaid recovery invoice",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
-                            input_names=(
-                                "locked recovery invoice and service scope",
-                                "active prepaid enforcement lock",
-                                "confirmed unallocated payment credit",
-                                "paid-invoice entitlement protocol",
-                                "financial access restoration protocol",
                             ),
                         ),
                     ),
@@ -10031,52 +10187,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="active invoice line metadata for the exact subscription and recovery-cycle intent",
                         ),
-                        AuthorityInput(
-                            name="locked recovery invoice and service scope",
-                            owner="financial.prepaid_recovery_billing",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="locked Invoice and exact active recovery InvoiceLine subscription link",
-                        ),
-                        AuthorityInput(
-                            name="confirmed unallocated payment credit",
-                            owner="financial.account_credit_applications",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="succeeded native payment allocation capacity and matching account-credit ledger position",
-                        ),
-                        AuthorityInput(
-                            name="paid-invoice entitlement protocol",
-                            owner="financial.prepaid_service_renewals",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source="paid prepaid InvoiceLine period metadata to ServiceEntitlement and next-billing anchor protocol",
-                        ),
-                        AuthorityInput(
-                            name="financial access restoration protocol",
-                            owner="financial.access_resolution",
-                            kind=AuthorityKind.CONTROL_INPUT,
-                            source="locked financial restoration preview/confirmation and remaining-lock gate",
-                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
-                            "Each confirmation enters execute_owner_command once on a "
-                            "transaction-free session; preview is read-only and all "
-                            "invoice, allocation, entitlement, anchor, and restoration "
-                            "effects flush and commit together."
+                            "Draft confirmation enters execute_owner_command once on a "
+                            "transaction-free session; preview is read-only and the "
+                            "replacement invoice aggregate commits together."
                         ),
                         locking=(
-                            "Account is locked first, then the exact subscription and "
-                            "invoice. Active recovery-invoice lookup is repeated under "
-                            "those locks before every write."
+                            "Account is locked first, then the exact subscription. Active "
+                            "recovery-invoice lookup is repeated under those locks before "
+                            "the draft is written."
                         ),
                         idempotency=(
                             "Recovery draft fingerprint identifies one period and an open "
-                            "invoice prevents duplicate active recovery cycles; paid invoice "
-                            "replay returns its stable successful outcome."
+                            "invoice prevents duplicate active recovery cycles."
                         ),
                         retries=(
-                            "A stale preview or changed payment capacity is rejected for a "
-                            "fresh preview; no partial payment allocation is attempted."
+                            "A stale price, service, or period preview is rejected for a "
+                            "fresh preview; this owner performs no settlement."
                         ),
                     ),
                     errors=ErrorContract(
@@ -10092,23 +10222,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_recovery_billing.unsupported_cycle",
                             "financial.prepaid_recovery_billing.invalid_charge",
                             "financial.prepaid_recovery_billing.stale_preview",
-                            "financial.prepaid_recovery_billing.invoice_not_found",
-                            "financial.prepaid_recovery_billing.not_recovery_invoice",
-                            "financial.prepaid_recovery_billing.invoice_scope_mismatch",
-                            "financial.prepaid_recovery_billing.invoice_not_draft",
-                            "financial.prepaid_recovery_billing.insufficient_confirmed_credit",
-                            "financial.prepaid_recovery_billing.settlement_incomplete",
                         ),
-                        mapping_owner="admin catalog and billing invoice adapters",
+                        mapping_owner="admin catalog adapter",
                         fail_closed_on=(
                             "missing prepaid lock or suspended service state",
                             "an existing active recovery invoice",
-                            "stale price, service, invoice, or funding evidence",
-                            "credit that cannot settle the exact invoice in full",
+                            "stale price, service, or period evidence",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("invoice_created", "subscription_resumed"),
+                        event_types=("invoice_created",),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -10117,8 +10240,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "is introduced by this coordinator."
                         ),
                         replay=(
-                            "Invoice line period metadata, payment allocations, and paid "
-                            "invoice entitlement evidence reconstruct completed recovery."
+                            "Invoice line period metadata and the draft fingerprint "
+                            "reconstruct completed recovery-draft creation."
                         ),
                     ),
                     migration=MigrationContract(
@@ -10126,15 +10249,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="financial.prepaid_recovery_billing",
                         verification=(
                             "Focused command, UI visibility, stale-preview, duplicate, "
-                            "insufficient-credit, paid-entitlement, and restoration tests."
+                            "price, period, and invoice-creation tests."
                         ),
                         cutover_gate=(
-                            "Admin Bill Now and prepaid recovery Pay Now routes invoke "
-                            "only this coordinator."
+                            "Admin Bill Now invokes only this coordinator; invoice-page "
+                            "reconciliation invokes only financial.prepaid_draft_reconciliation."
                         ),
                         fallback_retirement=(
-                            "No adapter may manufacture a prepaid recovery invoice or "
-                            "restore a service from a displayed balance."
+                            "The recovery-specific settlement writer is removed. No adapter "
+                            "may manufacture a recovery invoice or restore from displayed balance."
                         ),
                     ),
                     steward="billing operations",
@@ -11139,6 +11262,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "scheduled billing enforcement execution",
                     "scheduled prepaid balance enforcement execution",
+                    "scheduled prepaid coverage-evidence repair execution",
                     "scheduled bundle-state reconciliation execution",
                 ),
                 depends_on=(
@@ -11146,6 +11270,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "financial.access_resolution",
                     "financial.prepaid_enforcement",
                     "financial.prepaid_enforcement_state",
+                    "financial.prepaid_service_coverage_reconciliation",
+                ),
+                notes=(
+                    "The coverage-evidence repair pass is transitional ADR "
+                    "0007 debt: it drains entitlement gaps historical forward "
+                    "billing could commit. It retires with the prepaid "
+                    "balance sweep at the Phase 5 collections cutover, once "
+                    "activation and renewal cannot commit without contract, "
+                    "obligation, and timer."
                 ),
             ),
             SOTService(
@@ -12284,6 +12417,236 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "and splitter invariants, exact core materialization, physical "
                     "inventory, and splice execution to their named owners instead "
                     "of maintaining parallel mutation rules."
+                ),
+            ),
+            SOTService(
+                name="network.fiber_job_evidence",
+                module="app.services.network.fiber_job_evidence",
+                owns=("per-job fiber evidence summary projection",),
+                depends_on=(
+                    "network.fiber_asset_changes",
+                    "network.fiber_splice_plans",
+                ),
+                notes=(
+                    "Read-only aggregation of the fiber evidence naming one "
+                    "native work order: tests with derived-verdict failures and "
+                    "assertion conflicts, topology source observations, splice "
+                    "proposals by review status, live cut-sheet progress, "
+                    "attachments, and pending inventory proposals. Every fact "
+                    "belongs to its named owner; this projection only counts and "
+                    "labels, and decides nothing."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-job fiber evidence summary projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "owner-recorded fiber evidence facts",
+                                "reviewed splice change-request state",
+                                "live cut-sheet progress",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="owner-recorded fiber evidence facts",
+                            owner="network.fiber_job_evidence",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "FieldFiberTestResult, "
+                                "FiberTopologyFieldObservation, and "
+                                "FieldAttachment rows naming the exact work order"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="reviewed splice change-request state",
+                            owner="network.fiber_asset_changes",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "fiber_splice, fiber_segment, and fiber_strand "
+                                "change requests with typed work-order provenance"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live cut-sheet progress",
+                            owner="network.fiber_splice_plans",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "the work order's live plan view and derived "
+                                "execution counts"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure aggregation over committed state; nothing is written."
+                        ),
+                        locking="None; the projection reads committed state only.",
+                        idempotency=(
+                            "Deterministic for identical committed inputs; safe to "
+                            "recompute at any time."
+                        ),
+                        retries="Safe to re-read; no side effects exist.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner=(
+                            "field and vendor transports surface the summary as "
+                            "data; scoping errors belong to their job resolvers"
+                        ),
+                        fail_closed_on=(
+                            "unscoped work orders (transports resolve scope "
+                            "before this projection runs)",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        old_owner=None,
+                        new_owner="network.fiber_job_evidence",
+                        verification=(
+                            "Focused summary-count and gate-composition tests."
+                        ),
+                        cutover_gate=(
+                            "Native new projection; the staged-verification "
+                            "evidence map remains authoritative for its campaign."
+                        ),
+                        fallback_retirement=(
+                            "No fallback exists; owners remain the source of "
+                            "every underlying fact."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/FIBER_TECH_JOURNEY_GAP_LIST.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_fiber_field_inventory_journey.py",),
+                ),
+            ),
+            SOTService(
+                name="network.fiber_test_acceptance",
+                module="app.services.network.fiber_test_acceptance",
+                owns=(
+                    "derived fiber test acceptance verdicts",
+                    "expected downstream link budget derivation",
+                ),
+                depends_on=("network.fiber_topology",),
+                notes=(
+                    "Observations stay facts: the technician's measurement and "
+                    "self-assessment are never altered. This policy derives a "
+                    "typed verdict from declared per-test-type thresholds "
+                    "(snapshotted beside the assertion with the policy version at "
+                    "capture time) and an expected downstream link budget from "
+                    "the canonical trace with every assumption named. Unknown "
+                    "test types and incomplete inputs yield explicit no_policy / "
+                    "incomplete outcomes, never a guess."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="derived fiber test acceptance verdicts",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "declared acceptance thresholds",
+                                "field fiber test measurement facts",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="expected downstream link budget derivation",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "declared acceptance thresholds",
+                                "canonical customer trace evidence",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="declared acceptance thresholds",
+                            owner="network.fiber_test_acceptance",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "versioned typed threshold table and planning "
+                                "coefficients declared in the policy module"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="field fiber test measurement facts",
+                            owner="network.fiber_test_acceptance",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "FieldFiberTestResult measurements captured by the "
+                                "scoped field transport; the capture path stores "
+                                "the derived snapshot beside the assertion"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer trace evidence",
+                            owner="network.fiber_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "trace_fiber_subscription hops, reviewed splitter "
+                                "stage losses, and traced segment lengths"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure derivation: verdicts and budgets are computed "
+                            "from inputs without mutating state; the field capture "
+                            "path persists the verdict snapshot inside its own "
+                            "existing transaction."
+                        ),
+                        locking="None; derivation reads committed state only.",
+                        idempotency=(
+                            "Deterministic for identical inputs and policy "
+                            "version; snapshots carry the version so replays are "
+                            "distinguishable from policy changes."
+                        ),
+                        retries=(
+                            "Safe to recompute at any time; recorded snapshots "
+                            "are never rewritten by recomputation."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner=(
+                            "field/vendor transports surface derived outcomes as "
+                            "data; no transport error mapping is required"
+                        ),
+                        fail_closed_on=(
+                            "unknown test types (explicit no_policy verdict)",
+                            "missing measurements (explicit no_measurement verdict)",
+                            "incomplete traces (budget labelled incomplete, "
+                            "never presented as the whole path)",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        old_owner=None,
+                        new_owner="network.fiber_test_acceptance",
+                        verification=(
+                            "Focused verdict-matrix, capture-snapshot, conflict, "
+                            "and link-budget tests."
+                        ),
+                        cutover_gate=(
+                            "Native new authority; the technician assertion "
+                            "remains recorded and unaltered beside the verdict."
+                        ),
+                        fallback_retirement=(
+                            "No fallback exists; tests without policy coverage "
+                            "carry an explicit no_policy verdict."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/FIBER_TECH_JOURNEY_GAP_LIST.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_fiber_test_acceptance.py",),
                 ),
             ),
             SOTService(
@@ -13952,6 +14315,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "WAN, LAN, or Wi-Fi intent. Assignment converts a "
                     "management-ready intent; expiry without assignment stages "
                     "idempotent return-to-inventory cleanup."
+                    " Slow OLT calls consume detached immutable connection values "
+                    "after the preceding database transaction closes; a fresh "
+                    "reliability session records partial external success."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -14056,8 +14422,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "Admission and scheduled reconciliation each enter "
                             "execute_owner_command once on a transaction-free session; "
                             "intent, operation, dispatch, audit, and event stage "
-                            "atomically. Device workers commit external-write evidence "
-                            "before subsequent coordination."
+                            "atomically. Device workers close the database transaction "
+                            "before live OLT or management I/O, use detached connection "
+                            "values, and persist external-write evidence in a fresh "
+                            "transaction before subsequent coordination."
                         ),
                         locking=(
                             "Admission locks the exact autofind candidate and active "
@@ -14100,6 +14468,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "network.ont_commissioning.management_priority_missing",
                             "network.ont_commissioning.management_apply_failed",
                             "network.ont_commissioning.service_config_forbidden",
+                            "network.ont_commissioning.unsafe_external_transaction",
+                            "network.ont_commissioning.external_write_reconciliation_required",
                             "network.ont_commissioning.acs_not_ready",
                             "network.ont_commissioning.cleanup_target_missing",
                             "network.ont_commissioning.cleanup_identity_mismatch",
@@ -14576,7 +14946,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Subscription.ipv4_address copy; its durable event delegates "
                     "RADIUS and old-IP session consequences to their owners. Normal "
                     "provisioning writers remain declared migration debt until the "
-                    "later runtime cutover."
+                    "later runtime cutover. The admin subscription replacement "
+                    "adapter is cut over to the two reviewed owner commands and is "
+                    "isolated from recurring add-on and billing writes."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -15723,12 +16095,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "communication intent lifecycle",
                     "recipient and channel delivery expansion",
                     "intent delivery outcome projection",
+                    "durable delivery attachment reference contract",
                 ),
                 depends_on=(
                     "communications.channel_policy",
                     "communications.customer_policy",
                     "communications.eligibility",
                     "communications.notification_service",
+                    "financial.invoices",
+                ),
+                notes=(
+                    "Invoice email attachments persist only a typed invoice-PDF "
+                    "reference. The delivery worker revalidates account scope and "
+                    "materializes bytes through the canonical billing invoice PDF "
+                    "service immediately before SMTP transport. Required attachment "
+                    "failure retries the complete delivery; body-only fallback is "
+                    "forbidden."
                 ),
             ),
             SOTService(

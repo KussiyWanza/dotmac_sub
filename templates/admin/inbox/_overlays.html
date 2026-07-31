@@ -1,3 +1,5 @@
+{% from "admin/inbox/_queue_macros.html" import channel_icon %}
+
 <div x-show="newConversationOpen"
      x-cloak
      x-transition:enter="transition-opacity duration-200"
@@ -20,11 +22,11 @@
              role="dialog"
              aria-modal="true"
              aria-labelledby="new-conversation-title"
-             class="flex max-h-[calc(100vh-4rem)] w-full max-w-[672px] flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-6 shadow-2xl dark:border-slate-700/60 dark:bg-slate-900">
+             class="flex max-h-[calc(100vh-4rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-6 shadow-2xl dark:border-slate-700/60 dark:bg-slate-900">
         <header class="flex shrink-0 items-center justify-between gap-4">
             <div class="flex min-w-0 items-center gap-3">
                 <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white" aria-hidden="true">
-                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
                 </span>
                 <div class="min-w-0">
                     <h2 id="new-conversation-title" class="font-display text-lg font-bold text-slate-900 dark:text-white">New conversation</h2>
@@ -254,14 +256,14 @@
        x-show="managerDashboardOpen"
        x-cloak
        x-transition:enter="transition duration-200 ease-out"
-       x-transition:enter-start="translate-y-2 scale-95 opacity-0"
-       x-transition:enter-end="translate-y-0 scale-100 opacity-100"
+       x-transition:enter-start="scale-95 opacity-0"
+       x-transition:enter-end="scale-100 opacity-100"
        x-transition:leave="transition duration-150 ease-in"
-       x-transition:leave-start="translate-y-0 scale-100 opacity-100"
-       x-transition:leave-end="translate-y-2 scale-95 opacity-0"
+       x-transition:leave-start="scale-100 opacity-100"
+       x-transition:leave-end="scale-95 opacity-0"
        @click.outside="managerDashboardOpen = false"
        @keydown.escape.window="managerDashboardOpen = false"
-       class="fixed inset-x-4 top-20 z-50 flex h-[calc(100vh-6rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.28)] sm:left-auto sm:w-[448px] dark:border-slate-700 dark:bg-slate-900 dark:shadow-[0_24px_70px_rgba(0,0,0,0.55)]"
+       class="fixed left-1/2 top-1/2 z-50 flex h-[calc(100vh-6rem)] w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.28)] dark:border-slate-700 dark:bg-slate-900 dark:shadow-[0_24px_70px_rgba(0,0,0,0.55)]"
        role="dialog"
        aria-modal="false"
        aria-labelledby="manager-dashboard-title">
@@ -349,9 +351,10 @@
             <div class="grid grid-cols-5 gap-1">
                 {% for channel in manager_dashboard.channel_split %}
                 <a href="{{ '/admin/inbox?open_only=true' if channel.key == 'other' else '/admin/inbox?open_only=true&channel_type=' ~ channel.key }}"
-                   class="min-w-0 rounded-lg border border-slate-200 bg-white px-1 py-2 text-center hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
+                   data-inbox-channel="{{ channel.key }}"
+                   class="inbox-channel-filter min-w-0 rounded-lg border border-slate-200 bg-white px-1 py-2 text-center hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
                     <strong class="block text-sm font-bold tabular-nums text-slate-800 dark:text-white">{{ channel.count }}</strong>
-                    <span class="block truncate text-[9px] font-semibold text-slate-500" title="{{ channel.label }}">{{ channel.label }}</span>
+                    <span class="inbox-channel-text block truncate text-[9px] font-semibold" title="{{ channel.label }}">{{ channel.label }}</span>
                 </a>
                 {% endfor %}
             </div>
@@ -363,7 +366,11 @@
                 {% for conversation in manager_dashboard.active_chats %}
                 <a href="/admin/inbox?conversation_id={{ conversation.id }}"
                    class="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 hover:border-amber-300 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-amber-500/10">
-                    <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-xs font-bold uppercase text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{{ conversation.channel_type[:2] }}</span>
+                    <span class="inbox-channel-indicator flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white"
+                          data-inbox-channel="{{ conversation.channel_type }}"
+                          title="{{ conversation.channel_type | replace('_', ' ') | title }}">
+                        {{ channel_icon(conversation.channel_type, "h-4 w-4") }}
+                    </span>
                     <span class="min-w-0 flex-1">
                         <span class="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{{ conversation.subject or conversation.contact_address or 'Unknown contact' }}</span>
                         <span class="block truncate text-[11px] text-slate-500 dark:text-slate-400">{{ conversation.latest_message_body or 'No message preview' }}</span>

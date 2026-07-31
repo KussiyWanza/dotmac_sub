@@ -1,6 +1,7 @@
 """Tests for email service."""
 
 import smtplib
+from email import message_from_string
 
 from app.models.domain_settings import DomainSetting, SettingDomain
 from app.models.notification import (
@@ -128,6 +129,43 @@ def test_send_email_html_and_text(db_session, monkeypatch):
     assert len(fake_smtp.messages) == 1
     _, _, msg = fake_smtp.messages[0]
     assert "HTML Content" in msg or "Text Content" in msg
+
+
+def test_send_email_attaches_pdf_with_alternative_body(db_session, monkeypatch):
+    fake_smtp = FakeSMTP()
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setattr("smtplib.SMTP_SSL", lambda *args, **kwargs: fake_smtp)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.local")
+    monkeypatch.setenv("SMTP_FROM", "noreply@test.local")
+
+    result = email_service.send_email(
+        db=db_session,
+        to_email="customer@example.com",
+        subject="Invoice INV-1001",
+        body_html="<p>Your invoice is attached.</p>",
+        body_text="Your invoice is attached.",
+        track=False,
+        attachments=(
+            email_service.EmailAttachment(
+                filename="invoice-INV-1001.pdf",
+                content_type="application/pdf",
+                content=b"%PDF-1.4 invoice",
+            ),
+        ),
+    )
+
+    assert result is True
+    parsed = message_from_string(fake_smtp.messages[0][2])
+    assert parsed.get_content_type() == "multipart/mixed"
+    parts = parsed.get_payload()
+    assert parts[0].get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in parts[0].get_payload()] == [
+        "text/plain",
+        "text/html",
+    ]
+    assert parts[1].get_content_type() == "application/pdf"
+    assert parts[1].get_filename() == "invoice-INV-1001.pdf"
+    assert parts[1].get_payload(decode=True) == b"%PDF-1.4 invoice"
 
 
 def test_send_email_preserves_operational_headers(db_session, monkeypatch):

@@ -36,6 +36,20 @@ def test_invoice_detail_shows_authoritative_paid_date_only_when_available():
     )
 
 
+def test_prepaid_draft_reconciliation_uses_owner_preview_and_shared_confirmation():
+    detail = Path("templates/admin/billing/invoice_detail.html").read_text()
+    confirmation = Path(
+        "templates/admin/billing/prepaid_pay_now_confirm.html"
+    ).read_text()
+
+    assert "prepaid_draft_reconciliation_preview" in detail
+    assert "prepaid-draft-reconciliation/preview" in detail
+    assert "prepaid_recovery_settlement" not in detail
+    assert "action_form(review.action_form)" in confirmation
+    assert "preview.payment_backed_credit" in confirmation
+    assert "preview.opening_funding_required" in confirmation
+
+
 def test_invoice_edit_form_locks_currency_while_submitting_existing_value():
     template = Path("templates/admin/billing/invoice_form.html").read_text()
 

@@ -780,6 +780,86 @@ class FieldFiberOntLiveRead(BaseModel):
     rx_observed_at: datetime | None = None
 
 
+class FieldOntAttachmentCreate(BaseModel):
+    work_order_id: str = Field(min_length=1, max_length=64)
+    ont_unit_id: UUID
+    splitter_port_id: UUID
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class FieldOntAttachmentResponse(BaseModel):
+    decision_id: UUID
+    status: str
+    ont_unit_id: UUID
+    splitter_port_id: UUID
+    work_order_public_id: str
+
+
+class FieldCableRegistrationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    fiber_count: int = Field(ge=1, le=1728)
+    segment_type: Literal["feeder", "distribution", "drop"] | None = None
+    cable_type: str | None = Field(default=None, max_length=40)
+    fibers_per_tube: int | None = Field(default=None, ge=1, le=48)
+    color_standard: str | None = Field(default=None, max_length=40)
+    length_m: float | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=2000)
+    work_order_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class FieldCableRegistrationResponse(BaseModel):
+    change_request_id: UUID
+    status: str
+    name: str
+    fiber_count: int
+    work_order_public_id: str | None = None
+
+
+class FieldStrandDamageCreate(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
+    strand_id: UUID | None = None
+    segment_id: UUID | None = None
+    tube_number: int | None = Field(default=None, ge=1)
+    work_order_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class FieldStrandDamageResponse(BaseModel):
+    change_request_ids: list[UUID] = Field(default_factory=list)
+    strand_ids: list[UUID] = Field(default_factory=list)
+    tube_number: int | None = None
+    work_order_public_id: str | None = None
+
+
+class FieldSpliceProposalCountsRead(BaseModel):
+    pending: int
+    applied: int
+    rejected: int
+
+
+class FieldJobPlanSummaryRead(BaseModel):
+    plan_id: UUID
+    status: str
+    item_count: int
+    executed_count: int
+    unexecuted_count: int
+
+
+class FieldJobEvidenceRead(BaseModel):
+    work_order_id: UUID
+    work_order_public_id: str
+    fiber_test_count: int
+    derived_failed_count: int
+    assertion_conflict_count: int
+    source_observation_count: int
+    splice_proposals: FieldSpliceProposalCountsRead
+    unplanned_splice_count: int
+    plan: FieldJobPlanSummaryRead | None = None
+    attachment_count: int
+    pending_inventory_proposals: int
+    as_built_required: bool
+    as_built_satisfied: bool
+
+
 class FieldSplicePlanResponse(BaseModel):
     """The job's live cut sheet and planned-vs-as-built diff (None when absent)."""
 
@@ -806,6 +886,23 @@ class FieldSegmentPhysicalDetailRead(BaseModel):
     terminations: list[FieldStrandTerminationDetailRead] = Field(default_factory=list)
 
 
+class FieldLinkBudgetComponentRead(BaseModel):
+    name: str
+    loss_db: float
+    basis: str
+
+
+class FieldLinkBudgetRead(BaseModel):
+    expected_loss_db: float
+    complete: bool
+    components: list[FieldLinkBudgetComponentRead] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    measured_rx_dbm: float | None = None
+    assumed_tx_dbm: float | None = None
+    margin_db: float | None = None
+    policy_version: int
+
+
 class FieldFiberCustomerTraceRead(BaseModel):
     subscription_id: UUID
     customer_label: str
@@ -821,6 +918,7 @@ class FieldFiberCustomerTraceRead(BaseModel):
     upstream_message: str
     ont_live: FieldFiberOntLiveRead | None = None
     physical_details: list[FieldSegmentPhysicalDetailRead] = Field(default_factory=list)
+    link_budget: FieldLinkBudgetRead | None = None
 
 
 class FieldFiberTestCreate(BaseModel):
@@ -860,6 +958,12 @@ class FieldFiberTestRead(BaseModel):
     notes: str | None = None
     client_ref: UUID | None = None
     created_at: datetime
+    derived_passed: bool | None = None
+    derived_verdict: str | None = None
+    applied_minimum_db: float | None = None
+    applied_maximum_db: float | None = None
+    acceptance_policy_version: int | None = None
+    assertion_conflict: bool = False
 
 
 class FieldFiberSourceObservationCreate(BaseModel):

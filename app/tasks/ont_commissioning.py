@@ -22,16 +22,26 @@ def commission_ont(
 
     if not _network_dispatch_id:
         raise ValueError("A durable commissioning dispatch claim is required.")
-    with db_session_adapter.session() as db:
-        from app.services.network.ont_commissioning import (
-            execute_ont_commissioning,
-        )
+    from app.services.network.ont_commissioning import (
+        execute_ont_commissioning,
+        record_external_write_reconciliation_required,
+    )
 
-        return execute_ont_commissioning(
-            db,
-            intent_id=intent_id,
-            operation_id=operation_id,
-        )
+    try:
+        with db_session_adapter.session() as db:
+            return execute_ont_commissioning(
+                db,
+                intent_id=intent_id,
+                operation_id=operation_id,
+            )
+    except Exception:
+        with db_session_adapter.session() as recovery_db:
+            record_external_write_reconciliation_required(
+                recovery_db,
+                intent_id=intent_id,
+                operation_id=operation_id,
+            )
+        raise
 
 
 @celery_app.task(name="app.tasks.ont_commissioning.verify_commissioned_ont")

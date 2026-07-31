@@ -540,10 +540,6 @@ def _selected_ipv4_values_from_form(form: FormData) -> tuple[list[str], list[str
     return block_ids, addresses
 
 
-def _has_ipv4_assignment_edit(block_ids: list[str], addresses: list[str]) -> bool:
-    return bool(block_ids or addresses)
-
-
 def _selected_additional_route_values_from_form(
     form: FormData,
 ) -> tuple[list[str], list[str]]:
@@ -680,21 +676,32 @@ def handle_subscription_update_form(
 
     try:
         block_ids, addresses = _selected_ipv4_values_from_form(form)
-        ipv4_assignment_submitted = _has_ipv4_assignment_edit(block_ids, addresses)
+        selected_ipv4 = addresses[0] if addresses else None
+        current_ipv4 = core.active_service_ipv4_address(db, subscription_id)
+        if selected_ipv4 and selected_ipv4 != current_ipv4:
+            error = (
+                "Use Replace service IPv4 in the IPv4 Allocation section. "
+                "That action changes IPAM and RADIUS without entering billing."
+            )
+            context = core.subscription_form_context(db, subscription, error)
+            context["action_url"] = (
+                f"/admin/catalog/subscriptions/{subscription_id}/edit"
+            )
+            return {"form_context": context}
         updated = core.update_subscription_with_audit(
             db,
             subscription_id,
             core.build_payload_data(subscription),
             str(subscription.get("service_password") or ""),
-            block_ids,
-            addresses,
+            [],
+            [],
             request,
             actor_id,
             additional_route_cidrs=route_cidrs,
             additional_route_metrics=route_metrics,
             ip_addon_id=str(form.get("ip_addon_id") or ""),
             ip_addon_quantity=str(form.get("ip_addon_quantity") or "1"),
-            ipv4_assignment_submitted=ipv4_assignment_submitted,
+            ipv4_assignment_submitted=False,
         )
         subscriber_id = getattr(updated, "subscriber_id", None)
         redirect_url = (
@@ -717,6 +724,37 @@ def handle_subscription_update_form(
     )
     context["action_url"] = f"/admin/catalog/subscriptions/{subscription_id}/edit"
     return {"form_context": context}
+
+
+def handle_subscription_ipv4_replacement(
+    db: Session,
+    *,
+    subscription_id: str,
+    form: FormData,
+    actor_id: str | None,
+) -> str:
+    """Apply the dedicated, non-commercial service IPv4 replacement action."""
+
+    block_ids, addresses = _selected_ipv4_values_from_form(form)
+    base_url = f"/admin/catalog/subscriptions/{subscription_id}/edit"
+    if len(block_ids) != 1 or len(addresses) != 1:
+        message = quote_plus("Select one IPv4 block and address to replace.")
+        return f"{base_url}?error={message}"
+    try:
+        replaced_ip = core.replace_subscription_ipv4_with_owner(
+            db,
+            subscription_id=subscription_id,
+            selector=block_ids[0],
+            requested_ip=addresses[0],
+            actor_id=actor_id,
+        )
+        notice = quote_plus(
+            f"Service IPv4 replaced with {replaced_ip}; billing unchanged."
+        )
+        return f"{base_url}?notice={notice}"
+    except Exception as exc:
+        db.rollback()
+        return f"{base_url}?error={quote_plus(core.error_message(exc))}"
 
 
 def send_subscription_credentials_redirect(

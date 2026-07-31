@@ -928,9 +928,17 @@ transition.
     "activities": list[dict],                   # [{title, description, occurred_at}]
     "pdf_export": PdfExport | None,
     "is_proforma": bool,
+    "prepaid_draft_reconciliation_preview": PrepaidDraftReconciliationPreview | None,
     "active_page": "billing",
 }
 ```
+
+An actionable prepaid draft exposes **Reconcile prepaid draft** only to staff
+with `billing:invoice:update`. Its POST preview renders the authoritative
+payment/opening-funding breakdown and a shared `ActionForm`. Confirmation sends
+the owner fingerprint plus an actor-bound, expiring signed token; the command
+owner rechecks classification, funding, locking, and idempotency before one
+atomic transition. Templates do not infer eligibility from account balance.
 
 #### Invoice Form (New)
 

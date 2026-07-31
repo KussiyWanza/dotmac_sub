@@ -18,7 +18,7 @@ from app.models.notification import (
     NotificationDelivery,
     NotificationStatus,
 )
-from app.services import communication_eligibility
+from app.services import communication_attachments, communication_eligibility
 from app.services import email as email_service
 from app.services import push as push_service
 from app.services import sms as sms_service
@@ -341,6 +341,11 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     activity = str(
                         delivery_metadata.get("activity") or "notification_queue"
                     )
+                resolved_attachments = (
+                    communication_attachments.resolve_email_attachments(
+                        db, notification
+                    )
+                )
                 success = email_service.send_email(
                     db=db,
                     to_email=notification.recipient,
@@ -369,6 +374,14 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                         ]
                         if isinstance(delivery_metadata.get("bcc"), list)
                         else []
+                    ),
+                    attachments=tuple(
+                        email_service.EmailAttachment(
+                            filename=item.filename,
+                            content_type=item.content_type,
+                            content=item.content,
+                        )
+                        for item in resolved_attachments
                     ),
                 )
             elif notification.channel == NotificationChannel.sms:

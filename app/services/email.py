@@ -1,9 +1,11 @@
 import html
 import logging
 import os
+import re
 import smtplib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -22,11 +24,67 @@ from app.models.subscription_engine import SettingValueType
 from app.schemas.notification import NotificationCreate
 from app.schemas.settings import DomainSettingUpdate
 from app.services.branding_config import get_brand
+from app.services.communication_intents import MAX_EMAIL_ATTACHMENT_BYTES
 from app.services.domain_settings import notification_settings
 from app.services.notification import notifications as notification_records
 from app.services.settings_spec import resolve_value
 
 logger = logging.getLogger(__name__)
+
+_SAFE_ATTACHMENT_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True)
+class EmailAttachment:
+    filename: str
+    content_type: str
+    content: bytes
+
+
+def _attachment_filename(value: str) -> str:
+    filename = value.replace("\\", "_").replace("/", "_")
+    filename = _SAFE_ATTACHMENT_FILENAME.sub("-", filename).strip(".-")
+    return filename[:180] or "attachment.pdf"
+
+
+def _build_email_message(
+    *,
+    subject: str,
+    from_header: str,
+    to_email: str,
+    body_html: str,
+    body_text: str | None,
+    cc_recipients: list[str],
+    attachments: tuple[EmailAttachment, ...],
+) -> MIMEMultipart:
+    msg = MIMEMultipart("mixed" if attachments else "alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_header
+    msg["To"] = to_email
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
+
+    body = MIMEMultipart("alternative") if attachments else msg
+    if body_text:
+        body.attach(MIMEText(body_text, "plain"))
+    body.attach(MIMEText(body_html, "html"))
+    if attachments:
+        msg.attach(body)
+    if sum(len(item.content) for item in attachments) > MAX_EMAIL_ATTACHMENT_BYTES:
+        raise ValueError("Email attachments exceed the total size limit")
+    for attachment in attachments:
+        if attachment.content_type != "application/pdf":
+            raise ValueError("Only PDF email attachments are supported")
+        if len(attachment.content) > MAX_EMAIL_ATTACHMENT_BYTES:
+            raise ValueError("Email attachment exceeds the size limit")
+        part = MIMEApplication(attachment.content, _subtype="pdf")
+        part.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=_attachment_filename(attachment.filename),
+        )
+        msg.attach(part)
+    return msg
 
 
 def _resolve_secret_value(value: str | None) -> str | None:
@@ -783,21 +841,22 @@ def send_email_with_config(
     *,
     cc_addresses: list[str] | tuple[str, ...] | None = None,
     bcc_addresses: list[str] | tuple[str, ...] | None = None,
+    attachments: tuple[EmailAttachment, ...] = (),
 ) -> bool:
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = (
-        f"{config.get('from_name') or get_brand()['from_name']} <{config.get('from_email') or get_brand()['from_email']}>"
-    )
-    msg["To"] = to_email
     cc_recipients = list(dict.fromkeys(cc_addresses or ()))
     bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
-    if cc_recipients:
-        msg["Cc"] = ", ".join(cc_recipients)
-
-    if body_text:
-        msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
+    msg = _build_email_message(
+        subject=subject,
+        from_header=(
+            f"{config.get('from_name') or get_brand()['from_name']} "
+            f"<{config.get('from_email') or get_brand()['from_email']}>"
+        ),
+        to_email=to_email,
+        body_html=body_html,
+        body_text=body_text,
+        cc_recipients=cc_recipients,
+        attachments=attachments,
+    )
 
     try:
         host = str(config.get("host") or "")
@@ -847,6 +906,7 @@ def send_email(
     sensitive_content: bool = False,
     cc_addresses: list[str] | tuple[str, ...] | None = None,
     bcc_addresses: list[str] | tuple[str, ...] | None = None,
+    attachments: tuple[EmailAttachment, ...] = (),
 ) -> bool:
     """
     Send an email via SMTP.
@@ -872,6 +932,8 @@ def send_email(
         tracked_body = html_to_text(body_html)
 
     if db is not None and track and notification_id is None:
+        if attachments:
+            raise ValueError("Queued email attachments require durable references")
         queued = notification_records.create_customer_notification(
             db,
             NotificationCreate(
@@ -896,23 +958,23 @@ def send_email(
 
     config = _get_smtp_config(db, sender_key=sender_key, activity=activity)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{config['from_name']} <{config['from_email']}>"
-    msg["To"] = to_email
     cc_recipients = list(dict.fromkeys(cc_addresses or ()))
     bcc_recipients = list(dict.fromkeys(bcc_addresses or ()))
-    if cc_recipients:
-        msg["Cc"] = ", ".join(cc_recipients)
+    msg = _build_email_message(
+        subject=subject,
+        from_header=f"{config['from_name']} <{config['from_email']}>",
+        to_email=to_email,
+        body_html=body_html,
+        body_text=body_text,
+        cc_recipients=cc_recipients,
+        attachments=attachments,
+    )
     for name, value in (headers or {}).items():
         normalized_name = str(name).strip()
         if normalized_name.lower() in {"from", "to", "cc", "bcc", "subject"}:
             raise ValueError(f"Reserved email header cannot be overridden: {name}")
         msg[normalized_name] = str(value)
 
-    if body_text:
-        msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
     notification = None
     if db is not None and (notification_id or track):
         notification = notification_records.record_transport_attempt(
