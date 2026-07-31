@@ -77,6 +77,37 @@ git merge-base --is-ancestor origin/main origin/dev && echo ok
 If that fails, the branches have already diverged. Do not open the promotion
 from `dev`. Reconcile first, as described in the next section.
 
+### Branch protection: green is required, an approving review is not
+
+`dev` requires its status checks to pass and **zero** approving reviews. That is
+deliberate, not an oversight. Do not add a review requirement without first
+satisfying the precondition below.
+
+Release automation here is single-account. The rolling version-bump pull request
+is generated on nearly every merge, agent-authored pull requests merge on green
+throughout the day, and **all of them are authored by the same account**, because
+the automation pushes with that account's `VERSION_BUMP_TOKEN`. GitHub does not
+permit self-approval, and that account is the only admin. So the only person who
+could satisfy a review requirement is the only person who could bypass it, and
+every automated merge would become an admin override.
+
+That is worse than having no gate. It normalises the bypass and makes the audit
+trail dishonest, because routine traffic then looks like a deliberate exception.
+This was demonstrated in practice on 2026-07-31: the requirement was added and
+blocked a fully green bump pull request, stalling a waiting deployment, and was
+reverted within the hour.
+
+**Precondition for re-enabling.** Give automation its own identity — point
+`VERSION_BUMP_TOKEN` at a GitHub App installation token or a dedicated bot
+account, so its pull requests are authored by that identity and a human can
+approve them in one click. Never point it at `GITHUB_TOKEN`: GitHub raises no
+workflow runs for events made with it, so required checks never report and the
+pull request becomes permanently unmergeable. `version-bump-pr.yml` already
+validates the token and warns rather than falling back silently.
+
+Once automation is a separate identity, a review requirement becomes meaningful
+rather than ceremonial, and can be reconsidered.
+
 ### Fast-forward `dev` to `main` immediately after a promotion merges
 
 A merge-commit promotion creates a commit **on `main` only**. `main` becomes

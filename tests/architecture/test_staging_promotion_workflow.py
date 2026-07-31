@@ -94,6 +94,24 @@ def test_runbook_records_the_merge_method_per_pull_request_kind() -> None:
     assert "git merge-base --is-ancestor origin/main origin/dev" in runbook
 
 
+def test_runbook_explains_why_dev_requires_no_approving_review() -> None:
+    """The rule was added and reverted within an hour on 2026-07-31.
+
+    Single-account automation cannot satisfy a review requirement: bump and
+    agent pull requests are authored by the only admin, nobody may self-approve,
+    so every automated merge becomes an admin override. Recording why keeps it
+    from being re-added, and names the precondition for reconsidering it.
+    """
+
+    runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
+
+    assert "an approving review is not" in runbook
+    assert "VERSION_BUMP_TOKEN" in runbook
+    # The deadlock that makes GITHUB_TOKEN the wrong identity must stay stated.
+    assert "GITHUB_TOKEN" in runbook
+    assert "permanently unmergeable" in runbook
+
+
 def test_runbook_requires_fast_forwarding_dev_after_a_promotion() -> None:
     """The promotion merge commit exists only on main, leaving dev behind.
 
