@@ -1,0 +1,74 @@
+name: Dev-First Gate
+
+# Release changes promote through `dev` and staging before `main`. Nothing used
+# to enforce that, so work landed on `main` unstaged and the branches diverged.
+# This gate refuses a pull request that targets `main` unless it is promoting or
+# reconciling, and explains the flow in the failure itself.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-first-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Dev-first promotion gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the head branch
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          # An override exists so a production incident is never blocked by this
+          # gate. It is deliberately visible: the label is on the PR, and the
+          # run below records that it was used.
+          if echo "$LABELS" | grep -q '"dev-first:override"'; then
+            echo "::warning::Dev-first gate overridden by the dev-first:override label on #${PR_NUMBER} (head: ${HEAD_REF})."
+            echo "Overridden. This PR reaches main without passing through dev and staging."
+            exit 0
+          fi
+
+          case "$HEAD_REF" in
+            dev|agent/promote-*|agent/reconcile-*|promote/*|reconcile/*)
+              echo "Allowed: '${HEAD_REF}' is a promotion or reconciliation head."
+              exit 0
+              ;;
+          esac
+
+          # A single-line annotation surfaces in the Checks tab; the block below
+          # is what someone reads in the log.
+          echo "::error::This PR targets main, but release changes promote through dev and staging first. Retarget it with: gh pr edit ${PR_NUMBER} --base dev"
+
+          cat >&2 <<EOF
+
+          Head branch: ${HEAD_REF}
+
+          Retarget it:
+            gh pr edit ${PR_NUMBER} --base dev
+
+          Only these may target main:
+            - dev                  the promotion itself
+            - agent/promote-*      a promotion from a reconciled branch
+            - agent/reconcile-*    a reconciliation branch used as promotion head
+            - promote/*, reconcile/*
+
+          Why: merging straight to main ships code that staging never ran, and
+          leaves dev behind, which makes the next promotion conflict.
+
+          See docs/runbooks/STAGING_PROMOTION.md.
+
+          For a production incident that genuinely cannot wait, add the
+          dev-first:override label. It is recorded on the run.
+          EOF
+          exit 1
