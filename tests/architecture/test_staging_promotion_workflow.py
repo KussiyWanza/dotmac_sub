@@ -94,6 +94,25 @@ def test_runbook_records_the_merge_method_per_pull_request_kind() -> None:
     assert "git merge-base --is-ancestor origin/main origin/dev" in runbook
 
 
+def test_runbook_warns_that_merging_a_promotion_deletes_dev() -> None:
+    """delete_branch_on_merge deletes the head branch, and a promotion's head is dev.
+
+    Hit on 2026-07-31: merging the promotion removed `dev` outright. Branch
+    protection prevents it now, so this records why that protection exists and
+    must not be removed.
+    """
+
+    runbook = _read("docs/runbooks/STAGING_PROMOTION.md")
+
+    assert "delete_branch_on_merge" in runbook
+    assert "allow_deletions" in runbook
+    # gh's --delete-branch governs only the local branch; the remote deletion
+    # comes from the repository setting. Mistaking the two is the whole trap.
+    assert "--delete-branch" in runbook
+    # Recreating at the former head would leave the branches diverged again.
+    assert "not at its own former head" in runbook
+
+
 def test_dev_first_gate_refuses_pull_requests_that_bypass_staging() -> None:
     workflow = _read(".github/workflows/dev-first-gate.yml")
 
