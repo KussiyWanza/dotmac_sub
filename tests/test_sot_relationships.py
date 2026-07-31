@@ -481,6 +481,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "financial.access_resolution",
         "financial.prepaid_enforcement",
         "financial.prepaid_enforcement_state",
+        "financial.prepaid_service_coverage_reconciliation",
     )
     assert sot_relationships.dependencies_for("financial.payment_webhooks") == (
         "integration.inbox",

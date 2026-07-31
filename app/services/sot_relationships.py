@@ -11262,6 +11262,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "scheduled billing enforcement execution",
                     "scheduled prepaid balance enforcement execution",
+                    "scheduled prepaid coverage-evidence repair execution",
                     "scheduled bundle-state reconciliation execution",
                 ),
                 depends_on=(
@@ -11269,6 +11270,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "financial.access_resolution",
                     "financial.prepaid_enforcement",
                     "financial.prepaid_enforcement_state",
+                    "financial.prepaid_service_coverage_reconciliation",
+                ),
+                notes=(
+                    "The coverage-evidence repair pass is transitional ADR "
+                    "0007 debt: it drains entitlement gaps historical forward "
+                    "billing could commit. It retires with the prepaid "
+                    "balance sweep at the Phase 5 collections cutover, once "
+                    "activation and renewal cannot commit without contract, "
+                    "obligation, and timer."
                 ),
             ),
             SOTService(

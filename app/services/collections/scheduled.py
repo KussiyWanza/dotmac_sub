@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 from app.schemas.collections import BillingEnforcementRunRequest
 from app.services.collections import billing_enforcement_reconciler
@@ -70,6 +76,256 @@ def run_bundle_reconcile() -> dict[str, int]:
         session.close()
 
 
+# One coverage-repair confirmation transaction locks its accounts,
+# subscriptions, and source rows FOR UPDATE. Chunking keeps that lock set
+# bounded so a large backlog cannot stall enforcement or interactive traffic.
+_COVERAGE_REPAIR_CHUNK = 200
+
+
+class PrepaidCoverageRepairStatus(StrEnum):
+    ok = "ok"
+    stale_preview = "stale_preview"
+    error = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidCoverageRepairOutcome:
+    """Typed result of one scheduled coverage-repair pass."""
+
+    subscriptions: int
+    repairable: int
+    quarantined: int
+    quarantined_blocking: int
+    entitlements_created: int
+    stale_preview_chunks: int
+    status: PrepaidCoverageRepairStatus
+
+    def as_stats(self, prefix: str = "coverage_repair_") -> dict[str, int | str]:
+        """Serialize for the Celery/task boundary only."""
+        return {
+            f"{prefix}repairable": self.repairable,
+            f"{prefix}quarantined": self.quarantined,
+            f"{prefix}quarantined_blocking": self.quarantined_blocking,
+            f"{prefix}entitlements_created": self.entitlements_created,
+            f"{prefix}stale_preview_chunks": self.stale_preview_chunks,
+            f"{prefix}status": self.status.value,
+        }
+
+
+_REPAIR_FAILED = PrepaidCoverageRepairOutcome(
+    subscriptions=0,
+    repairable=0,
+    quarantined=0,
+    quarantined_blocking=0,
+    entitlements_created=0,
+    stale_preview_chunks=0,
+    status=PrepaidCoverageRepairStatus.error,
+)
+
+
+def repair_prepaid_coverage_evidence(
+    session: Session, *, now: datetime | None = None
+) -> PrepaidCoverageRepairOutcome:
+    """Drain exact-evidence prepaid coverage gaps without operator interaction.
+
+    Enforcement fails closed on any subscription whose paid financial evidence
+    has no entitlement projection, which parks the prepaid sweep for the whole
+    account. This runner previews the full collectible cohort and confirms the
+    fingerprint-bound repair for every item backed by exact evidence, so the
+    blocked set converges to zero between sweeps. Quarantined evidence
+    (ambiguous, conflicting, or malformed sources) still requires a human
+    decision: it is never bypassed, and enforcement-blocking quarantine is
+    persisted through the owner's run/item evidence, not just logged. All
+    decisions stay with ``financial.prepaid_service_coverage_reconciliation``;
+    this runner only sequences preview → confirm and bounds transaction size.
+
+    TRANSITIONAL (ADR 0007): this repair exists because historical forward
+    billing could commit paid evidence without its entitlement projection.
+    Retire it, together with ``prepaid_balance_sweep``, at the Phase 5
+    collections cutover — once activation/renewal cannot commit without the
+    contract, obligation, and timer, forward transactions can no longer create
+    the gaps this pass repairs.
+    """
+    from app.services.owner_commands import CommandContext
+    from app.services.prepaid_coverage_reconciliation import (
+        CoverageReconciliationDecision,
+        CoverageReconciliationReason,
+        PrepaidCoverageReconciliationError,
+        ReconcilePrepaidCoverageCommand,
+        preview_prepaid_coverage_reconciliation,
+        reconcile_prepaid_service_coverage,
+    )
+
+    # Quarantine reasons that also block adverse enforcement (the same
+    # evidence classes resolve_prepaid_coverage_enforcement_blockers reports).
+    blocking_reasons: frozenset[CoverageReconciliationReason] = frozenset(
+        {
+            CoverageReconciliationReason.malformed_paid_invoice_period,
+            CoverageReconciliationReason.malformed_renewal_origin,
+            CoverageReconciliationReason.conflicting_financial_sources,
+            CoverageReconciliationReason.ambiguous_paid_invoice_lines,
+            CoverageReconciliationReason.ambiguous_renewal_adjustments,
+        }
+    )
+
+    observed_at = now or datetime.now(UTC)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+    cohort = preview_prepaid_coverage_reconciliation(session, as_of=observed_at)
+    # The owner-command boundary requires a transaction-free session; the
+    # preview above is read-only, so completing its snapshot loses nothing.
+    session.commit()
+
+    repairable_ids: list[UUID] = []
+    blocking_quarantined_ids: list[UUID] = []
+    for item in cohort.items:
+        if item.decision == CoverageReconciliationDecision.entitlement_created:
+            repairable_ids.append(item.subscription_id)
+        elif (
+            item.decision == CoverageReconciliationDecision.quarantined
+            and item.reason in blocking_reasons
+        ):
+            blocking_quarantined_ids.append(item.subscription_id)
+    if blocking_quarantined_ids:
+        reasons = sorted(
+            {
+                item.reason.value
+                for item in cohort.items
+                if item.decision == CoverageReconciliationDecision.quarantined
+                and item.reason in blocking_reasons
+            }
+        )
+        logger.error(
+            "prepaid_coverage_quarantined_evidence_requires_review: "
+            "count=%d reasons=%s",
+            len(blocking_quarantined_ids),
+            ",".join(reasons),
+        )
+
+    created = 0
+    stale_chunks = 0
+    # Blocking quarantine rides along so the owner records immutable run/item
+    # evidence for it; identical evidence replays the same run, so repeated
+    # sweeps do not multiply records.
+    worklist: list[UUID] = sorted((*repairable_ids, *blocking_quarantined_ids), key=str)
+    for start in range(0, len(worklist), _COVERAGE_REPAIR_CHUNK):
+        chunk = tuple(worklist[start : start + _COVERAGE_REPAIR_CHUNK])
+        preview = preview_prepaid_coverage_reconciliation(
+            session,
+            as_of=observed_at,
+            subscription_ids=chunk,
+        )
+        session.commit()
+        if preview.blocker_count == 0:
+            continue
+        command = ReconcilePrepaidCoverageCommand(
+            context=CommandContext.system(
+                actor="task:prepaid-coverage-repair",
+                scope="financial.prepaid_service_coverage_reconciliation:scheduled",
+                reason=(
+                    "scheduled repair of exact prepaid coverage evidence "
+                    "blocking enforcement"
+                ),
+                idempotency_key=f"scheduled-coverage-repair:{preview.fingerprint}",
+            ),
+            as_of=preview.as_of,
+            preview_fingerprint=preview.fingerprint,
+            subscription_ids=chunk,
+        )
+        try:
+            result = reconcile_prepaid_service_coverage(session, command)
+        except PrepaidCoverageReconciliationError as exc:
+            if exc.code.endswith("stale_preview"):
+                # Evidence moved between preview and confirmation; the next
+                # sweep run re-previews and repairs the current state.
+                logger.warning(
+                    "prepaid_coverage_repair_stale_preview: "
+                    "chunk deferred to the next run"
+                )
+                stale_chunks += 1
+                continue
+            raise
+        created += result.entitlement_created_count
+        logger.info(
+            "prepaid_coverage_repair_chunk_completed: run_id=%s created=%d "
+            "already_covered=%d no_repair=%d quarantined=%d replayed=%s",
+            result.run_id,
+            result.entitlement_created_count,
+            result.already_covered_count,
+            result.no_repair_required_count,
+            result.quarantined_count,
+            result.replayed,
+        )
+
+    return PrepaidCoverageRepairOutcome(
+        subscriptions=len(cohort.subscription_ids),
+        repairable=cohort.repairable_count,
+        quarantined=cohort.quarantined_count,
+        quarantined_blocking=len(blocking_quarantined_ids),
+        entitlements_created=created,
+        stale_preview_chunks=stale_chunks,
+        status=(
+            PrepaidCoverageRepairStatus.stale_preview
+            if stale_chunks
+            else PrepaidCoverageRepairStatus.ok
+        ),
+    )
+
+
+def _publish_prepaid_enforcement_snapshot(
+    repair: PrepaidCoverageRepairOutcome,
+    sweep: dict[str, int | str],
+) -> None:
+    """Export bounded repair + enforcement counts for /metrics and alerting."""
+    from app.services.observability import StateObservation, publish_state_snapshot
+
+    def _count(key: str) -> float:
+        value = sweep.get(key, 0)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    signals: dict[str, float] = {
+        "coverage_repairable": float(repair.repairable),
+        "coverage_quarantined_blocking": float(repair.quarantined_blocking),
+        "coverage_quarantined_total": float(repair.quarantined),
+        "coverage_entitlements_created": float(repair.entitlements_created),
+        "coverage_stale_preview_chunks": float(repair.stale_preview_chunks),
+        "coverage_repair_failed": float(
+            repair.status is PrepaidCoverageRepairStatus.error
+        ),
+        "coverage_unresolved": _count("coverage_unresolved"),
+        "renewal_terms_unresolved": _count("renewal_terms_unresolved"),
+        "funding_quarantined": _count("funding_quarantined"),
+        "notice_blocked": _count("notice_blocked"),
+        "sweep_errors": _count("errors"),
+        "suspended": _count("suspended"),
+        "warned": _count("warned"),
+        "restored": _count("restored"),
+    }
+    if repair.status is PrepaidCoverageRepairStatus.error or signals["sweep_errors"]:
+        status = "error"
+    elif any(
+        signals[name]
+        for name in (
+            "coverage_quarantined_blocking",
+            "coverage_unresolved",
+            "renewal_terms_unresolved",
+            "funding_quarantined",
+            "notice_blocked",
+        )
+    ):
+        status = "degraded"
+    else:
+        status = "ok"
+    publish_state_snapshot(
+        "prepaid_enforcement",
+        (
+            StateObservation(signal=name, scope="collections", value=value)
+            for name, value in signals.items()
+        ),
+        status=status,
+    )
+
+
 def run_prepaid_balance_sweep() -> dict[str, int | str]:
     from app.services.collections.prepaid_balance_sweep import (
         run_prepaid_balance_sweep as run_sweep,
@@ -78,7 +334,21 @@ def run_prepaid_balance_sweep() -> dict[str, int | str]:
     logger.info("Starting prepaid balance sweep")
     session = SessionLocal()
     try:
+        # Repair exact-evidence coverage gaps first so this same run evaluates
+        # the repaired coverage. A repair failure must never stop enforcement:
+        # the sweep still runs and its per-account fail-close still holds.
+        try:
+            repair = repair_prepaid_coverage_evidence(session)
+        except Exception:
+            session.rollback()
+            logger.exception("prepaid_coverage_repair_failed")
+            repair = _REPAIR_FAILED
         result = run_sweep(session)
+        try:
+            _publish_prepaid_enforcement_snapshot(repair, result)
+        except Exception:
+            logger.exception("prepaid_enforcement_snapshot_failed")
+        result.update(repair.as_stats())
         logger.info("prepaid_balance_sweep completed: %s", result)
         return result
     except Exception:

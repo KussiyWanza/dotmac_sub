@@ -1,0 +1,135 @@
+# Prepaid enforcement liveness alerts (ADR 0007 operating SLO).
+#
+# Deploy-ready Prometheus rule group for the dotmac-observe stack. The
+# prepaid_balance_sweep run exports bounded enforcement and transitional
+# coverage-repair counts as observability_state{domain="prepaid_enforcement"};
+# snapshot age is the runner heartbeat. System-wide billing never stops: an
+# account with contradictory evidence enters an owned, SLA-bound exception
+# workflow, and these alerts fire when any blocked class stops draining.
+groups:
+  - name: prepaid_enforcement
+    rules:
+      # --- Heartbeat: the sweep (and its repair pass) publishes every run.
+      - alert: PrepaidEnforcementRunnerMissing
+        expr: absent(observability_snapshot_age_seconds{domain="prepaid_enforcement"}) == 1
+        for: 30m
+        labels:
+          severity: critical
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid enforcement snapshot is absent"
+          description: >
+            No prepaid_enforcement snapshot is being exported. Check the Sub
+            scrape target, the celery beat schedule, and the collections
+            worker running prepaid_balance_sweep.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: PrepaidEnforcementRunnerStale
+        expr: observability_snapshot_age_seconds{domain="prepaid_enforcement"} > 7200
+        for: 15m
+        labels:
+          severity: critical
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid enforcement has not run for over two hours"
+          description: >
+            The prepaid balance sweep publishes a snapshot on every run
+            (hourly by default). A stale snapshot means enforcement and the
+            coverage repair pass are not executing.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      # --- The repair pass itself failed; enforcement still ran fail-closed.
+      - alert: PrepaidCoverageRepairFailed
+        expr: observability_state{domain="prepaid_enforcement",signal="coverage_repair_failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid coverage-evidence repair pass is failing"
+          description: >
+            The scheduled exact-evidence coverage repair raised an error.
+            Coverage-blocked accounts will accumulate until it recovers.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      # --- SLO: repairable gaps are zero after one enforcement cycle.
+      - alert: PrepaidCoverageRepairableGapsPersist
+        expr: observability_state{domain="prepaid_enforcement",signal="coverage_repairable"} > 0
+        for: 3h
+        labels:
+          severity: critical
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Repairable prepaid coverage gaps are not draining"
+          description: >
+            Subscriptions with exact paid evidence but no entitlement
+            projection have survived multiple repair cycles. Check the repair
+            chunk logs for stale-preview loops or command failures.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      # --- Contradictory evidence needs a human decision within its SLA.
+      - alert: PrepaidCoverageQuarantinedEvidence
+        expr: observability_state{domain="prepaid_enforcement",signal="coverage_quarantined_blocking"} > 0
+        for: 1h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid accounts blocked on contradictory financial evidence"
+          description: >
+            Ambiguous, conflicting, or malformed financial evidence is
+            blocking adverse enforcement. Each item is persisted in the
+            reconciliation owner's run evidence and needs a finance review;
+            it must never be auto-suspended or silently parked.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      # --- Remaining blocked classes must trend to zero (ADR 0007 SLO).
+      - alert: PrepaidRenewalTermsUnresolved
+        expr: observability_state{domain="prepaid_enforcement",signal="renewal_terms_unresolved"} > 0
+        for: 6h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid accounts blocked on unresolved renewal terms"
+          description: >
+            Due prepaid service exists whose contracted renewal charge cannot
+            be resolved. Complete the billing contract/obligation backfill for
+            these accounts; enforcement stays fail-closed until then.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: PrepaidFundingQuarantineActive
+        expr: observability_state{domain="prepaid_enforcement",signal="funding_quarantined"} > 0
+        for: 6h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid accounts excluded by funding quarantine"
+          description: >
+            Accounts with missing or unverifiable prepaid funding baselines
+            are excluded from enforcement. Resolve via the subledger opening
+            posting backfill (ADR 0007 Phase 3).
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
+
+      - alert: PrepaidNoticeBlockedAccounts
+        expr: observability_state{domain="prepaid_enforcement",signal="notice_blocked"} > 0
+        for: 6h
+        labels:
+          severity: warning
+          area: prepaid-enforcement
+          owner: financial-collections
+        annotations:
+          summary: "Prepaid enforcement stalled on undeliverable notices"
+          description: >
+            Accounts without a deliverable warning channel are not
+            progressing toward enforcement. These need a contact route or the
+            typed notice-outcome progression that replaces this state.
+          runbook: "docs/adr/0007-end-to-end-billing-target-architecture.md"
