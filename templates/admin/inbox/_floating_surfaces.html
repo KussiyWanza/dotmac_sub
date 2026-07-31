@@ -1,5 +1,7 @@
 {# Conditional CRM-replica surfaces. The checked-in preview values are browser
    demo state only; no call or notification backend is implied. #}
+{% from "admin/inbox/_queue_macros.html" import channel_icon %}
+
 <section x-show="replyFailure"
          x-cloak
          x-transition
@@ -57,7 +59,9 @@
     <div class="flex items-center gap-3">
         <span class="relative flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 font-bold text-white">
             AC
-            <span class="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#22C55E] text-[10px] ring-2 ring-white dark:ring-slate-900">☎</span>
+            <span class="inbox-channel-indicator absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full text-white ring-2 ring-white dark:ring-slate-900" data-inbox-channel="whatsapp" title="WhatsApp">
+                {{ channel_icon("whatsapp", "h-3 w-3") }}
+            </span>
         </span>
         <div class="min-w-0 flex-1">
             <h2 class="truncate text-sm font-bold text-slate-900 dark:text-white" x-text="incomingCall && incomingCall.name"></h2>

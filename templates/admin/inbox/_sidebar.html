@@ -5,7 +5,7 @@
         <div class="flex min-w-0 items-center gap-2">
             <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg shadow-amber-500/25" aria-hidden="true">
                 <svg class="h-[22px] w-[22px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h8m-8 4h5m8-2a9 9 0 11-4.5-7.8L21 3v5h-5"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                 </svg>
             </div>
             <div class="min-w-0">
@@ -27,7 +27,7 @@
                 <button type="button" @click="openNewConversation()"
                         class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-amber-50 hover:text-amber-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:text-slate-400 dark:hover:bg-amber-500/10 dark:hover:text-amber-400"
                         aria-label="Start new conversation">
-                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
                 </button>
                 <span role="tooltip" class="pointer-events-none absolute right-0 top-full z-30 mt-2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-[10px] font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 dark:bg-slate-700">New conversation</span>
             </span>
@@ -77,18 +77,6 @@
         </label>
     </div>
 
-    <nav class="grid grid-cols-4 gap-px border-b border-slate-200 bg-slate-200 text-center dark:border-slate-800 dark:bg-slate-800" aria-label="Inbox summary filters">
-        <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Open</span></a>
-        <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-amber-700 dark:text-amber-300">{{ queue_metrics.needs_response }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unreplied</span></a>
-        <a href="/admin/inbox?open_only=true&unassigned=true" hx-get="/admin/inbox?open_only=true&unassigned=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unassigned</span></a>
-        <a href="/admin/inbox/reports/outbox-failures" class="bg-white px-1 py-2 hover:bg-rose-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums {% if queue_metrics.failed_outbound %}text-rose-600{% else %}text-slate-900 dark:text-white{% endif %}">{{ queue_metrics.failed_outbound }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Failed</span></a>
-    </nav>
-    <nav class="flex min-h-10 items-center gap-4 border-b border-slate-200 px-3 text-[11px] dark:border-slate-800" aria-label="Secondary inbox filters">
-        <a href="/admin/inbox?unread=true" class="font-medium text-slate-500 hover:text-amber-700">Unread <strong>{{ operator_unread_count }}</strong></a>
-        <a href="/admin/inbox?open_only=true&snoozed=true" class="font-medium text-slate-500 hover:text-amber-700">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
-        <a href="/admin/inbox?open_only=true&muted=true" class="font-medium text-slate-500 hover:text-amber-700">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
-    </nav>
-
     <div class="border-b border-slate-200 p-3 dark:border-slate-800">
         <button type="button" @click="filtersOpen = !filtersOpen; persistFilters()"
                 class="flex min-h-10 w-full items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 text-left text-xs font-semibold text-amber-800 hover:border-amber-300 hover:bg-amber-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:border-amber-400/50 dark:hover:bg-amber-500/20 dark:hover:text-amber-50"
@@ -97,7 +85,18 @@
             <svg class="h-4 w-4 transition-transform" :class="filtersOpen && 'rotate-180'" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
 
-        <div id="inbox-stats-filters" x-show="filtersOpen" x-collapse x-cloak class="space-y-3 pt-2">
+        <div id="inbox-stats-filters" x-show="filtersOpen" x-collapse x-cloak class="inbox-filter-scroll space-y-3 pt-2">
+            <nav class="grid grid-cols-4 gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 text-center dark:border-slate-700 dark:bg-slate-700" aria-label="Inbox summary filters">
+                <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Open</span></a>
+                <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-amber-700 dark:text-amber-300">{{ queue_metrics.needs_response }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unreplied</span></a>
+                <a href="/admin/inbox?open_only=true&unassigned=true" hx-get="/admin/inbox?open_only=true&unassigned=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unassigned</span></a>
+                <a href="/admin/inbox/reports/outbox-failures" class="bg-white px-1 py-2 hover:bg-rose-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums {% if queue_metrics.failed_outbound %}text-rose-600{% else %}text-slate-900 dark:text-white{% endif %}">{{ queue_metrics.failed_outbound }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Failed</span></a>
+            </nav>
+            <nav class="flex min-h-10 items-center gap-4 rounded-lg border border-slate-200 px-3 text-[11px] dark:border-slate-700" aria-label="Secondary inbox filters">
+                <a href="/admin/inbox?unread=true" class="font-medium text-slate-500 hover:text-amber-700">Unread <strong>{{ operator_unread_count }}</strong></a>
+                <a href="/admin/inbox?open_only=true&snoozed=true" class="font-medium text-slate-500 hover:text-amber-700">Snoozed <strong>{{ queue_metrics.snoozed_open }}</strong></a>
+                <a href="/admin/inbox?open_only=true&muted=true" class="font-medium text-slate-500 hover:text-amber-700">Muted <strong>{{ queue_metrics.muted_open }}</strong></a>
+            </nav>
             <form id="inbox-filter-form" method="get" action="/admin/inbox"
                   hx-get="/admin/inbox" hx-target="#inbox-sidebar-content" hx-swap="innerHTML" hx-push-url="true"
                   class="space-y-3"
@@ -181,7 +180,7 @@
             <div class="space-y-2">
                 <label class="flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                     <span class="w-12 shrink-0">Channel</span>
-                    <select name="channel_type" @change="$el.form.requestSubmit()" class="h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    <select name="channel_type" @change="$el.form.requestSubmit()" data-inbox-channel="{{ channel_type }}" class="inbox-channel-filter h-10 min-w-0 flex-1 rounded-lg border-slate-200 bg-white text-xs text-slate-700 focus:border-amber-500 focus:ring-amber-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
                         <option value="">All channels</option>
                         {% for option in channel_options %}<option value="{{ option }}" {% if option == channel_type %}selected{% endif %}>{{ option | replace('_',' ') | title }}</option>{% endfor %}
                     </select>
@@ -322,7 +321,7 @@
                 {% else %}
                     <div class="flex min-h-64 flex-1 flex-col items-center justify-center px-6 py-10 text-center">
                         <div class="flex h-16 w-16 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800">
-                            <svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M8 10h8m-8 4h5m8-2a9 9 0 11-4.5-7.8L21 3v5h-5"/></svg>
+                            <svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/></svg>
                         </div>
                         <p class="mt-4 text-sm font-semibold text-slate-700 dark:text-slate-200">No conversations.</p>
                         <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">

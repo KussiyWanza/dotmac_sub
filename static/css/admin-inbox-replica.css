@@ -21,6 +21,99 @@
   box-shadow: 0 1px 2px rgb(15 23 42 / 0.05);
 }
 
+[data-inbox-workspace] {
+  --channel-color: 100, 116, 139;
+}
+
+[data-inbox-workspace] [data-inbox-channel="email"] {
+  --channel-color: 139, 92, 246;
+}
+
+[data-inbox-workspace] [data-inbox-channel="whatsapp"] {
+  --channel-color: 34, 197, 94;
+}
+
+[data-inbox-workspace] [data-inbox-channel="sms"],
+[data-inbox-workspace] [data-inbox-channel="phone"] {
+  --channel-color: 249, 115, 22;
+}
+
+[data-inbox-workspace] [data-inbox-channel="telegram"] {
+  --channel-color: 14, 165, 233;
+}
+
+[data-inbox-workspace] [data-inbox-channel="chat_widget"],
+[data-inbox-workspace] [data-inbox-channel="web_chat"],
+[data-inbox-workspace] [data-inbox-channel="webchat"] {
+  --channel-color: 245, 158, 11;
+}
+
+[data-inbox-workspace] [data-inbox-channel="facebook"],
+[data-inbox-workspace] [data-inbox-channel="facebook_messenger"],
+[data-inbox-workspace] [data-inbox-channel="facebook_comment"] {
+  --channel-color: 24, 119, 242;
+}
+
+[data-inbox-workspace] [data-inbox-channel="instagram"],
+[data-inbox-workspace] [data-inbox-channel="instagram_dm"],
+[data-inbox-workspace] [data-inbox-channel="instagram_comment"] {
+  --channel-color: 236, 72, 153;
+}
+
+[data-inbox-workspace] .inbox-channel-indicator {
+  background: rgb(var(--channel-color));
+  box-shadow: 0 0 12px rgba(var(--channel-color), .4);
+}
+
+[data-inbox-workspace] .inbox-channel-label {
+  background: rgba(var(--channel-color), 0.1);
+  color: rgb(var(--channel-color));
+}
+
+[data-inbox-workspace] .inbox-channel-filter {
+  border-color: rgba(var(--channel-color), 0.45);
+}
+
+[data-inbox-workspace] .inbox-channel-text,
+[data-inbox-workspace] .inbox-phone-channel {
+  color: rgb(var(--channel-color));
+}
+
+[data-inbox-workspace] .inbox-phone-channel {
+  --channel-color: 249, 115, 22;
+}
+
+[data-inbox-workspace] .inbox-create-ticket-action {
+  background: #0891b2;
+  color: #fff;
+}
+
+[data-inbox-workspace] .inbox-create-ticket-action:hover {
+  background: #0e7490;
+}
+
+[data-inbox-workspace] .inbox-send-action {
+  box-shadow: 0 10px 24px rgba(6, 182, 212, .3);
+}
+
+[data-inbox-workspace] .inbox-create-ticket-action:focus-visible,
+[data-inbox-workspace] .inbox-send-action:focus-visible {
+  outline: 2px solid #06b6d4;
+  outline-offset: 2px;
+}
+
+[data-inbox-workspace] .inbox-filter-scroll {
+  max-height: min(30dvh, 22rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
+  scrollbar-gutter: stable;
+}
+
+[data-inbox-workspace] #inbox-conversation-queue {
+  min-height: 8rem;
+}
+
 .inbox-mesh {
   background-image:
     radial-gradient(at 0 0, rgb(6 182 212 / 0.06) 0, transparent 50%),
