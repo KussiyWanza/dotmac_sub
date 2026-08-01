@@ -9,6 +9,7 @@ RADIUS and IP state remain projections of the committed lifecycle events.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -132,6 +133,7 @@ class SubscriptionCorrectionPreview:
     target_subscription_id: UUID
     target_offer_name: str
     target_status: SubscriptionStatus
+    target_created_at: datetime
     credential_id: UUID | None
     credential_username: str | None
     target_radius_profile_id: UUID | None
@@ -254,11 +256,60 @@ def _target_profile(
 def _speed_label(profile: RadiusProfile | None) -> str | None:
     if profile is None:
         return None
+    if profile.mikrotik_rate_limit:
+        return profile.mikrotik_rate_limit
     if profile.download_speed is not None or profile.upload_speed is not None:
         down = (profile.download_speed or 0) / 1000
         up = (profile.upload_speed or 0) / 1000
         return f"{down:g} Mbps down / {up:g} Mbps up"
-    return profile.mikrotik_rate_limit
+    return None
+
+
+def _profile_configuration_issue(
+    profile: RadiusProfile | None,
+) -> SubscriptionCorrectionIssue | None:
+    if profile is None:
+        return None
+    configured_rate = bool((profile.mikrotik_rate_limit or "").strip())
+    configured_speed = bool(profile.download_speed) or bool(profile.upload_speed)
+    invalid_speed = any(
+        speed is not None and speed < 0
+        for speed in (profile.download_speed, profile.upload_speed)
+    )
+    if invalid_speed:
+        return SubscriptionCorrectionIssue(
+            "radius_profile_speed_invalid",
+            "The target RADIUS profile has an invalid speed configuration.",
+        )
+    if not configured_rate and not configured_speed:
+        return SubscriptionCorrectionIssue(
+            "radius_profile_speed_unconfigured",
+            "The target RADIUS profile has no enforceable speed configuration.",
+        )
+    return None
+
+
+def _ip_projection_issues(
+    subscription: Subscription, *, label: str
+) -> tuple[SubscriptionCorrectionIssue, ...]:
+    issues: list[SubscriptionCorrectionIssue] = []
+    for version in (4, 6):
+        field = f"ipv{version}_address"
+        value = getattr(subscription, field)
+        if not value:
+            continue
+        try:
+            parsed = ipaddress.ip_address(value)
+        except ValueError:
+            parsed = None
+        if parsed is None or parsed.version != version:
+            issues.append(
+                SubscriptionCorrectionIssue(
+                    f"{label}_ipv{version}_invalid",
+                    f"The {label} subscription has an invalid stored IPv{version} address; repair its IP evidence before correction.",
+                )
+            )
+    return tuple(issues)
 
 
 def _fingerprint(payload: dict[str, object]) -> str:
@@ -398,10 +449,46 @@ def _build_preview(
                 "The active credential is bound to a third subscription.",
             )
         )
+    if credential is not None:
+        credential_username = (credential.username or "").strip()
+        if not credential_username:
+            issues.append(
+                SubscriptionCorrectionIssue(
+                    "credential_username_missing",
+                    "The active access credential has no PPPoE username.",
+                )
+            )
+        if not (target.login or "").strip():
+            issues.append(
+                SubscriptionCorrectionIssue(
+                    "target_login_missing",
+                    "The target subscription has no PPPoE login.",
+                )
+            )
+        elif credential_username and credential_username != target.login:
+            issues.append(
+                SubscriptionCorrectionIssue(
+                    "credential_target_login_mismatch",
+                    "The active credential username does not match the target subscription login.",
+                )
+            )
+        if (active.login or "").strip() and credential_username != active.login:
+            issues.append(
+                SubscriptionCorrectionIssue(
+                    "credential_active_login_mismatch",
+                    "The active credential username does not match the mistaken subscription login.",
+                )
+            )
 
     profile, profile_issue = _target_profile(db, target, lock=lock)
     if profile_issue is not None:
         issues.append(profile_issue)
+    profile_configuration_issue = _profile_configuration_issue(profile)
+    if profile_configuration_issue is not None:
+        issues.append(profile_configuration_issue)
+
+    issues.extend(_ip_projection_issues(active, label="active"))
+    issues.extend(_ip_projection_issues(target, label="target"))
 
     fup_statement = select(FupState).where(
         FupState.subscription_id.in_((active.id, target.id))
@@ -425,19 +512,37 @@ def _build_preview(
             }
         )
     )
+    if lock_reasons:
+        issues.append(
+            SubscriptionCorrectionIssue(
+                "target_enforcement_lock_present",
+                "The target subscription has an active enforcement lock that must be resolved by its owner before correction.",
+            )
+        )
     evidence: dict[str, object] = {
         "active_subscription_id": active.id,
         "active_status": active.status.value,
         "active_updated_at": active.updated_at,
+        "active_login": active.login,
+        "active_ipv4_address": active.ipv4_address,
+        "active_ipv6_address": active.ipv6_address,
         "target_subscription_id": target.id,
         "target_status": target.status.value,
         "target_updated_at": target.updated_at,
+        "target_login": target.login,
+        "target_ipv4_address": target.ipv4_address,
+        "target_ipv6_address": target.ipv6_address,
         "credential_id": credential.id if credential else None,
+        "credential_username": credential.username if credential else None,
         "credential_subscription_id": credential.subscription_id
         if credential
         else None,
         "credential_profile_id": credential.radius_profile_id if credential else None,
         "target_profile_id": profile.id if profile else None,
+        "target_profile_updated_at": profile.updated_at if profile else None,
+        "target_profile_download_speed": profile.download_speed if profile else None,
+        "target_profile_upload_speed": profile.upload_speed if profile else None,
+        "target_profile_rate_limit": profile.mikrotik_rate_limit if profile else None,
         "active_fup": active_fup.action_status.value if active_fup else None,
         "target_fup": target_fup.action_status.value if target_fup else None,
         "target_locks": lock_reasons,
@@ -451,6 +556,7 @@ def _build_preview(
         target_subscription_id=target.id,
         target_offer_name=target.offer.name if target.offer else "Unknown plan",
         target_status=target.status,
+        target_created_at=target.created_at,
         credential_id=credential.id if credential else None,
         credential_username=credential.username if credential else None,
         target_radius_profile_id=profile.id if profile else None,
