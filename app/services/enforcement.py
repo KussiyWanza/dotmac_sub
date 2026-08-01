@@ -1510,13 +1510,22 @@ def cleanup_subscription_on_cancel(db: Session, subscription_id: str) -> dict[st
                     profile=profile,
                     action="delete",
                 )
-                with DeviceProvisioner.ssh_session(nas_device) as ssh:
-                    for cmd in commands:
-                        try:
-                            ssh.execute(cmd)
-                            stats["nas_commands_sent"] += 1
-                        except Exception as cmd_exc:
-                            logger.warning("NAS cleanup command failed: %s", cmd_exc)
+                # A PPPoE cancellation yields no commands by design: the NAS
+                # holds no per-customer record, so there is nothing to clean up
+                # and no reason to open an SSH session to every NAS on every
+                # cancel. Pre-existing shadowing secrets are retired per NAS
+                # through network.nas_local_secret_boundary's reviewed cleanup,
+                # not implicitly here.
+                if commands:
+                    with DeviceProvisioner.ssh_session(nas_device) as ssh:
+                        for cmd in commands:
+                            try:
+                                ssh.execute(cmd)
+                                stats["nas_commands_sent"] += 1
+                            except Exception as cmd_exc:
+                                logger.warning(
+                                    "NAS cleanup command failed: %s", cmd_exc
+                                )
             except Exception as exc:
                 logger.warning(
                     "NAS cleanup failed for subscription %s: %s", subscription_id, exc

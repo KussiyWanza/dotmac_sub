@@ -74,6 +74,7 @@ class NetworkOperationType(enum.Enum):
     router_firmware_upgrade = "router_firmware_upgrade"
     router_bulk_push = "router_bulk_push"
     nas_vlan_provision = "nas_vlan_provision"
+    nas_local_secret_retire = "nas_local_secret_retire"
     autofind_scan = "autofind_scan"
 
 

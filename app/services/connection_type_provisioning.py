@@ -16,11 +16,24 @@ from app.models.catalog import (
     ConnectionType,
     NasConnectionRule,
     NasDevice,
+    NasVendor,
     RadiusProfile,
     Subscription,
 )
+from app.services.nas import local_secret_policy
+from app.services.nas.local_secret_policy import LocalSecretAction
 
 logger = logging.getLogger(__name__)
+
+# This builder's free-text ``action`` argument, mapped onto the boundary owner's
+# typed vocabulary. An action absent from this map cannot touch a local secret.
+_LOCAL_SECRET_ACTIONS: dict[str, LocalSecretAction] = {
+    "create": LocalSecretAction.create,
+    "delete": LocalSecretAction.delete,
+    "suspend": LocalSecretAction.suspend,
+    "unsuspend": LocalSecretAction.unsuspend,
+    "change_ip": LocalSecretAction.change_ip,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -820,23 +833,24 @@ def _mikrotik_commands(
     commands: list[str] = []
 
     if connection_type == ConnectionType.pppoe:
-        if action == "create":
-            parts = [f'/ppp secret add name="{login}"']
-            if prof_name:
-                parts.append(f'profile="{prof_name}"')
-            if ip:
-                parts.append(f"remote-address={ip}")
-            parts.append("service=pppoe")
-            commands.append(" ".join(parts))
-        elif action == "delete":
-            commands.append(f'/ppp secret remove [find name="{login}"]')
-        elif action == "suspend":
-            commands.append(f'/ppp secret set [find name="{login}"] disabled=yes')
-            commands.append(f'/ppp active remove [find name="{login}"]')
-        elif action == "unsuspend":
-            commands.append(f'/ppp secret set [find name="{login}"] disabled=no')
+        # No per-subscriber local secret is ever emitted. A RouterOS /ppp secret
+        # shadows the RADIUS projection rather than supplementing it, so the NAS
+        # carries no customer record at all — see
+        # app/services/nas/local_secret_policy.py and
+        # docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md. Session disconnect on
+        # suspend belongs to access.session_enforcement (CoA), not to a local
+        # secret toggle; removal of a pre-existing secret belongs to the
+        # reviewed cleanup operation.
+        ruling = local_secret_policy.decide(
+            vendor=NasVendor.mikrotik,
+            connection_type=connection_type,
+            action=_LOCAL_SECRET_ACTIONS.get(action),
+        )
+        if not ruling.emits_commands:
+            logger.info("nas_local_secret_suppressed", extra=ruling.as_log_extra())
+        return []
 
-    elif connection_type == ConnectionType.dhcp:
+    if connection_type == ConnectionType.dhcp:
         if action == "create" and ip:
             parts = [f"/ip dhcp-server lease add address={ip}"]
             if mac:

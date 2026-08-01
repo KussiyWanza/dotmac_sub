@@ -511,6 +511,29 @@ def _write_radius_projection(
     return counts
 
 
+def _single_active_ipv4(
+    candidates: set[str] | None,
+) -> tuple[str | None, tuple[str, ...]]:
+    """Resolve one active IPv4 from a candidate set, or refuse.
+
+    Returns ``(address, ())`` when exactly one active assignment exists,
+    ``(None, ())`` when there is none, and ``(None, sorted_candidates)`` when
+    there is more than one.
+
+    Refusing is the point. ``docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md``
+    states that consumers fail closed on an ambiguous ledger: picking a winner
+    -- by insertion order, lowest value, or any other deterministic tiebreak --
+    is an ownership decision this projection does not hold. The caller preserves
+    the login's existing RADIUS rows so an ambiguous ledger degrades into "no
+    change, reported" rather than "a coin-flip address, silently served".
+    """
+    if not candidates:
+        return None, ()
+    if len(candidates) == 1:
+        return next(iter(candidates)), ()
+    return None, tuple(sorted(candidates))
+
+
 def populate(
     dry_run: bool = True,
     only_usernames: set[str] | None = None,
@@ -528,6 +551,7 @@ def populate(
         "radreply_upserts": 0,
         "blocked_users_written": 0,
         "captive_ineligible_optins": 0,
+        "skipped_ambiguous_ipv4_ledger": 0,
     }
 
     enc_key = get_encryption_key()
@@ -662,8 +686,14 @@ def populate(
         # subscriber with one projected subscription.
         from app.models.network import IPAssignment, IPv4Address, IPVersion
 
-        ipv4_by_subscription: dict = {}
-        legacy_ipv4_by_subscriber: dict = {}
+        # Collect ALL active addresses per key rather than first-wins. The
+        # previous `setdefault` over an unordered query silently chose a winner
+        # when a service carried more than one active assignment -- an ownership
+        # decision this projection has no authority to make, and one that could
+        # differ between two runs over identical data. Ambiguity is now resolved
+        # by refusing to resolve: see `_single_active_ipv4` below.
+        ipv4_candidates_by_subscription: dict = {}
+        legacy_ipv4_candidates_by_subscriber: dict = {}
         for sid, subscription_id, addr in db.execute(
             select(
                 IPAssignment.subscriber_id,
@@ -676,9 +706,13 @@ def populate(
         ).all():
             if sid and addr:
                 if subscription_id:
-                    ipv4_by_subscription.setdefault(subscription_id, str(addr))
+                    ipv4_candidates_by_subscription.setdefault(
+                        subscription_id, set()
+                    ).add(str(addr))
                 else:
-                    legacy_ipv4_by_subscriber.setdefault(sid, str(addr))
+                    legacy_ipv4_candidates_by_subscriber.setdefault(sid, set()).add(
+                        str(addr)
+                    )
 
         # IPv6 PD: the subscription's assigned delegated prefix, emitted as
         # Delegated-IPv6-Prefix. Flag-gated (inert until IPv6 PD is turned on).
@@ -775,12 +809,31 @@ def populate(
             sub_blocked = projection.blocked
             eff_ipv4 = sub.ipv4_address
             if not eff_ipv4 or eff_ipv4 == "0.0.0.0":  # nosec B104  # noqa: S104
-                eff_ipv4 = ipv4_by_subscription.get(sub.id)
-                if (
-                    eff_ipv4 is None
-                    and subscriber_service_counts.get(sub.subscriber_id) == 1
-                ):
-                    eff_ipv4 = legacy_ipv4_by_subscriber.get(sub.subscriber_id)
+                # Only reached when the served projection is empty, so this is
+                # the one place the ledger actually has to be read. An ambiguous
+                # ledger here cannot be resolved without inventing an owner, so
+                # the login is preserved and reported instead of guessed at.
+                eff_ipv4, ambiguous_addresses = _single_active_ipv4(
+                    ipv4_candidates_by_subscription.get(sub.id)
+                )
+                if eff_ipv4 is None and not ambiguous_addresses:
+                    if subscriber_service_counts.get(sub.subscriber_id) == 1:
+                        eff_ipv4, ambiguous_addresses = _single_active_ipv4(
+                            legacy_ipv4_candidates_by_subscriber.get(sub.subscriber_id)
+                        )
+                if ambiguous_addresses:
+                    logger.error(
+                        "ambiguous active IPv4 ledger for login %s (subscription "
+                        "%s): %s. Preserving the existing RADIUS rows; the "
+                        "assignment owner must adjudicate.",
+                        login,
+                        sub.id,
+                        ", ".join(ambiguous_addresses),
+                    )
+                    _increment_result_count(stats, "skipped_ambiguous_ipv4_ledger")
+                    unbuildable_usernames.add(login)
+                    preserve_usernames.add(login)
+                    continue
             delegated_ipv6 = pd_by_subscription.get(sub.id)
             if (
                 delegated_ipv6 is None

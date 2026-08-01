@@ -227,6 +227,31 @@ class EnforcementHandler:
 
     def _handle_subscription_cancel(self, db: Session, event: Event) -> None:
         self._handle_subscription_block(db, event, "canceled")
+        self._stage_local_secret_retirement(db, event)
+
+    def _stage_local_secret_retirement(self, db: Session, event: Event) -> None:
+        """Retire a shadowing NAS-local secret once cancellation has projected.
+
+        Ordering matters: ``_handle_subscription_block`` raises through
+        ``_raise_incomplete`` when the terminal RADIUS projection did not
+        complete, so reaching this line means RADIUS has stopped serving the
+        login and its absence is expected rather than a hazard.
+
+        The retirement itself is best-effort by design. Cancellation is
+        authoritative and already decided; a NAS that is unreachable must leave
+        a retryable, visible ``NetworkOperation`` failure rather than roll the
+        lifecycle transition back.
+        """
+        from app.services.nas.local_secret_policy import stage_terminal_retirement
+
+        subscription_id = event.subscription_id or event.payload.get("subscription_id")
+        if not subscription_id:
+            return
+        stage_terminal_retirement(
+            db,
+            subscription_id=str(subscription_id),
+            event_reference=str(getattr(event, "id", "") or "subscription.canceled"),
+        )
 
     def _handle_subscription_restore(self, db: Session, event: Event) -> None:
         from app.services.account_lifecycle import compute_account_status

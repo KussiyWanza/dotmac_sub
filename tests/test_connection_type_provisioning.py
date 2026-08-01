@@ -460,29 +460,39 @@ class TestAppendAdditionalRoutes:
 
 
 class TestMikrotikCommands:
-    def test_pppoe_create(self, mock_subscription, mock_profile):
-        cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.pppoe, "create"
-        )
-        assert len(cmds) == 1
-        assert "/ppp secret add" in cmds[0]
-        assert "service=pppoe" in cmds[0]
-        assert mock_profile.name in cmds[0]
+    @pytest.mark.parametrize(
+        "action", ["create", "delete", "suspend", "unsuspend", "change_ip"]
+    )
+    def test_pppoe_emits_no_local_secret_command(
+        self, mock_subscription, mock_profile, action
+    ):
+        """The NAS carries no per-customer PPPoE record, for any action.
 
-    def test_pppoe_delete(self, mock_subscription, mock_profile):
+        A local ``/ppp secret`` bypasses the RADIUS projection rather than
+        supplementing it, so access lives entirely in
+        ``access.radius_projection``; suspension is CoA through
+        ``access.session_enforcement``; removal of an existing secret is the
+        reviewed cleanup operation, not a builder concern.
+        """
         cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.pppoe, "delete"
+            mock_subscription, mock_profile, ConnectionType.pppoe, action
         )
-        assert len(cmds) == 1
-        assert "/ppp secret remove" in cmds[0]
 
-    def test_pppoe_suspend(self, mock_subscription, mock_profile):
-        cmds = _mikrotik_commands(
-            mock_subscription, mock_profile, ConnectionType.pppoe, "suspend"
-        )
-        assert len(cmds) == 2
-        assert "disabled=yes" in cmds[0]
-        assert "/ppp active remove" in cmds[1]
+        assert cmds == []
+
+    def test_pppoe_never_mentions_a_local_secret_at_all(
+        self, mock_subscription, mock_profile
+    ):
+        """Belt and braces: no action may leak the prohibited verbs."""
+        emitted = [
+            command
+            for action in ("create", "delete", "suspend", "unsuspend", "change_ip")
+            for command in _mikrotik_commands(
+                mock_subscription, mock_profile, ConnectionType.pppoe, action
+            )
+        ]
+
+        assert not [c for c in emitted if "/ppp secret" in c]
 
     def test_dhcp_create(self, mock_subscription, mock_profile):
         cmds = _mikrotik_commands(

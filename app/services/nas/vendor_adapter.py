@@ -279,59 +279,20 @@ class MikroTikAdapter(BaseNasVendorAdapter):
             description="Import RouterOS configuration",
         )
 
-    def get_authorize_command(
-        self,
-        username: str,
-        password: str,
-        *,
-        ip_address: str | None = None,
-        speed_profile: str | None = None,
-        **kwargs: Any,
-    ) -> VendorCommand:
-        # Build PPP secret command
-        parts = [f'/ppp secret add name="{username}" password="{password}"']
-        parts.append("service=pppoe")
-
-        if speed_profile:
-            parts.append(f'profile="{speed_profile}"')
-
-        if ip_address:
-            parts.append(f"remote-address={ip_address}")
-
-        return VendorCommand(
-            command=" ".join(parts),
-            command_type=CommandType.authorize,
-            requires_config_mode=False,
-            timeout_seconds=30,
-            description=f"Create PPPoE secret for {username}",
-        )
-
-    def get_deauthorize_command(self, username: str) -> VendorCommand:
-        return VendorCommand(
-            command=f'/ppp secret remove [find name="{username}"]',
-            command_type=CommandType.deauthorize,
-            requires_config_mode=False,
-            timeout_seconds=30,
-            description=f"Remove PPPoE secret for {username}",
-        )
-
-    def get_suspend_command(self, username: str) -> VendorCommand:
-        return VendorCommand(
-            command=f'/ppp secret set [find name="{username}"] disabled=yes',
-            command_type=CommandType.suspend,
-            requires_config_mode=False,
-            timeout_seconds=30,
-            description=f"Disable PPPoE secret for {username}",
-        )
-
-    def get_unsuspend_command(self, username: str) -> VendorCommand:
-        return VendorCommand(
-            command=f'/ppp secret set [find name="{username}"] disabled=no',
-            command_type=CommandType.unsuspend,
-            requires_config_mode=False,
-            timeout_seconds=30,
-            description=f"Enable PPPoE secret for {username}",
-        )
+    # get_authorize_command / get_deauthorize_command / get_suspend_command /
+    # get_unsuspend_command are deliberately NOT overridden here. They used to
+    # build a local PPPoE secret carrying the customer's address, and to toggle
+    # its enabled flag for suspension — making the router a second authority for
+    # both the address and the access state. RouterOS consults RADIUS only when
+    # the username is absent from its local secret store, so such a record
+    # bypasses access.radius_projection rather than supplementing it.
+    #
+    # Inheriting the base class's NotImplementedError is the point — a MikroTik
+    # PPPoE user is provisioned by projecting RADIUS, suspended by CoA through
+    # access.session_enforcement, and cleaned up through the reviewed operation
+    # in app/services/nas/local_secret_policy.py. See
+    # docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md and the architecture guard in
+    # tests/architecture/test_nas_local_secret_prohibition.py.
 
     def get_status(self, device: NasDevice) -> StatusResult:
         """Get MikroTik device status via API."""

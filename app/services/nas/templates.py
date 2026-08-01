@@ -30,6 +30,20 @@ from app.services.response import ListResponseMixin
 logger = logging.getLogger(__name__)
 
 
+def _assert_template_body_allowed(content: object) -> None:
+    """Reject a template body that would mutate a NAS-local PPPoE secret.
+
+    Enforced at authoring time as well as execution time. Catching it only on
+    execution would leave a saved row that looks legitimate in the UI and fails
+    for the first operator who runs it.
+    """
+    from app.services.nas.local_secret_policy import assert_command_text_allowed
+
+    if content is None:
+        return
+    assert_command_text_allowed(str(content), context="Provisioning template body")
+
+
 class ProvisioningTemplates(ListResponseMixin):
     """Service class for provisioning template operations."""
 
@@ -46,6 +60,8 @@ class ProvisioningTemplates(ListResponseMixin):
             # Find all {{placeholder}} patterns
             placeholders = list(set(re.findall(r"\{\{(\w+)\}\}", content)))
             data["placeholders"] = placeholders
+
+        _assert_template_body_allowed(data.get("template_content"))
 
         template = ProvisioningTemplate(**data)
         db.add(template)
@@ -176,6 +192,9 @@ class ProvisioningTemplates(ListResponseMixin):
             content = data["template_content"]
             placeholders = list(set(re.findall(r"\{\{(\w+)\}\}", content)))
             data["placeholders"] = placeholders
+
+        if "template_content" in data:
+            _assert_template_body_allowed(data["template_content"])
 
         for key, value in data.items():
             setattr(template, key, value)
