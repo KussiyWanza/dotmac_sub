@@ -477,6 +477,28 @@ Use one controlled subscriber to verify:
 5. Queues welcome notification email
 6. Generates prorated invoice (if mid-cycle)
 
+### Correct an accidentally activated subscription
+
+When an active subscription has an older restorable sibling, its detail page
+shows **Correct Subscription**. Use it only to repair an accidental activation:
+
+1. Open the mistakenly active subscription and select **Correct Subscription**.
+2. Find the owner-reviewed form for the exact subscription and plan that should
+   remain. Blocked options explain why they cannot run.
+3. Review the cancellation/restoration pair, PPPoE credential, target RADIUS
+   profile and speed, FUP cleanup, and financial-history result.
+4. Tick the exact-correction confirmation and submit the shared action form.
+5. Open the restored subscription and verify its provisioning evidence and
+   external FreeRADIUS rows.
+
+The command does not delete history and does not guess the correct plan. It
+cancels the mistaken service, restores the selected service, moves the single
+active access credential to the target profile, clears stale FUP runtime state,
+and requests the normal RADIUS/IP reconciliation after commit. It makes no
+automatic credit or invoice adjustment. If the mistaken subscription already
+has an invoice line, the preview blocks the command; reconcile the financial
+documents through their owning billing workflow before retrying.
+
 ### Step 3: Verify RADIUS Sync
 
 Check that credentials are synced:

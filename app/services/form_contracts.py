@@ -115,6 +115,12 @@ HIGH_IMPACT_EDITORS: tuple[HighImpactEditor, ...] = (
         status="pending",
     ),
     HighImpactEditor(
+        key="admin.subscription_correction",
+        surface="admin catalog mistaken-subscription correction",
+        status="contracted",
+        contract_key="admin.subscription_correction",
+    ),
+    HighImpactEditor(
         key="admin.invoice_void",
         surface="admin billing invoice void",
         status="pending",

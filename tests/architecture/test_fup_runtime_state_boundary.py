@@ -21,6 +21,7 @@ STATE_FIELDS = {
 ALLOWED_MUTATION_CALLERS = {
     "app/services/enforcement.py",
     "app/services/fup_enforcement.py",
+    "app/services/subscription_correction.py",
 }
 
 
