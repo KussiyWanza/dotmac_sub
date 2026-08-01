@@ -189,3 +189,26 @@ def test_work_item_summary_fits_admin_alert_schema():
         "inferred from the catalog."
     )
     assert len(summary) <= 255
+
+
+def test_suspended_subscription_is_repaired_from_paid_evidence(
+    db_session, subscriber, subscription
+):
+    # Slice-1 gap found in production: 20 suspended prepaid subscriptions
+    # lacked unit_price and stayed blocked (and unrestorable) because the
+    # preview only looked at active status while the threshold owner
+    # evaluates every collectible status.
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.suspended
+    subscription.unit_price = None
+    db_session.commit()
+    _paid_line(db_session, subscriber, subscription, "35000.00")
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items and items[0].decision is RenewalTermsDecision.repairable
+
+    _capture(db_session, preview.fingerprint, "renewal-terms-suspended")
+
+    db_session.refresh(subscription)
+    assert subscription.unit_price == Decimal("35000.00")

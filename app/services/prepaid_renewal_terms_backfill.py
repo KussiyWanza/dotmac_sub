@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoiceLine, InvoiceStatus
-from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
+from app.models.catalog import BillingMode, Subscription
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
     CommandContext,
@@ -110,9 +110,15 @@ class RenewalTermsBackfillResult:
 
 
 def _blocked_subscriptions(db: Session) -> list[Subscription]:
+    # The threshold owner evaluates every COLLECTIBLE status, not just
+    # active: a suspended prepaid subscription with no frozen contracted
+    # amount still blocks its account (including funded restoration), so the
+    # backfill must see it too.
+    from app.services.billing_settings import COLLECTIBLE_SERVICE_STATUSES
+
     rows = db.scalars(
         select(Subscription).where(
-            Subscription.status == SubscriptionStatus.active,
+            Subscription.status.in_(COLLECTIBLE_SERVICE_STATUSES),
             Subscription.billing_mode == BillingMode.prepaid,
         )
     ).all()
