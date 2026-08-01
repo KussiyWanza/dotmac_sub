@@ -20,7 +20,9 @@ MIGRATED_MODULES = (
 
 CONTRACTED_OWNERS = {
     "support.ticket_lifecycle",
+    "support.ticket_vocabulary",
     "support.ticket_configuration",
+    "support.ticket_region_projection",
     "support.ticket_sla_clock",
     "support.ticket_work_order_handoff",
     "support.ticket_bulk_commands",

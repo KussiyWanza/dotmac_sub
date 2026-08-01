@@ -726,7 +726,10 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     )
     assert sot_relationships.dependencies_for("operations.project_lifecycle") == (
         "auth.permission_gate",
+        "auth.staff_provisioning",
+        "communications.intents",
         "events.dispatcher",
+        "communications.notification_service",
         "communications.staff_notifications",
         "operations.work_order_commands",
     )
@@ -842,6 +845,20 @@ def test_domain_sot_relationships_resolve_owning_service_by_concern():
     assert ticket_lifecycle is not None
     assert ticket_lifecycle.name == "support.ticket_lifecycle"
     assert ticket_lifecycle.module == "app.services.support"
+
+    ticket_vocabulary = sot_relationships.owning_service_for(
+        "ticket status vocabulary"
+    )
+    assert ticket_vocabulary is not None
+    assert ticket_vocabulary.name == "support.ticket_vocabulary"
+    assert sot_relationships.dependencies_for("support.ticket_configuration") == (
+        "support.ticket_vocabulary",
+        "operations.service_team_lifecycle",
+    )
+    assert sot_relationships.dependencies_for("support.ticket_region_projection") == (
+        "support.ticket_configuration",
+        "support.ticket_lifecycle",
+    )
 
     ticket_presentation = sot_relationships.owning_service_for(
         "support-ticket status labels, semantic tones, and icon keys"

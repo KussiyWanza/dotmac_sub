@@ -28,10 +28,17 @@ commit lifecycle changes. Every public mutation enters
 
 ## Configuration and policies
 
+`support.ticket_vocabulary` owns the closed typed `TicketStatus` vocabulary and
+terminal-state semantics consumed by both lifecycle and configuration. It is a
+pure value boundary and owns no Ticket or configuration rows.
+
 `support.ticket_configuration` owns operator-managed status choices,
 priorities, types, routing inputs, service-team membership configuration, and
-priority/type SLA targets. It may only expose statuses from the lifecycle
-vocabulary.
+priority/type SLA targets. It may only expose statuses from the ticket
+vocabulary owner. `support.ticket_region_projection` separately resolves the
+current region choices from configured values and canonical Ticket observations.
+This separation prevents lifecycle and configuration from depending on each
+other while preserving the provenance of both inputs.
 
 Assignment is split deliberately:
 

@@ -19674,6 +19674,69 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="support.ticket_vocabulary",
+                module="app.models.support",
+                owns=("ticket status vocabulary",),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="ticket status vocabulary",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("typed ticket status values",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed ticket status values",
+                            owner="support.ticket_vocabulary",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "closed TicketStatus enum values and terminal-state semantics"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Pure typed vocabulary resolution performs no database work."
+                        ),
+                        locking="Immutable enum values require no locking.",
+                        idempotency=(
+                            "The same application version returns the same closed value set."
+                        ),
+                        retries="Pure resolution requires no retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="support command and configuration adapters",
+                        fail_closed_on=("unknown ticket status value",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="support.ticket_lifecycle bundled vocabulary concern",
+                        new_owner="support.ticket_vocabulary",
+                        verification=(
+                            "ticket status transition and SOT relationship tests"
+                        ),
+                        cutover_gate=(
+                            "lifecycle and configuration name the shared vocabulary owner"
+                        ),
+                        fallback_retirement=(
+                            "no service claims the vocabulary as lifecycle state"
+                        ),
+                    ),
+                    steward="support operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ticket_status_transition.py",
+                        "tests/test_sot_relationships.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="support.ticket_lifecycle",
                 module="app.services.support",
                 owns=(
@@ -19681,7 +19744,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "ticket creation and identity",
                     "admin-created ticket customer email acknowledgement",
                     "support ticket human-readable number allocation",
-                    "ticket status vocabulary",
                     "guarded ticket status transitions",
                     "ticket lifecycle timestamps and consequences",
                     "ticket team and person assignment",
@@ -19693,6 +19755,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
                 depends_on=(
                     "support.ticket_configuration",
+                    "support.ticket_vocabulary",
                     "support.ticket_assignment_evaluation",
                     "support.ticket_automation_evaluation",
                     "customer.identity_scope",
@@ -19740,7 +19803,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "ticket lifecycle mutations",
                                 "ticket creation and identity",
                                 "support ticket human-readable number allocation",
-                                "ticket status vocabulary",
                                 "guarded ticket status transitions",
                                 "ticket lifecycle timestamps and consequences",
                                 "ticket team and person assignment",
@@ -19985,11 +20047,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "operator-visible ticket status subset",
                     "ticket priority and type options",
                     "ticket routing and priority/type SLA target policy",
-                    "canonical support-ticket region projection",
                     "customer-portal ticket fallback team routing",
                 ),
                 depends_on=(
-                    "support.ticket_lifecycle",
+                    "support.ticket_vocabulary",
                     "operations.service_team_lifecycle",
                 ),
                 notes=(
@@ -20020,14 +20081,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             )
                         ),
                         ConcernContract(
-                            name="canonical support-ticket region projection",
-                            role=OwnerRole.RESOLVER,
-                            input_names=(
-                                "current ticket configuration",
-                                "canonical ticket regions",
-                            ),
-                        ),
-                        ConcernContract(
                             name="customer-portal ticket fallback team routing",
                             role=OwnerRole.RESOLVER,
                             input_names=("active service-team identity",),
@@ -20045,7 +20098,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         AuthorityInput(
                             name="ticket lifecycle vocabulary",
-                            owner="support.ticket_lifecycle",
+                            owner="support.ticket_vocabulary",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="TicketStatus enum and guarded terminal-state semantics",
                         ),
@@ -20056,14 +20109,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "workflow DomainSetting rows plus synchronized ServiceTeam and "
                                 "ServiceTeamMember records"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="canonical ticket regions",
-                            owner="support.ticket_lifecycle",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source=(
-                                "distinct non-empty Region values on current active Ticket rows"
                             ),
                         ),
                         AuthorityInput(
@@ -20147,6 +20192,87 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_support_ticket_settings.py",
                         "tests/test_sla_assignment.py",
                         "tests/architecture/test_support_ticket_sot_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="support.ticket_region_projection",
+                module="app.services.support_ticket_settings",
+                owns=("canonical support-ticket region projection",),
+                depends_on=(
+                    "support.ticket_configuration",
+                    "support.ticket_lifecycle",
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="canonical support-ticket region projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "current ticket configuration",
+                                "canonical ticket regions",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="current ticket configuration",
+                            owner="support.ticket_configuration",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="configured workflow region option values",
+                        ),
+                        AuthorityInput(
+                            name="canonical ticket regions",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "distinct non-empty Region values on current active Ticket rows"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "list_canonical_region_options reads configuration and Ticket "
+                            "rows without writes."
+                        ),
+                        locking="A transaction-current read requires no row lock.",
+                        idempotency=(
+                            "Re-reading the same committed inputs returns the same normalized "
+                            "values."
+                        ),
+                        retries=(
+                            "Adapters may retry the complete read after transient database "
+                            "failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="support form and API adapters",
+                        fail_closed_on=("unavailable current region inputs",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "support.ticket_configuration bundled region projection concern"
+                        ),
+                        new_owner="support.ticket_region_projection",
+                        verification="support settings and SOT relationship tests",
+                        cutover_gate=(
+                            "region reads name both configuration and Ticket provenance"
+                        ),
+                        fallback_retirement=(
+                            "configuration no longer claims lifecycle-derived region authority"
+                        ),
+                    ),
+                    steward="support operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_support_ticket_settings.py",
+                        "tests/test_sot_relationships.py",
                     ),
                 ),
             ),
