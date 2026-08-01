@@ -373,7 +373,13 @@ def test_confirmed_deposit_skips_eligible_prepaid_renewal(db_session, subscriber
     )
     db_session.add(offer)
     db_session.flush()
-    next_billing_at = datetime(2026, 8, 1)
+    # An UPCOMING renewal: deposits only skip renewals that are not yet due
+    # (a due/lapsed one is funded — see
+    # test_confirmed_deposit_renews_due_suspended_service_before_restoration).
+    # A fixed calendar date here goes stale the day the clock passes it.
+    next_billing_at = datetime.now(UTC).replace(tzinfo=None, microsecond=0) + timedelta(
+        days=30
+    )
     subscription = Subscription(
         subscriber_id=subscriber.id,
         offer_id=offer.id,

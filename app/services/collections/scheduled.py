@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
@@ -85,6 +85,11 @@ _QUARANTINE_FINDING_PREFIX = "prepaid-coverage:quarantine:"
 #: Finance review window recorded on each blocking-quarantine work item.
 _QUARANTINE_SLA_HOURS = 72
 
+#: The run must finish and publish its snapshot before the Celery soft time
+#: limit (840s in production) interrupts a query mid-flight; work that does
+#: not fit is deferred to the next run instead of dying unreported.
+_DEFAULT_SWEEP_BUDGET_SECONDS = 720
+
 
 class PrepaidCoverageRepairStatus(StrEnum):
     ok = "ok"
@@ -102,6 +107,7 @@ class PrepaidCoverageRepairOutcome:
     quarantined_blocking: int
     entitlements_created: int
     stale_preview_chunks: int
+    deferred_subscriptions: int
     status: PrepaidCoverageRepairStatus
 
     def as_stats(self, prefix: str = "coverage_repair_") -> dict[str, int | str]:
@@ -112,6 +118,7 @@ class PrepaidCoverageRepairOutcome:
             f"{prefix}quarantined_blocking": self.quarantined_blocking,
             f"{prefix}entitlements_created": self.entitlements_created,
             f"{prefix}stale_preview_chunks": self.stale_preview_chunks,
+            f"{prefix}deferred_subscriptions": self.deferred_subscriptions,
             f"{prefix}status": self.status.value,
         }
 
@@ -123,12 +130,16 @@ _REPAIR_FAILED = PrepaidCoverageRepairOutcome(
     quarantined_blocking=0,
     entitlements_created=0,
     stale_preview_chunks=0,
+    deferred_subscriptions=0,
     status=PrepaidCoverageRepairStatus.error,
 )
 
 
 def repair_prepaid_coverage_evidence(
-    session: Session, *, now: datetime | None = None
+    session: Session,
+    *,
+    now: datetime | None = None,
+    deadline: datetime | None = None,
 ) -> PrepaidCoverageRepairOutcome:
     """Drain exact-evidence prepaid coverage gaps without operator interaction.
 
@@ -220,11 +231,21 @@ def repair_prepaid_coverage_evidence(
 
     created = 0
     stale_chunks = 0
+    deferred_subscriptions = 0
     # Blocking quarantine rides along so the owner records immutable run/item
     # evidence for it; identical evidence replays the same run, so repeated
     # sweeps do not multiply records.
     worklist: list[UUID] = sorted((*repairable_ids, *blocking_quarantined_ids), key=str)
     for start in range(0, len(worklist), _COVERAGE_REPAIR_CHUNK):
+        if deadline is not None and datetime.now(UTC) >= deadline:
+            deferred_subscriptions = len(worklist) - start
+            logger.warning(
+                "prepaid_coverage_repair_budget_exhausted: deferred=%d "
+                "of %d subscriptions to the next run",
+                deferred_subscriptions,
+                len(worklist),
+            )
+            break
         chunk = tuple(worklist[start : start + _COVERAGE_REPAIR_CHUNK])
         preview = preview_prepaid_coverage_reconciliation(
             session,
@@ -280,6 +301,7 @@ def repair_prepaid_coverage_evidence(
         quarantined_blocking=len(blocking_quarantined_ids),
         entitlements_created=created,
         stale_preview_chunks=stale_chunks,
+        deferred_subscriptions=deferred_subscriptions,
         status=(
             PrepaidCoverageRepairStatus.stale_preview
             if stale_chunks
@@ -353,6 +375,7 @@ def _publish_prepaid_enforcement_snapshot(
         "coverage_quarantined_total": float(repair.quarantined),
         "coverage_entitlements_created": float(repair.entitlements_created),
         "coverage_stale_preview_chunks": float(repair.stale_preview_chunks),
+        "coverage_repair_deferred": float(repair.deferred_subscriptions),
         "coverage_repair_failed": float(
             repair.status is PrepaidCoverageRepairStatus.error
         ),
@@ -362,6 +385,7 @@ def _publish_prepaid_enforcement_snapshot(
         "notice_suppressed": _count("notice_suppressed"),
         "no_contact_route": _count("no_contact_route"),
         "delivery_unavailable": _count("delivery_unavailable"),
+        "budget_deferred": _count("budget_deferred"),
         "sweep_errors": _count("errors"),
         "suspended": _count("suspended"),
         "warned": _count("warned"),
@@ -378,6 +402,8 @@ def _publish_prepaid_enforcement_snapshot(
             "funding_quarantined",
             "no_contact_route",
             "delivery_unavailable",
+            "coverage_repair_deferred",
+            "budget_deferred",
         )
     ):
         status = "degraded"
@@ -393,6 +419,24 @@ def _publish_prepaid_enforcement_snapshot(
     )
 
 
+def _sweep_budget_seconds(session: Session) -> int:
+    from app.models.settings import SettingDomain
+    from app.services.settings_spec import resolve_value
+
+    try:
+        value = int(
+            resolve_value(
+                session,
+                SettingDomain.collections,
+                "prepaid_balance_sweep_budget_seconds",
+            )
+            or _DEFAULT_SWEEP_BUDGET_SECONDS
+        )
+    except (TypeError, ValueError):
+        return _DEFAULT_SWEEP_BUDGET_SECONDS
+    return value if value > 0 else _DEFAULT_SWEEP_BUDGET_SECONDS
+
+
 def run_prepaid_balance_sweep() -> dict[str, int | str]:
     from app.services.collections.prepaid_balance_sweep import (
         run_prepaid_balance_sweep as run_sweep,
@@ -401,16 +445,21 @@ def run_prepaid_balance_sweep() -> dict[str, int | str]:
     logger.info("Starting prepaid balance sweep")
     session = SessionLocal()
     try:
+        # The run must always end by publishing its snapshot: work that does
+        # not fit the budget is deferred to the next run instead of letting
+        # the Celery soft time limit interrupt a query mid-flight and kill
+        # the task unreported.
+        deadline = datetime.now(UTC) + timedelta(seconds=_sweep_budget_seconds(session))
         # Repair exact-evidence coverage gaps first so this same run evaluates
         # the repaired coverage. A repair failure must never stop enforcement:
         # the sweep still runs and its per-account fail-close still holds.
         try:
-            repair = repair_prepaid_coverage_evidence(session)
+            repair = repair_prepaid_coverage_evidence(session, deadline=deadline)
         except Exception:
             session.rollback()
             logger.exception("prepaid_coverage_repair_failed")
             repair = _REPAIR_FAILED
-        result = run_sweep(session)
+        result = run_sweep(session, deadline=deadline)
         try:
             _publish_prepaid_enforcement_snapshot(repair, result)
         except Exception:
