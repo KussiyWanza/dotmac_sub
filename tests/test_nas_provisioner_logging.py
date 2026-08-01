@@ -20,7 +20,10 @@ def test_provision_user_logs_structured_lifecycle(monkeypatch, caplog):
         id=device_id,
         name="NAS-1",
         vendor=NasVendor.mikrotik,
-        default_connection_type=ConnectionType.pppoe,
+        # DHCP, not PPPoE: a MikroTik PPPoE create_user is refused at the
+        # local-secret boundary before any template runs, so this lifecycle
+        # test uses a connection type the boundary has no opinion on.
+        default_connection_type=ConnectionType.dhcp,
     )
     template = SimpleNamespace(
         id=template_id,
@@ -39,7 +42,7 @@ def test_provision_user_logs_structured_lifecycle(monkeypatch, caplog):
     )
     monkeypatch.setattr(
         "app.services.nas.templates.ProvisioningTemplates.render",
-        lambda *_args, **_kwargs: "/ppp secret add",
+        lambda *_args, **_kwargs: "/ip dhcp-server lease add address=10.0.0.2",
     )
     monkeypatch.setattr(
         "app.services.nas.logs.ProvisioningLogs.create",

@@ -28,6 +28,7 @@ from app.services import backup_alerts as backup_alerts_service  # noqa: F401
 
 # Re-export commonly monkeypatched dependencies for test compatibility
 from app.services import ping as ping_service  # noqa: F401
+from app.services.nas import local_secret_policy
 from app.services.nas._helpers import (
     RADIUS_REQUIRED_CONNECTION_TYPES,
     TEMPLATE_AUDIT_EXCLUDE_FIELDS,
@@ -128,6 +129,7 @@ __all__ = [
     "ProvisioningLogs",
     "RadiusProfiles",
     "DeviceProvisioner",
+    "local_secret_policy",
     # Singletons
     "nas_devices",
     "nas_config_backups",

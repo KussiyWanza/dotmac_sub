@@ -9,6 +9,8 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.services.nas import local_secret_policy
+
 
 class _SshSession:
     """Thin wrapper around an open paramiko SSHClient.
@@ -137,6 +139,30 @@ class DeviceProvisioner:
             ),
         )
 
+        # Boundary check BEFORE template lookup. Template bodies live in an
+        # operator-editable database row, so a PPPoE `/ppp secret` template
+        # would otherwise reintroduce the parallel authority with no code
+        # change. Refusing here means the prohibition cannot be edited around.
+        ruling = local_secret_policy.decide_for_provisioning_action(
+            vendor=device.vendor,
+            connection_type=connection_type,
+            action=action,
+        )
+        if not ruling.emits_commands:
+            logger.warning(
+                "nas_provisioning_refused_local_secret",
+                extra={
+                    **_provision_extra(
+                        device=device,
+                        action=action,
+                        triggered_by=triggered_by,
+                        connection_type=connection_type,
+                    ),
+                    **ruling.as_log_extra(),
+                },
+            )
+            raise HTTPException(status_code=409, detail=ruling.reason)
+
         # Find appropriate template
         template = ProvisioningTemplates.find_template(
             db, device.vendor, connection_type, action
@@ -150,6 +176,32 @@ class DeviceProvisioner:
 
         # Render the command
         command = ProvisioningTemplates.render(template, variables)
+
+        # Post-render guard. The action label alone is not a boundary: a
+        # template filed under reset_session or backup_config can still contain
+        # /ppp secret text, and template bodies are operator-editable data. This
+        # inspects what will actually be sent, so a benign label cannot smuggle
+        # a local-secret mutation onto the device.
+        try:
+            local_secret_policy.assert_command_text_allowed(
+                command,
+                context=f"Provisioning template {template.id}",
+            )
+        except local_secret_policy.LocalSecretCommandRejected as rejected:
+            logger.warning(
+                "nas_provisioning_refused_local_secret_command_text",
+                extra={
+                    **_provision_extra(
+                        device=device,
+                        action=action,
+                        triggered_by=triggered_by,
+                        connection_type=connection_type,
+                    ),
+                    "template_id": str(template.id),
+                    "rejected_matches": rejected.details.get("matches"),
+                },
+            )
+            raise HTTPException(status_code=409, detail=rejected.message) from rejected
 
         # Create log entry
         log = ProvisioningLogs.create(

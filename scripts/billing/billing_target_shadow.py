@@ -217,6 +217,69 @@ def _cmd_capture_addon_contract(db, args) -> int:
     return 0
 
 
+def _cmd_preview_renewal_terms(db, args) -> int:
+    from app.services.prepaid_renewal_terms_backfill import (
+        preview_prepaid_renewal_terms_backfill,
+    )
+
+    preview = preview_prepaid_renewal_terms_backfill(db)
+    _emit(
+        {
+            "as_of": preview.as_of,
+            "blocked_subscriptions": len(preview.items),
+            "repairable": preview.repairable_count,
+            "unresolved": preview.unresolved_count,
+            "preview_fingerprint": preview.fingerprint,
+            "items": [
+                {
+                    "subscription_id": item.subscription_id,
+                    "account_id": item.account_id,
+                    "decision": item.decision.value,
+                    "contracted_amount": item.contracted_amount,
+                    "distinct_paid_amounts": list(item.distinct_paid_amounts),
+                    "paid_line_count": item.paid_line_count,
+                }
+                for item in preview.items
+            ],
+            "authority_moved": False,
+            "repair_requested": False,
+        }
+    )
+    return 0
+
+
+def _cmd_capture_renewal_terms(db, args) -> int:
+    from app.services.prepaid_renewal_terms_backfill import (
+        CaptureRenewalTermsBackfillCommand,
+        capture_prepaid_renewal_terms_backfill,
+    )
+
+    # The fingerprint binds the evidence only; as_of stamps the finance
+    # work-item SLA, so capture time is the correct moment.
+    result = capture_prepaid_renewal_terms_backfill(
+        db,
+        CaptureRenewalTermsBackfillCommand(
+            preview_fingerprint=args.preview_fingerprint,
+            as_of=datetime.now(UTC),
+        ),
+        context=_context(
+            "restore reviewed contracted prepaid renewal amounts from paid "
+            "invoice evidence",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "repaired_count": result.repaired_count,
+            "work_item_count": result.work_item_count,
+            "preview_fingerprint": result.fingerprint,
+            "authority_moved": False,
+            "repair_requested": True,
+        }
+    )
+    return 0
+
+
 def _instant(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -388,6 +451,20 @@ def main() -> int:
     p.add_argument("--preview-fingerprint", required=True)
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_capture_addon_contract)
+
+    p = sub.add_parser(
+        "preview-renewal-terms",
+        help="classify blocked prepaid subscriptions against paid evidence",
+    )
+    p.set_defaults(func=_cmd_preview_renewal_terms)
+
+    p = sub.add_parser(
+        "capture-renewal-terms",
+        help="apply the reviewed renewal-terms backfill (fingerprint-bound)",
+    )
+    p.add_argument("--preview-fingerprint", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_capture_renewal_terms)
 
     p = sub.add_parser(
         "verify-rating-cohort",

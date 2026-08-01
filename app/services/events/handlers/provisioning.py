@@ -208,9 +208,10 @@ class ProvisioningHandler:
         from app.models.catalog import NasDevice, ProvisioningAction, Subscription
         from app.services.connection_type_provisioning import (
             build_nas_provisioning_commands,
+            resolve_connection_type,
         )
         from app.services.enforcement import _resolve_effective_profile
-        from app.services.nas import DeviceProvisioner
+        from app.services.nas import DeviceProvisioner, local_secret_policy
 
         subscription = db.get(Subscription, coerce_uuid(subscription_id))
         if not subscription or not subscription.provisioning_nas_device_id:
@@ -228,6 +229,9 @@ class ProvisioningHandler:
         )
         for command in commands:
             DeviceProvisioner._execute_ssh(nas_device, command)
+
+        # Queue mapping is bandwidth-monitoring bookkeeping, not access state, so
+        # it runs whether or not the NAS legitimately received any command.
         DeviceProvisioner._handle_queue_mapping(
             db,
             nas_device,
@@ -237,10 +241,24 @@ class ProvisioningHandler:
                 "username": subscription.login or "",
             },
         )
+
+        # Record WHY nothing was pushed when that is the correct outcome. A
+        # PPPoE activation sends no NAS command by design — access lives in the
+        # RADIUS projection — and without a typed ruling in the log that is
+        # indistinguishable from a push that silently failed.
+        ruling = local_secret_policy.decide(
+            vendor=nas_device.vendor,
+            connection_type=resolve_connection_type(db, subscription, nas_device),
+            action=local_secret_policy.LocalSecretAction.create,
+        )
         logger.info(
-            "Pushed %d NAS provisioning commands for subscription %s.",
-            len(commands),
-            subscription_id,
+            "nas_activation_provisioning_complete",
+            extra={
+                "subscription_id": subscription_id,
+                "commands_sent": len(commands),
+                "queue_mapping_applied": True,
+                **ruling.as_log_extra(),
+            },
         )
 
     def _handle_service_order_assigned(self, db: Session, event: Event) -> None:

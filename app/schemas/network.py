@@ -244,6 +244,14 @@ class IPAssignmentBase(BaseModel):
     dns_primary: str | None = Field(default=None, max_length=64)
     dns_secondary: str | None = Field(default=None, max_length=64)
     is_active: bool = True
+    is_primary: bool = Field(
+        default=False,
+        description=(
+            "Whether this is the address RADIUS serves as Framed-IP-Address. "
+            "A service may hold several addresses but is served on one; "
+            "additional held addresses are projected as Framed-Route."
+        ),
+    )
 
 
 class IPAssignmentCreate(IPAssignmentBase):
@@ -274,6 +282,7 @@ class IPAssignmentUpdate(BaseModel):
     dns_primary: str | None = Field(default=None, max_length=64)
     dns_secondary: str | None = Field(default=None, max_length=64)
     is_active: bool | None = None
+    is_primary: bool | None = None
 
     @model_validator(mode="after")
     def _validate_ip_version(self) -> IPAssignmentUpdate:

@@ -10132,6 +10132,155 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.prepaid_renewal_terms_backfill",
+                module="app.services.prepaid_renewal_terms_backfill",
+                owns=("prepaid renewal-terms evidence backfill",),
+                depends_on=(
+                    "financial.invoices",
+                    "financial.prepaid_service_renewals",
+                ),
+                notes=(
+                    "ADR 0007 stage-3 migration only. Prepaid enforcement fails "
+                    "closed with renewal_terms_unresolved when an active prepaid "
+                    "subscription has no frozen contracted amount "
+                    "(Subscription.unit_price NULL or non-positive). This "
+                    "temporary owner restores the amount solely from the "
+                    "subscription's own PAID base-subscription invoice lines — "
+                    "never from the mutable catalog. Absent or contradictory "
+                    "paid evidence becomes an owned, SLA-bound finance work "
+                    "item and the account stays fail-closed. Retire at the "
+                    "ADR 0007 Phase 1 cutover when billing.contracts becomes "
+                    "the renewal-terms authority."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="prepaid renewal-terms evidence backfill",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "paid base-subscription invoice lines",
+                                "blocked prepaid subscription state",
+                            ),
+                            canonical_writer=(
+                                "financial.prepaid_renewal_terms_backfill"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="paid base-subscription invoice lines",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active InvoiceLine rows with metadata kind "
+                                "base_subscription on PAID invoices for the "
+                                "blocked subscription"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="blocked prepaid subscription state",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active prepaid Subscription rows whose "
+                                "unit_price is NULL or non-positive (the exact "
+                                "predicate that yields "
+                                "renewal_terms_unresolved)"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The capture command enters execute_owner_command "
+                            "once on a transaction-free session; the "
+                            "fingerprint-bound evidence re-check, unit_price "
+                            "writes, and finance work-item sync commit "
+                            "together."
+                        ),
+                        locking=(
+                            "Each repaired Subscription row is locked FOR "
+                            "UPDATE and re-checked (already-priced rows are "
+                            "skipped) before its contracted amount is written."
+                        ),
+                        idempotency=(
+                            "The capture is fingerprint-bound to the reviewed "
+                            "preview; replay with unchanged evidence rewrites "
+                            "nothing because repaired rows fail the "
+                            "still-unpriced re-check."
+                        ),
+                        retries=(
+                            "Retry the whole command with the same idempotency "
+                            "key. Changed paid evidence requires a new "
+                            "reviewed preview fingerprint."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.prepaid_renewal_terms_backfill"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_idempotency_key"
+                            ),
+                            ("financial.prepaid_renewal_terms_backfill.stale_preview"),
+                        ),
+                        mapping_owner="billing migration adapters",
+                        fail_closed_on=(
+                            "absent paid base-subscription evidence",
+                            "contradictory distinct paid amounts",
+                            "stale preview fingerprint",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "manual staff corrections of Subscription.unit_price "
+                            "with no evidence contract"
+                        ),
+                        new_owner="financial.prepaid_renewal_terms_backfill",
+                        verification=(
+                            "Focused evidence-classification, fail-closed, "
+                            "work-item lifecycle, and idempotent-replay tests."
+                        ),
+                        cutover_gate=(
+                            "renewal_terms_unresolved is zero for the active "
+                            "prepaid cohort, every remaining case carries an "
+                            "owned finance work item, and ADR 0007 Phase 1 "
+                            "makes billing.contracts the renewal-terms "
+                            "authority."
+                        ),
+                        fallback_retirement=(
+                            "Delete this temporary owner at the Phase 1 "
+                            "cutover; Subscription.unit_price stops being the "
+                            "renewal-charge authority."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_renewal_terms.backfilled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries the account, subscription, "
+                            "restored contracted amount, paid-line count, and "
+                            "the reviewed preview fingerprint."
+                        ),
+                        replay=(
+                            "Replay with unchanged evidence rewrites nothing: "
+                            "repaired rows fail the still-unpriced re-check, "
+                            "so no second event is emitted for them."
+                        ),
+                    ),
+                    test_refs=("tests/test_prepaid_renewal_terms_backfill.py",),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
                 owns=("suspended prepaid replacement-cycle draft creation",),
@@ -14889,6 +15038,195 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.nas.devices",
                 owns=("NAS administrative lifecycle state", "NAS inventory reads"),
                 depends_on=("network.identity",),
+            ),
+            SOTService(
+                name="network.nas_local_secret_boundary",
+                module="app.services.nas.local_secret_policy",
+                owns=(
+                    "NAS-local PPPoE secret prohibition rulings",
+                    "local-secret command-text admissibility",
+                    "typed local-secret retirement planning and verification",
+                ),
+                depends_on=(
+                    "network.nas_inventory",
+                    "access.radius_projection",
+                    "access.radius_state",
+                ),
+                notes=(
+                    "RouterOS consults RADIUS only when the username is absent "
+                    "from /ppp secret, so a NAS-local per-customer record bypasses "
+                    "the RADIUS projection rather than overriding an attribute. "
+                    "Create, suspend, unsuspend and change_ip are prohibited for "
+                    "MikroTik PPPoE on BOTH execution surfaces — the activation "
+                    "command builder and the operator-editable provisioning "
+                    "template runner — so the prohibition cannot be edited around "
+                    "in the database. Deletion is corrective, not a second "
+                    "authority: it runs only through the reviewed cleanup "
+                    "operation, which refuses a login shared by more than one "
+                    "projected subscription, refuses a login RADIUS does not "
+                    "serve, and fails rather than reporting success when the "
+                    "device still reports the secret after removal. DHCP, IPoE, "
+                    "static and hotspot provisioning are untouched."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="NAS-local PPPoE secret prohibition rulings",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "NAS vendor and connection type",
+                                "requested per-subscriber NAS action",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="local-secret command-text admissibility",
+                            role=OwnerRole.POLICY,
+                            input_names=("rendered or stored command text",),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "typed local-secret retirement planning and "
+                                "verification"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "projected subscription cohort for a login",
+                                "device local-secret readback",
+                            ),
+                            canonical_writer="network.nas_local_secret_boundary",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="NAS vendor and connection type",
+                            owner="network.nas_inventory",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="nas_devices",
+                        ),
+                        AuthorityInput(
+                            name="requested per-subscriber NAS action",
+                            owner="service_intent.subscription_lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="activation and provisioning callers",
+                        ),
+                        AuthorityInput(
+                            name="projected subscription cohort for a login",
+                            owner="access.radius_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="plan_login_radius_projections",
+                        ),
+                        AuthorityInput(
+                            name="device local-secret readback",
+                            owner="network.nas_local_secret_boundary",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="RouterOS local-secret existence count",
+                        ),
+                        AuthorityInput(
+                            name="rendered or stored command text",
+                            owner="network.nas_inventory",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="provisioning_templates",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.PARTICIPANT,
+                        boundary=(
+                            "Rulings and command-text checks are pure. Retirement "
+                            "reads inside the caller's session and writes the "
+                            "NetworkOperation ledger plus the device; it never "
+                            "writes customer or access state."
+                        ),
+                        locking=(
+                            "One active operation per (NAS, login) correlation "
+                            "key, so a duplicate event delivery or a concurrent "
+                            "operator run is rejected rather than repeated."
+                        ),
+                        idempotency=(
+                            "Retirement on an already-absent secret is a verified "
+                            "no-op that opens no operation. An apply must echo the "
+                            "plan fingerprint, so a cohort that shifted between "
+                            "preview and apply is refused."
+                        ),
+                        retries=(
+                            "Failures are retryable through the operation ledger, "
+                            "never by silent re-execution. An unverified removal "
+                            "records a durable failure and raises, so a still-live "
+                            "parallel authority is never reported as cleaned."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "nas_local_secret_cleanup_invalid_request",
+                            "nas_local_secret_cleanup_shared_login",
+                            "nas_local_secret_cleanup_radius_not_serving",
+                            "nas_local_secret_cleanup_radius_still_serving",
+                            "nas_local_secret_cleanup_dependent_subscription",
+                            "nas_local_secret_cleanup_fingerprint_mismatch",
+                            "nas_local_secret_cleanup_unverified",
+                            "nas_local_secret_command_text_rejected",
+                        ),
+                        mapping_owner="app.services.nas.provisioner",
+                        fail_closed_on=(
+                            "login shared by more than one nonterminal subscription",
+                            "migrate intent with no active RADIUS projection",
+                            "terminal intent while RADIUS still projects the login",
+                            "terminal intent with a nonterminal dependant",
+                            "plan fingerprint changed between preview and apply",
+                            "unreadable device count",
+                            "secret still present on device after removal",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        new_owner="network.nas_local_secret_boundary",
+                        old_owner="NAS-local per-customer PPPoE secret",
+                        verification=(
+                            "Per-customer PPPoE access state moved to "
+                            "access.radius_projection and suspension to "
+                            "access.session_enforcement; this owner retains only "
+                            "the prohibition ruling and the corrective removal. "
+                            "tests/architecture/test_nas_local_secret_prohibition.py "
+                            "pins that /ppp secret add and local enable/disable "
+                            "cannot return from either execution surface."
+                        ),
+                        cutover_gate=(
+                            "Code-level prohibition is unconditional; no runtime "
+                            "flag can re-enable it."
+                        ),
+                        fallback_retirement=(
+                            "Pre-existing device secrets are retired two ways: "
+                            "terminal_retirement staged from the durable "
+                            "subscription.canceled handler after the terminal "
+                            "RADIUS projection succeeds, and migrate_to_radius "
+                            "run per NAS in bounded operator cohorts. Both verify "
+                            "by device count; neither rolls back a lifecycle "
+                            "transition on device failure."
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("nas_local_secret_cleanup_applied.v1",),
+                        schema_version=1,
+                        delivery_owner="observability.recording",
+                        compatibility=(
+                            "Version 1 carries login, NAS device, reviewer and "
+                            "reason. It never carries a customer password or any "
+                            "other device credential."
+                        ),
+                        replay=(
+                            "Not replayable as a command. The device readback is "
+                            "the authoritative record of whether a secret is "
+                            "still present; re-running cleanup re-reads the "
+                            "device rather than trusting a prior emission."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=("docs/designs/IP_ASSIGNMENT_LIFECYCLE_SOT.md",),
+                    test_refs=(
+                        "tests/architecture/test_nas_local_secret_prohibition.py",
+                        "tests/test_nas_local_secret_policy.py",
+                        "tests/test_nas_local_secret_retirement.py",
+                    ),
+                ),
             ),
             SOTService(
                 name="network.nas_lifecycle",
