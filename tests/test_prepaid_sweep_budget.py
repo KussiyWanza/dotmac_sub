@@ -84,3 +84,15 @@ def test_repair_defers_chunks_past_deadline(db_session):
         outcome.quarantined_blocking
     )
     assert outcome.status.value in {"ok", "stale_preview"}
+
+
+def test_budget_resolution_uses_registered_setting(db_session):
+    # Exercises the real wrapper helper (the Celery-boundary path): a broken
+    # import or unregistered key here crashed the first v7.82.1 production
+    # run before any account was processed.
+    from app.services.collections.scheduled import (
+        _DEFAULT_SWEEP_BUDGET_SECONDS,
+        _sweep_budget_seconds,
+    )
+
+    assert _sweep_budget_seconds(db_session) == _DEFAULT_SWEEP_BUDGET_SECONDS
