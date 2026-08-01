@@ -628,7 +628,7 @@ def mark_primary_ipv4_assignment(
     db: Session,
     *,
     subscription_id: UUID,
-    ipv4_address_id: UUID,
+    ipv4_address_id: UUID | None,
 ) -> bool:
     """Move the served-address marker to one active exact-service assignment.
 
@@ -643,6 +643,12 @@ def mark_primary_ipv4_assignment(
 
     Returns True when a target assignment was found and marked.
     """
+    if ipv4_address_id is None:
+        # An assignment with no address cannot be the served one. Callers pass
+        # `IPAssignment.ipv4_address_id` directly, which is nullable, so this
+        # refuses rather than making the caller prove non-null at every site.
+        return False
+
     active_ipv4 = (
         db.execute(
             select(IPAssignment)
