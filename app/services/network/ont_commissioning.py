@@ -9,6 +9,8 @@ configuration.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,6 +29,7 @@ from app.models.network import (
 from app.models.network_operation import (
     NetworkOperation,
     NetworkOperationDispatch,
+    NetworkOperationDispatchStatus,
     NetworkOperationStatus,
     NetworkOperationTargetType,
     NetworkOperationType,
@@ -39,6 +42,10 @@ from app.models.ont_commissioning import (
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
+from app.services.network.olt_batched_mgmt import (
+    BatchedMgmtSpec,
+    build_management_command_batch,
+)
 from app.services.network.ont_authorization_contracts import (
     OntAuthorizationTarget,
     OntFsp,
@@ -65,7 +72,10 @@ from app.services.owner_commands import (
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-    from app.services.network.olt_protocol_adapters import OltConnectionConfig
+    from app.services.network.olt_protocol_adapters import (
+        OltConnectionConfig,
+        OltProtocolAdapterContract,
+    )
 
 DEFAULT_COMMISSIONING_TTL = timedelta(hours=24)
 MAX_COMMISSIONING_TTL = timedelta(hours=72)
@@ -160,8 +170,153 @@ class OntCommissioningReconcileResult:
     examined: int
     assigned: int
     provisioned: int
+    recovery_staged: int
+    recovery_failed_closed: int
     cleanup_staged: int
     expired_without_device_write: int
+
+
+@dataclass(frozen=True)
+class ExecuteOntCommissioning:
+    """Typed worker command for one durable commissioning operation."""
+
+    context: CommandContext
+    intent_id: uuid.UUID
+    operation_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class OntCommissioningExecutionOutcome:
+    """Typed result retained until the task adapter serializes it."""
+
+    success: bool
+    intent_id: uuid.UUID
+    operation_id: uuid.UUID
+    state: OntCommissioningState
+    message: str
+    waiting: bool = False
+    failure_code: str | None = None
+    ont_unit_id: uuid.UUID | None = None
+    verification_dispatch_id: uuid.UUID | None = None
+    management_steps: tuple[str, ...] = ()
+    management_recovery: bool = False
+
+    def to_transport(self) -> dict[str, object]:
+        """Serialize domain values only at the Celery transport boundary."""
+
+        return {
+            "success": self.success,
+            "waiting": self.waiting,
+            "intent_id": str(self.intent_id),
+            "ont_unit_id": (
+                str(self.ont_unit_id) if self.ont_unit_id is not None else None
+            ),
+            "operation_id": str(self.operation_id),
+            "verification_dispatch_id": (
+                str(self.verification_dispatch_id)
+                if self.verification_dispatch_id is not None
+                else None
+            ),
+            "state": self.state.value,
+            "failure_code": self.failure_code,
+            "management_only": True,
+            "management_steps": list(self.management_steps),
+            "management_recovery": self.management_recovery,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class RecordOntCommissioningExternalWriteFailure:
+    """Typed reliability command for a worker lost after an OLT write."""
+
+    context: CommandContext
+    intent_id: uuid.UUID
+    operation_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class ExternalWriteReconciliationOutcome:
+    """Typed reliability result for fresh-session failure recording."""
+
+    intent_id: uuid.UUID
+    operation_id: uuid.UUID
+    recorded: bool
+
+
+@dataclass(frozen=True)
+class _CommissioningPreflightOutcome:
+    success: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class _CommissioningManagementPlan:
+    """Immutable management values materialized before external device I/O."""
+
+    fsp: OntFsp
+    ont_id_on_olt: int
+    mgmt_vlan_tag: int
+    mgmt_gem_index: int
+    ip_mode: str
+    ip_address: str | None
+    subnet_mask: str | None
+    gateway: str | None
+    ip_priority: int
+    tr069_profile_id: int
+
+    def to_adapter_spec(self) -> BatchedMgmtSpec:
+        return BatchedMgmtSpec(
+            fsp=self.fsp.value,
+            ont_id_on_olt=self.ont_id_on_olt,
+            mgmt_vlan_tag=self.mgmt_vlan_tag,
+            mgmt_gem_index=self.mgmt_gem_index,
+            ip_mode=self.ip_mode,
+            ip_address=self.ip_address,
+            subnet_mask=self.subnet_mask,
+            gateway=self.gateway,
+            ip_priority=self.ip_priority,
+            ip_index=0,
+            internet_config_ip_index=None,
+            wan_config_profile_id=None,
+            tr069_profile_id=self.tr069_profile_id,
+        )
+
+
+@dataclass(frozen=True)
+class _CommissioningExecutionPlan:
+    """Detached, immutable plan consumed after the database phase commits."""
+
+    intent_id: uuid.UUID
+    operation_id: uuid.UUID
+    ont_unit_id: uuid.UUID
+    target: OntAuthorizationTarget
+    ont_id_on_olt: int
+    olt: OltConnectionConfig
+    management: _CommissioningManagementPlan
+    verify_registration: bool
+    management_recovery: bool
+
+
+@dataclass(frozen=True)
+class _LandedAuthorizationEvidence:
+    """Validated operation-ledger provenance for a landed OLT registration."""
+
+    source_operation_id: uuid.UUID
+    target: OntAuthorizationTarget
+    ont_id_on_olt: int
+
+    def to_output_fragment(self) -> dict[str, object]:
+        return {
+            "completed_authorization": True,
+            "device_authorization": {
+                "olt_id": str(self.target.olt_id),
+                "fsp": self.target.fsp.value,
+                "serial_number": self.target.serial_number.value,
+                "ont_id_on_olt": self.ont_id_on_olt,
+            },
+            "authorization_reused_from_operation_id": str(self.source_operation_id),
+        }
 
 
 def assignment_is_blocked_by_commissioning(
@@ -516,21 +671,23 @@ def stage_commissioning_verification(
 
 def _exact_live_autofind_preflight(
     *,
-    canonical_serial_value: str,
-    fsp: str,
+    target: OntAuthorizationTarget,
     olt_config: OltConnectionConfig,
-) -> tuple[bool, str]:
+) -> _CommissioningPreflightOutcome:
     from app.services.network.olt_ssh_ont.autofind import query_ont_autofind
 
-    ok, message, entries = query_ont_autofind(cast(OLTDevice, olt_config), port=fsp)
+    ok, message, entries = query_ont_autofind(
+        cast(OLTDevice, olt_config),
+        port=target.fsp.value,
+    )
     if not ok:
-        return False, message
+        return _CommissioningPreflightOutcome(False, message)
     match = next(
         (
             entry
             for entry in entries
-            if entry.fsp.strip() == fsp
-            and canonical_serial_value
+            if entry.fsp.strip() == target.fsp.value
+            and target.serial_number.value
             in {
                 canonical_serial(entry.serial_number),
                 canonical_serial(entry.serial_hex),
@@ -539,29 +696,30 @@ def _exact_live_autofind_preflight(
         None,
     )
     if match is None:
-        return (
-            False,
-            "The ONT is no longer present in live autofind on the exact "
-            f"target {fsp}; no OLT write was attempted.",
+        return _CommissioningPreflightOutcome(
+            success=False,
+            message=(
+                "The ONT is no longer present in live autofind on the exact "
+                f"target {target.fsp.value}; no OLT write was attempted."
+            ),
         )
-    return True, "Exact live autofind target confirmed."
+    return _CommissioningPreflightOutcome(
+        True,
+        "Exact live autofind target confirmed.",
+    )
 
 
-def _management_only_spec(
+def _management_only_plan(
     db: Session,
     *,
     ont: OntUnit,
     olt: OLTDevice,
     fsp: str,
     ont_id_on_olt: int,
-):
+) -> _CommissioningManagementPlan:
     from app.services.network.effective_ont_config import resolve_effective_ont_config
     from app.services.network.iphost_priority import (
         resolve_management_iphost_priority,
-    )
-    from app.services.network.olt_batched_mgmt import (
-        BatchedMgmtSpec,
-        build_management_command_batch,
     )
     from app.services.network.ont_management_ipam import allocate_ont_management_ip
 
@@ -619,8 +777,8 @@ def _management_only_spec(
             "management_priority_missing",
             "Management IPHOST priority could not be resolved from imported OLT state.",
         )
-    spec = BatchedMgmtSpec(
-        fsp=fsp,
+    plan = _CommissioningManagementPlan(
+        fsp=OntFsp.parse(fsp),
         ont_id_on_olt=ont_id_on_olt,
         mgmt_vlan_tag=int(mgmt_vlan),
         mgmt_gem_index=int(mgmt_gem),
@@ -629,13 +787,13 @@ def _management_only_spec(
         subnet_mask=subnet_mask,
         gateway=gateway,
         ip_priority=int(priority) if priority is not None else 0,
-        ip_index=0,
-        internet_config_ip_index=None,
-        wan_config_profile_id=None,
         tr069_profile_id=int(tr069_profile),
     )
     descriptions = {
-        description for _command, description in build_management_command_batch(spec)
+        description
+        for _command, description in build_management_command_batch(
+            plan.to_adapter_spec()
+        )
     }
     forbidden = descriptions.intersection({"activate_internet_config", "configure_wan"})
     if forbidden:
@@ -644,83 +802,103 @@ def _management_only_spec(
             "Commissioning attempted to build customer service commands.",
             forbidden_steps=sorted(forbidden),
         )
-    return spec
+    return plan
 
 
 def _fail_execution(
     db: Session,
     *,
-    intent: OntCommissioningIntent,
-    operation_id: str,
+    command: ExecuteOntCommissioning,
     code: str,
     message: str,
-) -> dict[str, object]:
+) -> OntCommissioningExecutionOutcome:
+    intent = db.scalars(
+        select(OntCommissioningIntent)
+        .where(OntCommissioningIntent.id == command.intent_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if intent is None or intent.latest_operation_id != command.operation_id:
+        raise _error(
+            "intent_not_found",
+            "Commissioning intent or operation ownership was not found.",
+        )
     _transition(
         db,
         intent,
         OntCommissioningState.failed,
-        actor="system",
+        actor=command.context.actor,
         failure_code=code,
         failure_message=message,
     )
-    operation = db.get(NetworkOperation, operation_id)
+    operation = db.get(NetworkOperation, command.operation_id)
     if operation is not None and operation.status in _OPERATION_ACTIVE_STATES:
         network_operations.mark_failed(
             db,
-            operation_id,
+            str(command.operation_id),
             message,
             output_payload={
                 **(operation.output_payload or {}),
                 "success": False,
-                "intent_id": str(intent.id),
+                "intent_id": str(command.intent_id),
                 "management_only": True,
                 "failure_code": code,
                 "message": message,
             },
         )
+    outcome = OntCommissioningExecutionOutcome(
+        success=False,
+        intent_id=command.intent_id,
+        operation_id=command.operation_id,
+        ont_unit_id=intent.ont_unit_id,
+        state=OntCommissioningState.failed,
+        failure_code=code,
+        message=message,
+    )
     db.commit()
-    return {
-        "success": False,
-        "intent_id": str(intent.id),
-        "operation_id": operation_id,
-        "failure_code": code,
-        "message": message,
-    }
+    return outcome
 
 
 def record_external_write_reconciliation_required(
     db: Session,
-    *,
-    intent_id: str,
-    operation_id: str,
-) -> bool:
+    command: RecordOntCommissioningExternalWriteFailure,
+) -> ExternalWriteReconciliationOutcome:
     """Record partial external success using a fresh reliability session."""
 
-    intent = db.get(OntCommissioningIntent, _uuid(intent_id, "intent_id"))
+    intent = db.scalars(
+        select(OntCommissioningIntent)
+        .where(OntCommissioningIntent.id == command.intent_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
     if (
         intent is None
-        or str(intent.latest_operation_id) != operation_id
+        or intent.latest_operation_id != command.operation_id
         or intent.device_authorized_at is None
         or intent.state is not OntCommissioningState.authorizing
     ):
         db.rollback()
-        return False
+        return ExternalWriteReconciliationOutcome(
+            intent_id=command.intent_id,
+            operation_id=command.operation_id,
+            recorded=False,
+        )
     _transition(
         db,
         intent,
         OntCommissioningState.failed,
-        actor="system",
+        actor=command.context.actor,
         failure_code="external_write_reconciliation_required",
         failure_message=(
             "OLT authorization completed, but commissioning lost its database "
             "session before management readiness was persisted."
         ),
     )
-    operation = db.get(NetworkOperation, _uuid(operation_id, "operation_id"))
+    operation = db.get(NetworkOperation, command.operation_id)
     if operation is not None and operation.status in _OPERATION_ACTIVE_STATES:
         network_operations.mark_failed(
             db,
-            operation_id,
+            str(command.operation_id),
             intent.failure_message or "External write requires reconciliation.",
             output_payload={
                 **(operation.output_payload or {}),
@@ -730,52 +908,94 @@ def record_external_write_reconciliation_required(
             },
         )
     db.commit()
-    return True
+    return ExternalWriteReconciliationOutcome(
+        intent_id=command.intent_id,
+        operation_id=command.operation_id,
+        recorded=True,
+    )
+
+
+def _verify_recovery_registration(
+    *,
+    target: OntAuthorizationTarget,
+    ont_id_on_olt: int,
+    adapter: OltProtocolAdapterContract,
+) -> _CommissioningPreflightOutcome:
+    """Fail closed unless recovery still targets the landed registration."""
+
+    result = adapter.find_ont_by_serial(target.serial_number.value)
+    registration = (result.data or {}).get("registration")
+    if not result.success or registration is None:
+        return _CommissioningPreflightOutcome(
+            False,
+            result.message
+            or "The previously authorized ONT registration could not be confirmed.",
+        )
+    observed_fsp = str(getattr(registration, "fsp", "") or "").strip()
+    observed_ont_id = getattr(registration, "onu_id", None)
+    observed_serial = canonical_serial(getattr(registration, "real_serial", None))
+    if (
+        observed_fsp != target.fsp.value
+        or observed_ont_id != ont_id_on_olt
+        or observed_serial != target.serial_number.value
+    ):
+        return _CommissioningPreflightOutcome(
+            False,
+            "The live OLT registration no longer matches the exact commissioning "
+            "serial, F/S/P, and ONT ID; management recovery was not attempted.",
+        )
+    return _CommissioningPreflightOutcome(
+        True,
+        "The landed OLT registration was confirmed for management recovery.",
+    )
 
 
 def execute_ont_commissioning(
     db: Session,
-    *,
-    intent_id: str,
-    operation_id: str,
-) -> dict[str, object]:
+    command: ExecuteOntCommissioning,
+) -> OntCommissioningExecutionOutcome:
     """Execute exact authorization and the restricted management-only baseline."""
 
     intent = db.scalars(
         select(OntCommissioningIntent)
-        .where(OntCommissioningIntent.id == _uuid(intent_id, "intent_id"))
+        .where(OntCommissioningIntent.id == command.intent_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).first()
-    if intent is None or str(intent.latest_operation_id) != operation_id:
+    if intent is None or intent.latest_operation_id != command.operation_id:
         raise _error(
             "intent_not_found",
             "Commissioning intent or operation ownership was not found.",
         )
-    operation = network_operations.get(db, operation_id)
+    operation = db.scalars(
+        select(NetworkOperation)
+        .where(NetworkOperation.id == command.operation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if operation is None:
+        raise _error("intent_not_found", "Commissioning operation was not found.")
     if operation.status is NetworkOperationStatus.pending:
-        network_operations.mark_running(db, operation_id)
+        network_operations.mark_running(db, str(command.operation_id))
     _transition(
         db,
         intent,
         OntCommissioningState.authorizing,
-        actor="system",
+        actor=command.context.actor,
     )
-    db.commit()
 
     olt = db.get(OLTDevice, intent.olt_id)
     if olt is None or not olt.is_active:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code="olt_unavailable",
             message="The exact commissioning OLT is no longer active.",
         )
     if _active_assignment(db, intent.ont_unit_id) is not None:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code="assignment_exists",
             message="An assignment now exists; use the assigned authorization workflow.",
         )
@@ -790,7 +1010,12 @@ def execute_ont_commissioning(
     authorization_candidate_id = intent.autofind_candidate_id
     authorization_ont_unit_id = intent.ont_unit_id
     authorization_already_recorded = intent.device_authorized_at is not None
-    operation_actor = operation.initiated_by or "system"
+    authorization_target = OntAuthorizationTarget.from_transport(
+        olt_id=authorization_olt_id,
+        fsp=authorization_fsp,
+        serial_number=authorization_serial,
+    )
+    operation_actor = operation.initiated_by or command.context.actor
     db.commit()
 
     ont_id_on_olt: int
@@ -800,18 +1025,16 @@ def execute_ont_commissioning(
                 "unsafe_external_transaction",
                 "Live OLT preflight cannot run inside a database transaction.",
             )
-        live_ok, live_message = _exact_live_autofind_preflight(
-            canonical_serial_value=authorization_serial,
-            fsp=authorization_fsp,
+        preflight = _exact_live_autofind_preflight(
+            target=authorization_target,
             olt_config=authorization_olt_config,
         )
-        if not live_ok:
+        if not preflight.success:
             return _fail_execution(
                 db,
-                intent=intent,
-                operation_id=operation_id,
+                command=command,
                 code="live_autofind_mismatch",
-                message=live_message,
+                message=preflight.message,
             )
         from app.services.network.ont_authorization import (
             register_ont_for_commissioning,
@@ -824,17 +1047,13 @@ def execute_ont_commissioning(
                     actor=operation_actor,
                     scope="network:ont:commission",
                     reason="execute durable management-only ONT commissioning",
-                    command_id=_uuid(operation_id, "operation_id"),
-                    correlation_id=_uuid(operation_id, "operation_id"),
+                    command_id=command.operation_id,
+                    correlation_id=command.context.correlation_id,
                     causation_id=authorization_intent_id,
                 ),
-                operation_id=_uuid(operation_id, "operation_id"),
+                operation_id=command.operation_id,
                 intent_id=authorization_intent_id,
-                target=OntAuthorizationTarget.from_transport(
-                    olt_id=authorization_olt_id,
-                    fsp=authorization_fsp,
-                    serial_number=authorization_serial,
-                ),
+                target=authorization_target,
             ),
         )
         if result.completed_authorization:
@@ -853,8 +1072,7 @@ def execute_ont_commissioning(
         if not result.success or not result.ont_unit_id or result.ont_id_on_olt is None:
             return _fail_execution(
                 db,
-                intent=intent,
-                operation_id=operation_id,
+                command=command,
                 code=(
                     "local_inventory_failed"
                     if result.local_inventory_failed
@@ -881,8 +1099,7 @@ def execute_ont_commissioning(
         if ont is None:
             return _fail_execution(
                 db,
-                intent=intent,
-                operation_id=operation_id,
+                command=command,
                 code="inventory_missing",
                 message="The commissioned ONT inventory row is missing.",
             )
@@ -892,20 +1109,54 @@ def execute_ont_commissioning(
         if parsed_ont_id is None:
             return _fail_execution(
                 db,
-                intent=intent,
-                operation_id=operation_id,
+                command=command,
                 code="olt_ont_id_missing",
                 message="The commissioned ONT ID on the OLT is unavailable.",
             )
         ont_id_on_olt = parsed_ont_id
 
+    intent = db.scalars(
+        select(OntCommissioningIntent)
+        .where(OntCommissioningIntent.id == command.intent_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if intent is None or intent.latest_operation_id != command.operation_id:
+        raise _error(
+            "execution_conflict",
+            "Commissioning ownership changed before management planning.",
+        )
+    operation = db.scalars(
+        select(NetworkOperation)
+        .where(NetworkOperation.id == command.operation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if operation is None or operation.status not in _OPERATION_ACTIVE_STATES:
+        raise _error(
+            "execution_conflict",
+            "Commissioning operation changed before management planning.",
+        )
     ont = db.get(OntUnit, intent.ont_unit_id)
-    assert ont is not None
+    if ont is None:
+        return _fail_execution(
+            db,
+            command=command,
+            code="inventory_missing",
+            message="The commissioned ONT inventory row is missing.",
+        )
+    management_olt = db.get(OLTDevice, authorization_olt_id, populate_existing=True)
+    if management_olt is None or not management_olt.is_active:
+        return _fail_execution(
+            db,
+            command=command,
+            code="olt_unavailable",
+            message="The exact commissioning OLT is no longer active.",
+        )
     if _active_assignment(db, ont.id) is not None:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code="assignment_exists",
             message=(
                 "An assignment was created during authorization; continue through "
@@ -913,25 +1164,36 @@ def execute_ont_commissioning(
             ),
         )
     try:
-        spec = _management_only_spec(
+        management = _management_only_plan(
             db,
             ont=ont,
-            olt=olt,
+            olt=management_olt,
             fsp=intent.fsp,
             ont_id_on_olt=ont_id_on_olt,
         )
     except OntCommissioningError as exc:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code=exc.code.rsplit(".", 1)[-1],
             message=exc.message,
         )
     from app.services.network.olt_protocol_adapters import OltConnectionConfig
 
-    olt_config = OltConnectionConfig.from_model(olt)
-    # IPAM reservation must land before the external OLT write.
+    plan = _CommissioningExecutionPlan(
+        intent_id=command.intent_id,
+        operation_id=command.operation_id,
+        ont_unit_id=ont.id,
+        target=authorization_target,
+        ont_id_on_olt=ont_id_on_olt,
+        olt=OltConnectionConfig.from_model(management_olt),
+        management=management,
+        verify_registration=authorization_already_recorded,
+        management_recovery=(
+            authorization_already_recorded or operation.redrive_of_id is not None
+        ),
+    )
+    # IPAM reservation and the immutable execution plan must land before OLT I/O.
     db.commit()
     if db.in_transaction():
         raise _error(
@@ -943,10 +1205,31 @@ def execute_ont_commissioning(
         get_protocol_adapter_from_config,
     )
 
-    management_result = get_protocol_adapter_from_config(
-        olt_config
-    ).configure_management_batch(spec)
-    completed_steps = list((management_result.data or {}).get("steps_completed", []))
+    adapter = get_protocol_adapter_from_config(plan.olt)
+    if plan.verify_registration:
+        registration = _verify_recovery_registration(
+            target=plan.target,
+            ont_id_on_olt=plan.ont_id_on_olt,
+            adapter=adapter,
+        )
+        if not registration.success:
+            return _fail_execution(
+                db,
+                command=command,
+                code="registration_not_confirmed",
+                message=registration.message,
+            )
+        if db.in_transaction():
+            raise _error(
+                "unsafe_external_transaction",
+                "Management recovery cannot run inside a database transaction.",
+            )
+    management_result = adapter.configure_management_batch(
+        plan.management.to_adapter_spec()
+    )
+    completed_steps = tuple(
+        str(step) for step in (management_result.data or {}).get("steps_completed", [])
+    )
     forbidden_steps = [
         step
         for step in completed_steps
@@ -955,59 +1238,83 @@ def execute_ont_commissioning(
     if forbidden_steps:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code="service_config_forbidden",
             message="Commissioning crossed the management-only command boundary.",
         )
     if not management_result.success:
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=command,
             code="management_apply_failed",
             message=management_result.message,
         )
 
-    intent = db.get(OntCommissioningIntent, intent.id)
-    assert intent is not None
-    operation = network_operations.get(db, operation_id)
+    intent = db.scalars(
+        select(OntCommissioningIntent)
+        .where(OntCommissioningIntent.id == plan.intent_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if (
+        intent is None
+        or intent.latest_operation_id != plan.operation_id
+        or intent.state is not OntCommissioningState.authorizing
+    ):
+        raise _error(
+            "execution_conflict",
+            "Commissioning state changed while management configuration was running.",
+        )
+    operation = db.scalars(
+        select(NetworkOperation)
+        .where(NetworkOperation.id == plan.operation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if operation is None or operation.status not in _OPERATION_ACTIVE_STATES:
+        raise _error(
+            "execution_conflict",
+            "Commissioning operation changed while management configuration was running.",
+        )
     _transition(
         db,
         intent,
         OntCommissioningState.awaiting_acs,
-        actor="system",
+        actor=command.context.actor,
     )
     network_operations.merge_output_payload(
         db,
-        operation_id,
+        str(plan.operation_id),
         {
             "success": True,
             "waiting": True,
             "intent_id": str(intent.id),
             "ont_unit_id": str(intent.ont_unit_id),
             "management_only": True,
-            "management_steps": completed_steps,
+            "management_steps": list(completed_steps),
+            "management_recovery": plan.management_recovery,
         },
     )
     network_operations.mark_waiting(
         db,
-        operation_id,
+        str(plan.operation_id),
         "Management path applied; waiting for the commissioned ONT to inform ACS.",
     )
     dispatch = stage_commissioning_verification(db, operation, attempt=0)
+    outcome = OntCommissioningExecutionOutcome(
+        success=True,
+        waiting=True,
+        intent_id=plan.intent_id,
+        ont_unit_id=plan.ont_unit_id,
+        operation_id=plan.operation_id,
+        verification_dispatch_id=dispatch.id,
+        state=OntCommissioningState.awaiting_acs,
+        management_steps=completed_steps,
+        management_recovery=plan.management_recovery,
+        message="Management path applied; waiting for ACS.",
+    )
     db.commit()
-    return {
-        "success": True,
-        "waiting": True,
-        "intent_id": str(intent.id),
-        "ont_unit_id": str(intent.ont_unit_id),
-        "operation_id": operation_id,
-        "verification_dispatch_id": str(dispatch.id),
-        "management_only": True,
-        "management_steps": completed_steps,
-        "message": "Management path applied; waiting for ACS.",
-    }
+    return outcome
 
 
 def verify_ont_commissioning(
@@ -1038,13 +1345,24 @@ def verify_ont_commissioning(
         }
     ont = db.get(OntUnit, intent.ont_unit_id)
     if ont is None:
+        operation_uuid = _uuid(operation_id, "operation_id")
         return _fail_execution(
             db,
-            intent=intent,
-            operation_id=operation_id,
+            command=ExecuteOntCommissioning(
+                context=CommandContext.system(
+                    actor="ont_commissioning_verifier",
+                    scope="network:ont:commission",
+                    reason="record commissioning verification failure",
+                    command_id=operation_uuid,
+                    correlation_id=operation_uuid,
+                    causation_id=_uuid(intent_id, "intent_id"),
+                ),
+                intent_id=_uuid(intent_id, "intent_id"),
+                operation_id=operation_uuid,
+            ),
             code="inventory_missing",
             message="The commissioned ONT inventory row is missing.",
-        )
+        ).to_transport()
     from app.services.network._resolve import resolve_genieacs_with_reason
 
     resolved, reason = resolve_genieacs_with_reason(db, ont)
@@ -1173,6 +1491,162 @@ def complete_commissioning_after_inform(
     return True
 
 
+def _landed_authorization_evidence(
+    intent: OntCommissioningIntent,
+    operation: NetworkOperation,
+) -> _LandedAuthorizationEvidence | None:
+    """Normalize and validate durable landed-write evidence from the ledger."""
+
+    payload = operation.output_payload
+    if (
+        not isinstance(payload, dict)
+        or payload.get("completed_authorization") is not True
+    ):
+        return None
+    device = payload.get("device_authorization")
+    if not isinstance(device, dict):
+        return None
+    raw_ont_id = device.get("ont_id_on_olt")
+    if isinstance(raw_ont_id, bool) or not isinstance(raw_ont_id, (int, str)):
+        return None
+    try:
+        target = OntAuthorizationTarget.from_transport(
+            olt_id=str(device.get("olt_id") or ""),
+            fsp=str(device.get("fsp") or ""),
+            serial_number=str(device.get("serial_number") or ""),
+        )
+        ont_id_on_olt = int(raw_ont_id)
+    except (DomainError, TypeError, ValueError):
+        return None
+    if (
+        target.olt_id != intent.olt_id
+        or target.fsp.value != intent.fsp
+        or target.serial_number.value != intent.canonical_serial
+        or ont_id_on_olt < 0
+    ):
+        return None
+    return _LandedAuthorizationEvidence(
+        source_operation_id=operation.id,
+        target=target,
+        ont_id_on_olt=ont_id_on_olt,
+    )
+
+
+def _commissioning_recovery_head(
+    intent: OntCommissioningIntent,
+    operation: NetworkOperation,
+    evidence: _LandedAuthorizationEvidence,
+) -> str:
+    """Fingerprint the locked state that makes management replay safe."""
+
+    payload = {
+        "contract_version": 1,
+        "intent_id": str(intent.id),
+        "operation_id": str(operation.id),
+        "ont_unit_id": str(intent.ont_unit_id),
+        "olt_id": str(evidence.target.olt_id),
+        "fsp": evidence.target.fsp.value,
+        "serial_number": evidence.target.serial_number.value,
+        "ont_id_on_olt": evidence.ont_id_on_olt,
+        "device_authorized_at": intent.device_authorized_at,
+        "operation_status": operation.status.value,
+        "retry_count": int(operation.retry_count or 0),
+        "max_retries": int(operation.max_retries or 0),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stage_interrupted_management_recovery(
+    db: Session,
+    *,
+    intent: OntCommissioningIntent,
+    source: NetworkOperation,
+    evidence: _LandedAuthorizationEvidence,
+    context: CommandContext,
+) -> bool:
+    """Stage one bounded idempotent replay without reissuing authorization."""
+
+    device_authorized_at = intent.device_authorized_at
+    if device_authorized_at is None:
+        raise _error(
+            "interrupted_execution_review_required",
+            "Management recovery requires durable landed-authorization evidence.",
+        )
+    reviewed_head = _commissioning_recovery_head(intent, source, evidence)
+    recovery, replayed = network_operations.start_redrive(
+        db,
+        source,
+        correlation_key=f"ont_commission_recovery:{intent.id}:{source.id}",
+        input_payload={
+            **(source.input_payload or {}),
+            "intent_id": str(intent.id),
+            "authorization_already_recorded": True,
+            "recovery": {
+                "source_operation_id": str(source.id),
+                "reviewed_head": reviewed_head,
+                "device_authorized_at": device_authorized_at.isoformat(),
+                "authorization_reissue_allowed": False,
+            },
+        },
+        reason="resume management after recorded OLT authorization",
+        reviewed_head=reviewed_head,
+        idempotency_key=f"commissioning-partial-success:{intent.id}:{source.id}",
+        initiated_by=context.actor,
+    )
+    if not replayed:
+        network_operations.merge_output_payload(
+            db,
+            str(recovery.id),
+            evidence.to_output_fragment(),
+        )
+        stage_dispatch(
+            db,
+            recovery,
+            NetworkOperationCommand.ont_commission_v1,
+        )
+    intent.latest_operation_id = recovery.id
+    _transition(
+        db,
+        intent,
+        OntCommissioningState.authorizing,
+        actor=context.actor,
+    )
+    stage_audit_event(
+        db,
+        action="network.ont_commissioning.recovery_staged",
+        entity_type="ont_commissioning_intent",
+        entity_id=str(intent.id),
+        actor_type=AuditActorType.system,
+        actor_id=context.actor,
+        metadata={
+            "source_operation_id": str(source.id),
+            "recovery_operation_id": str(recovery.id),
+            "retry_count": int(recovery.retry_count or 0),
+            "authorization_reissue_allowed": False,
+        },
+    )
+    return not replayed
+
+
+def _fail_interrupted_execution(
+    db: Session,
+    *,
+    intent: OntCommissioningIntent,
+    context: CommandContext,
+    code: str,
+    message: str,
+) -> None:
+    _transition(
+        db,
+        intent,
+        OntCommissioningState.failed,
+        actor=context.actor,
+        failure_code=code,
+        failure_message=message,
+    )
+
+
 def _reconcile(
     db: Session,
     *,
@@ -1187,7 +1661,9 @@ def _reconcile(
             .with_for_update()
         )
     )
-    assigned = provisioned = cleanup_staged = expired_without_write = 0
+    assigned = provisioned = 0
+    recovery_staged = recovery_failed_closed = 0
+    cleanup_staged = expired_without_write = 0
     for intent in intents:
         intent.last_reconciled_at = now
         assignment = _active_assignment(db, intent.ont_unit_id)
@@ -1214,31 +1690,68 @@ def _reconcile(
                 assigned += 1
             continue
         prior = (
-            db.get(NetworkOperation, intent.latest_operation_id)
+            db.scalars(
+                select(NetworkOperation)
+                .where(NetworkOperation.id == intent.latest_operation_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).first()
             if intent.latest_operation_id
             else None
         )
         if (
             _aware_utc(intent.expires_at) > now
-            and intent.device_authorized_at is not None
-            and intent.ont_unit_id is not None
             and prior is not None
             and prior.status is NetworkOperationStatus.failed
-            and intent.failure_code == "external_write_reconciliation_required"
+            and (
+                intent.state is OntCommissioningState.authorizing
+                or intent.failure_code == "external_write_reconciliation_required"
+            )
         ):
             from app.services.network.parsers import normalize_fsp
+            from app.services.network.serial_utils import parse_ont_id_on_olt
 
+            unknown_delivery = any(
+                dispatch.status is NetworkOperationDispatchStatus.reconciliation_needed
+                for dispatch in prior.dispatches
+            )
+            explicitly_recorded = (
+                intent.failure_code == "external_write_reconciliation_required"
+            )
+            evidence = _landed_authorization_evidence(intent, prior)
+            if (
+                not (unknown_delivery or explicitly_recorded)
+                or intent.device_authorized_at is None
+                or intent.ont_unit_id is None
+                or evidence is None
+            ):
+                _fail_interrupted_execution(
+                    db,
+                    intent=intent,
+                    context=context,
+                    code="interrupted_execution_review_required",
+                    message=(
+                        "Commissioning stopped with unknown delivery and lacks the "
+                        "complete durable evidence required for automatic recovery."
+                    ),
+                )
+                recovery_failed_closed += 1
+                continue
             ont = db.get(OntUnit, intent.ont_unit_id)
             current_fsp = (
                 normalize_fsp(f"{ont.board}/{ont.port}")
                 if ont is not None and ont.board is not None and ont.port is not None
                 else None
             )
+            projected_ont_id = (
+                parse_ont_id_on_olt(ont.external_id) if ont is not None else None
+            )
             if (
                 ont is None
                 or canonical_serial(ont.serial_number) != intent.canonical_serial
                 or ont.olt_device_id != intent.olt_id
                 or current_fsp != intent.fsp
+                or projected_ont_id != evidence.ont_id_on_olt
             ):
                 _transition(
                     db,
@@ -1251,34 +1764,43 @@ def _reconcile(
                         "ONT inventory; automatic recovery stopped."
                     ),
                 )
+                recovery_failed_closed += 1
                 continue
-            recovery, replayed = network_operations.start_redrive(
-                db,
-                prior,
-                correlation_key=f"ont_commission_recovery:{intent.id}:{prior.id}",
-                input_payload={
-                    **(prior.input_payload or {}),
-                    "intent_id": str(intent.id),
-                    "authorization_already_recorded": True,
-                },
-                reason="resume management after recorded OLT authorization",
-                reviewed_head=f"{intent.state.value}:{intent.device_authorized_at.isoformat()}",
-                idempotency_key=f"commissioning-partial-success:{intent.id}:{prior.id}",
-                initiated_by=context.actor,
-            )
-            if not replayed:
-                stage_dispatch(
+            if int(prior.retry_count or 0) >= int(prior.max_retries or 0):
+                _fail_interrupted_execution(
                     db,
-                    recovery,
-                    NetworkOperationCommand.ont_commission_v1,
+                    intent=intent,
+                    context=context,
+                    code="management_recovery_exhausted",
+                    message=(
+                        "Commissioning management recovery reached its retry limit; "
+                        "the landed authorization requires operator review."
+                    ),
                 )
-            intent.latest_operation_id = recovery.id
-            _transition(
+                recovery_failed_closed += 1
+                continue
+            if _stage_interrupted_management_recovery(
                 db,
-                intent,
-                OntCommissioningState.authorizing,
-                actor=context.actor,
+                intent=intent,
+                source=prior,
+                evidence=evidence,
+                context=context,
+            ):
+                recovery_staged += 1
+            continue
+        if (
+            intent.state is OntCommissioningState.authorizing
+            and prior is None
+            and _aware_utc(intent.expires_at) > now
+        ):
+            _fail_interrupted_execution(
+                db,
+                intent=intent,
+                context=context,
+                code="operation_missing",
+                message="The authorizing intent has no durable operation to reconcile.",
             )
+            recovery_failed_closed += 1
             continue
         if _aware_utc(intent.expires_at) > now:
             continue
@@ -1357,6 +1879,8 @@ def _reconcile(
         examined=len(intents),
         assigned=assigned,
         provisioned=provisioned,
+        recovery_staged=recovery_staged,
+        recovery_failed_closed=recovery_failed_closed,
         cleanup_staged=cleanup_staged,
         expired_without_device_write=expired_without_write,
     )
