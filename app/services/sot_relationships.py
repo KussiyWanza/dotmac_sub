@@ -10225,11 +10225,25 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "missing_idempotency_key"
                             ),
                             ("financial.prepaid_renewal_terms_backfill.stale_preview"),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "invalid_reviewed_amount"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_review_reference"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "subscription_not_found"
+                            ),
                         ),
                         mapping_owner="billing migration adapters",
                         fail_closed_on=(
                             "absent paid base-subscription evidence",
                             "contradictory distinct paid amounts",
+                            "a lone line without explicit full-cycle proof",
+                            "currency, cadence, quantity, or proration incompatibility",
                             "stale preview fingerprint",
                         ),
                     ),
@@ -10263,7 +10277,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     events=EventContract(
-                        event_types=("prepaid_renewal_terms.backfilled",),
+                        event_types=(
+                            "prepaid_renewal_terms.backfilled",
+                            "prepaid_renewal_terms.corrected",
+                        ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
