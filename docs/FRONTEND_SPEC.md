@@ -1284,6 +1284,17 @@ full-value payment experience.
 }
 ```
 
+#### `GET /admin/catalog/subscriptions/{id}`
+
+Mistaken duplicate activations are projected as `correction_action_forms`, one
+shared `ActionForm` per owner-reviewed restorable sibling. The action is absent
+without `catalog:write`. Each eligible form carries the exact target,
+owner-produced preview fingerprint, and scoped idempotency key; it discloses the
+lifecycle, PPPoE/RADIUS profile, FUP, and no-automatic-financial-adjustment
+consequences before requiring confirmation. Ineligible forms remain visible to
+authorized operators with the owner-provided blocker. The template only renders
+`action_form(correction_action)` and never derives eligibility or fingerprints.
+
 #### Subscription Form
 
 ```python

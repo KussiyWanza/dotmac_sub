@@ -225,7 +225,28 @@ The workflow accepts only a successful push-triggered GHCR build from this
 repository's current `dev` tip. It waits for the CI and Mobile CI push workflows
 for the exact same commit, rejects stale or failed candidates, verifies that
 Celery Beat is absent, verifies the private `10.120.121.20:8001` binding, and
-then invokes the hardened deployment owner with the staging-only proxy opt-out.
+then invokes `scripts/deploy_staging.sh`. That staging-only adapter proves the
+exact environment, server name, and private health endpoint before delegating
+to the hardened deployment owner.
+
+## Staging database-backup policy
+
+The staging database is non-authoritative and its PostgreSQL workload and local
+backup destination share the staging host disk. A full `pg_dump` before every
+staging deployment is therefore disabled: repeated dumps can starve the
+application and workers of disk I/O without protecting production data.
+
+Every automatic or manual staging deployment must invoke
+`scripts/deploy_staging.sh`; operators must not call `scripts/deploy.sh`
+directly on staging. The adapter fails closed unless `.env` contains the exact
+staging host contract, then forces `SKIP_BACKUP=1` and the existing staging-only
+proxy opt-out before delegating to `scripts/deploy.sh`.
+
+Production backup behavior remains unchanged. Production and other deployment
+targets continue to use `scripts/deploy.sh`, whose default remains to take the
+pre-migration backup. The offsite backup jobs under `scripts/backup/` are also
+unchanged. Existing staging backup files are retained until a separately
+approved retention action.
 
 ## Failure behavior
 
@@ -233,5 +254,6 @@ then invokes the hardened deployment owner with the staging-only proxy opt-out.
   checkout, stale dev SHA, failed check, missing image, unexpected port, or
   active Celery Beat prevents deployment.
 - `scripts/deploy.sh` still owns backup, migration, candidate health, primary
-  health, worker readiness, rollback, and image-retention behavior.
+  health, worker readiness, rollback, and image-retention behavior; the guarded
+  staging adapter supplies only the staging-specific backup and proxy opt-outs.
 - A failed staging deployment never authorizes promotion to `main`.

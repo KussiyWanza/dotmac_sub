@@ -210,12 +210,11 @@ jobs:
         env:
           COMPOSE_PROJECT_NAME: dotmac_sub
           IMAGE_TAG: ${{ needs.verify.outputs.image_tag }}
-          REQUIRE_PROXY_HANDOFF: "0"
           STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
         run: |
           set -euo pipefail
           cd "$STAGING_DEPLOY_DIR"
-          bash scripts/deploy.sh "$IMAGE_TAG"
+          bash scripts/deploy_staging.sh "$IMAGE_TAG"
 
       - name: Verify deployed revision and health
         env:

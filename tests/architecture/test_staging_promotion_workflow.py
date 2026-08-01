@@ -49,9 +49,21 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
     assert 'expected_dir="/home/dotmac/projects/dotmac_sub"' in workflow
     assert 'git -C "$STAGING_DEPLOY_DIR" merge --ff-only' in workflow
     assert "git reset --hard" not in workflow
-    assert 'REQUIRE_PROXY_HANDOFF: "0"' in workflow
+    assert 'bash scripts/deploy_staging.sh "$IMAGE_TAG"' in workflow
+    assert 'bash scripts/deploy.sh "$IMAGE_TAG"' not in workflow
     assert "10.120.121.20:8001:8001/tcp" in workflow
     assert "grep -qx celery-beat" in workflow
+
+    staging_adapter = _read("scripts/deploy_staging.sh")
+    assert 'require_exact_env_line "APP_ENV=staging"' in staging_adapter
+    assert 'require_exact_env_line "SERVER_NAME=dotmac-sub-staging"' in staging_adapter
+    assert (
+        'require_exact_env_line "HEALTH_URL=http://10.120.121.20:8001/health"'
+        in staging_adapter
+    )
+    assert "export SKIP_BACKUP=1" in staging_adapter
+    assert "export REQUIRE_PROXY_HANDOFF=0" in staging_adapter
+    assert 'exec bash "${ROOT_DIR}/scripts/deploy.sh" "$@"' in staging_adapter
 
 
 def test_agents_guidance_requires_staging_before_main() -> None:
@@ -72,6 +84,8 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     assert "dotmac-sub-staging" in runbook
     assert "STAGING_DEPLOY_DIR=/home/dotmac/projects/dotmac_sub" in runbook
     assert "updates local `dev` only by fast-forward" in runbook
+    assert "scripts/deploy_staging.sh" in runbook
+    assert "Production backup behavior remains unchanged" in runbook
     assert "Do not edit `VERSION` in the source pull request" in runbook
     assert (
         "A failed staging deployment never authorizes promotion to `main`." in runbook

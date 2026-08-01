@@ -23,8 +23,15 @@ from app.models.subscriber import SubscriberCategory
 from app.services import catalog as catalog_service
 from app.services import subscriber as subscriber_service
 from app.services import web_catalog_subscriptions as core
+from app.services.action_forms import (
+    ActionConfirmation,
+    ActionForm,
+    ActionHiddenValue,
+    ActionTone,
+)
 from app.services.audit_helpers import build_audit_activities
 from app.services.common import coerce_uuid
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -33,6 +40,12 @@ from app.services.prepaid_recovery_billing import (
     PrepaidRecoveryDraftConfirmation,
     create_prepaid_recovery_draft,
     preview_prepaid_recovery_draft,
+)
+from app.services.subscription_correction import (
+    CorrectSubscriptionCommand,
+    correct_subscription,
+    list_correction_candidates,
+    preview_subscription_correction,
 )
 from app.services.subscription_lifecycle import (
     SubscriptionCommandKind,
@@ -428,9 +441,136 @@ def subscription_detail_page_context(
         "scheduled_status_changes": _scheduled_status_change_context(
             db, subscription_id
         ),
+        "correction_action_forms": _subscription_correction_action_forms(
+            db, subscription_id
+        ),
     }
     context.update(core.subscription_detail_context(db, subscription))
     return context
+
+
+def _subscription_correction_action_forms(
+    db: Session, active_subscription_id: str
+) -> tuple[ActionForm, ...]:
+    """Project one exact, server-owned review form per restorable sibling."""
+    forms: list[ActionForm] = []
+    for candidate in list_correction_candidates(db, active_subscription_id):
+        preview = preview_subscription_correction(
+            db,
+            active_subscription_id=active_subscription_id,
+            target_subscription_id=str(candidate.subscription_id),
+        )
+        issue_text = " ".join(issue.message for issue in preview.issues)
+        fup_present = bool(preview.active_fup_status or preview.target_fup_status)
+        impact = (
+            f"Cancel {preview.active_offer_name}; restore {preview.target_offer_name} "
+            f"({preview.target_status.value}). Move PPPoE credential "
+            f"{preview.credential_username or 'unavailable'} to "
+            f"{preview.target_radius_profile_name or 'an unavailable profile'} at "
+            f"{preview.target_speed_label or 'an unconfigured speed'}. "
+            f"{'Clear existing FUP runtime state. ' if fup_present else 'No active FUP runtime state was found. '}"
+            "Preserve all financial history with no automatic credit or invoice adjustment."
+        )
+        hidden_values: tuple[ActionHiddenValue, ...] = ()
+        confirmation: ActionConfirmation | None = None
+        if preview.eligible:
+            hidden_values = (
+                ActionHiddenValue(
+                    key="target_subscription_id",
+                    value=str(preview.target_subscription_id),
+                ),
+                ActionHiddenValue(key="preview_fingerprint", value=preview.fingerprint),
+                ActionHiddenValue(
+                    key="idempotency_key",
+                    value=f"subscription-correction:{uuid4()}",
+                ),
+            )
+            confirmation = ActionConfirmation(
+                title="Confirm this exact subscription correction",
+                message=(
+                    "I reviewed the mistaken and restored plans, PPPoE profile, FUP "
+                    "cleanup, and the absence of automatic financial adjustments."
+                ),
+            )
+        forms.append(
+            ActionForm(
+                key=f"admin.subscription_correction.{candidate.subscription_id}",
+                title=f"Restore {preview.target_offer_name}",
+                description=(
+                    "Use this only to repair an accidental duplicate activation. "
+                    "The command owner rechecks every item under lock."
+                ),
+                action_url=(
+                    f"/admin/catalog/subscriptions/{active_subscription_id}/"
+                    "correction/execute"
+                ),
+                submit_label="Apply reviewed correction",
+                fields=(),
+                hidden_values=hidden_values,
+                tone=ActionTone.neutral,
+                impact=impact,
+                confirmation=confirmation,
+                allowed=preview.eligible,
+                disabled_reason=None if preview.eligible else issue_text,
+            )
+        )
+    return tuple(forms)
+
+
+def execute_subscription_correction_response(
+    db: Session,
+    *,
+    active_subscription_id: str,
+    target_subscription_id: str,
+    preview_fingerprint: str,
+    idempotency_key: str,
+    actor_id: str | None,
+) -> tuple[dict[str, object], int]:
+    """Execute one reviewed correction and map domain failures for the route."""
+    command_id = uuid4()
+    try:
+        outcome = correct_subscription(
+            db,
+            CorrectSubscriptionCommand(
+                context=CommandContext(
+                    command_id=command_id,
+                    correlation_id=command_id,
+                    actor=f"admin:{actor_id or 'unknown'}",
+                    scope="catalog:write",
+                    reason="Correct mistaken active subscription",
+                    idempotency_key=idempotency_key,
+                ),
+                active_subscription_id=UUID(active_subscription_id),
+                target_subscription_id=UUID(target_subscription_id),
+                preview_fingerprint=preview_fingerprint,
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        code = getattr(exc, "code", "access.subscription_correction.invalid_command")
+        message = getattr(exc, "message", str(exc))
+        status_code = 404 if str(code).endswith("subscription_not_found") else 409
+        if "invalid_" in str(code):
+            status_code = 422
+        return {
+            "status": "rejected",
+            "message": message,
+            "error_code": code,
+        }, status_code
+    return (
+        {
+            "status": "applied",
+            "message": "Subscription correction applied; connectivity reconciliation has been requested.",
+            "active_subscription_id": str(outcome.active_subscription_id),
+            "target_subscription_id": str(outcome.target_subscription_id),
+            "credential_id": str(outcome.credential_id),
+            "radius_profile_id": str(outcome.radius_profile_id),
+            "cleared_fup_subscription_ids": [
+                str(item) for item in outcome.cleared_fup_subscription_ids
+            ],
+            "replayed": outcome.replayed,
+        },
+        200,
+    )
 
 
 def _scheduled_plan_change_context(
