@@ -26313,8 +26313,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "The reviewed coordinator never guesses the correct plan and never "
                     "hard-deletes history. It fails closed on billing history or ambiguous "
-                    "credential/profile evidence, then commits lifecycle, binding, FUP, "
-                    "and durable event evidence once."
+                    "credential/profile evidence, active target locks, or malformed legacy "
+                    "served-IP projection evidence, then commits lifecycle, binding, FUP, "
+                    "and durable event evidence once. It validates but never writes IP "
+                    "projection fields."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -26336,7 +26338,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             name="canonical subscription lifecycle state",
                             owner="access.subscription_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="Locked mistaken and target Subscription rows and locks",
+                            source=(
+                                "Locked mistaken and target Subscription rows and locks; "
+                                "legacy served-IP scalars are checked only as non-authoritative "
+                                "resume-provisioning evidence pending explicit IPv6 projection "
+                                "ownership"
+                            ),
                         ),
                         AuthorityInput(
                             name="canonical access credential binding",
@@ -26417,9 +26424,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "access.subscription_correction.credential_missing",
                             "access.subscription_correction.credential_ambiguous",
                             "access.subscription_correction.credential_binding_conflict",
+                            "access.subscription_correction.credential_username_missing",
+                            "access.subscription_correction.target_login_missing",
+                            "access.subscription_correction.credential_target_login_mismatch",
+                            "access.subscription_correction.credential_active_login_mismatch",
                             "access.subscription_correction.radius_profile_missing",
                             "access.subscription_correction.radius_profile_ambiguous",
                             "access.subscription_correction.radius_profile_inactive",
+                            "access.subscription_correction.radius_profile_speed_invalid",
+                            (
+                                "access.subscription_correction."
+                                "radius_profile_speed_unconfigured"
+                            ),
+                            "access.subscription_correction.active_ipv4_invalid",
+                            "access.subscription_correction.active_ipv6_invalid",
+                            "access.subscription_correction.target_ipv4_invalid",
+                            "access.subscription_correction.target_ipv6_invalid",
+                            (
+                                "access.subscription_correction."
+                                "target_enforcement_lock_present"
+                            ),
                             "access.subscription_correction.preview_changed",
                             "access.subscription_correction.correction_ineligible",
                             "access.subscription_correction.correction_not_applied",
@@ -26434,6 +26458,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "changed preview evidence",
                             "any existing invoice line",
                             "ambiguous credential or target profile",
+                            "missing or mismatched PPPoE identity",
+                            "unconfigured target speed or malformed served-IP projection",
+                            "active enforcement lock on the target subscription",
                             "account/subscription mismatch or lifecycle override",
                         ),
                     ),
@@ -26464,7 +26491,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         cutover_gate=(
                             "The correction action appears only for an active subscription "
-                            "with an explicit restorable sibling and executes this owner."
+                            "with an explicit restorable sibling and executes this owner; "
+                            "generic restore previews reject a same-login active sibling."
                         ),
                         fallback_retirement=(
                             "No correction route performs direct ORM writes or generic CRUD; "
@@ -26479,6 +26507,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_subscription_correction.py",
                         "tests/test_subscription_lifecycle_ui.py",
+                        "tests/playwright/e2e/test_subscription_correction.py",
                         "tests/architecture/test_subscription_correction_boundary.py",
                     ),
                 ),

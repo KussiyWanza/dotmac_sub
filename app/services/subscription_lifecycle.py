@@ -106,6 +106,22 @@ def is_subscription_restore_candidate(status: SubscriptionStatus | None) -> bool
     return status in RESTORE_CANDIDATE_STATUSES
 
 
+def reactivation_blocked_by_active_login(
+    db: Session, subscription: Subscription
+) -> bool:
+    """Return whether restoring this service would collide on its access login."""
+    if not subscription.login:
+        return False
+    statement = (
+        select(Subscription.id)
+        .where(Subscription.subscriber_id == subscription.subscriber_id)
+        .where(Subscription.login == subscription.login)
+        .where(Subscription.status == SubscriptionStatus.active)
+        .where(Subscription.id != subscription.id)
+    )
+    return db.scalars(statement).first() is not None
+
+
 class ServiceChangeDeliveryMode(str, enum.Enum):
     """Operational delivery required by a catalog service change."""
 
@@ -851,6 +867,8 @@ def _eligibility_reasons(
     if status not in allowed_statuses[command.kind]:
         reasons.append(f"status_{status.value}_not_eligible_for_{command.kind.value}")
     if command.kind == SubscriptionCommandKind.restore:
+        if reactivation_blocked_by_active_login(db, subscription):
+            reasons.append("another_active_subscription_uses_login_use_correction")
         unresolved_prepaid_lock = db.scalar(
             select(EnforcementLock.id)
             .where(
