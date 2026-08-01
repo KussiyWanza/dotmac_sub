@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -16,6 +17,7 @@ from app.services.prepaid_draft_reconciliation import (
     PrepaidDraftReconciliationPreview,
     PrepaidDraftReconciliationResult,
 )
+from app.web.admin import billing_invoice_actions
 
 INVOICE_ID = UUID("11111111-1111-1111-1111-111111111111")
 ACCOUNT_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -276,6 +278,47 @@ def test_invoice_page_uses_authoritative_permission_gated_action_form():
     assert "shortfall" in confirmation
     assert "prepaid-draft-reconciliation/confirm" in route
     assert 'require_permission("billing:invoice:update")' in route
+
+
+def test_prepaid_draft_review_renders_csrf_action_form_with_request_context(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        web_reconciliation,
+        "preview_prepaid_draft_reconciliation",
+        lambda _db, _invoice_id: _preview(),
+    )
+    monkeypatch.setattr(
+        web_reconciliation.context_signing,
+        "sign_context_token",
+        lambda _db, _claims: "signed-review-token",
+    )
+    review = web_reconciliation.build_admin_review(
+        object(), invoice_id=INVOICE_ID, actor=ACTOR, now=NOW
+    )
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            auth={"permission_keys": frozenset({"billing:invoice:update"})},
+            csrf_token="csrf-review-token",
+        ),
+        url=SimpleNamespace(
+            path=f"/admin/billing/invoices/{INVOICE_ID}/prepaid-draft-reconciliation/preview"
+        ),
+    )
+
+    html = billing_invoice_actions.templates.env.get_template(
+        "admin/billing/prepaid_pay_now_confirm.html"
+    ).render(
+        request=request,
+        review=review,
+        invoice_id=INVOICE_ID,
+        current_user=None,
+        sidebar_stats=None,
+    )
+
+    assert 'name="_csrf_token" value="csrf-review-token"' in html
+    assert 'name="confirmation_token" value="signed-review-token"' in html
+    assert "Settle invoice" in html
 
 
 def test_recovery_billing_no_longer_owns_a_parallel_settlement_writer():

@@ -462,9 +462,14 @@ def _subscription_correction_action_forms(
         )
         issue_text = " ".join(issue.message for issue in preview.issues)
         fup_present = bool(preview.active_fup_status or preview.target_fup_status)
+        target_created_at = preview.target_created_at.isoformat()
+        target_identity = (
+            f"subscription {preview.target_subscription_id}, created "
+            f"{target_created_at}"
+        )
         impact = (
             f"Cancel {preview.active_offer_name}; restore {preview.target_offer_name} "
-            f"({preview.target_status.value}). Move PPPoE credential "
+            f"({preview.target_status.value}; {target_identity}). Move PPPoE credential "
             f"{preview.credential_username or 'unavailable'} to "
             f"{preview.target_radius_profile_name or 'an unavailable profile'} at "
             f"{preview.target_speed_label or 'an unconfigured speed'}. "
@@ -495,9 +500,13 @@ def _subscription_correction_action_forms(
         forms.append(
             ActionForm(
                 key=f"admin.subscription_correction.{candidate.subscription_id}",
-                title=f"Restore {preview.target_offer_name}",
+                title=(
+                    f"Correct mistake: restore {preview.target_offer_name} "
+                    f"({str(preview.target_subscription_id)[:8]})"
+                ),
                 description=(
                     "Use this only to repair an accidental duplicate activation. "
+                    f"Target {target_identity}. "
                     "The command owner rechecks every item under lock."
                 ),
                 action_url=(

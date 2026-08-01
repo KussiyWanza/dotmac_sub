@@ -262,3 +262,32 @@ class FinancialAccessConsequenceEvidence(Base):
     enforcement_lock = relationship("EnforcementLock")
     access_credential = relationship("AccessCredential")
     dunning_case = relationship("DunningCase", foreign_keys=[dunning_case_id])
+
+
+class PrepaidSweepCycleState(Base):
+    """Keyset cursor for the bounded prepaid sweep's coverage cycle.
+
+    One row per runner. The sweep processes accounts in stable key order and
+    checkpoints the last processed key, so every account is visited exactly
+    once per cycle regardless of how many bounded runs a cycle takes.
+    TRANSITIONAL: retired with prepaid_balance_sweep at the ADR 0007 durable
+    timer cutover.
+    """
+
+    __tablename__ = "prepaid_sweep_cycle_state"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    runner: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    cursor_key: Mapped[str | None] = mapped_column(String(64))
+    cycle_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    cycles_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )

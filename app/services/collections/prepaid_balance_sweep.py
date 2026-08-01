@@ -16,18 +16,20 @@ processed in its own committed unit so one bad row cannot abort the batch.
 
 from __future__ import annotations
 
+import bisect
 import logging
-import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from uuid import UUID
 
 from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.collections import FinancialAccessOrigin
+from app.models.catalog import Subscription
+from app.models.collections import FinancialAccessOrigin, PrepaidSweepCycleState
 from app.models.enforcement_lock import EnforcementReason
 from app.models.subscriber import Subscriber
 from app.services.access_resolution import PrepaidFundingDecision
@@ -349,14 +351,33 @@ def _process_account(
     cfg: PrepaidEnforcementPolicy,
     *,
     notice_suppression_reason: str | None,
+    prefetch: _SweepPrefetch | None = None,
 ) -> str:
-    decision = plan_prepaid_account(
-        db,
-        account,
-        now=now,
-        policy=cfg,
-        notice_suppression_reason=notice_suppression_reason,
-    )
+    if prefetch is not None:
+        decision = plan_prepaid_account(
+            db,
+            account,
+            now=now,
+            policy=cfg,
+            notice_suppression_reason=notice_suppression_reason,
+            subscriptions=prefetch.subscriptions_by_account.get(account.id, []),
+            funding=prefetch.funding_by_account.get(account.id),
+            active_prepaid_lock_count=prefetch.lock_counts.get(account.id, 0),
+            dedicated_bundle=account.id in prefetch.dedicated_account_ids,
+            shield_reason=prefetch.shield_reasons.get(account.id),
+            shield_evaluated=True,
+            window_block_reason=prefetch.window_block_reason,
+            window_evaluated=True,
+            include_derived_status=False,
+        )
+    else:
+        decision = plan_prepaid_account(
+            db,
+            account,
+            now=now,
+            policy=cfg,
+            notice_suppression_reason=notice_suppression_reason,
+        )
     if decision.action == PrepaidEnforcementAction.billing_profile_invalid:
         logger.warning(
             "prepaid_balance_sweep skipped account %s: %s",
@@ -441,6 +462,85 @@ def _process_account(
     return "ok"
 
 
+@dataclass(frozen=True, slots=True)
+class _SweepPrefetch:
+    """Run-level observations for the per-account planner.
+
+    Pure reads resolved once for the run slice; every decision and write
+    stays per-account inside its own committed unit. Planning from a
+    run-start snapshot is safe because the consequence path re-resolves
+    live funding before any suspension is confirmed.
+    """
+
+    subscriptions_by_account: dict[UUID, list[Subscription]]
+    funding_by_account: dict[UUID, PrepaidFundingDecision]
+    funding_candidate_ids: set[UUID]
+    lock_counts: dict[UUID, int]
+    dedicated_account_ids: set[UUID]
+    shield_reasons: dict[UUID, str]
+    window_block_reason: str | None
+
+
+_CYCLE_RUNNER = "prepaid_balance_sweep"
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _build_sweep_prefetch(
+    db: Session,
+    account_order: list,
+    *,
+    funding_candidate_ids: set,
+    now: datetime,
+) -> _SweepPrefetch:
+    from collections import defaultdict
+
+    from app.services.access_resolution import resolve_prepaid_fundings
+    from app.services.prepaid_enforcement_planner import (
+        _bulk_dunning_shield_reasons,
+        _dedicated_bundle_account_ids,
+        _prepaid_lock_counts,
+        _window_block_reason,
+    )
+
+    ids = [coerce_uuid(str(value)) for value in account_order]
+    subscriptions_by_account: dict[UUID, list[Subscription]] = defaultdict(list)
+    if ids:
+        for subscription in db.scalars(
+            select(Subscription).where(Subscription.subscriber_id.in_(ids))
+        ):
+            subscriptions_by_account[subscription.subscriber_id].append(subscription)
+    funding_ids = [value for value in ids if value in funding_candidate_ids]
+    return _SweepPrefetch(
+        subscriptions_by_account=dict(subscriptions_by_account),
+        funding_by_account=resolve_prepaid_fundings(db, funding_ids, now=now),
+        funding_candidate_ids=set(funding_candidate_ids),
+        lock_counts=_prepaid_lock_counts(db, ids) if ids else {},
+        dedicated_account_ids=(
+            _dedicated_bundle_account_ids(db, ids) if ids else set()
+        ),
+        shield_reasons=_bulk_dunning_shield_reasons(db, set(ids)) if ids else {},
+        window_block_reason=_window_block_reason(db, now=now),
+    )
+
+
+def _load_cycle_state(db: Session) -> PrepaidSweepCycleState:
+    state = db.execute(
+        select(PrepaidSweepCycleState)
+        .where(PrepaidSweepCycleState.runner == _CYCLE_RUNNER)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if state is None:
+        state = PrepaidSweepCycleState(
+            runner=_CYCLE_RUNNER, cycle_started_at=datetime.now(UTC)
+        )
+        db.add(state)
+        db.flush()
+    return state
+
+
 def _safe_rollback(db: Session) -> None:
     """Roll back, invalidating the connection when rollback itself fails.
 
@@ -473,8 +573,12 @@ def run_prepaid_balance_sweep(
     failure never aborts the batch; quarantine and evidence failures remain
     account-scoped. When ``deadline`` is set, accounts that do not fit the
     budget are deferred to the next run (counted as ``budget_deferred``) so
-    the run always ends cleanly and publishes its snapshot; iteration order
-    is shuffled so a persistent tail cannot be starved across runs.
+    the run always ends cleanly and publishes its snapshot. Fair coverage is
+    a persistent keyset cursor, not shuffling: accounts are processed in
+    stable key order and each bounded run resumes after the last processed
+    key, so a full cycle visits every account exactly once and no tail can
+    be starved. ``cycle_remaining``/``cycle_age_seconds`` expose cycle
+    progress for alerting.
     """
     run_at = now or datetime.now(UTC)
     cfg = resolve_prepaid_enforcement_policy(db)
@@ -511,12 +615,36 @@ def run_prepaid_balance_sweep(
     stats["accounts_scanned"] = len(account_ids)
     stats["funding_quarantined"] = len(quarantined_ids)
     no_contact_account_ids: set[str] = set()
-    account_order = sorted(enforceable_ids, key=str)
-    # Fair coverage under a budget: a fixed order would starve the same tail
-    # every run once the cohort outgrows the budget.
-    random.shuffle(account_order)
+    ordered = sorted(enforceable_ids, key=str)
+    cursor = _load_cycle_state(db).cursor_key
+    if cursor is None:
+        start_index = 0
+    else:
+        start_index = bisect.bisect_right([str(a) for a in ordered], cursor)
+        if start_index >= len(ordered):
+            # The previous cycle's tail is done; wrap to a fresh cycle.
+            start_index = 0
+            cursor = None
+    account_order = ordered[start_index:]
+    prefetch: _SweepPrefetch | None = None
+    try:
+        prefetch = _build_sweep_prefetch(
+            db,
+            account_order,
+            funding_candidate_ids=funding_candidate_ids,
+            now=run_at,
+        )
+        db.commit()
+    except Exception:
+        # Prefetch is an optimization, never a gate: fall back to the
+        # per-account resolution path.
+        _safe_rollback(db)
+        prefetch = None
+        logger.exception("prepaid_balance_sweep_prefetch_failed")
+    stopped_at: int | None = None
     for position, account_id in enumerate(account_order):
         if deadline is not None and datetime.now(UTC) >= deadline:
+            stopped_at = position
             deferred = len(account_order) - position
             stats["budget_deferred"] = int(stats["budget_deferred"]) + deferred
             logger.warning(
@@ -540,6 +668,7 @@ def run_prepaid_balance_sweep(
                 run_at,
                 cfg,
                 notice_suppression_reason=notice_reasons.get(account.id),
+                prefetch=prefetch,
             )
             if outcome == "no_contact_route":
                 no_contact_account_ids.add(str(account.id))
@@ -550,6 +679,7 @@ def run_prepaid_balance_sweep(
             # was set): stop DB work immediately, count the remainder as
             # deferred, and let the run end by publishing its snapshot.
             _safe_rollback(db)
+            stopped_at = position
             deferred = len(account_order) - position
             stats["budget_deferred"] = int(stats["budget_deferred"]) + deferred
             stats["errors"] = int(stats["errors"]) + 1
@@ -565,6 +695,34 @@ def run_prepaid_balance_sweep(
                 "prepaid_balance_sweep_account_failed",
                 extra={"account_id": str(account_id)},
             )
+    try:
+        # Checkpoint the coverage cycle: resume after the last processed key
+        # next run, or reset when this run reached the end of the cohort.
+        state = _load_cycle_state(db)
+        if cursor is None:
+            state.cycle_started_at = run_at
+        if stopped_at is None:
+            if account_order:
+                state.cursor_key = None
+                state.cycles_completed = int(state.cycles_completed) + 1
+            cycle_remaining = 0
+        elif stopped_at > 0:
+            state.cursor_key = str(account_order[stopped_at - 1])
+            cycle_remaining = len(account_order) - stopped_at
+        else:
+            cycle_remaining = len(account_order)
+        cycle_age = max(
+            0.0,
+            (datetime.now(UTC) - _aware(state.cycle_started_at)).total_seconds(),
+        )
+        stats["cycle_total"] = len(ordered)
+        stats["cycle_remaining"] = cycle_remaining
+        stats["cycle_age_seconds"] = int(cycle_age)
+        stats["cycles_completed"] = int(state.cycles_completed)
+        db.commit()
+    except Exception:
+        _safe_rollback(db)
+        logger.exception("prepaid_balance_sweep_cycle_checkpoint_failed")
     try:
         # A work item stays open while its account remains inside prepaid
         # enforcement (armed timer or deactivation marker) — the outcome only

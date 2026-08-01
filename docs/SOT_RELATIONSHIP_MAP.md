@@ -569,7 +569,7 @@ do not hand-edit these rows.
 | `auth.staff_provisioning` | staff identity bootstrap | `command_writer` | ERP HR staff lifecycle request ← `external:dotmac_erp`<br>canonical staff identity and credential state ← `auth.staff_provisioning`<br>canonical Person Party identity ← `party.registry` | `coordinator_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_api_staff_sync.py`<br>`tests/test_staff_provisioning_owner.py`<br>`tests/architecture/test_staff_provisioning_boundary.py` |
 | `auth.reseller_onboarding` | reseller portal principal onboarding | `application_coordinator` | authorized reseller onboarding principal ← `auth.permission_gate`<br>canonical reseller and subscriber account state ← `customer.accounts`<br>canonical subscriber assignment state ← `auth.subscriber_assignments`<br>reseller principal cutover gate ← `control.feature_registry`<br>canonical reseller onboarding state ← `auth.reseller_onboarding` | `coordinator_managed` | `complete` | platform security | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_reseller_onboarding.py`<br>`tests/architecture/test_reseller_onboarding_boundary.py` |
 | `access.credential_binding` | access credential subscription and RADIUS-profile binding | `command_writer` | canonical subscriber access credential ← `access.radius_projection`<br>canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>catalog-linked target RADIUS profile ← `service_intent.catalog_policy`<br>typed credential binding command evidence ← `access.credential_binding` | `participant` | `complete` | network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_subscription_correction.py`<br>`tests/architecture/test_subscription_correction_boundary.py` |
-| `access.subscription_correction` | atomic mistaken-subscription correction coordination | `application_coordinator` | canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical access credential binding ← `access.credential_binding`<br>canonical FUP runtime state ← `access.fup_runtime_state`<br>canonical invoice-line history ← `financial.invoices`<br>catalog-linked target RADIUS profile ← `service_intent.catalog_policy`<br>reviewed correction preview ← `access.subscription_correction` | `coordinator_managed` | `complete` | network access and billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_subscription_correction.py`<br>`tests/test_subscription_lifecycle_ui.py`<br>`tests/architecture/test_subscription_correction_boundary.py` |
+| `access.subscription_correction` | atomic mistaken-subscription correction coordination | `application_coordinator` | canonical subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical access credential binding ← `access.credential_binding`<br>canonical FUP runtime state ← `access.fup_runtime_state`<br>canonical invoice-line history ← `financial.invoices`<br>catalog-linked target RADIUS profile ← `service_intent.catalog_policy`<br>reviewed correction preview ← `access.subscription_correction` | `coordinator_managed` | `complete` | network access and billing operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_subscription_correction.py`<br>`tests/test_subscription_lifecycle_ui.py`<br>`tests/playwright/e2e/test_subscription_correction.py`<br>`tests/architecture/test_subscription_correction_boundary.py` |
 | `access.event_policy` | event-driven enforcement feature policy | `event_policy` | canonical RADIUS event settings ← `control.settings_spec` | `read_only` | `complete` | network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_enforcement_event_policy.py`<br>`tests/test_events_enforcement_services.py`<br>`tests/test_radius_shadow_handler_integration.py`<br>`tests/architecture/test_enforcement_event_policy_boundary.py` |
 | `access.event_policy` | FUP enforcement action settings | `event_policy` | canonical FUP event settings ← `control.settings_spec`<br>usage-exhausted action evidence ← `access.fup_enforcement_sweep` | `read_only` | `complete` | network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_enforcement_event_policy.py`<br>`tests/test_events_enforcement_services.py`<br>`tests/test_radius_shadow_handler_integration.py`<br>`tests/architecture/test_enforcement_event_policy_boundary.py` |
 | `access.walled_garden_policy` | captive account eligibility | `policy` | canonical subscriber access identity ← `customer.accounts`<br>canonical reseller scope ← `customer.identity_scope`<br>captive restriction protocol ← `access.walled_garden_policy` | `read_only` | `complete` | network access | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/audits/BILLING_SOT_AUDIT_2026-07-12.md`<br>`docs/designs/SOT_CODING_STANDARDS_REFACTOR.md`<br>`tests/test_walled_garden_policy.py`<br>`tests/test_radius_shadow_handler_integration.py`<br>`tests/architecture/test_grace_walled_garden_ownership.py`<br>`tests/architecture/test_walled_garden_policy_boundary.py` |
@@ -2088,15 +2088,19 @@ network summary composition.
 8. `access.subscription_correction` owns the reviewed coordination used when
    one subscription was activated by mistake and an explicit restorable sibling
    should remain. It never guesses or deletes a subscription. The owner locks
-   both services, fails closed on any invoice line or ambiguous active
-   credential/profile, delegates status changes to
+   both services, fails closed on any invoice line, target enforcement lock,
+   malformed legacy served-IP projection, unconfigured speed, or ambiguous or
+   mismatched PPPoE credential/profile evidence, delegates status changes to
    `access.subscription_lifecycle`, delegates the credential service/profile
    binding to the flush-only `access.credential_binding` participant, clears
    both scoped FUP runtime states through `access.fup_runtime_state`, and commits
    the fingerprinted correction once. Existing lifecycle events request IP and
    RADIUS convergence after commit; paired cancel/resume customer notifications
    are suppressed because they describe one administrative correction, not two
-   customer decisions.
+   customer decisions. Ordinary Restore is not the correction path: its owner
+   rejects a stopped/disabled subscription while another active service uses
+   the same login, so the operator must open the mistakenly active service and
+   use the fingerprinted correction action.
 7. `customer.service_status` owns customer-visible service health and action
    hints, including whether payment can restore every active service hold and
    the authoritative amount required by financial policy.
@@ -3413,7 +3417,14 @@ writers are retired; historical rows remain readable evidence.
    conversion and, after the default 24-hour expiry, stages locked
    return-to-inventory cleanup when no assignment exists. Exact identity drift
    or cleanup failure remains durable blocking evidence. The reviewed contract
-   and state machine are in `docs/designs/ONT_COMMISSIONING_INTENT.md`.
+   and state machine are in `docs/designs/ONT_COMMISSIONING_INTENT.md`. Device
+   workers cross an immutable typed command/outcome boundary, commit before OLT
+   I/O, and finalize through freshly locked intent and operation rows. An
+   interrupted `authorizing` operation is automatically redriven only when its
+   intent, operation ledger, `reconciliation_needed` dispatch, local inventory,
+   and live OLT serial/F/S/P/ONT-ID evidence agree. Recovery is retry-bounded,
+   management-only, and explicitly forbids authorization reissue; missing or
+   conflicting evidence becomes durable operator-review state.
 47. `network.ont_provisioning_execution`: owns the tracked authorization,
    baseline-repair, DB-only baseline preview, bootstrap retry, parent rollup,
    and bulk-item transitions.

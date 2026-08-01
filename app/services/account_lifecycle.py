@@ -1905,16 +1905,11 @@ def reactivation_blocked_by_active_login(db: Session, subscription) -> bool:
     Used by the lock-repair tools to skip such rows instead of hitting an
     IntegrityError mid-restore.
     """
-    if not subscription.login:
-        return False
-    stmt = (
-        select(Subscription.id)
-        .where(Subscription.subscriber_id == subscription.subscriber_id)
-        .where(Subscription.login == subscription.login)
-        .where(Subscription.status == SubscriptionStatus.active)
-        .where(Subscription.id != subscription.id)
+    from app.services.subscription_lifecycle import (
+        reactivation_blocked_by_active_login as lifecycle_restore_is_blocked,
     )
-    return db.scalars(stmt).first() is not None
+
+    return lifecycle_restore_is_blocked(db, subscription)
 
 
 # ---------------------------------------------------------------------------

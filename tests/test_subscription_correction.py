@@ -16,6 +16,7 @@ from app.models.catalog import (
     Subscription,
     SubscriptionStatus,
 )
+from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.fup_state import FupActionStatus, FupState
 from app.services.owner_commands import CommandContext
 from app.services.subscription_correction import (
@@ -124,6 +125,7 @@ def test_candidates_and_preview_show_exact_restoration_consequences(
     assert preview.eligible is True
     assert preview.active_offer_name == catalog_offer.name
     assert preview.target_offer_name == "Unlimited Lite"
+    assert preview.target_created_at == target.created_at
     assert preview.credential_id == credential.id
     assert preview.target_radius_profile_id == profile.id
     assert preview.target_speed_label == "15 Mbps down / 15 Mbps up"
@@ -152,6 +154,88 @@ def test_admin_projection_uses_exact_shared_action_form(
     assert hidden["idempotency_key"].startswith("subscription-correction:")
     assert "15 Mbps down / 15 Mbps up" in str(form.impact)
     assert "no automatic credit" in str(form.impact)
+    assert str(target.id) in form.description
+    assert target.created_at.isoformat() in form.description
+    assert str(target.id)[:8] in form.title
+    assert form.title.startswith("Correct mistake:")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "issue_code"),
+    [
+        ("ipv4_address", "not-an-ip", "target_ipv4_invalid"),
+        ("ipv6_address", "10.10.10.10", "target_ipv6_invalid"),
+    ],
+)
+def test_preview_blocks_invalid_target_ip_projection_evidence(
+    db_session, subscriber, catalog_offer, field, value, issue_code
+):
+    wrong, target, _credential, _profile = _fixture(
+        db_session, subscriber, catalog_offer
+    )
+    setattr(target, field, value)
+    db_session.commit()
+
+    preview = preview_subscription_correction(
+        db_session,
+        active_subscription_id=wrong.id,
+        target_subscription_id=target.id,
+    )
+
+    assert preview.eligible is False
+    assert issue_code in {issue.code for issue in preview.issues}
+
+
+def test_preview_blocks_mismatched_pppoe_identity_and_unconfigured_speed(
+    db_session, subscriber, catalog_offer
+):
+    wrong, target, credential, profile = _fixture(db_session, subscriber, catalog_offer)
+    credential.username = "different-login"
+    profile.download_speed = None
+    profile.upload_speed = None
+    profile.mikrotik_rate_limit = None
+    db_session.commit()
+
+    preview = preview_subscription_correction(
+        db_session,
+        active_subscription_id=wrong.id,
+        target_subscription_id=target.id,
+    )
+
+    assert preview.eligible is False
+    assert {
+        "credential_active_login_mismatch",
+        "credential_target_login_mismatch",
+        "radius_profile_speed_unconfigured",
+    }.issubset({issue.code for issue in preview.issues})
+
+
+def test_preview_blocks_active_target_enforcement_lock(
+    db_session, subscriber, catalog_offer
+):
+    wrong, target, _credential, _profile = _fixture(
+        db_session, subscriber, catalog_offer
+    )
+    db_session.add(
+        EnforcementLock(
+            subscription_id=target.id,
+            subscriber_id=subscriber.id,
+            reason=EnforcementReason.admin,
+            source="admin:test",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    preview = preview_subscription_correction(
+        db_session,
+        active_subscription_id=wrong.id,
+        target_subscription_id=target.id,
+    )
+
+    assert preview.eligible is False
+    assert preview.target_lock_reasons == ("admin",)
+    assert "target_enforcement_lock_present" in {issue.code for issue in preview.issues}
 
 
 def test_newer_stopped_sibling_is_not_offered_as_a_correction_target(

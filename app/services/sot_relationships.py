@@ -14317,7 +14317,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "idempotent return-to-inventory cleanup."
                     " Slow OLT calls consume detached immutable connection values "
                     "after the preceding database transaction closes; a fresh "
-                    "reliability session records partial external success."
+                    "reliability session records partial external success. The "
+                    "permanent reconciler admits bounded management-only recovery "
+                    "only from matching intent, operation-ledger, dispatch, local "
+                    "inventory, and live OLT registration evidence."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -14423,9 +14426,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "execute_owner_command once on a transaction-free session; "
                             "intent, operation, dispatch, audit, and event stage "
                             "atomically. Device workers close the database transaction "
-                            "before live OLT or management I/O, use detached connection "
-                            "values, and persist external-write evidence in a fresh "
-                            "transaction before subsequent coordination."
+                            "before live OLT or management I/O, use a detached immutable "
+                            "typed execution plan, and persist external-write evidence "
+                            "in a fresh transaction before subsequent coordination. "
+                            "Finalization locks and revalidates the exact intent and "
+                            "operation after device I/O."
                         ),
                         locking=(
                             "Admission locks the exact autofind candidate and active "
@@ -14437,12 +14442,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "One active intent per canonical serial and operation "
                             "correlation suppress duplicate admission; versioned "
                             "dispatch keys make bounded ACS checks and cleanup "
-                            "replay-safe."
+                            "replay-safe. Interrupted management redrives are linked to "
+                            "one reviewed operation/evidence fingerprint and carry "
+                            "authorization_reissue_allowed=false."
                         ),
                         retries=(
                             "Device authorization reuses durable landed-write evidence; "
-                            "ACS checks use five delayed attempts; later reconciliation "
-                            "repairs assignment and expiry drift."
+                            "management recovery is bounded by the operation retry "
+                            "budget; ACS checks use five delayed attempts; later "
+                            "reconciliation repairs assignment and expiry drift."
                         ),
                     ),
                     errors=ErrorContract(
@@ -14470,6 +14478,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "network.ont_commissioning.service_config_forbidden",
                             "network.ont_commissioning.unsafe_external_transaction",
                             "network.ont_commissioning.external_write_reconciliation_required",
+                            "network.ont_commissioning.registration_not_confirmed",
+                            "network.ont_commissioning.execution_conflict",
+                            "network.ont_commissioning.interrupted_execution_review_required",
+                            "network.ont_commissioning.management_recovery_exhausted",
+                            "network.ont_commissioning.operation_missing",
                             "network.ont_commissioning.acs_not_ready",
                             "network.ont_commissioning.cleanup_target_missing",
                             "network.ont_commissioning.cleanup_identity_mismatch",
@@ -14492,6 +14505,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "registration on a different F/S/P",
                             "missing registration or management-only prerequisites",
                             "any internet, WAN, PPPoE, LAN, or Wi-Fi command",
+                            "missing durable landed-authorization recovery evidence",
+                            "changed live registration before management recovery",
+                            "an active database transaction at any device-I/O boundary",
                             "identity drift before cleanup",
                         ),
                     ),
@@ -14528,7 +14544,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             stale_behavior=(
                                 "Stale intent state never grants service. Expired "
                                 "unassigned device state is cleanup-eligible only "
-                                "after exact locked revalidation."
+                                "after exact locked revalidation. An interrupted "
+                                "authorizing intent either receives bounded, exact-live "
+                                "management recovery from durable landed evidence or "
+                                "moves to a terminal failed state for review."
                             ),
                             drift_signal=(
                                 "last_reconciled_at, expiry, assignment state, "
@@ -14536,7 +14555,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             rebuild_operation=(
                                 "reconcile_ont_commissioning recomputes assignment "
-                                "conversion and stages safe expiry cleanup"
+                                "conversion, repairs interrupted management execution, "
+                                "and stages safe expiry cleanup"
                             ),
                             repair_owner="network.ont_commissioning",
                         ),
@@ -26313,8 +26333,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "The reviewed coordinator never guesses the correct plan and never "
                     "hard-deletes history. It fails closed on billing history or ambiguous "
-                    "credential/profile evidence, then commits lifecycle, binding, FUP, "
-                    "and durable event evidence once."
+                    "credential/profile evidence, active target locks, or malformed legacy "
+                    "served-IP projection evidence, then commits lifecycle, binding, FUP, "
+                    "and durable event evidence once. It validates but never writes IP "
+                    "projection fields."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -26336,7 +26358,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             name="canonical subscription lifecycle state",
                             owner="access.subscription_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="Locked mistaken and target Subscription rows and locks",
+                            source=(
+                                "Locked mistaken and target Subscription rows and locks; "
+                                "legacy served-IP scalars are checked only as non-authoritative "
+                                "resume-provisioning evidence pending explicit IPv6 projection "
+                                "ownership"
+                            ),
                         ),
                         AuthorityInput(
                             name="canonical access credential binding",
@@ -26417,9 +26444,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "access.subscription_correction.credential_missing",
                             "access.subscription_correction.credential_ambiguous",
                             "access.subscription_correction.credential_binding_conflict",
+                            "access.subscription_correction.credential_username_missing",
+                            "access.subscription_correction.target_login_missing",
+                            "access.subscription_correction.credential_target_login_mismatch",
+                            "access.subscription_correction.credential_active_login_mismatch",
                             "access.subscription_correction.radius_profile_missing",
                             "access.subscription_correction.radius_profile_ambiguous",
                             "access.subscription_correction.radius_profile_inactive",
+                            "access.subscription_correction.radius_profile_speed_invalid",
+                            (
+                                "access.subscription_correction."
+                                "radius_profile_speed_unconfigured"
+                            ),
+                            "access.subscription_correction.active_ipv4_invalid",
+                            "access.subscription_correction.active_ipv6_invalid",
+                            "access.subscription_correction.target_ipv4_invalid",
+                            "access.subscription_correction.target_ipv6_invalid",
+                            (
+                                "access.subscription_correction."
+                                "target_enforcement_lock_present"
+                            ),
                             "access.subscription_correction.preview_changed",
                             "access.subscription_correction.correction_ineligible",
                             "access.subscription_correction.correction_not_applied",
@@ -26434,6 +26478,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "changed preview evidence",
                             "any existing invoice line",
                             "ambiguous credential or target profile",
+                            "missing or mismatched PPPoE identity",
+                            "unconfigured target speed or malformed served-IP projection",
+                            "active enforcement lock on the target subscription",
                             "account/subscription mismatch or lifecycle override",
                         ),
                     ),
@@ -26464,7 +26511,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         cutover_gate=(
                             "The correction action appears only for an active subscription "
-                            "with an explicit restorable sibling and executes this owner."
+                            "with an explicit restorable sibling and executes this owner; "
+                            "generic restore previews reject a same-login active sibling."
                         ),
                         fallback_retirement=(
                             "No correction route performs direct ORM writes or generic CRUD; "
@@ -26479,6 +26527,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_subscription_correction.py",
                         "tests/test_subscription_lifecycle_ui.py",
+                        "tests/playwright/e2e/test_subscription_correction.py",
                         "tests/architecture/test_subscription_correction_boundary.py",
                     ),
                 ),

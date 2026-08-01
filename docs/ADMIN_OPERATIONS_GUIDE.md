@@ -484,7 +484,9 @@ shows **Correct Subscription**. Use it only to repair an accidental activation:
 
 1. Open the mistakenly active subscription and select **Correct Subscription**.
 2. Find the owner-reviewed form for the exact subscription and plan that should
-   remain. Blocked options explain why they cannot run.
+   remain. The form shows the full target subscription ID and creation time so
+   repeated plan names are distinguishable. Blocked options explain why they
+   cannot run.
 3. Review the cancellation/restoration pair, PPPoE credential, target RADIUS
    profile and speed, FUP cleanup, and financial-history result.
 4. Tick the exact-correction confirmation and submit the shared action form.
@@ -498,6 +500,22 @@ and requests the normal RADIUS/IP reconciliation after commit. It makes no
 automatic credit or invoice adjustment. If the mistaken subscription already
 has an invoice line, the preview blocks the command; reconcile the financial
 documents through their owning billing workflow before retrying.
+
+Do not use ordinary **Restore** for this scenario. Restore is intentionally
+blocked when another active subscription already uses the same PPPoE login.
+Open that active subscription and use **Correct Subscription**. The correction
+preview also blocks malformed stored IPv4/IPv6 values, a missing or mismatched
+PPPoE username, an unconfigured target speed profile, or an active target
+enforcement lock. Repair the named evidence through its owning workflow, then
+refresh the preview; do not bypass the preflight with direct database writes.
+
+For staging acceptance, use the disposable Playwright fixture rather than a
+real customer. Set `PLAYWRIGHT_BASE_URL` to the staging URL and
+`TEST_DATABASE_URL` to that deployment's disposable test database, then run
+`poetry run pytest -q tests/playwright/e2e/test_subscription_correction.py`.
+The suite refuses known production hosts and creates a unique customer with one
+mistaken active plan, one older stopped Unlimited Lite target, one PPPoE
+credential, and an exact 15 Mbps profile before exercising the UI correction.
 
 ### Step 3: Verify RADIUS Sync
 
