@@ -20197,7 +20197,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             ),
             SOTService(
                 name="support.ticket_region_projection",
-                module="app.services.support_ticket_settings",
+                module="app.services.support_ticket_region_projection",
                 owns=("canonical support-ticket region projection",),
                 depends_on=(
                     "support.ticket_configuration",

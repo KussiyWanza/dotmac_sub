@@ -14,11 +14,11 @@ from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.service_team import ServiceTeam
 from app.models.subscription_engine import SettingValueType
-from app.models.support import Ticket, TicketStatus
+from app.models.support import TicketStatus
 from app.models.ticket_workflow import TicketAssignmentRule, TicketAssignmentStrategy
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
-from app.services import service_team_lifecycle
+from app.services import service_team_lifecycle, support_ticket_region_projection
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
@@ -462,31 +462,21 @@ def list_region_options(db: Session) -> list[str]:
 def list_canonical_region_options(db: Session) -> list[str]:
     """Return the canonical region projection shared by ticket forms."""
 
-    rows = (
-        db.query(Ticket.region)
-        .filter(
-            Ticket.is_active.is_(True),
-            Ticket.region.isnot(None),
-            Ticket.region != "",
+    return list(
+        support_ticket_region_projection.list_canonical_region_options(
+            db,
+            configured_regions=tuple(list_region_options(db)),
         )
-        .distinct()
-        .order_by(Ticket.region.asc())
-        .limit(200)
-        .all()
     )
-    discovered = [str(item[0]) for item in rows if item and item[0]]
-    return sorted(set(discovered + list_region_options(db)))
 
 
 def canonical_region_option(db: Session, submitted: str | None) -> str | None:
     """Resolve a submitted region only when it is a current canonical option."""
 
-    candidate = str(submitted or "").strip()
-    if not candidate:
-        return None
-    return next(
-        (option for option in list_canonical_region_options(db) if option == candidate),
-        None,
+    return support_ticket_region_projection.canonical_region_option(
+        db,
+        submitted,
+        configured_regions=tuple(list_region_options(db)),
     )
 
 

@@ -9,6 +9,7 @@ MIGRATED_MODULES = (
     "app/services/support_automation.py",
     "app/services/support_automation_rules.py",
     "app/services/support_ticket_settings.py",
+    "app/services/support_ticket_region_projection.py",
     "app/services/ticket_assignment/admin.py",
     "app/services/ticket_assignment/engine.py",
     "app/services/ticket_assignment/selectors.py",
@@ -103,6 +104,19 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
     assert "TicketCreationRoutingMode.preserve_requested_team" in _source(
         "app/services/crm_portal.py"
     )
+
+
+def test_ticket_region_projection_has_one_typed_owner() -> None:
+    configuration = _source("app/services/support_ticket_settings.py")
+    projection = _source("app/services/support_ticket_region_projection.py")
+
+    assert (
+        "support_ticket_region_projection.list_canonical_region_options"
+        in configuration
+    )
+    assert "configured_regions: tuple[str, ...]" in projection
+    assert "db.query(Ticket.region)" in projection
+    assert "db.query(Ticket.region)" not in configuration
 
 
 def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:
