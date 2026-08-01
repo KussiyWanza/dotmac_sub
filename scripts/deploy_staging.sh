@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Staging-only deployment adapter.
+#
+# The staging database is non-authoritative and shares its host disk with the
+# application stack. A full local pg_dump before every staging deployment can
+# therefore starve the running services of I/O without protecting production.
+# This adapter proves the exact staging host contract before opting out of that
+# local dump. Production and every other environment continue to call
+# scripts/deploy.sh directly, where backups remain enabled by default.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ROOT_DIR}/.env"
+
+die() {
+  echo "Staging deploy refused: $*" >&2
+  exit 1
+}
+
+require_exact_env_line() {
+  local expected="$1"
+  grep -Fqx "${expected}" "${ENV_FILE}" || die "${ENV_FILE} must contain ${expected}"
+}
+
+[[ -f "${ENV_FILE}" ]] || die "missing ${ENV_FILE}"
+require_exact_env_line "APP_ENV=staging"
+require_exact_env_line "SERVER_NAME=dotmac-sub-staging"
+require_exact_env_line "HEALTH_URL=http://10.120.121.20:8001/health"
+
+cd "${ROOT_DIR}"
+export SKIP_BACKUP=1
+export REQUIRE_PROXY_HANDOFF=0
+exec bash "${ROOT_DIR}/scripts/deploy.sh" "$@"
