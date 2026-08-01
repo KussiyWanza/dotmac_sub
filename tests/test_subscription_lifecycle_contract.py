@@ -407,6 +407,11 @@ def test_plan_change_preview_uses_canonical_proration_and_access_impact(
             kind=SubscriptionCommandKind.change_plan,
             source="admin:test",
             target_offer_id=str(target.id),
+            # The pricing owner keeps its own clock unless the command
+            # carries an explicit effective time; without it the quote uses
+            # wall clock and this pinned mid-cycle preview breaks once the
+            # real date passes next_billing_at (2026-08-01).
+            effective_at=datetime(2026, 7, 14, 12, 0, tzinfo=UTC),
         ),
         now=datetime(2026, 7, 14, 12, 0, tzinfo=UTC),
     )
