@@ -220,11 +220,10 @@ def _sync_evidence_work_items(
                 severity=AlertSeverity.warning,
                 title="Prepaid renewal terms need finance review",
                 summary=(
-                    "This active prepaid subscription has no frozen contracted "
-                    "amount and its paid-invoice evidence is missing or "
-                    "self-contradictory. Record the correct contracted price "
-                    "through a reviewed staff correction; the amount is never "
-                    "inferred from the current catalog."
+                    "Active prepaid subscription with no frozen contracted "
+                    "amount; paid-invoice evidence is missing or conflicting. "
+                    "Record the price via a reviewed staff correction — never "
+                    "inferred from the catalog."
                 ),
                 details={
                     "owner": "finance-billing",
