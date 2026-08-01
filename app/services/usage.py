@@ -161,13 +161,35 @@ def _write_subscription_mac_from_accounting(
     subscription_id,
     calling_station_id: str | None,
 ) -> None:
-    mac_address = _normalize_mac_address(calling_station_id)
-    if not mac_address or not subscription_id:
-        return
-    subscription = db.get(Subscription, subscription_id)
-    if not subscription or subscription.mac_address == mac_address:
-        return
-    subscription.mac_address = mac_address
+    """Deliberately does nothing. Retained as the documented boundary.
+
+    This used to write ``Subscription.mac_address`` from the accounting
+    ``Calling-Station-Id``, which conflated an OBSERVATION with a POLICY field.
+    Two things went wrong with that:
+
+    * the accounting feed carries stop and backlog rows, so a stale observation
+      could overwrite the current value; and
+    * ``Subscription.mac_address`` is consumed as device IDENTITY -- see
+      ``unmatched_radio_queue``, which matches a radio's MAC against it -- so
+      identity matching drifted with whatever CPE last connected.
+
+    This is the same defect shape as the accounting dual-write that put observed
+    framed IPs into ``ipv4_address`` and produced duplicate ``Framed-IP-Address``
+    projections: an observer writing a field an owner is responsible for. See
+    ``_write_subscription_ips_from_accounting`` for how the IP side was split.
+
+    The observed MAC already has a home -- ``RadiusActiveSession``
+    ``calling_station_id`` for the live view and external ``radacct`` for
+    history -- so nothing is lost by not writing here.
+
+    ``Subscription.mac_address`` is now LEGACY AMBIGUOUS state: some values were
+    operator-entered, some were written by this function, and the two are no
+    longer distinguishable. It must not be treated as an enforceable device
+    binding. An owner-managed binding at exact subscription/credential grain,
+    projected as a ``Calling-Station-Id`` CHECK item and shadow-first, is a
+    separate slice to be decided after measurement.
+    """
+    return
 
 
 def _write_subscription_ips_from_accounting(

@@ -91,9 +91,17 @@ def test_list_sessions_by_subscription(db_session, subscription):
     assert isinstance(sessions, list)
 
 
-def test_radius_accounting_session_create_writes_back_subscription_mac(
+def test_radius_accounting_session_create_does_not_write_the_policy_mac(
     db_session, subscription
 ):
+    """Accounting observes; it does not set device identity.
+
+    `Subscription.mac_address` is consumed as identity -- `unmatched_radio_queue`
+    matches a radio's MAC against it -- so letting the accounting feed write it
+    made identity drift with whatever CPE last connected, and stop/backlog rows
+    could overwrite the current value with a stale one. Same defect shape as the
+    accounting dual-write into `ipv4_address`.
+    """
     credential = AccessCredential(
         subscriber_id=subscription.subscriber_id,
         username="10005030",
@@ -118,10 +126,10 @@ def test_radius_accounting_session_create_writes_back_subscription_mac(
 
     assert session.subscription_id == subscription.id
     db_session.refresh(subscription)
-    assert subscription.mac_address == "AA:BB:CC:DD:EE:FF"
+    assert subscription.mac_address is None
 
 
-def test_radius_accounting_session_update_writes_back_subscription_mac(
+def test_radius_accounting_session_update_does_not_write_the_policy_mac(
     db_session, subscription
 ):
     credential = AccessCredential(
@@ -155,7 +163,7 @@ def test_radius_accounting_session_update_writes_back_subscription_mac(
     )
 
     db_session.refresh(subscription)
-    assert subscription.mac_address == "AA:BB:CC:DD:EE:11"
+    assert subscription.mac_address is None
 
 
 def test_create_usage_record(db_session, subscription):
