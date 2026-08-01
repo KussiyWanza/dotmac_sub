@@ -76,6 +76,11 @@ The boundary is typed end to end:
   OLT/F/S/P/serial target, force policy, preset, and `CommandContext`;
 - `RegisterCommissioningOnt` carries the exact commissioning intent and
   operation;
+- `ExecuteOntCommissioning` carries the exact intent, operation, and command
+  context from the durable worker adapter, and returns an immutable
+  `OntCommissioningExecutionOutcome`;
+- `RecordOntCommissioningExternalWriteFailure` carries the same typed identity
+  into the fresh-session reliability recorder when worker finalization is lost;
 - `OntFsp`, `OntSerialNumber`, and `OntAuthorizationTarget` prevent primitive
   identity bags;
 - typed admission, assignment-decision, workflow, and execution outcomes remain
@@ -108,10 +113,13 @@ Authorization evidence is persisted immediately after the OLT confirms the
 write. If the original session is lost afterward, the task opens a fresh
 reliability session and records
 `external_write_reconciliation_required`. The reconciler verifies the exact
-serial, OLT, canonical F/S/P, ONT inventory identity, and recorded operation,
-then idempotently redrives management-only commissioning without issuing a
-second authorization command. Conflicting evidence fails closed into cleanup
-review.
+serial, OLT, canonical F/S/P, ONT inventory identity, recorded operation
+payload, and `reconciliation_needed` dispatch. It fingerprints that locked
+evidence and stages a linked, retry-bounded management-only redrive with
+`authorization_reissue_allowed=false`. The recovery worker then live-verifies
+the exact serial, F/S/P, and ONT ID before any management write. Missing or
+conflicting evidence, live registration drift, and retry exhaustion fail closed
+into durable review state instead of leaving the UI in `authorizing`.
 
 ## Concurrency and cleanup
 

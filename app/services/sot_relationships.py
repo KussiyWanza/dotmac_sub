@@ -14317,7 +14317,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "idempotent return-to-inventory cleanup."
                     " Slow OLT calls consume detached immutable connection values "
                     "after the preceding database transaction closes; a fresh "
-                    "reliability session records partial external success."
+                    "reliability session records partial external success. The "
+                    "permanent reconciler admits bounded management-only recovery "
+                    "only from matching intent, operation-ledger, dispatch, local "
+                    "inventory, and live OLT registration evidence."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -14423,9 +14426,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "execute_owner_command once on a transaction-free session; "
                             "intent, operation, dispatch, audit, and event stage "
                             "atomically. Device workers close the database transaction "
-                            "before live OLT or management I/O, use detached connection "
-                            "values, and persist external-write evidence in a fresh "
-                            "transaction before subsequent coordination."
+                            "before live OLT or management I/O, use a detached immutable "
+                            "typed execution plan, and persist external-write evidence "
+                            "in a fresh transaction before subsequent coordination. "
+                            "Finalization locks and revalidates the exact intent and "
+                            "operation after device I/O."
                         ),
                         locking=(
                             "Admission locks the exact autofind candidate and active "
@@ -14437,12 +14442,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "One active intent per canonical serial and operation "
                             "correlation suppress duplicate admission; versioned "
                             "dispatch keys make bounded ACS checks and cleanup "
-                            "replay-safe."
+                            "replay-safe. Interrupted management redrives are linked to "
+                            "one reviewed operation/evidence fingerprint and carry "
+                            "authorization_reissue_allowed=false."
                         ),
                         retries=(
                             "Device authorization reuses durable landed-write evidence; "
-                            "ACS checks use five delayed attempts; later reconciliation "
-                            "repairs assignment and expiry drift."
+                            "management recovery is bounded by the operation retry "
+                            "budget; ACS checks use five delayed attempts; later "
+                            "reconciliation repairs assignment and expiry drift."
                         ),
                     ),
                     errors=ErrorContract(
@@ -14470,6 +14478,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "network.ont_commissioning.service_config_forbidden",
                             "network.ont_commissioning.unsafe_external_transaction",
                             "network.ont_commissioning.external_write_reconciliation_required",
+                            "network.ont_commissioning.registration_not_confirmed",
+                            "network.ont_commissioning.execution_conflict",
+                            "network.ont_commissioning.interrupted_execution_review_required",
+                            "network.ont_commissioning.management_recovery_exhausted",
+                            "network.ont_commissioning.operation_missing",
                             "network.ont_commissioning.acs_not_ready",
                             "network.ont_commissioning.cleanup_target_missing",
                             "network.ont_commissioning.cleanup_identity_mismatch",
@@ -14492,6 +14505,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "registration on a different F/S/P",
                             "missing registration or management-only prerequisites",
                             "any internet, WAN, PPPoE, LAN, or Wi-Fi command",
+                            "missing durable landed-authorization recovery evidence",
+                            "changed live registration before management recovery",
+                            "an active database transaction at any device-I/O boundary",
                             "identity drift before cleanup",
                         ),
                     ),
@@ -14528,7 +14544,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             stale_behavior=(
                                 "Stale intent state never grants service. Expired "
                                 "unassigned device state is cleanup-eligible only "
-                                "after exact locked revalidation."
+                                "after exact locked revalidation. An interrupted "
+                                "authorizing intent either receives bounded, exact-live "
+                                "management recovery from durable landed evidence or "
+                                "moves to a terminal failed state for review."
                             ),
                             drift_signal=(
                                 "last_reconciled_at, expiry, assignment state, "
@@ -14536,7 +14555,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             rebuild_operation=(
                                 "reconcile_ont_commissioning recomputes assignment "
-                                "conversion and stages safe expiry cleanup"
+                                "conversion, repairs interrupted management execution, "
+                                "and stages safe expiry cleanup"
                             ),
                             repair_owner="network.ont_commissioning",
                         ),

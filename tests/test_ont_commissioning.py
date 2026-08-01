@@ -18,6 +18,7 @@ from app.models.network import (
 from app.models.network_operation import (
     NetworkOperation,
     NetworkOperationDispatch,
+    NetworkOperationDispatchStatus,
     NetworkOperationStatus,
     NetworkOperationTargetType,
     NetworkOperationType,
@@ -34,13 +35,18 @@ from app.services.network.olt_batched_mgmt import (
 )
 from app.services.network.olt_protocol_adapters import OltConnectionConfig
 from app.services.network.ont_authorization_contracts import (
+    OntAuthorizationTarget,
     OntFsp,
     OntSerialNumber,
     RegisterCommissioningOnt,
     RequestAssignedOntAuthorization,
 )
 from app.services.network.ont_commissioning import (
+    ExecuteOntCommissioning,
+    RecordOntCommissioningExternalWriteFailure,
     RequestOntCommissioning,
+    _CommissioningManagementPlan,
+    _CommissioningPreflightOutcome,
     _exact_live_autofind_preflight,
     assignment_is_blocked_by_commissioning,
     cleanup_ont_commissioning,
@@ -117,6 +123,25 @@ def _request(
         expected_serial=OntSerialNumber.parse(target.serial),
         reason="Pre-stage ACS management for field installation",
         reference="WO-100013286",
+    )
+
+
+def _execution_command(
+    *,
+    intent_id: uuid.UUID,
+    operation_id: uuid.UUID,
+) -> ExecuteOntCommissioning:
+    return ExecuteOntCommissioning(
+        context=CommandContext.system(
+            actor="test-commissioning-worker",
+            scope="network:ont:commission",
+            reason="test commissioning execution",
+            command_id=operation_id,
+            correlation_id=operation_id,
+            causation_id=intent_id,
+        ),
+        intent_id=intent_id,
+        operation_id=operation_id,
     )
 
 
@@ -258,14 +283,17 @@ def test_live_autofind_preflight_requires_exact_fsp_and_serial(
     )
 
     olt_config = OltConnectionConfig.from_model(olt)
-    ok, message = _exact_live_autofind_preflight(
-        canonical_serial_value=intent.canonical_serial,
-        fsp=intent.fsp,
+    outcome = _exact_live_autofind_preflight(
+        target=OntAuthorizationTarget.from_transport(
+            olt_id=intent.olt_id,
+            fsp=intent.fsp,
+            serial_number=intent.canonical_serial,
+        ),
         olt_config=olt_config,
     )
 
-    assert ok is False
-    assert "no OLT write was attempted" in message
+    assert outcome.success is False
+    assert "no OLT write was attempted" in outcome.message
 
 
 def test_assignment_is_blocked_until_commissioning_is_management_ready(db_session):
@@ -436,8 +464,12 @@ def test_reconciler_converts_management_ready_intent_to_assignment(db_session):
     )
 
 
-def test_reconciler_redrives_recorded_partial_authorization_once(db_session):
-    _olt, _candidate_row, target = _candidate(db_session, fsp="0/1/13")
+def test_reconciler_redrives_interrupted_authorizing_intent_once(db_session):
+    _olt, _candidate_row, target = _candidate(
+        db_session,
+        serial="HWTC1D737DD1",
+        fsp="0/1/13",
+    )
     ont = OntUnit(
         serial_number=target.serial,
         olt_device_id=target.olt_id,
@@ -460,22 +492,44 @@ def test_reconciler_redrives_recorded_partial_authorization_once(db_session):
             "fsp": target.fsp,
             "serial_number": target.serial,
         },
+        output_payload={
+            "completed_authorization": True,
+            "device_authorization": {
+                "olt_id": str(target.olt_id),
+                "fsp": target.fsp,
+                "serial_number": target.serial,
+                "ont_id_on_olt": 1,
+            },
+        },
     )
     db_session.add(prior)
     db_session.flush()
+    db_session.add(
+        NetworkOperationDispatch(
+            operation_id=prior.id,
+            dispatch_key="initial",
+            command_name="ont_commission.v1",
+            task_name="app.tasks.ont_commissioning.commission_ont",
+            args_payload=[],
+            kwargs_payload={},
+            queue="tr069",
+            status=NetworkOperationDispatchStatus.reconciliation_needed,
+            attempts=1,
+            max_attempts=5,
+        )
+    )
     intent = OntCommissioningIntent(
         autofind_candidate_id=target.candidate_id,
         ont_unit_id=ont.id,
         olt_id=target.olt_id,
         canonical_serial=target.serial,
         fsp=target.fsp,
-        state=OntCommissioningState.failed,
+        state=OntCommissioningState.authorizing,
         reason="partial success",
         requested_by="noc.operator",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         device_authorized_at=datetime.now(UTC) - timedelta(minutes=5),
         latest_operation_id=prior.id,
-        failure_code="external_write_reconciliation_required",
     )
     db_session.add(intent)
     db_session.flush()
@@ -496,6 +550,9 @@ def test_reconciler_redrives_recorded_partial_authorization_once(db_session):
     assert recovered.state is OntCommissioningState.authorizing
     assert recovery_id != prior_id
     assert db_session.get(NetworkOperation, recovery_id).redrive_of_id == prior_id
+    recovery = db_session.get(NetworkOperation, recovery_id)
+    assert recovery.output_payload["completed_authorization"] is True
+    assert recovery.input_payload["recovery"]["authorization_reissue_allowed"] is False
     assert (
         db_session.query(NetworkOperationDispatch)
         .filter_by(operation_id=recovery_id)
@@ -515,6 +572,93 @@ def test_reconciler_redrives_recorded_partial_authorization_once(db_session):
     assert db_session.get(OntCommissioningIntent, intent_id).latest_operation_id == (
         recovery_id
     )
+
+    recovery = db_session.get(NetworkOperation, recovery_id)
+    assert recovery is not None
+    recovery.status = NetworkOperationStatus.failed
+    recovery.retry_count = recovery.max_retries
+    for dispatch in recovery.dispatches:
+        dispatch.status = NetworkOperationDispatchStatus.reconciliation_needed
+    db_session.commit()
+
+    exhausted = reconcile_ont_commissioning(
+        db_session,
+        context=CommandContext.system(
+            actor="test-reconciler",
+            scope="network:ont:commission",
+            reason="test bounded commissioning recovery",
+        ),
+    )
+
+    terminal = db_session.get(OntCommissioningIntent, intent_id)
+    assert terminal is not None
+    assert exhausted.recovery_staged == 0
+    assert exhausted.recovery_failed_closed == 1
+    assert terminal.state is OntCommissioningState.failed
+    assert terminal.failure_code == "management_recovery_exhausted"
+
+
+def test_reconciler_fails_closed_without_durable_authorization_evidence(db_session):
+    _olt, _candidate_row, target = _candidate(
+        db_session,
+        serial="HWTC1D737DD1",
+        fsp="0/1/9",
+    )
+    operation = NetworkOperation(
+        operation_type=NetworkOperationType.ont_commission,
+        target_type=NetworkOperationTargetType.olt,
+        target_id=target.olt_id,
+        status=NetworkOperationStatus.failed,
+        retry_count=0,
+        max_retries=3,
+    )
+    db_session.add(operation)
+    db_session.flush()
+    db_session.add(
+        NetworkOperationDispatch(
+            operation_id=operation.id,
+            dispatch_key="initial",
+            command_name="ont_commission.v1",
+            task_name="app.tasks.ont_commissioning.commission_ont",
+            args_payload=[],
+            kwargs_payload={},
+            queue="tr069",
+            status=NetworkOperationDispatchStatus.reconciliation_needed,
+            attempts=1,
+            max_attempts=5,
+        )
+    )
+    intent = OntCommissioningIntent(
+        autofind_candidate_id=target.candidate_id,
+        olt_id=target.olt_id,
+        latest_operation_id=operation.id,
+        canonical_serial=target.serial,
+        fsp=target.fsp,
+        state=OntCommissioningState.authorizing,
+        reason="test unknown authorization delivery",
+        requested_by="noc.operator",
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
+    )
+    db_session.add(intent)
+    db_session.flush()
+    intent_id = intent.id
+    db_session.commit()
+
+    result = reconcile_ont_commissioning(
+        db_session,
+        context=CommandContext.system(
+            actor="test-reconciler",
+            scope="network:ont:commission",
+            reason="test unknown authorization delivery",
+        ),
+    )
+
+    stored = db_session.get(OntCommissioningIntent, intent_id)
+    assert stored is not None
+    assert result.recovery_staged == 0
+    assert result.recovery_failed_closed == 1
+    assert stored.state is OntCommissioningState.failed
+    assert stored.failure_code == "interrupted_execution_review_required"
 
 
 def test_reconciler_expires_intent_without_device_write_or_cleanup(db_session):
@@ -561,7 +705,7 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
 
     def exact_preflight_without_transaction(**_kwargs):
         assert db_session.in_transaction() is False
-        return True, "exact"
+        return _CommissioningPreflightOutcome(True, "exact")
 
     monkeypatch.setattr(
         "app.services.network.ont_commissioning._exact_live_autofind_preflight",
@@ -587,11 +731,13 @@ def test_landed_authorization_without_local_target_requires_cleanup_review(
 
     result = execute_ont_commissioning(
         db_session,
-        intent_id=str(admission.intent_id),
-        operation_id=str(admission.operation_id),
+        _execution_command(
+            intent_id=admission.intent_id,
+            operation_id=admission.operation_id,
+        ),
     )
 
-    assert result["failure_code"] == "local_inventory_failed"
+    assert result.failure_code == "local_inventory_failed"
     intent = db_session.get(OntCommissioningIntent, admission.intent_id)
     assert intent is not None
     assert intent.device_authorized_at is not None
@@ -638,19 +784,261 @@ def test_reliability_handler_records_external_write_with_fresh_session(db_sessio
 
     recorded = record_external_write_reconciliation_required(
         db_session,
-        intent_id=str(admission.intent_id),
-        operation_id=str(admission.operation_id),
+        RecordOntCommissioningExternalWriteFailure(
+            context=CommandContext.system(
+                actor="test-reliability-recorder",
+                scope="network:ont:commission",
+                reason="record interrupted commissioning execution",
+                command_id=admission.operation_id,
+                correlation_id=admission.operation_id,
+                causation_id=admission.dispatch_id,
+            ),
+            intent_id=admission.intent_id,
+            operation_id=admission.operation_id,
+        ),
     )
 
     stored_intent = db_session.get(OntCommissioningIntent, admission.intent_id)
     stored_operation = db_session.get(NetworkOperation, admission.operation_id)
-    assert recorded is True
+    assert recorded.recorded is True
     assert stored_intent is not None
     assert stored_intent.state is OntCommissioningState.failed
     assert stored_intent.failure_code == "external_write_reconciliation_required"
     assert stored_operation is not None
     assert stored_operation.status is NetworkOperationStatus.failed
     assert stored_operation.output_payload["reconciliation_required"] is True
+
+
+def test_management_recovery_live_verifies_without_database_transaction(
+    db_session,
+    monkeypatch,
+):
+    _olt, _candidate_row, target = _candidate(
+        db_session,
+        serial="HWTC1D737DD1",
+        fsp="0/1/9",
+    )
+    ont = OntUnit(
+        serial_number=target.serial,
+        olt_device_id=target.olt_id,
+        board="0/1",
+        port="9",
+        external_id="7",
+        is_active=True,
+    )
+    db_session.add(ont)
+    db_session.flush()
+    operation = NetworkOperation(
+        operation_type=NetworkOperationType.ont_commission,
+        target_type=NetworkOperationTargetType.olt,
+        target_id=target.olt_id,
+        status=NetworkOperationStatus.pending,
+        output_payload={
+            "completed_authorization": True,
+            "device_authorization": {
+                "olt_id": str(target.olt_id),
+                "fsp": target.fsp,
+                "serial_number": target.serial,
+                "ont_id_on_olt": 7,
+            },
+        },
+        initiated_by="noc.operator",
+    )
+    db_session.add(operation)
+    db_session.flush()
+    intent = OntCommissioningIntent(
+        autofind_candidate_id=target.candidate_id,
+        ont_unit_id=ont.id,
+        olt_id=target.olt_id,
+        latest_operation_id=operation.id,
+        canonical_serial=target.serial,
+        fsp=target.fsp,
+        state=OntCommissioningState.authorizing,
+        reason="test interrupted management recovery",
+        requested_by="noc.operator",
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        device_authorized_at=datetime.now(UTC),
+    )
+    db_session.add(intent)
+    db_session.flush()
+    intent_id = intent.id
+    operation_id = operation.id
+    operation.input_payload = {
+        "intent_id": str(intent_id),
+        "olt_id": str(target.olt_id),
+    }
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.network.ont_commissioning._management_only_plan",
+        lambda *_args, **_kwargs: _CommissioningManagementPlan(
+            fsp=OntFsp.parse(target.fsp),
+            ont_id_on_olt=7,
+            mgmt_vlan_tag=201,
+            mgmt_gem_index=2,
+            ip_mode="dhcp",
+            ip_address=None,
+            subnet_mask=None,
+            gateway=None,
+            ip_priority=0,
+            tr069_profile_id=2,
+        ),
+    )
+
+    transaction_states: list[bool] = []
+    received_configs: list[object] = []
+
+    class Adapter:
+        def find_ont_by_serial(self, _serial):
+            transaction_states.append(db_session.in_transaction())
+            return SimpleNamespace(
+                success=True,
+                message="found",
+                data={
+                    "registration": SimpleNamespace(
+                        fsp=target.fsp,
+                        onu_id=7,
+                        real_serial=target.serial,
+                    )
+                },
+            )
+
+        def configure_management_batch(self, _spec):
+            transaction_states.append(db_session.in_transaction())
+            return SimpleNamespace(
+                success=True,
+                message="management complete",
+                data={
+                    "steps_completed": [
+                        "create_mgmt_service_port",
+                        "configure_iphost",
+                        "bind_tr069",
+                    ]
+                },
+            )
+
+    def adapter_for(detached_config):
+        received_configs.append(detached_config)
+        assert isinstance(detached_config, OltConnectionConfig)
+        return Adapter()
+
+    monkeypatch.setattr(
+        "app.services.network.olt_protocol_adapters.get_protocol_adapter_from_config",
+        adapter_for,
+    )
+    monkeypatch.setattr(
+        "app.services.network.ont_authorization.register_ont_for_commissioning",
+        lambda *_args, **_kwargs: pytest.fail(
+            "landed authorization must never be reissued during recovery"
+        ),
+    )
+
+    outcome = execute_ont_commissioning(
+        db_session,
+        _execution_command(intent_id=intent_id, operation_id=operation_id),
+    )
+
+    assert outcome.success is True
+    assert outcome.state is OntCommissioningState.awaiting_acs
+    assert outcome.management_recovery is True
+    assert transaction_states == [False, False]
+    assert len(received_configs) == 1
+    assert db_session.in_transaction() is False
+
+
+def test_management_recovery_fails_before_write_on_live_identity_drift(
+    db_session,
+    monkeypatch,
+):
+    _olt, _candidate_row, target = _candidate(
+        db_session,
+        serial="HWTC1D737DD1",
+        fsp="0/1/9",
+    )
+    ont = OntUnit(
+        serial_number=target.serial,
+        olt_device_id=target.olt_id,
+        board="0/1",
+        port="9",
+        external_id="7",
+        is_active=True,
+    )
+    db_session.add(ont)
+    db_session.flush()
+    operation = NetworkOperation(
+        operation_type=NetworkOperationType.ont_commission,
+        target_type=NetworkOperationTargetType.olt,
+        target_id=target.olt_id,
+        status=NetworkOperationStatus.pending,
+        initiated_by="noc.operator",
+    )
+    db_session.add(operation)
+    db_session.flush()
+    intent = OntCommissioningIntent(
+        autofind_candidate_id=target.candidate_id,
+        ont_unit_id=ont.id,
+        olt_id=target.olt_id,
+        latest_operation_id=operation.id,
+        canonical_serial=target.serial,
+        fsp=target.fsp,
+        state=OntCommissioningState.authorizing,
+        reason="test recovery identity drift",
+        requested_by="noc.operator",
+        expires_at=datetime.now(UTC) + timedelta(hours=24),
+        device_authorized_at=datetime.now(UTC),
+    )
+    db_session.add(intent)
+    db_session.flush()
+    operation.input_payload = {"intent_id": str(intent.id)}
+    intent_id = intent.id
+    operation_id = operation.id
+    db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.network.ont_commissioning._management_only_plan",
+        lambda *_args, **_kwargs: _CommissioningManagementPlan(
+            fsp=OntFsp.parse(target.fsp),
+            ont_id_on_olt=7,
+            mgmt_vlan_tag=201,
+            mgmt_gem_index=2,
+            ip_mode="dhcp",
+            ip_address=None,
+            subnet_mask=None,
+            gateway=None,
+            ip_priority=0,
+            tr069_profile_id=2,
+        ),
+    )
+
+    class DriftedAdapter:
+        def find_ont_by_serial(self, _serial):
+            return SimpleNamespace(
+                success=True,
+                message="found elsewhere",
+                data={
+                    "registration": SimpleNamespace(
+                        fsp="0/1/10",
+                        onu_id=7,
+                        real_serial=target.serial,
+                    )
+                },
+            )
+
+        def configure_management_batch(self, _spec):
+            pytest.fail("management must not run after live identity drift")
+
+    monkeypatch.setattr(
+        "app.services.network.olt_protocol_adapters.get_protocol_adapter_from_config",
+        lambda _config: DriftedAdapter(),
+    )
+
+    outcome = execute_ont_commissioning(
+        db_session,
+        _execution_command(intent_id=intent_id, operation_id=operation_id),
+    )
+
+    assert outcome.success is False
+    assert outcome.failure_code == "registration_not_confirmed"
 
 
 def test_cleanup_fails_closed_when_projected_fsp_drifted(db_session):

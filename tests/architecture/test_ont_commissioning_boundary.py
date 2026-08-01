@@ -170,6 +170,13 @@ def test_authorization_process_uses_typed_commands_and_outcomes() -> None:
         ont_authorization_contracts.AssignedAuthorizationDecision,
         ont_authorization.AuthorizationWorkflowResult,
         ont_provisioning_execution.OntAuthorizationExecutionOutcome,
+        ont_commissioning.ExecuteOntCommissioning,
+        ont_commissioning.OntCommissioningExecutionOutcome,
+        ont_commissioning.RecordOntCommissioningExternalWriteFailure,
+        ont_commissioning.ExternalWriteReconciliationOutcome,
+        ont_commissioning._CommissioningPreflightOutcome,
+        ont_commissioning._CommissioningManagementPlan,
+        ont_commissioning._CommissioningExecutionPlan,
     )
     for contract in immutable_contracts:
         assert is_dataclass(contract)
@@ -190,6 +197,43 @@ def test_authorization_process_uses_typed_commands_and_outcomes() -> None:
         ).return_annotation
         == "OntAuthorizationExecutionOutcome"
     )
+    commissioning_parameters = inspect.signature(
+        ont_commissioning.execute_ont_commissioning
+    ).parameters
+    assert tuple(commissioning_parameters) == ("db", "command")
+    assert commissioning_parameters["command"].annotation == "ExecuteOntCommissioning"
+    assert (
+        inspect.signature(ont_commissioning.execute_ont_commissioning).return_annotation
+        == "OntCommissioningExecutionOutcome"
+    )
+    commissioning_hints = get_type_hints(ont_commissioning.ExecuteOntCommissioning)
+    assert commissioning_hints["intent_id"] is UUID
+    assert commissioning_hints["operation_id"] is UUID
+
+
+def test_commissioning_external_io_uses_detached_plan_and_typed_task_boundary() -> None:
+    owner_source = inspect.getsource(ont_commissioning.execute_ont_commissioning)
+    task_source = (PROJECT_ROOT / "app/tasks/ont_commissioning.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_CommissioningExecutionPlan(" in owner_source
+    assert "OltConnectionConfig.from_model" in owner_source
+    assert "get_protocol_adapter_from_config(plan.olt)" in owner_source
+    assert "ExecuteOntCommissioning(" in task_source
+    assert "outcome.to_transport()" in task_source
+    assert "owner_command_session()" in task_source
+
+
+def test_commissioning_recovery_never_reissues_landed_authorization() -> None:
+    recovery_source = inspect.getsource(
+        ont_commissioning._stage_interrupted_management_recovery
+    )
+    execution_source = inspect.getsource(ont_commissioning.execute_ont_commissioning)
+
+    assert '"authorization_reissue_allowed": False' in recovery_source
+    assert "authorization_already_recorded" in execution_source
+    assert "_verify_recovery_registration" in execution_source
 
 
 def test_reauthorization_delegates_to_assigned_command_owner() -> None:
@@ -219,7 +263,11 @@ def test_commission_verify_cleanup_are_versioned_durable_commands() -> None:
         encoding="utf-8"
     )
     assert "record_external_write_reconciliation_required" in task_source
-    assert "with db_session_adapter.session() as recovery_db" in task_source
+    assert (
+        "with db_session_adapter.owner_command_session() as recovery_db" in task_source
+    )
+    assert "RecordOntCommissioningExternalWriteFailure(" in task_source
+    assert "outcome.to_transport()" in task_source
 
 
 def test_commissioning_reconciler_is_permanent_and_contracted() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from app.celery_app import celery_app
 from app.services.db_session_adapter import db_session_adapter
@@ -23,23 +24,42 @@ def commission_ont(
     if not _network_dispatch_id:
         raise ValueError("A durable commissioning dispatch claim is required.")
     from app.services.network.ont_commissioning import (
+        ExecuteOntCommissioning,
+        RecordOntCommissioningExternalWriteFailure,
         execute_ont_commissioning,
         record_external_write_reconciliation_required,
     )
 
+    intent_uuid = UUID(intent_id)
+    operation_uuid = UUID(operation_id)
+    context = CommandContext.system(
+        actor="ont_commissioning_worker",
+        scope="network:ont:commission",
+        reason="execute durable management-only ONT commissioning",
+        command_id=operation_uuid,
+        correlation_id=operation_uuid,
+        causation_id=UUID(_network_dispatch_id),
+    )
     try:
-        with db_session_adapter.session() as db:
-            return execute_ont_commissioning(
+        with db_session_adapter.owner_command_session() as db:
+            outcome = execute_ont_commissioning(
                 db,
-                intent_id=intent_id,
-                operation_id=operation_id,
+                ExecuteOntCommissioning(
+                    context=context,
+                    intent_id=intent_uuid,
+                    operation_id=operation_uuid,
+                ),
             )
+            return outcome.to_transport()
     except Exception:
-        with db_session_adapter.session() as recovery_db:
+        with db_session_adapter.owner_command_session() as recovery_db:
             record_external_write_reconciliation_required(
                 recovery_db,
-                intent_id=intent_id,
-                operation_id=operation_id,
+                RecordOntCommissioningExternalWriteFailure(
+                    context=context,
+                    intent_id=intent_uuid,
+                    operation_id=operation_uuid,
+                ),
             )
         raise
 
@@ -122,6 +142,8 @@ def reconcile_intents() -> dict[str, int]:
             "examined": result.examined,
             "assigned": result.assigned,
             "provisioned": result.provisioned,
+            "recovery_staged": result.recovery_staged,
+            "recovery_failed_closed": result.recovery_failed_closed,
             "cleanup_staged": result.cleanup_staged,
             "expired_without_device_write": result.expired_without_device_write,
         }

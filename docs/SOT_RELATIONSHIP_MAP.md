@@ -3417,7 +3417,14 @@ writers are retired; historical rows remain readable evidence.
    conversion and, after the default 24-hour expiry, stages locked
    return-to-inventory cleanup when no assignment exists. Exact identity drift
    or cleanup failure remains durable blocking evidence. The reviewed contract
-   and state machine are in `docs/designs/ONT_COMMISSIONING_INTENT.md`.
+   and state machine are in `docs/designs/ONT_COMMISSIONING_INTENT.md`. Device
+   workers cross an immutable typed command/outcome boundary, commit before OLT
+   I/O, and finalize through freshly locked intent and operation rows. An
+   interrupted `authorizing` operation is automatically redriven only when its
+   intent, operation ledger, `reconciliation_needed` dispatch, local inventory,
+   and live OLT serial/F/S/P/ONT-ID evidence agree. Recovery is retry-bounded,
+   management-only, and explicitly forbids authorization reissue; missing or
+   conflicting evidence becomes durable operator-review state.
 47. `network.ont_provisioning_execution`: owns the tracked authorization,
    baseline-repair, DB-only baseline preview, bootstrap retry, parent rollup,
    and bulk-item transitions.
