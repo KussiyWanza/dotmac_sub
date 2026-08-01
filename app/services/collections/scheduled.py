@@ -420,7 +420,7 @@ def _publish_prepaid_enforcement_snapshot(
 
 
 def _sweep_budget_seconds(session: Session) -> int:
-    from app.models.settings import SettingDomain
+    from app.models.domain_settings import SettingDomain
     from app.services.settings_spec import resolve_value
 
     try:
