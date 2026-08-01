@@ -222,3 +222,33 @@ def normalize_mac_address(value: str | None) -> str | None:
         return None
     compact = compact.upper()
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+
+
+def is_identifying_mac_address(value: str | None) -> bool:
+    """Whether a MAC may be stored as a DEVICE IDENTITY.
+
+    A well-formed MAC is not automatically an identity. The second-least
+    significant bit of the first octet marks a locally administered address --
+    assigned by software rather than burned in by a vendor -- so it carries no
+    uniqueness guarantee and several devices can legitimately share one. The
+    multicast bit marks a group address, which is never a device.
+
+    This is not a hypothetical distinction here. An OLT reported the same
+    locally administered address for 227 ONTs, and because
+    ``device_groups.resolve_device_id`` matches on MAC with ``.limit(1)``, a
+    lookup for it returned an arbitrary one of them. Measured across the fleet
+    the split is exact: every locally administered value was that one
+    placeholder, and every globally unique value was distinct.
+
+    Storing such a value is worse than storing nothing, because NULL cannot be
+    mistaken for a match.
+    """
+    normalized = normalize_mac_address(value)
+    if normalized is None:
+        return False
+    first_octet = int(normalized[:2], 16)
+    if first_octet & 0b1:  # multicast/group address
+        return False
+    if first_octet & 0b10:  # locally administered
+        return False
+    return int(normalized.replace(":", ""), 16) != 0
