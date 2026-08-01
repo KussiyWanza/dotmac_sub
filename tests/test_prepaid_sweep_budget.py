@@ -96,3 +96,35 @@ def test_budget_resolution_uses_registered_setting(db_session):
     )
 
     assert _sweep_budget_seconds(db_session) == _DEFAULT_SWEEP_BUDGET_SECONDS
+
+
+def test_keyset_cursor_resumes_and_completes_cycle(
+    db_session, subscriber_account, subscription
+):
+    from app.models.collections import PrepaidSweepCycleState
+
+    _prepare(db_session, subscriber_account, subscription)
+
+    # Run 1: budget exhausted before any account — nothing processed, the
+    # cycle is open, the whole cohort remains.
+    expired = _MONDAY_NOON - timedelta(seconds=1)
+    r1 = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON, deadline=expired)
+    assert r1["cycle_remaining"] == r1["cycle_total"] > 0
+    state = (
+        db_session.query(PrepaidSweepCycleState)
+        .filter_by(runner="prepaid_balance_sweep")
+        .one()
+    )
+    assert state.cursor_key is None
+    completed_before = state.cycles_completed
+
+    # Run 2: open deadline — the cycle finishes and the cursor resets so the
+    # next run starts a fresh cycle from the beginning.
+    open_deadline = datetime.now(UTC) + timedelta(hours=1)
+    r2 = run_prepaid_balance_sweep(db_session, now=_MONDAY_NOON, deadline=open_deadline)
+    assert r2["cycle_remaining"] == 0
+    assert r2["budget_deferred"] == 0
+    db_session.refresh(state)
+    assert state.cursor_key is None
+    assert state.cycles_completed == completed_before + 1
+    assert int(r2["cycle_age_seconds"]) >= 0
