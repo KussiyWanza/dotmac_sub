@@ -899,6 +899,19 @@ SETTINGS_SPECS: list[SettingSpec] = [
         min_value=300,
         max_value=3600,
     ),
+    # Wall-clock budget for one sweep run (repair pass + account loop). It
+    # must stay under the Celery soft time limit so the run always ends by
+    # publishing its snapshot; accounts that do not fit are deferred to the
+    # next run and counted as budget_deferred.
+    SettingSpec(
+        domain=SettingDomain.collections,
+        key="prepaid_balance_sweep_budget_seconds",
+        env_var="PREPAID_BALANCE_SWEEP_BUDGET_SECONDS",
+        value_type=SettingValueType.integer,
+        default=720,
+        min_value=60,
+        label="Prepaid sweep run budget (seconds)",
+    ),
     SettingSpec(
         domain=SettingDomain.collections,
         key="billing_notif_send_hour",
@@ -4279,6 +4292,18 @@ SETTINGS_SPECS: list[SettingSpec] = [
         value_type=SettingValueType.integer,
         default=30,
         label="Location prompt snooze (days)",
+    ),
+    # Customer-impact shields (outage/ticket) defer billing notices; this
+    # bounds how long their evidence keeps suppressing before the normal
+    # collections progression resumes (see billing_communication_policy).
+    SettingSpec(
+        domain=SettingDomain.billing,
+        key="notice_shield_max_hours",
+        env_var="NOTICE_SHIELD_MAX_HOURS",
+        value_type=SettingValueType.integer,
+        default=72,
+        min_value=1,
+        label="Billing notice shield expiry (hours)",
     ),
     # Scheduler booleans are decision inputs. Every mutable task gate must be
     # registered here or in control_registry; scheduler_config may not invent

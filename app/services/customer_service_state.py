@@ -211,8 +211,16 @@ def open_infrastructure_down_ticket(session: Session, subscriber_id):
 def subscribers_with_open_infrastructure_down_tickets(
     session: Session,
     subscriber_ids: set[object],
+    *,
+    max_age_hours: int | None = None,
 ) -> set[object]:
-    """Subset of ``subscriber_ids`` holding an open infrastructure-down ticket."""
+    """Subset of ``subscriber_ids`` holding an open infrastructure-down ticket.
+
+    ``max_age_hours`` bounds how long an open ticket keeps counting — a
+    customer-impact shield must expire rather than pin its account
+    indefinitely. ``None`` preserves the unbounded behavior for callers that
+    are not shields.
+    """
     from app.models.support import Ticket
 
     subscriber_ids = {
@@ -221,13 +229,16 @@ def subscribers_with_open_infrastructure_down_tickets(
     if not subscriber_ids:
         return set()
 
-    tickets = (
+    query = (
         session.query(Ticket)
         .filter(Ticket.is_active.is_(True))
         .filter(Ticket.status.in_(OPEN_INFRASTRUCTURE_TICKET_STATUSES))
         .filter(ticket_customer_any_link_filter(Ticket, subscriber_ids))
-        .all()
     )
+    if max_age_hours is not None:
+        cutoff = datetime.now(UTC) - timedelta(hours=max(1, int(max_age_hours)))
+        query = query.filter(Ticket.created_at >= cutoff)
+    tickets = query.all()
     suppressed: set[object] = set()
     for ticket in tickets:
         if not is_infrastructure_down_ticket(ticket):
@@ -248,13 +259,19 @@ def subscription_ids_under_active_outage(
     return active_outage_subscription_ids(session) & subscription_ids
 
 
-def active_outage_subscription_ids(session: Session) -> set[object]:
+def active_outage_subscription_ids(
+    session: Session,
+    *,
+    manual_open_max_hours: int | None = None,
+) -> set[object]:
     """Every subscription id inside the blast radius of a live outage incident.
 
     Which incidents count (customer-impact policy):
 
     - manual operator ``open``: until resolved — a human declared it and a
-      human owns closing it;
+      human owns closing it. ``manual_open_max_hours`` optionally bounds how
+      long such an incident keeps counting for shield-type callers, so a
+      forgotten incident cannot pin billing suppression forever;
     - classifier ``confirmed``/``clearing``: always — that lifecycle debounces
       and auto-resolves itself;
     - auto-detect operator ``open`` (``declared_by = system:outage-autodetect``):
@@ -297,15 +314,23 @@ def active_outage_subscription_ids(session: Session) -> set[object]:
         ttl_hours = 6
     autodetect_cutoff = datetime.now(UTC) - timedelta(hours=max(1, ttl_hours))
 
+    manual_cutoff = (
+        datetime.now(UTC) - timedelta(hours=max(1, int(manual_open_max_hours)))
+        if manual_open_max_hours is not None
+        else None
+    )
+
     def _counts_for_impact(incident) -> bool:
-        if incident.status != "open" or incident.declared_by != AUTO_DETECT_ACTOR:
+        if incident.status != "open":
             return True
         started = incident.started_at
-        if started is None:
-            return False
-        if started.tzinfo is None:
+        if started is not None and started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
-        return started >= autodetect_cutoff
+        if incident.declared_by == AUTO_DETECT_ACTOR:
+            return started is not None and started >= autodetect_cutoff
+        if manual_cutoff is not None:
+            return started is not None and started >= manual_cutoff
+        return True
 
     incidents = [incident for incident in incidents if _counts_for_impact(incident)]
     if not incidents:

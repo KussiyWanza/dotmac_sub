@@ -29,6 +29,14 @@ from app.services.usage import meter_usage_into_quota
 
 _GB = 1024**3
 
+# Metering buckets sessions into the calendar month of `now`. Pin the clock
+# to mid-month so sessions created a few hours in the past cannot cross a
+# month boundary — on wall clock these tests fail in the first hours of
+# every month (sessions land in the previous month's window).
+_MID_MONTH_NOON = datetime.now(UTC).replace(
+    day=15, hour=12, minute=0, second=0, microsecond=0
+)
+
 
 def _run_async(coro):
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -66,7 +74,7 @@ def _setup_metered_subscription(db_session, subscriber):
 
 def test_sessions_meter_into_quota_and_match_cycle_summary(db_session, subscriber):
     subscription = _setup_metered_subscription(db_session, subscriber)
-    now = datetime.now(UTC)
+    now = _MID_MONTH_NOON
 
     # Two sessions with known traffic: 2 GB + 1 GB, both directions counted.
     db_session.add_all(
@@ -92,7 +100,7 @@ def test_sessions_meter_into_quota_and_match_cycle_summary(db_session, subscribe
     )
     db_session.commit()
 
-    meter_usage_into_quota(db_session)
+    meter_usage_into_quota(db_session, now)
 
     bucket = (
         db_session.query(QuotaBucket)
@@ -113,7 +121,7 @@ def test_sessions_meter_into_quota_and_match_cycle_summary(db_session, subscribe
 
 def test_remetering_is_idempotent(db_session, subscriber):
     subscription = _setup_metered_subscription(db_session, subscriber)
-    now = datetime.now(UTC)
+    now = _MID_MONTH_NOON
     db_session.add(
         RadiusAccountingSession(
             subscription_id=subscription.id,
@@ -127,8 +135,8 @@ def test_remetering_is_idempotent(db_session, subscriber):
     )
     db_session.commit()
 
-    meter_usage_into_quota(db_session)
-    meter_usage_into_quota(db_session)  # absolute recompute, not increment
+    meter_usage_into_quota(db_session, now)
+    meter_usage_into_quota(db_session, now)  # absolute recompute, not increment
 
     bucket = (
         db_session.query(QuotaBucket)
