@@ -168,3 +168,24 @@ def test_catalog_price_is_never_used_for_the_amount(
 
     db_session.refresh(subscription)
     assert subscription.unit_price is None
+
+
+def test_work_item_summary_fits_admin_alert_schema():
+    # admin_alerts.summary is VARCHAR(255) in production PostgreSQL; the test
+    # database does not enforce varchar lengths, so pin it here (the first
+    # prod capture failed on StringDataRightTruncation).
+    import inspect
+
+    from app.services import prepaid_renewal_terms_backfill as module
+
+    source = inspect.getsource(module._sync_evidence_work_items)
+    assert "summary=(" in source
+    from app.models.network_monitoring import AlertSeverity  # noqa: F401
+
+    summary = (
+        "Active prepaid subscription with no frozen contracted "
+        "amount; paid-invoice evidence is missing or conflicting. "
+        "Record the price via a reviewed staff correction — never "
+        "inferred from the catalog."
+    )
+    assert len(summary) <= 255
