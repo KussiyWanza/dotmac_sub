@@ -285,22 +285,21 @@ def _cmd_audit_renewal_terms(db, args) -> int:
         audit_restored_renewal_terms,
     )
 
-    items = audit_restored_renewal_terms(db)
+    run = audit_restored_renewal_terms(
+        db,
+        context=_context(
+            "durable v2 re-audit of restored prepaid renewal terms",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
     _emit(
         {
-            "restored_subscriptions": len(items),
-            "confirmed": sum(1 for i in items if i.amount_confirmed),
+            "as_of": run.as_of,
+            "audit_fingerprint": run.audit_fingerprint,
+            "restored_subscriptions": len(run.items),
+            "confirmed": sum(1 for i in run.items if i.amount_confirmed),
             "unconfirmed": [
-                {
-                    "subscription_id": i.subscription_id,
-                    "account_id": i.account_id,
-                    "current_unit_price": i.current_unit_price,
-                    "v2_decision": i.v2_decision.value,
-                    "v2_amount": i.v2_amount,
-                    "insufficiency_reasons": list(i.insufficiency_reasons),
-                }
-                for i in items
-                if not i.amount_confirmed
+                i.as_payload() for i in run.items if not i.amount_confirmed
             ],
             "authority_moved": False,
             "repair_requested": False,
@@ -315,6 +314,7 @@ def _cmd_correct_renewal_terms(db, args) -> int:
     from app.services.prepaid_renewal_terms_backfill import (
         CorrectRenewalTermsCommand,
         RenewalTermsCorrectionAction,
+        RenewalTermsCorrectionSource,
         correct_prepaid_renewal_terms,
     )
 
@@ -323,11 +323,18 @@ def _cmd_correct_renewal_terms(db, args) -> int:
         CorrectRenewalTermsCommand(
             subscription_id=UUID(args.subscription),
             action=RenewalTermsCorrectionAction(args.action),
+            source=RenewalTermsCorrectionSource(args.source),
+            expected_current_amount=(
+                Decimal(args.expected_amount)
+                if args.expected_amount is not None
+                else None
+            ),
+            audit_fingerprint=args.audit_fingerprint,
             review_reference=args.reference,
             reviewed_amount=(Decimal(args.amount) if args.amount is not None else None),
         ),
         context=_context(
-            "finance-reviewed correction of a backfilled prepaid renewal term",
+            "bound correction of a backfilled prepaid renewal term",
             idempotency_key=args.idempotency_key,
         ),
     )
@@ -533,13 +540,14 @@ def main() -> int:
 
     p = sub.add_parser(
         "audit-renewal-terms",
-        help="re-audit previously restored renewal terms under the v2 rules",
+        help="durable v2 re-audit of previously restored renewal terms",
     )
+    p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_audit_renewal_terms)
 
     p = sub.add_parser(
         "correct-renewal-terms",
-        help="finance-reviewed supersession of a backfilled renewal term",
+        help="bound supersession of a backfilled renewal term",
     )
     p.add_argument("--subscription", required=True)
     p.add_argument(
@@ -547,8 +555,11 @@ def main() -> int:
         required=True,
         choices=["apply_reviewed_term", "restore_fail_closed"],
     )
+    p.add_argument("--source", required=True, choices=["audit", "finance_review"])
+    p.add_argument("--expected-amount", default=None)
+    p.add_argument("--audit-fingerprint", default=None)
     p.add_argument("--amount", default=None)
-    p.add_argument("--reference", required=True)
+    p.add_argument("--reference", default=None)
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_correct_renewal_terms)
 
