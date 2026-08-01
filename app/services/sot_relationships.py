@@ -10132,6 +10132,155 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.prepaid_renewal_terms_backfill",
+                module="app.services.prepaid_renewal_terms_backfill",
+                owns=("prepaid renewal-terms evidence backfill",),
+                depends_on=(
+                    "financial.invoices",
+                    "financial.prepaid_service_renewals",
+                ),
+                notes=(
+                    "ADR 0007 stage-3 migration only. Prepaid enforcement fails "
+                    "closed with renewal_terms_unresolved when an active prepaid "
+                    "subscription has no frozen contracted amount "
+                    "(Subscription.unit_price NULL or non-positive). This "
+                    "temporary owner restores the amount solely from the "
+                    "subscription's own PAID base-subscription invoice lines — "
+                    "never from the mutable catalog. Absent or contradictory "
+                    "paid evidence becomes an owned, SLA-bound finance work "
+                    "item and the account stays fail-closed. Retire at the "
+                    "ADR 0007 Phase 1 cutover when billing.contracts becomes "
+                    "the renewal-terms authority."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="prepaid renewal-terms evidence backfill",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "paid base-subscription invoice lines",
+                                "blocked prepaid subscription state",
+                            ),
+                            canonical_writer=(
+                                "financial.prepaid_renewal_terms_backfill"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="paid base-subscription invoice lines",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active InvoiceLine rows with metadata kind "
+                                "base_subscription on PAID invoices for the "
+                                "blocked subscription"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="blocked prepaid subscription state",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active prepaid Subscription rows whose "
+                                "unit_price is NULL or non-positive (the exact "
+                                "predicate that yields "
+                                "renewal_terms_unresolved)"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The capture command enters execute_owner_command "
+                            "once on a transaction-free session; the "
+                            "fingerprint-bound evidence re-check, unit_price "
+                            "writes, and finance work-item sync commit "
+                            "together."
+                        ),
+                        locking=(
+                            "Each repaired Subscription row is locked FOR "
+                            "UPDATE and re-checked (already-priced rows are "
+                            "skipped) before its contracted amount is written."
+                        ),
+                        idempotency=(
+                            "The capture is fingerprint-bound to the reviewed "
+                            "preview; replay with unchanged evidence rewrites "
+                            "nothing because repaired rows fail the "
+                            "still-unpriced re-check."
+                        ),
+                        retries=(
+                            "Retry the whole command with the same idempotency "
+                            "key. Changed paid evidence requires a new "
+                            "reviewed preview fingerprint."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.prepaid_renewal_terms_backfill"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_idempotency_key"
+                            ),
+                            ("financial.prepaid_renewal_terms_backfill.stale_preview"),
+                        ),
+                        mapping_owner="billing migration adapters",
+                        fail_closed_on=(
+                            "absent paid base-subscription evidence",
+                            "contradictory distinct paid amounts",
+                            "stale preview fingerprint",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "manual staff corrections of Subscription.unit_price "
+                            "with no evidence contract"
+                        ),
+                        new_owner="financial.prepaid_renewal_terms_backfill",
+                        verification=(
+                            "Focused evidence-classification, fail-closed, "
+                            "work-item lifecycle, and idempotent-replay tests."
+                        ),
+                        cutover_gate=(
+                            "renewal_terms_unresolved is zero for the active "
+                            "prepaid cohort, every remaining case carries an "
+                            "owned finance work item, and ADR 0007 Phase 1 "
+                            "makes billing.contracts the renewal-terms "
+                            "authority."
+                        ),
+                        fallback_retirement=(
+                            "Delete this temporary owner at the Phase 1 "
+                            "cutover; Subscription.unit_price stops being the "
+                            "renewal-charge authority."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_renewal_terms.backfilled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries the account, subscription, "
+                            "restored contracted amount, paid-line count, and "
+                            "the reviewed preview fingerprint."
+                        ),
+                        replay=(
+                            "Replay with unchanged evidence rewrites nothing: "
+                            "repaired rows fail the still-unpriced re-check, "
+                            "so no second event is emitted for them."
+                        ),
+                    ),
+                    test_refs=("tests/test_prepaid_renewal_terms_backfill.py",),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
                 owns=("suspended prepaid replacement-cycle draft creation",),
