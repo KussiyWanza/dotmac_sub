@@ -641,7 +641,7 @@ def create_ticket_from_form(
     attachments: list,
     duplicate_override: bool = False,
     **form,
-):
+) -> Ticket:
     """Create a support ticket from web form values and attach uploaded files.
 
     Mirrors CRM's admin create flow: candidate duplicates are re-checked
@@ -670,7 +670,13 @@ def create_ticket_from_form(
         payload.metadata_ = metadata
     db_session_adapter.release_read_transaction(db)
     ticket = support_service.tickets.create(
-        db, payload, actor_id=actor_id, request=request
+        db,
+        payload,
+        actor_id=actor_id,
+        request=request,
+        acknowledgement_mode=(
+            support_service.TicketCreationAcknowledgementMode.customer_email
+        ),
     )
     if attachments:
         uploaded = upload_ticket_attachments(

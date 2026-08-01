@@ -13,6 +13,23 @@ lifecycle owner may apply manager, assistant-manager, service-team, primary task
 assignee, or task-assignee collection changes. The shared ticket assignment
 engine cannot write those fields.
 
+Creating a Project with a linked Subscriber requests one customer email through
+the communication-intent owner. The email identifies the Project, its reference,
+and initial status, uses an idempotent Project key, and requests no other channel.
+Projects without a linked Subscriber do not request an email. Queue failure is
+isolated in the approved owner savepoint and recorded as durable Project audit
+evidence without rolling back Project creation.
+
+When an existing task gains an assignee through the lifecycle update command,
+the owner queues one email for each newly added active staff member whose
+assignment identifier resolves to either their `SystemUser` or canonical Person
+identity. Staff who were already assigned are not emailed again. Removing an
+assignee, changing any non-assignment task field, or assigning an unresolved or
+inactive identity does not queue this email. This consequence is part of the
+same owner transaction and does not add a push notification. Queue failures are
+isolated in the approved owner savepoint and recorded as durable project-task
+audit evidence after rollback, so the reassignment itself remains valid.
+
 `operations.work_order_commands` remains the writer of WorkOrder bindings. The
 project owner validates the native Project-to-ProjectTask side; neither owner
 may infer a relationship from a CRM identifier. CRM and other external
