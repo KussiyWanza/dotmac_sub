@@ -128,3 +128,31 @@ def test_keyset_cursor_resumes_and_completes_cycle(
     assert state.cursor_key is None
     assert state.cycles_completed == completed_before + 1
     assert int(r2["cycle_age_seconds"]) >= 0
+
+
+def test_sweep_plans_from_batched_funding_not_per_account(
+    db_session, subscriber_account, subscription, monkeypatch
+):
+    _prepare(db_session, subscriber_account, subscription)
+
+    def _boom(db, account, *, now=None):  # noqa: ANN001
+        raise AssertionError(
+            "per-account resolve_prepaid_funding must not run when the "
+            "sweep prefetch is active"
+        )
+
+    monkeypatch.setattr(
+        "app.services.prepaid_enforcement_planner.resolve_prepaid_funding",
+        _boom,
+    )
+
+    result = run_prepaid_balance_sweep(
+        db_session,
+        now=_MONDAY_NOON,
+        deadline=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert result["errors"] == 0
+    db_session.refresh(subscriber_account)
+    # The account was genuinely planned (low balance -> timer armed).
+    assert subscriber_account.prepaid_low_balance_at is not None

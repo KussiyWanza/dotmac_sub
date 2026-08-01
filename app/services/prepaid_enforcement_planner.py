@@ -381,8 +381,18 @@ def plan_prepaid_account(
     shield_reason: str | None = None,
     shield_evaluated: bool = False,
     notice_suppression_reason: str | None = None,
+    window_block_reason: str | None = None,
+    window_evaluated: bool = False,
+    include_derived_status: bool = True,
 ) -> PrepaidEnforcementPlanItem:
-    """Classify one account without mutating it."""
+    """Classify one account without mutating it.
+
+    ``window_block_reason``/``window_evaluated`` let a batched caller resolve
+    the run-constant enforcement window once. ``include_derived_status``
+    disables the report-only derived-status comparison (it never gates an
+    action) for callers that cannot afford its financial-event replay per
+    account.
+    """
     from app.services.account_lifecycle import derive_account_status
 
     account_subscriptions = subscriptions
@@ -441,8 +451,12 @@ def plan_prepaid_account(
             )
     balance = funding.available_balance
     threshold = funding.required_balance
-    derived_status = derive_account_status(db, str(account.id))
     current_status = account.status or SubscriberStatus.new
+    derived_status = (
+        derive_account_status(db, str(account.id))
+        if include_derived_status
+        else current_status
+    )
     low_at = (
         _as_utc(account.prepaid_low_balance_at)
         if account.prepaid_low_balance_at is not None
@@ -549,7 +563,9 @@ def plan_prepaid_account(
     elif not zero_grace and grace.phase != "actionable":
         action = PrepaidEnforcementAction.waiting
         reason = "deactivation_grace_not_elapsed"
-    elif window_reason := _window_block_reason(db, now=now):
+    elif window_reason := (
+        window_block_reason if window_evaluated else _window_block_reason(db, now=now)
+    ):
         action = PrepaidEnforcementAction.deferred
         reason = window_reason
         reason_source = PrepaidEnforcementReasonSource.WINDOW
@@ -680,6 +696,7 @@ def plan_prepaid_enforcement(
     dedicated_accounts = _dedicated_bundle_account_ids(db, resolved_ids)
     shield_reasons = _bulk_dunning_shield_reasons(db, set(resolved_ids))
     notice_reasons = prepaid_notice_suppression_reasons(db, resolved_ids)
+    window_reason = _window_block_reason(db, now=generated_at)
 
     items = tuple(
         plan_prepaid_account(
@@ -694,6 +711,8 @@ def plan_prepaid_enforcement(
             shield_reason=shield_reasons.get(account.id),
             shield_evaluated=True,
             notice_suppression_reason=notice_reasons.get(account.id),
+            window_block_reason=window_reason,
+            window_evaluated=True,
         )
         for account in accounts
     )

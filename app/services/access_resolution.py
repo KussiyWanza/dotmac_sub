@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -260,6 +261,54 @@ def resolve_prepaid_funding(
             threshold.unresolved_renewal_subscription_ids
         ),
     )
+
+
+def resolve_prepaid_fundings(
+    db: Session,
+    account_ids: Sequence[UUID | str],
+    *,
+    now: datetime | None = None,
+) -> dict[UUID, PrepaidFundingDecision]:
+    """Cohort variant of :func:`resolve_prepaid_funding`.
+
+    Identical decisions from the same two owners (threshold and available
+    balance), resolved once for the whole cohort instead of ~24 statements
+    per account. Keyed by account UUID.
+    """
+    from app.services.common import coerce_uuid
+    from app.services.customer_financial_position import prepaid_available_balances
+    from app.services.prepaid_threshold import resolve_prepaid_threshold_decisions
+
+    ids = sorted({coerce_uuid(str(value)) for value in account_ids}, key=str)
+    if not ids:
+        return {}
+    currency = resolve_prepaid_enforcement_currency(db)
+    thresholds = resolve_prepaid_threshold_decisions(
+        db, ids, now=now, currency=currency
+    )
+    balances = prepaid_available_balances(db, ids, currency=currency)
+    decisions: dict[UUID, PrepaidFundingDecision] = {}
+    for account_id in ids:
+        threshold = thresholds[str(account_id)]
+        decisions[account_id] = PrepaidFundingDecision(
+            account_id=str(account_id),
+            available_balance=balances.get(account_id, Decimal("0.00")),
+            required_balance=threshold.threshold,
+            currency=currency,
+            configured_reserve_target=threshold.configured_minimum,
+            covered_subscription_ids=threshold.covered_subscription_ids,
+            non_billable_subscription_ids=threshold.non_billable_subscription_ids,
+            actionable_uncovered_subscription_ids=(
+                threshold.actionable_uncovered_subscription_ids
+            ),
+            unresolved_projection_subscription_ids=(
+                threshold.unresolved_projection_subscription_ids
+            ),
+            unresolved_renewal_subscription_ids=(
+                threshold.unresolved_renewal_subscription_ids
+            ),
+        )
+    return decisions
 
 
 def resolve_customer_access(
