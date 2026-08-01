@@ -217,6 +217,10 @@ def _candidate_rows(db: Session, ont_ids: Sequence[str] | None) -> list[Any]:
             OntUnit.serial_number,
             desired_config_column(OntUnit).label("desired_config"),
             OntAssignment.subscriber_id,
+            OntAssignment.subscription_id,
+            OntAssignment.wan_mode,
+            OntAssignment.ip_mode,
+            OntAssignment.pppoe_username.label("assignment_pppoe_username"),
             OntObservation.acs_observed_pppoe_username,
         )
         .join(
@@ -229,27 +233,84 @@ def _candidate_rows(db: Session, ont_ids: Sequence[str] | None) -> list[Any]:
         .outerjoin(OntObservation, OntObservation.ont_unit_id == OntUnit.id)
         .where(OntUnit.is_active.is_(True))
         .where(OntAssignment.subscriber_id.isnot(None))
+        # Exact-service grain. A subscriber-only assignment cannot say WHICH
+        # service a credential belongs to, and projecting on that basis is how
+        # one subscriber's credential reached another service's ONT.
+        .where(OntAssignment.subscription_id.isnot(None))
     )
     if ont_ids:
         stmt = stmt.where(OntUnit.id.in_(list(ont_ids)))
     return list(db.execute(stmt).all())
 
 
+#: Values in either WAN field that place termination off the ONT.
+_BRIDGE_INTENT = frozenset({"bridge", "bridged", "bridging", "setup_via_onu"})
+
+
+def termination_intent(
+    wan_mode: Any, ip_mode: Any, assignment_pppoe_username: Any
+) -> tuple[bool, str]:
+    """Whether the ONT is the authorised PPPoE termination for this service.
+
+    Returns ``(eligible, reason)``. Eligible ONLY on a positive signal.
+
+    Neither WAN field can express PPPoE: ``wan_mode`` is
+    ``{routing, bridging}`` and ``ip_mode`` is
+    ``{inactive, static_ip, dhcp}``. So "the assignment says routing" is not
+    consent to dial -- routing merely says the ONT is not bridging.
+
+    The one positive signal the schema carries is the operator-entered
+    ``OntAssignment.pppoe_username``. That is a DIFFERENT field from the
+    ``OntUnit.desired_config`` this reconciler writes, so reading it is not
+    circular: the operator states that this ONT dials PPPoE for this service,
+    and the reconciler then keeps the credential aligned with the authoritative
+    record. Absent that statement there is no authorisation, which is why 1,373
+    of 1,374 production projections should never have happened.
+
+    A bridge signal in either field wins outright, because bridging places
+    termination on a downstream router whatever else is set.
+    """
+    wan = str(wan_mode or "").strip().lower()
+    ip = str(ip_mode or "").strip().lower()
+
+    if wan in _BRIDGE_INTENT or ip in _BRIDGE_INTENT:
+        return False, "bridge_termination"
+    if not str(assignment_pppoe_username or "").strip():
+        return False, f"no_ont_pppoe_intent:{wan or '-'}/{ip or '-'}"
+    return True, "managed_ont_pppoe"
+
+
 def _authoritative_credentials(
-    db: Session, subscriber_ids: list[Any]
+    db: Session, subscription_ids: list[Any]
 ) -> dict[Any, AccessCredential]:
-    if not subscriber_ids:
+    """Exactly one active credential per EXACT subscription, or none.
+
+    Previously this keyed by subscriber and kept the oldest row by
+    ``created_at``. Both halves were wrong. Subscriber grain cannot say which
+    of a customer's services a credential belongs to, and picking by creation
+    order is an ownership decision made by accident -- a customer with two
+    services would have had one credential projected onto both ONTs.
+
+    Ambiguity is refused rather than resolved: more than one active credential
+    for a service means nobody has said which is authoritative, and a
+    projection is a device write.
+    """
+    if not subscription_ids:
         return {}
     rows = db.scalars(
         select(AccessCredential)
-        .where(AccessCredential.subscriber_id.in_(subscriber_ids))
+        .where(AccessCredential.subscription_id.in_(subscription_ids))
         .where(AccessCredential.is_active.is_(True))
-        .order_by(AccessCredential.created_at.asc())
-    )
-    selected: dict[Any, AccessCredential] = {}
+    ).all()
+
+    by_subscription: dict[Any, list[AccessCredential]] = {}
     for row in rows:
-        selected.setdefault(row.subscriber_id, row)
-    return selected
+        by_subscription.setdefault(row.subscription_id, []).append(row)
+    return {
+        subscription_id: found[0]
+        for subscription_id, found in by_subscription.items()
+        if len(found) == 1
+    }
 
 
 def reconcile_cpe_dialer_credentials(
@@ -269,8 +330,33 @@ def reconcile_cpe_dialer_credentials(
     and by tests) that still reports exactly what a repair pass would change.
     """
     rows = _candidate_rows(db, ont_ids)
+
+    # Filter to ONTs the ledger positively authorises as the PPPoE termination
+    # BEFORE any credential is resolved. Skipped rows are counted and reported;
+    # nothing about them is written.
+    eligible_rows = []
+    skipped: dict[str, int] = {}
+    for row in rows:
+        ok, reason = termination_intent(
+            getattr(row, "wan_mode", None),
+            getattr(row, "ip_mode", None),
+            getattr(row, "assignment_pppoe_username", None),
+        )
+        if ok:
+            eligible_rows.append(row)
+        else:
+            skipped[reason] = skipped.get(reason, 0) + 1
+    if skipped:
+        logger.info(
+            "cpe dialer credential sync skipped %d ONT(s) without managed-ONT "
+            "PPPoE termination intent: %s",
+            sum(skipped.values()),
+            skipped,
+        )
+    rows = eligible_rows
+
     credentials = _authoritative_credentials(
-        db, [row.subscriber_id for row in rows if row.subscriber_id is not None]
+        db, [row.subscription_id for row in rows if row.subscription_id is not None]
     )
 
     checked = in_sync = projected = awaiting = no_credential = no_secret = 0
@@ -279,7 +365,7 @@ def reconcile_cpe_dialer_credentials(
 
     for row in rows:
         checked += 1
-        credential = credentials.get(row.subscriber_id)
+        credential = credentials.get(row.subscription_id)
         if credential is None:
             # Not this reconciler's problem: an ONT with no access credential
             # is surfaced by pppoe_health as CATEGORY_NO_CREDENTIAL.
