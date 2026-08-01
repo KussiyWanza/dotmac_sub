@@ -30,7 +30,7 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["452_add_nas_local_secret_retire_operation_type"]
+    assert script.get_heads() == ["453_ipv4_primary_assignment_marker"]
     assert (
         script.get_revision("446_ont_commissioning_intents").down_revision
         == "445_social_comment_channels"

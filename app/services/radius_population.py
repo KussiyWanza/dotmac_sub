@@ -692,12 +692,19 @@ def populate(
         # decision this projection has no authority to make, and one that could
         # differ between two runs over identical data. Ambiguity is now resolved
         # by refusing to resolve: see `_single_active_ipv4` below.
+        # A service may hold several addresses; exactly one of them is served.
+        # Prefer the marked primary. Where none is marked, fall back to the
+        # candidate set so `_single_active_ipv4` can resolve a lone holding or
+        # refuse a genuinely ambiguous one -- the marker narrows the ambiguity,
+        # it does not license a guess when it is absent.
+        ipv4_primary_by_subscription: dict = {}
         ipv4_candidates_by_subscription: dict = {}
         legacy_ipv4_candidates_by_subscriber: dict = {}
-        for sid, subscription_id, addr in db.execute(
+        for sid, subscription_id, is_primary, addr in db.execute(
             select(
                 IPAssignment.subscriber_id,
                 IPAssignment.subscription_id,
+                IPAssignment.is_primary,
                 IPv4Address.address,
             )
             .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
@@ -709,6 +716,8 @@ def populate(
                     ipv4_candidates_by_subscription.setdefault(
                         subscription_id, set()
                     ).add(str(addr))
+                    if is_primary:
+                        ipv4_primary_by_subscription[subscription_id] = str(addr)
                 else:
                     legacy_ipv4_candidates_by_subscriber.setdefault(sid, set()).add(
                         str(addr)
@@ -813,9 +822,12 @@ def populate(
                 # the one place the ledger actually has to be read. An ambiguous
                 # ledger here cannot be resolved without inventing an owner, so
                 # the login is preserved and reported instead of guessed at.
-                eff_ipv4, ambiguous_addresses = _single_active_ipv4(
-                    ipv4_candidates_by_subscription.get(sub.id)
-                )
+                eff_ipv4 = ipv4_primary_by_subscription.get(sub.id)
+                ambiguous_addresses: tuple[str, ...] = ()
+                if eff_ipv4 is None:
+                    eff_ipv4, ambiguous_addresses = _single_active_ipv4(
+                        ipv4_candidates_by_subscription.get(sub.id)
+                    )
                 if eff_ipv4 is None and not ambiguous_addresses:
                     if subscriber_service_counts.get(sub.subscriber_id) == 1:
                         eff_ipv4, ambiguous_addresses = _single_active_ipv4(

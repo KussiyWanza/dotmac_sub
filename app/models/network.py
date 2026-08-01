@@ -567,6 +567,23 @@ class IPAssignment(Base):
             postgresql_where=text("is_active"),
             sqlite_where=text("is_active"),
         ),
+        # At most one active PRIMARY IPv4 assignment per exact service. This is
+        # the constraint that could not be expressed before the marker existed:
+        # a plain unique index on subscription_id would have forbidden holding
+        # several addresses, which is a supported product shape.
+        Index(
+            "uq_ip_assignments_primary_ipv4_active",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text(
+                "is_active AND is_primary AND ipv4_address_id IS NOT NULL "
+                "AND subscription_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "is_active AND is_primary AND ipv4_address_id IS NOT NULL "
+                "AND subscription_id IS NOT NULL"
+            ),
+        ),
         CheckConstraint(
             "(ip_version = 'ipv4' AND ipv4_address_id IS NOT NULL AND ipv6_address_id IS NULL) OR "
             "(ip_version = 'ipv6' AND ipv6_address_id IS NOT NULL AND ipv4_address_id IS NULL)",
@@ -599,6 +616,17 @@ class IPAssignment(Base):
     )
     ipv6_address_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("ipv6_addresses.id")
+    )
+    # Which held address RADIUS serves as Framed-IP-Address. A service may hold
+    # several addresses -- the admin form allocates one per selected block -- so
+    # "holds" and "is served on" are different facts and needed separate
+    # storage. Without this, a consumer facing two active assignments had no
+    # answer and radius_population picked by unordered query position. An
+    # additional address that must coexist with the primary belongs to
+    # SubscriberAdditionalRoute as a Framed-Route; this marker does not make a
+    # second IPAssignment legitimate, it makes the primary one identifiable.
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
     )
     prefix_length: Mapped[int | None] = mapped_column(Integer)
     gateway: Mapped[str | None] = mapped_column(String(64))

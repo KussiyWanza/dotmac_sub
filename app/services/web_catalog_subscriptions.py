@@ -1728,12 +1728,17 @@ def _allocate_ipv4_assignments_for_subscription(
             )
         if not address:
             raise ValueError(f"No available IPv4 address in block {block_label}.")
+        # The caller serves allocated[0] as subscriptions.ipv4_address, so the
+        # first allocation is the primary and every later one is an additional
+        # held address. Marking it here keeps "which address is served" a
+        # recorded fact rather than something a consumer has to infer.
         assignment_payload = {
             "account_id": subscription_obj.subscriber_id,
             "subscription_id": subscription_obj.id,
             "ip_version": IPVersion.ipv4,
             "ipv4_address_id": address.id,
             "is_active": True,
+            "is_primary": index == 0,
         }
         existing_assignment = getattr(address, "assignment", None)
         if existing_assignment:

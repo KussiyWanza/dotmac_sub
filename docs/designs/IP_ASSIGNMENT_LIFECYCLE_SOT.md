@@ -123,26 +123,25 @@ rather than "a coin-flip address, silently served". Adding deterministic
 ordering would not have fixed this: a repeatable arbitrary choice is still an
 unauthorized one.
 
-A database constraint cannot yet express the other half. **Multiple active IPv4
-assignments per subscription is a supported product shape** — the admin
-subscription form allocates one assignment per selected block, and the edit form
-renders them as a list. A unique index on `(subscription_id) WHERE is_active`
-would forbid that feature, not protect an invariant.
+**Multiple active IPv4 assignments per subscription is a supported product
+shape** — the admin subscription form allocates one assignment per selected
+block, and the edit form renders them as a list. A unique index on
+`(subscription_id) WHERE is_active` would forbid that feature, not protect an
+invariant.
 
-What is actually missing is the concept of a PRIMARY assignment. `IPAssignment`
-records that a service holds an address; nothing records which held address is
-the one RADIUS should serve as `Framed-IP-Address`. Until that exists:
+What was missing was the concept of a PRIMARY assignment: `IPAssignment` records
+that a service HOLDS an address, and nothing recorded which held address RADIUS
+serves as `Framed-IP-Address`. `IPAssignment.is_primary` now records it, and
+`uq_ip_assignments_primary_ipv4_active` permits a service to hold several
+addresses while forbidding two active primaries. The marker is backfilled from
+evidence — the served column first, then a sole active holding — and anything
+undecidable is left unmarked rather than guessed, because consumers already fail
+closed on that state.
 
-- consumers must fail closed when a service holds more than one, which is what
-  `populate()` now does; and
-- the documented contract stands that an additional address which must coexist
-  with the primary PPP address belongs to `SubscriberAdditionalRoute` and is
-  projected as `Framed-Route`, not as a second `IPAssignment`.
-
-The next slice is therefore to introduce and backfill an explicit primary
-marker, migrate legitimate additional allocations to routed blocks, and only
-then add a partial unique index over the primary flag. Constraining first would
-have deleted a feature to satisfy a constraint.
+The contract is unchanged by this: an additional address that must coexist with
+the primary belongs to `SubscriberAdditionalRoute` and is projected as
+`Framed-Route`. The marker does not make a second `IPAssignment` a legitimate
+way to serve two addresses; it makes the served one identifiable.
 
 #### Cutover: RADIUS must consume the assignment, not the served column
 
