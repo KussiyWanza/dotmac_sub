@@ -138,6 +138,24 @@ evidence — the served column first, then a sole active holding — and anythin
 undecidable is left unmarked rather than guessed, because consumers already fail
 closed on that state.
 
+`is_primary` has exactly ONE writer: `network.ip_assignment_lifecycle`, through
+`mark_primary_ipv4_assignment`. It demotes any sibling and flushes before
+promoting, because the partial unique index permits one active primary per
+service and the reverse order violates it mid-statement.
+
+Adapters may REQUEST the marker; they may not decide it. The reviewed repair
+marks the address it was asked to make desired. The admin allocation form asks
+for its first allocation, since the caller serves `allocated_ips[0]`. Generic IP
+CRUD asks only where the assignment is the service's sole active IPv4 holding —
+there is exactly one possible answer then, and skipping would leave a
+first-provisioned customer with no served address. With several holdings and
+none marked, it fails closed and leaves the served column alone.
+
+The flag is readable but NOT writable through the generic API: it is absent from
+`IPAssignmentCreate` and `IPAssignmentUpdate` and present on `IPAssignmentRead`,
+so a thin adapter cannot change the served-address decision through a payload.
+`tests/architecture/test_ipv4_primary_marker_ownership.py` pins all of this.
+
 The contract is unchanged by this: an additional address that must coexist with
 the primary belongs to `SubscriberAdditionalRoute` and is projected as
 `Framed-Route`. The marker does not make a second `IPAssignment` a legitimate

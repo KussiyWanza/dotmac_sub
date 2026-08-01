@@ -126,6 +126,38 @@ class IPAssignments(CRUDManager[IPAssignment]):
         if subscription is None or not _is_active_subscription(subscription):
             return
 
+        # Only the PRIMARY assignment decides the served address. A service may
+        # hold several addresses; writing the column for any of them let a
+        # generic CRUD call silently re-address a live customer just by adding
+        # an additional holding.
+        #
+        # Where this is the service's ONLY active IPv4 holding there is exactly
+        # one possible answer, so ask the owner to mark it rather than skipping
+        # -- otherwise provisioning a first address through this path would
+        # leave the customer with no served address at all. Requesting is not
+        # deciding: with several holdings and none marked, this fails closed and
+        # leaves the column alone for the assignment owner to adjudicate.
+        if assignment.is_active and not assignment.is_primary:
+            from app.services.ip_assignment_lifecycle import (
+                mark_primary_ipv4_assignment,
+            )
+
+            siblings = (
+                db.query(IPAssignment)
+                .filter(IPAssignment.subscription_id == subscription.id)
+                .filter(IPAssignment.is_active.is_(True))
+                .filter(IPAssignment.ipv4_address_id.is_not(None))
+                .count()
+            )
+            if siblings == 1 and assignment.ipv4_address_id is not None:
+                mark_primary_ipv4_assignment(
+                    db,
+                    subscription_id=subscription.id,
+                    ipv4_address_id=assignment.ipv4_address_id,
+                )
+        if not assignment.is_primary:
+            return
+
         if not assignment.is_active:
             if released_ip and subscription.ipv4_address == released_ip:
                 subscription.ipv4_address = None

@@ -624,6 +624,56 @@ def _target_address_is_device_host(db: Session, address: str) -> bool:
     return any(db.scalar(statement) is not None for statement in lookups)
 
 
+def mark_primary_ipv4_assignment(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    ipv4_address_id: UUID,
+) -> bool:
+    """Move the served-address marker to one active exact-service assignment.
+
+    THE single writer of ``IPAssignment.is_primary``. Which held address a
+    service is served on is an ownership decision, so no adapter may set the
+    flag directly -- see the architecture guard in
+    ``tests/architecture/test_ipv4_primary_marker_ownership.py``.
+
+    Demotes any sibling first and flushes, because
+    ``uq_ip_assignments_primary_ipv4_active`` permits only one active primary
+    per service and promoting before demoting would violate it mid-statement.
+
+    Returns True when a target assignment was found and marked.
+    """
+    active_ipv4 = (
+        db.execute(
+            select(IPAssignment)
+            .where(IPAssignment.subscription_id == subscription_id)
+            .where(IPAssignment.is_active.is_(True))
+            .where(IPAssignment.ipv4_address_id.is_not(None))
+        )
+        .scalars()
+        .all()
+    )
+    target = next(
+        (item for item in active_ipv4 if item.ipv4_address_id == ipv4_address_id),
+        None,
+    )
+    if target is None:
+        return False
+
+    demoted = False
+    for item in active_ipv4:
+        if item.id != target.id and item.is_primary:
+            item.is_primary = False
+            demoted = True
+    if demoted:
+        db.flush()
+
+    if not target.is_primary:
+        target.is_primary = True
+        db.flush()
+    return True
+
+
 def preview_service_ipv4_assignment_repair(
     db: Session,
     *,
@@ -1389,6 +1439,11 @@ def _repair_service_ipv4_assignment(
             )
             db.add(desired_assignment)
             db.flush()
+            mark_primary_ipv4_assignment(
+                db,
+                subscription_id=subscription.id,
+                ipv4_address_id=desired_assignment.ipv4_address_id,
+            )
             created_count = 1
             _stage_lifecycle_item_audit(
                 db,
@@ -1400,6 +1455,12 @@ def _repair_service_ipv4_assignment(
         elif desired_assignment.subscription_id is None:
             desired_assignment.subscription_id = subscription.id
             desired_assignment.service_address_id = subscription.service_address_id
+            db.flush()
+            mark_primary_ipv4_assignment(
+                db,
+                subscription_id=subscription.id,
+                ipv4_address_id=desired_assignment.ipv4_address_id,
+            )
             linked_count = 1
             _stage_lifecycle_item_audit(
                 db,
