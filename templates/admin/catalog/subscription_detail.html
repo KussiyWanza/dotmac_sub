@@ -1,5 +1,6 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import status_presentation_badge %}
+{% from "components/forms/action_form.html" import action_form with context %}
 
 {% block title %}Subscription {{ subscription.id | string | truncate(8, True, '') | upper }} - Admin{% endblock %}
 
@@ -51,6 +52,13 @@
                 {% include "components/forms/csrf_input.html" %}
                 <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700">Bill now</button>
             </form>
+            {% endif %}
+            {% if correction_action_forms and can_correct_subscription %}
+            <a href="#subscription-correction"
+               class="inline-flex items-center gap-2 rounded-lg border border-amber-500 bg-white px-4 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-50 dark:bg-slate-800 dark:text-amber-300 dark:hover:bg-amber-900/20">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v6h6M20 20v-6h-6M5 19a9 9 0 0014.13-3M19 5A9 9 0 004.87 8"/></svg>
+                Correct Subscription
+            </a>
             {% endif %}
             <a href="/admin/catalog/subscriptions/{{ subscription.id }}/edit" class="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536M4 17l4.586-4.586a2 2 0 012.828 0L15 16l5-5a2 2 0 012.828 0L24 13.172V20a2 2 0 01-2 2H6a2 2 0 01-2-2v-3z"/></svg>
@@ -356,6 +364,7 @@
                 },
             };
         }
+
     </script>
 
     {% if notice %}
@@ -372,6 +381,19 @@
     <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-400">
         {{ error }}
     </div>
+    {% endif %}
+    {% if correction_action_forms and can_correct_subscription %}
+    <section id="subscription-correction" class="space-y-4" aria-labelledby="subscription-correction-title">
+        <div>
+            <h2 id="subscription-correction-title" class="text-lg font-semibold text-slate-900 dark:text-white">Correct mistaken activation</h2>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Each option is an owner-reviewed correction. Choose only the subscription that should remain active.</p>
+        </div>
+        <div class="grid gap-4 lg:grid-cols-2">
+            {% for correction_action in correction_action_forms %}
+                {{ action_form(correction_action) }}
+            {% endfor %}
+        </div>
+    </section>
     {% endif %}
     {% if scheduled_plan_change %}
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300">

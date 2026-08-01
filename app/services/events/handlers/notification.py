@@ -548,6 +548,21 @@ class NotificationHandler:
         spec = EVENT_NOTIFICATION_SPECS.get(event.event_type)
         if spec is None:
             return
+        correction_source = "admin:subscription_correction"
+        if (
+            event.event_type == EventType.subscription_canceled
+            and event.payload.get("source") == correction_source
+        ) or (
+            event.event_type == EventType.subscription_resumed
+            and (
+                event.payload.get("resolved_by") == correction_source
+                or event.payload.get("source") == correction_source
+            )
+        ):
+            logger.info(
+                "Suppressed paired lifecycle notification for reviewed subscription correction"
+            )
+            return
         if (
             event.event_type == EventType.invoice_created
             and str(event.payload.get("status") or "").lower() == "draft"

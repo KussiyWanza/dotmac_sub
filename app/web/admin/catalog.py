@@ -732,6 +732,10 @@ def catalog_subscription_detail(
         )
     context = _base_context(request, db, active_page="catalog-subscriptions")
     context.update(detail_context)
+    auth = getattr(request.state, "auth", None)
+    context["can_correct_subscription"] = bool(
+        auth and has_permission(auth, db, "catalog:write")
+    )
     context["notice"] = notice
     context["warning"] = warning
     context["error"] = error
@@ -1006,6 +1010,50 @@ def catalog_subscription_preview_lifecycle_command(
         )
     )
     return JSONResponse(payload, status_code=status_code)
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/correction/execute",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_execute_correction(
+    request: Request,
+    subscription_id: str,
+    target_subscription_id: str = Form(...),
+    preview_fingerprint: str = Form(...),
+    idempotency_key: str = Form(...),
+    confirmed: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Apply one server-reviewed mistaken-subscription correction."""
+    if confirmed != "yes":
+        message = "Confirm the reviewed subscription correction before continuing."
+        return RedirectResponse(
+            f"/admin/catalog/subscriptions/{subscription_id}"
+            f"?error={quote_plus(message)}#subscription-correction",
+            status_code=303,
+        )
+    payload, status_code = (
+        web_catalog_subscription_workflows_service.execute_subscription_correction_response(
+            db,
+            active_subscription_id=subscription_id,
+            target_subscription_id=target_subscription_id,
+            preview_fingerprint=preview_fingerprint,
+            idempotency_key=idempotency_key,
+            actor_id=_get_actor_id(request),
+        )
+    )
+    if status_code != 200:
+        return RedirectResponse(
+            f"/admin/catalog/subscriptions/{subscription_id}"
+            f"?error={quote_plus(str(payload['message']))}#subscription-correction",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/admin/catalog/subscriptions/{payload['target_subscription_id']}"
+        f"?notice={quote_plus(str(payload['message']))}",
+        status_code=303,
+    )
 
 
 @router.post(

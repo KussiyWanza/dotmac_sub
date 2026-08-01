@@ -124,3 +124,26 @@ def test_retired_false_row_cannot_disable_status_policy(db_session):
     before = db_session.query(Notification).count()
     _handle(db_session, EventType.invoice_overdue, sub.id)
     assert db_session.query(Notification).count() == before
+
+
+@pytest.mark.parametrize(
+    ("event_type", "provenance_field"),
+    [
+        (EventType.subscription_canceled, "source"),
+        (EventType.subscription_resumed, "resolved_by"),
+        (EventType.subscription_resumed, "source"),
+    ],
+)
+def test_reviewed_subscription_correction_suppresses_paired_notifications(
+    db_session, event_type, provenance_field
+):
+    before = db_session.query(Notification).count()
+    NotificationHandler().handle(
+        db_session,
+        Event(
+            event_type=event_type,
+            payload={provenance_field: "admin:subscription_correction"},
+        ),
+    )
+    db_session.flush()
+    assert db_session.query(Notification).count() == before
