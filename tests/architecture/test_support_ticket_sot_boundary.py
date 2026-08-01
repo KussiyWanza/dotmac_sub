@@ -118,6 +118,30 @@ def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:
         assert "queue_staff_email" not in _source(adapter)
 
 
+def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None:
+    lifecycle = _source("app/services/support.py")
+    admin_adapter = _source("app/services/web_support_tickets.py")
+    contract = SERVICES_BY_NAME["support.ticket_lifecycle"].contract
+
+    assert contract is not None
+    acknowledgement = next(
+        concern
+        for concern in contract.concerns
+        if concern.name == "admin-created ticket customer email acknowledgement"
+    )
+    assert acknowledgement.input_names == (
+        "typed ticket command",
+        "canonical ticket state",
+        "customer identity evidence",
+        "customer communication delivery intent",
+    )
+    assert "class TicketCreationAcknowledgementMode" in lifecycle
+    assert "_stage_admin_creation_customer_email(" in lifecycle
+    assert 'event_type="support_ticket_created_admin"' in lifecycle
+    assert "TicketCreationAcknowledgementMode.customer_email" in admin_adapter
+    assert "default_channels=(NotificationChannel.email,)" in lifecycle
+
+
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:
     source = _source("app/services/ticket_work_order_handoff.py")
     assert "execute_owner_command(" in source

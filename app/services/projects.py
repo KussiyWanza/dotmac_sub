@@ -106,6 +106,7 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+    execute_owner_savepoint,
 )
 from app.services.response import ListResponseMixin
 from app.services.staff_notifications import queue_staff_email, queue_staff_push
@@ -177,6 +178,16 @@ class ProjectProjectionRepairOutcome:
     task_count: int
     repaired_sla_clocks: int
     repaired_primary_assignees: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTaskReassignmentNotificationOutcome:
+    """Typed evidence of email consequences for newly added task assignees."""
+
+    added_assignee_ids: tuple[UUID, ...]
+    queued_email_user_ids: tuple[UUID, ...]
+    failed_user_ids: tuple[UUID, ...]
+    unresolved_assignee_ids: tuple[UUID, ...]
 
 
 def reconcile_project_projection(
@@ -1022,6 +1033,62 @@ def _notify_customer_project_completed(db: Session, project: Project) -> None:
     )
 
 
+def _queue_customer_project_created_email(db: Session, project: Project) -> bool:
+    """Request one customer email when a subscriber project is created."""
+
+    if project.subscriber_id is None:
+        return False
+    project_ref = project.number or str(project.id)
+    from app.models.notification import NotificationChannel
+    from app.services import customer_experience_communications
+
+    customer_experience_communications.request_update(
+        db,
+        subscriber_id=project.subscriber_id,
+        event_type="project_created",
+        subject=f"Project created: {project.name}",
+        body=(
+            f"Your project '{project.name}' ({project_ref}) has been created.\n\n"
+            f"Current status: {project.status}.\n\n"
+            "We will keep you informed as work progresses."
+        ),
+        metadata={"type": "project", "project_id": str(project.id)},
+        dedupe_key=f"project-created:{project.id}",
+        default_channels=(NotificationChannel.email,),
+    )
+    return True
+
+
+def _stage_customer_project_created_email(
+    db: Session,
+    *,
+    project: Project,
+    context: CommandContext,
+) -> bool:
+    """Isolate optional email staging from the Project create command."""
+
+    try:
+        return execute_owner_savepoint(
+            db,
+            lambda: _queue_customer_project_created_email(db, project),
+        )
+    except Exception as exc:  # noqa: BLE001 - Project creation must remain valid
+        logger.error(
+            "project_created_customer_email_failed project_id=%s error=%s",
+            project.id,
+            exc,
+        )
+        _stage_project_audit(
+            db,
+            context=context,
+            action="creation_customer_email_failed",
+            entity_type="project",
+            entity_id=project.id,
+            changed_fields=["customer_email"],
+        )
+        return False
+
+
 def notify_project_task_sla_breach(db: Session, clock: SlaClock) -> None:
     if clock.entity_type != WorkflowEntityType.project_task.value:
         return
@@ -1563,130 +1630,129 @@ def _notify_project_task_assigned(
     task: ProjectTask,
     project: Project,
     assigned_to: SystemUser,
-    created_by: SystemUser | None,
-) -> None:
-    try:
-        if not assigned_to.email:
-            logger.warning("project_task_assigned_missing_email task_id=%s", task.id)
-            return
+    *,
+    include_push: bool = True,
+) -> bool:
+    if not assigned_to.email:
+        logger.warning("project_task_assigned_missing_email task_id=%s", task.id)
+        return False
 
-        assignee_name = html.escape(_person_label(assigned_to))
-        due_label = _format_dt(task.due_at)
-        start_label = _format_dt(task.start_at)
+    assignee_name = html.escape(_person_label(assigned_to))
+    due_label = _format_dt(task.due_at)
+    start_label = _format_dt(task.start_at)
 
-        app_url = _app_base_url(db)
-        task_url = f"{app_url}/admin/projects/tasks/{task.id}" if app_url else None
-        project_ref = project.number or str(project.id)
-        project_url = f"{app_url}/admin/projects/{project_ref}" if app_url else None
+    app_url = _app_base_url(db)
+    task_url = f"{app_url}/admin/projects/tasks/{task.id}" if app_url else None
+    project_ref = project.number or str(project.id)
+    project_url = f"{app_url}/admin/projects/{project_ref}" if app_url else None
 
-        company = html.escape(_company_name(db))
-        logo_url = _DEFAULT_LOGO_URL
+    company = html.escape(_company_name(db))
+    logo_url = _DEFAULT_LOGO_URL
 
-        subject = f"New project task assigned: {task.title or 'Task'}"
-        safe_title = html.escape(task.title or "Task")
-        safe_project = html.escape(project.name or "Project")
-        status_label = html.escape(task.status) if task.status else "todo"
-        priority_label = html.escape(task.priority) if task.priority else "normal"
-        description_block = ""
-        if task.description:
-            description_block = (
-                "<p><strong>Description:</strong><br>"
-                f"{html.escape(task.description)}</p>"
-            )
+    subject = f"New project task assigned: {task.title or 'Task'}"
+    safe_title = html.escape(task.title or "Task")
+    safe_project = html.escape(project.name or "Project")
+    status_label = html.escape(task.status) if task.status else "todo"
+    priority_label = html.escape(task.priority) if task.priority else "normal"
+    description_block = ""
+    if task.description:
+        description_block = (
+            f"<p><strong>Description:</strong><br>{html.escape(task.description)}</p>"
+        )
 
-        task_link_url = task_url or f"{app_url}/admin/projects/tasks"
-        task_link_block = (
-            '<div style="text-align: center; margin: 20px 0;">'
-            f'<a href="{task_link_url}" '
-            'style="background-color: #16a34a; color: #fff; text-decoration: none; '
-            "padding: 12px 20px; border-radius: 6px; display: inline-block; "
-            'font-weight: 600;">'
-            "View Project Task"
+    task_link_url = task_url or f"{app_url}/admin/projects/tasks"
+    task_link_block = (
+        '<div style="text-align: center; margin: 20px 0;">'
+        f'<a href="{task_link_url}" '
+        'style="background-color: #16a34a; color: #fff; text-decoration: none; '
+        "padding: 12px 20px; border-radius: 6px; display: inline-block; "
+        'font-weight: 600;">'
+        "View Project Task"
+        "</a>"
+        "</div>"
+    )
+
+    project_link_block = ""
+    if project_url:
+        project_link_block = (
+            '<div style="text-align: center; margin: 12px 0 20px;">'
+            f'<a href="{project_url}" '
+            'style="background-color: #0f766e; color: #fff; '
+            "text-decoration: none; padding: 12px 20px; border-radius: 6px; "
+            'display: inline-block; font-weight: 600;">'
+            "View Project"
             "</a>"
             "</div>"
         )
 
-        project_link_block = ""
-        if project_url:
-            project_link_block = (
-                '<div style="text-align: center; margin: 12px 0 20px;">'
-                f'<a href="{project_url}" '
-                'style="background-color: #0f766e; color: #fff; '
-                "text-decoration: none; padding: 12px 20px; border-radius: 6px; "
-                'display: inline-block; font-weight: 600;">'
-                "View Project"
-                "</a>"
-                "</div>"
-            )
+    logo_block = (
+        '<div style="position: absolute; top: 15px; right: 15px;">'
+        f'<img src="{html.escape(logo_url)}" '
+        f'alt="{company}" style="max-width: 150px; height: auto;">'
+        "</div>"
+    )
 
-        logo_block = (
-            '<div style="position: absolute; top: 15px; right: 15px;">'
-            f'<img src="{html.escape(logo_url)}" '
-            f'alt="{company}" style="max-width: 150px; height: auto;">'
-            "</div>"
-        )
+    body = (
+        "<div style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, "
+        "sans-serif; line-height: 1.8; "
+        "color: #333; background-color: #f4f4f9; padding: 25px; "
+        "border: 1px solid #ccc; "
+        "border-radius: 10px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); "
+        'position: relative;">'
+        f"{logo_block}"
+        '<div style="text-align: center; margin-bottom: 20px;">'
+        '<h1 style="color: green; font-size: 24px; margin: 0;">Task Assigned</h1>'
+        "</div>"
+        f'<p style="font-size: 16px; color: green; margin-top: 20px;">'
+        f"Dear {assignee_name},</p>"
+        '<p style="font-size: 15px; color: #555; margin: 15px 0;">'
+        "You have been assigned a new project task. Please find the details below:"
+        "</p>"
+        '<div style="background-color: #fff; border: 2px solid #e2e2e2; '
+        'border-radius: 8px; padding: 20px; margin-bottom: 20px;">'
+        f'<p style="font-size: 15px; margin: 0; line-height: 1.5;">'
+        f'<strong style="color: red;">Task:</strong> '
+        f'<span style="color: #555;">{safe_title}</span><br>'
+        f'<strong style="color: red;">Project:</strong> '
+        f'<span style="color: #555;">{safe_project}</span><br>'
+        f'<strong style="color: red;">Status:</strong> '
+        f'<span style="color: #555;">{status_label}</span><br>'
+        f'<strong style="color: red;">Task ID:</strong> '
+        f'<span style="color: #555;">{task.id}</span><br>'
+        f'<strong style="color: red;">Start:</strong> '
+        f'<span style="color: #555;">{start_label or "N/A"}</span><br>'
+        f'<strong style="color: red;">Due:</strong> '
+        f'<span style="color: #555;">{due_label or "N/A"}</span><br>'
+        f'<strong style="color: red;">Priority:</strong> '
+        f'<span style="color: #555;">{priority_label}</span>'
+        f"</p>"
+        "</div>"
+        f"{description_block}"
+        '<p style="font-size: 15px; color: #555; margin: 15px 0;">'
+        "We will keep you updated with further progress."
+        "</p>"
+        f"{task_link_block}"
+        f"{project_link_block}"
+        '<p style="font-size: 15px; color: green; text-align: left; '
+        'font-style: italic;">'
+        f'Thank you for choosing <strong style="color: red;">{company}</strong>.'
+        "</p>"
+        '<p style="font-size: 15px; color: green; text-align: right; '
+        'font-style: italic;">'
+        "Best regards,<br>"
+        f'<span style="color: red; font-weight: bold;">{company} Support Team'
+        "</span>"
+        "</p>"
+        "</div>"
+    )
 
-        body = (
-            "<div style=\"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, "
-            "sans-serif; line-height: 1.8; "
-            "color: #333; background-color: #f4f4f9; padding: 25px; "
-            "border: 1px solid #ccc; "
-            "border-radius: 10px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); "
-            'position: relative;">'
-            f"{logo_block}"
-            '<div style="text-align: center; margin-bottom: 20px;">'
-            '<h1 style="color: green; font-size: 24px; margin: 0;">Task Assigned</h1>'
-            "</div>"
-            f'<p style="font-size: 16px; color: green; margin-top: 20px;">'
-            f"Dear {assignee_name},</p>"
-            '<p style="font-size: 15px; color: #555; margin: 15px 0;">'
-            "You have been assigned a new project task. Please find the details "
-            "below:"
-            "</p>"
-            '<div style="background-color: #fff; border: 2px solid #e2e2e2; '
-            'border-radius: 8px; padding: 20px; margin-bottom: 20px;">'
-            f'<p style="font-size: 15px; margin: 0; line-height: 1.5;">'
-            f'<strong style="color: red;">Task:</strong> '
-            f'<span style="color: #555;">{safe_title}</span><br>'
-            f'<strong style="color: red;">Project:</strong> '
-            f'<span style="color: #555;">{safe_project}</span><br>'
-            f'<strong style="color: red;">Status:</strong> '
-            f'<span style="color: #555;">{status_label}</span><br>'
-            f'<strong style="color: red;">Task ID:</strong> '
-            f'<span style="color: #555;">{task.id}</span><br>'
-            f'<strong style="color: red;">Start:</strong> '
-            f'<span style="color: #555;">{start_label or "N/A"}</span><br>'
-            f'<strong style="color: red;">Due:</strong> '
-            f'<span style="color: #555;">{due_label or "N/A"}</span><br>'
-            f'<strong style="color: red;">Priority:</strong> '
-            f'<span style="color: #555;">{priority_label}</span>'
-            f"</p>"
-            "</div>"
-            f"{description_block}"
-            '<p style="font-size: 15px; color: #555; margin: 15px 0;">'
-            "We will keep you updated with further progress."
-            "</p>"
-            f"{task_link_block}"
-            f"{project_link_block}"
-            '<p style="font-size: 15px; color: green; text-align: left; '
-            'font-style: italic;">'
-            f'Thank you for choosing <strong style="color: red;">{company}</strong>.'
-            "</p>"
-            '<p style="font-size: 15px; color: green; text-align: right; '
-            'font-style: italic;">'
-            "Best regards,<br>"
-            f'<span style="color: red; font-weight: bold;">{company} Support Team'
-            "</span>"
-            "</p>"
-            "</div>"
-        )
-
-        queue_staff_email(
-            db,
-            recipient=assigned_to.email,
-            subject=subject,
-            body=body,
-        )
+    queue_staff_email(
+        db,
+        recipient=assigned_to.email,
+        subject=subject,
+        body=body,
+    )
+    if include_push:
         queue_staff_push(
             db,
             recipient=assigned_to.email,
@@ -1694,11 +1760,111 @@ def _notify_project_task_assigned(
             body=f"You have been assigned a project task: {task.title or 'Task'}",
             delivered=False,
         )
-        db.flush()
-    except Exception as exc:  # noqa: BLE001 - notification must not break writes
-        logger.error(
-            "project_task_assigned_notify_failed task_id=%s error=%s", task.id, exc
+    db.flush()
+    return True
+
+
+def _stage_project_task_assignment_notification(
+    db: Session,
+    *,
+    task: ProjectTask,
+    project: Project,
+    assigned_to: SystemUser,
+    context: CommandContext,
+    include_push: bool,
+) -> bool:
+    """Isolate an optional delivery and record durable failure evidence."""
+
+    try:
+        return execute_owner_savepoint(
+            db,
+            lambda: _notify_project_task_assigned(
+                db,
+                task,
+                project,
+                assigned_to,
+                include_push=include_push,
+            ),
         )
+    except Exception as exc:  # noqa: BLE001 - assignment must remain successful
+        logger.error(
+            "project_task_assigned_notify_failed task_id=%s user_id=%s error=%s",
+            task.id,
+            assigned_to.id,
+            exc,
+        )
+        _stage_project_audit(
+            db,
+            context=context,
+            action="assignment_notification_failed",
+            entity_type="project_task",
+            entity_id=task.id,
+            changed_fields=["assignee_email"],
+        )
+        return False
+
+
+def _notify_new_project_task_assignees(
+    db: Session,
+    *,
+    task: ProjectTask,
+    project: Project,
+    previous_assignee_ids: frozenset[UUID],
+    context: CommandContext,
+) -> ProjectTaskReassignmentNotificationOutcome:
+    """Email active staff newly added to an already-existing project task."""
+
+    added_assignee_ids = tuple(
+        sorted(
+            set(task.assigned_to_person_ids) - previous_assignee_ids,
+            key=str,
+        )
+    )
+    if not added_assignee_ids:
+        return ProjectTaskReassignmentNotificationOutcome((), (), (), ())
+
+    users = db.scalars(
+        select(SystemUser)
+        .where(
+            SystemUser.is_active.is_(True),
+            or_(
+                SystemUser.id.in_(added_assignee_ids),
+                SystemUser.person_party_id.in_(added_assignee_ids),
+            ),
+        )
+        .order_by(SystemUser.id)
+    ).all()
+
+    queued_email_user_ids: list[UUID] = []
+    failed_user_ids: list[UUID] = []
+    resolved_assignee_ids: set[UUID] = set()
+    for user in users:
+        if user.id in added_assignee_ids:
+            resolved_assignee_ids.add(user.id)
+        if user.person_party_id in added_assignee_ids:
+            resolved_assignee_ids.add(user.person_party_id)
+        if _stage_project_task_assignment_notification(
+            db,
+            task=task,
+            project=project,
+            assigned_to=user,
+            context=context,
+            include_push=False,
+        ):
+            queued_email_user_ids.append(user.id)
+        else:
+            failed_user_ids.append(user.id)
+
+    return ProjectTaskReassignmentNotificationOutcome(
+        added_assignee_ids=added_assignee_ids,
+        queued_email_user_ids=tuple(queued_email_user_ids),
+        failed_user_ids=tuple(failed_user_ids),
+        unresolved_assignee_ids=tuple(
+            assignee_id
+            for assignee_id in added_assignee_ids
+            if assignee_id not in resolved_assignee_ids
+        ),
+    )
 
 
 def _maybe_auto_assign_project(
@@ -1834,7 +2000,7 @@ class Projects(ListResponseMixin):
         payload: ProjectCreate,
         *,
         context: CommandContext | None = None,
-    ):
+    ) -> Project:
         if context is None:
             context = _project_command_context(
                 action="create_project", actor=payload.created_by_person_id
@@ -1966,6 +2132,12 @@ class Projects(ListResponseMixin):
             action="create",
             entity_type="project",
             entity_id=project.id,
+        )
+
+        _stage_customer_project_created_email(
+            db,
+            project=project,
+            context=context,
         )
 
         _notify_project_roles_created_in_app(db, project)
@@ -2780,15 +2952,13 @@ class ProjectTasks(ListResponseMixin):
         if task.assigned_to_person_id:
             assigned_to = db.get(SystemUser, task.assigned_to_person_id)
             if assigned_to:
-                created_by = None
-                if task.created_by_person_id:
-                    created_by = db.get(SystemUser, task.created_by_person_id)
-                _notify_project_task_assigned(
-                    db=db,
+                _stage_project_task_assignment_notification(
+                    db,
                     task=task,
                     project=project,
                     assigned_to=assigned_to,
-                    created_by=created_by,
+                    context=context,
+                    include_push=True,
                 )
         _stage_project_audit(
             db,
@@ -2923,6 +3093,7 @@ class ProjectTasks(ListResponseMixin):
         if not task:
             raise _project_error("not_found", "Project task not found")
         previous_status = task.status
+        previous_assignee_ids = frozenset(task.assigned_to_person_ids)
         changed_fields: list[str] = []
         data = _model_data(payload.model_dump(exclude_unset=True))
         if data.get("status"):
@@ -2967,6 +3138,16 @@ class ProjectTasks(ListResponseMixin):
         _sync_project_task_assignees(db, task, assignee_ids)
         db.flush()
         db.refresh(task)
+        if assignee_ids is not None:
+            project = db.get(Project, task.project_id)
+            if project:
+                _notify_new_project_task_assignees(
+                    db,
+                    task=task,
+                    project=project,
+                    previous_assignee_ids=previous_assignee_ids,
+                    context=context,
+                )
         if (
             "assigned_to_person_ids" in payload.model_fields_set
             or "assigned_to_person_id" in payload.model_fields_set

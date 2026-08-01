@@ -19679,6 +19679,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "ticket lifecycle mutations",
                     "ticket creation and identity",
+                    "admin-created ticket customer email acknowledgement",
                     "support ticket human-readable number allocation",
                     "ticket status vocabulary",
                     "guarded ticket status transitions",
@@ -19697,56 +19698,69 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "customer.identity_scope",
                     "auth.staff_provisioning",
                     "customer.branding",
+                    "communications.intents",
                     "communications.notification_service",
                 ),
                 contract=ServiceContract(
-                    concerns=tuple(
+                    concerns=(
+                        *tuple(
+                            ConcernContract(
+                                name=name,
+                                role=(
+                                    OwnerRole.COMMAND_WRITER
+                                    if name
+                                    in {
+                                        "ticket lifecycle mutations",
+                                        "support ticket human-readable number allocation",
+                                    }
+                                    else OwnerRole.AUTHORITATIVE_RECORD
+                                ),
+                                input_names=(
+                                    "typed ticket command",
+                                    "canonical ticket state",
+                                    "ticket configuration",
+                                    "portal team-routing resolution",
+                                    "customer identity evidence",
+                                    "assignment policy proposal",
+                                    "automation policy proposal",
+                                    *(
+                                        (
+                                            "active assigned staff contact identity",
+                                            "customer-scoped helpdesk contact",
+                                            "staff notification delivery queue",
+                                        )
+                                        if name
+                                        == "ticket lifecycle timestamps and consequences"
+                                        else ()
+                                    ),
+                                ),
+                                canonical_writer="support.ticket_lifecycle",
+                            )
+                            for name in (
+                                "ticket lifecycle mutations",
+                                "ticket creation and identity",
+                                "support ticket human-readable number allocation",
+                                "ticket status vocabulary",
+                                "guarded ticket status transitions",
+                                "ticket lifecycle timestamps and consequences",
+                                "ticket team and person assignment",
+                                "ticket comments mentions and attachments",
+                                "ticket links duplicates and merges",
+                                "signed-link and authenticated resolution confirmation/dispute",
+                                "ticket CSAT and satisfaction",
+                                "ticket audit official timeline and transactional events",
+                            )
+                        ),
                         ConcernContract(
-                            name=name,
-                            role=(
-                                OwnerRole.COMMAND_WRITER
-                                if name
-                                in {
-                                    "ticket lifecycle mutations",
-                                    "support ticket human-readable number allocation",
-                                }
-                                else OwnerRole.AUTHORITATIVE_RECORD
-                            ),
+                            name="admin-created ticket customer email acknowledgement",
+                            role=OwnerRole.EVENT_POLICY,
                             input_names=(
                                 "typed ticket command",
                                 "canonical ticket state",
-                                "ticket configuration",
-                                "portal team-routing resolution",
                                 "customer identity evidence",
-                                "assignment policy proposal",
-                                "automation policy proposal",
-                                *(
-                                    (
-                                        "active assigned staff contact identity",
-                                        "customer-scoped helpdesk contact",
-                                        "staff notification delivery queue",
-                                    )
-                                    if name
-                                    == "ticket lifecycle timestamps and consequences"
-                                    else ()
-                                ),
+                                "customer communication delivery intent",
                             ),
-                            canonical_writer="support.ticket_lifecycle",
-                        )
-                        for name in (
-                            "ticket lifecycle mutations",
-                            "ticket creation and identity",
-                            "support ticket human-readable number allocation",
-                            "ticket status vocabulary",
-                            "guarded ticket status transitions",
-                            "ticket lifecycle timestamps and consequences",
-                            "ticket team and person assignment",
-                            "ticket comments mentions and attachments",
-                            "ticket links duplicates and merges",
-                            "signed-link and authenticated resolution confirmation/dispute",
-                            "ticket CSAT and satisfaction",
-                            "ticket audit official timeline and transactional events",
-                        )
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -19838,6 +19852,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
                                 "durable queued Notification rows and post-commit delivery state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer communication delivery intent",
+                            owner="communications.intents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "deduplicated customer email intent and durable Notification "
+                                "delivery state"
                             ),
                         ),
                     ),
@@ -21822,16 +21845,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.projects",
                 owns=(
                     "Project and ProjectTask identity and lifecycle",
+                    "project creation customer email consequence",
                     "project and task allowed status transitions",
                     "project and task assignment and scheduling",
                     "project manager assistant manager service-team and task-assignee changes",
+                    "existing project-task reassignment email consequence",
                     "Project-to-ProjectTask and project/task-to-work-order relationships",
                     "project audit records and transactional domain events",
                     "project derived-state reconciliation",
                 ),
                 depends_on=(
                     "auth.permission_gate",
+                    "auth.staff_provisioning",
+                    "communications.intents",
                     "events.dispatcher",
+                    "communications.notification_service",
                     "communications.staff_notifications",
                     "operations.work_order_commands",
                 ),
@@ -21851,6 +21879,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authorized project command",
                             ),
                             canonical_writer="operations.project_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="project creation customer email consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "customer communication delivery intent",
+                            ),
                         ),
                         ConcernContract(
                             name="project and task allowed status transitions",
@@ -21879,6 +21915,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authorized project command",
                             ),
                             canonical_writer="operations.project_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="existing project-task reassignment email consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "active project-task assignee contact identity",
+                                "staff notification delivery queue",
+                            ),
                         ),
                         ConcernContract(
                             name="Project-to-ProjectTask and project/task-to-work-order relationships",
@@ -21935,6 +21980,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.work_order_commands",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="native WorkOrder.project_id and WorkOrder.project_task_id foreign keys",
+                        ),
+                        AuthorityInput(
+                            name="active project-task assignee contact identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser identity and email resolved from a "
+                                "new task-assignee SystemUser or canonical Person identifier"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="staff notification delivery queue",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "durable queued Notification rows and post-commit delivery state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer communication delivery intent",
+                            owner="communications.intents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "deduplicated customer email intent and durable Notification "
+                                "delivery state"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(

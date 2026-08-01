@@ -67,6 +67,7 @@ from app.services.owner_commands import (
     CommandContext,
     OwnerCommandDefinition,
     execute_owner_command,
+    execute_owner_savepoint,
     owner_command_active,
 )
 from app.services.sales import lifecycle as lead_lifecycle
@@ -88,6 +89,13 @@ class TicketCreationRoutingMode(str, Enum):
 
     evaluate_policy = "evaluate_policy"
     preserve_requested_team = "preserve_requested_team"
+
+
+class TicketCreationAcknowledgementMode(str, Enum):
+    """Select whether the Ticket owner requests a customer creation email."""
+
+    none = "none"
+    customer_email = "customer_email"
 
 
 class CustomerReplyStaffNotificationSource(str, Enum):
@@ -1358,6 +1366,72 @@ class Tickets:
         )
 
     @staticmethod
+    def _queue_admin_creation_customer_email(db: Session, ticket: Ticket) -> bool:
+        """Request one email acknowledgement for an admin-created ticket."""
+
+        if not Tickets._notifications_enabled(db):
+            return False
+        subscriber_id = ticket.subscriber_id or ticket.customer_account_id
+        if subscriber_id is None or db.get(Subscriber, subscriber_id) is None:
+            return False
+
+        ticket_ref = ticket.number or str(ticket.id)[:8]
+        from app.services import customer_experience_communications
+
+        customer_experience_communications.request_update(
+            db,
+            subscriber_id=subscriber_id,
+            event_type="support_ticket_created_admin",
+            subject=f"Support ticket {ticket_ref} created",
+            body=(
+                f"Support ticket {ticket_ref} has been created for you.\n\n"
+                f"Subject: {ticket.title}\n\n"
+                "We will keep you updated as our support team works on it."
+            ),
+            metadata={
+                "type": "ticket",
+                "ticket_id": str(ticket.id),
+                "ticket_number": ticket.number,
+                "creation_source": "admin_web",
+            },
+            dedupe_key=f"ticket-created-admin:{ticket.id}",
+            default_channels=(NotificationChannel.email,),
+        )
+        return True
+
+    @staticmethod
+    def _stage_admin_creation_customer_email(
+        db: Session,
+        ticket: Ticket,
+        *,
+        request: object | None,
+        actor_id: str | None,
+    ) -> bool:
+        """Isolate optional acknowledgement delivery from Ticket creation."""
+
+        try:
+            return execute_owner_savepoint(
+                db,
+                lambda: Tickets._queue_admin_creation_customer_email(db, ticket),
+            )
+        except Exception as exc:  # noqa: BLE001 - Ticket creation must remain valid
+            logger.error(
+                "ticket_creation_customer_email_failed ticket_id=%s error=%s",
+                ticket.id,
+                exc,
+            )
+            log_audit_event(
+                db=db,
+                request=request,
+                action="creation_customer_email_failed",
+                entity_type="support_ticket",
+                entity_id=str(ticket.id),
+                actor_id=actor_id,
+                metadata={"creation_source": "admin_web"},
+            )
+            return False
+
+    @staticmethod
     def _notify_customer_of_comment(
         db: Session, ticket: Ticket, comment: TicketComment
     ) -> None:
@@ -1605,6 +1679,7 @@ class Tickets:
         *,
         dispatch_after_commit: bool = True,
         creation_routing_mode: TicketCreationRoutingMode | None = None,
+        creation_acknowledgement_mode: TicketCreationAcknowledgementMode | None = None,
     ) -> None:
         payload = {
             "name": event_name,
@@ -1633,6 +1708,10 @@ class Tickets:
                     "creation_routing_mode": creation_routing_mode.value,
                 }
             )
+        if creation_acknowledgement_mode is not None:
+            payload["creation_acknowledgement_mode"] = (
+                creation_acknowledgement_mode.value
+            )
         emit_event(
             db,
             EventType.custom,
@@ -1649,12 +1728,15 @@ class Tickets:
         db: Session,
         payload: TicketCreate,
         actor_id: str | None = None,
-        request=None,
+        request: object | None = None,
         *,
         origin_conversation_id: UUID | None = None,
         dispatch_event_after_commit: bool = True,
         routing_mode: TicketCreationRoutingMode = (
             TicketCreationRoutingMode.evaluate_policy
+        ),
+        acknowledgement_mode: TicketCreationAcknowledgementMode = (
+            TicketCreationAcknowledgementMode.none
         ),
     ) -> Ticket:
         """Create a ticket inside the canonical Ticket transaction.
@@ -1755,6 +1837,7 @@ class Tickets:
                     else None
                 ),
                 "creation_routing_mode": routing_mode.value,
+                "creation_acknowledgement_mode": acknowledgement_mode.value,
             },
         )
         Tickets._emit_ticket_event(
@@ -1764,7 +1847,15 @@ class Tickets:
             actor_id,
             dispatch_after_commit=dispatch_event_after_commit,
             creation_routing_mode=routing_mode,
+            creation_acknowledgement_mode=acknowledgement_mode,
         )
+        if acknowledgement_mode is TicketCreationAcknowledgementMode.customer_email:
+            Tickets._stage_admin_creation_customer_email(
+                db,
+                ticket,
+                request=request,
+                actor_id=actor_id,
+            )
 
         db.flush()
         db.refresh(ticket)

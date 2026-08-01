@@ -15,6 +15,25 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
 
     assert lifecycle.contract is not None
     assert lifecycle.contract.transaction.mode is TransactionMode.OWNER_MANAGED
+    creation_email = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name == "project creation customer email consequence"
+    )
+    assert creation_email.input_names == (
+        "canonical project aggregate",
+        "customer communication delivery intent",
+    )
+    reassignment = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name == "existing project-task reassignment email consequence"
+    )
+    assert reassignment.input_names == (
+        "canonical project aggregate",
+        "active project-task assignee contact identity",
+        "staff notification delivery queue",
+    )
     assert assignment.contract is not None
     assert assignment.contract.transaction.mode is TransactionMode.READ_ONLY
     assert projection.contract is not None
@@ -42,6 +61,30 @@ def test_project_adapters_do_not_complete_transactions() -> None:
     for relative in ("app/api/projects.py", "app/web/admin/projects.py"):
         source = (ROOT / relative).read_text()
         assert ".commit(" not in source
+
+
+def test_task_reassignment_email_is_owned_by_project_lifecycle() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+    adapters = "\n".join(
+        (ROOT / relative).read_text()
+        for relative in ("app/api/projects.py", "app/web/admin/projects.py")
+    )
+
+    assert "_notify_new_project_task_assignees(" in service
+    assert "previous_assignee_ids = frozenset(task.assigned_to_person_ids)" in service
+    assert "execute_owner_savepoint(" in service
+    assert 'action="assignment_notification_failed"' in service
+    assert "include_push=False" in service
+    assert "queue_staff_email(" not in adapters
+
+
+def test_project_creation_customer_email_is_owned_by_project_lifecycle() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+
+    assert "_stage_customer_project_created_email(" in service
+    assert 'event_type="project_created"' in service
+    assert "default_channels=(NotificationChannel.email,)" in service
+    assert 'action="creation_customer_email_failed"' in service
 
 
 def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:

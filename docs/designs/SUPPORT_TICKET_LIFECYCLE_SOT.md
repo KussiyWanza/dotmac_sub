@@ -78,6 +78,16 @@ transaction. Audit and event evidence include the creation routing mode and
 final team identifier, including a null identifier for intentional
 unassignment.
 
+The admin create form passes the typed
+`TicketCreationAcknowledgementMode.customer_email` intent to the lifecycle
+owner. After the Ticket, number, routing, audit, and event evidence are staged,
+the owner requests one email-only customer acknowledgement using the linked
+Subscriber identity. Other create adapters use `none` unless they deliberately
+adopt this contract, so API, inbox, integration, and portal behavior does not
+change. Missing customer identity or disabled support notifications produces no
+email. Queue failure is isolated in an owner savepoint and recorded as durable
+Ticket audit evidence without rolling back the Ticket.
+
 Customer-authored public replies have one staff-email consequence owned by the
 lifecycle command. After the comment is staged, the owner resolves active
 individual assignees from current Ticket assignment fields and queues one email

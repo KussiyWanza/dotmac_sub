@@ -81,6 +81,43 @@ def _enable_support_ticket_notifications(db_session) -> None:
     db_session.commit()
 
 
+def test_admin_creation_mode_queues_customer_email_only(db_session, subscriber):
+    _enable_support_ticket_notifications(db_session)
+
+    ticket = support_service.tickets.create(
+        db_session,
+        _ticket_payload(subscriber.id),
+        acknowledgement_mode=(
+            support_service.TicketCreationAcknowledgementMode.customer_email
+        ),
+    )
+
+    notifications = (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "support_ticket_created_admin")
+        .all()
+    )
+    assert len(notifications) == 1
+    assert notifications[0].channel == NotificationChannel.email
+    assert notifications[0].recipient == subscriber.email
+    assert notifications[0].subject == f"Support ticket {ticket.number} created"
+
+
+def test_default_ticket_creation_does_not_queue_admin_acknowledgement(
+    db_session, subscriber
+):
+    _enable_support_ticket_notifications(db_session)
+
+    support_service.tickets.create(db_session, _ticket_payload(subscriber.id))
+
+    assert (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "support_ticket_created_admin")
+        .count()
+        == 0
+    )
+
+
 def test_ticket_customer_any_link_filter_matches_all_customer_link_fields(db_session):
     account = Subscriber(
         first_name="Support",
