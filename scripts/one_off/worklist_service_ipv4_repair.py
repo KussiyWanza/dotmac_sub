@@ -127,15 +127,16 @@ def _address_ids(db: Session) -> dict[str, UUID]:
     }
 
 
-def _external_framed_ips(db: Session, logins: list[str]) -> dict[str, str]:
-    """login -> radreply Framed-IP, read from every configured RADIUS target."""
+def _external_framed_ips(db: Session, logins: list[str]) -> dict[str, set[str]]:
+    """login -> EVERY radreply Framed-IP observed across configured targets."""
     from app.services.radius import (
         _active_external_sync_configs,
         _external_radius_table,
         _get_external_engine,
     )
 
-    framed: dict[str, str] = {}
+    framed: dict[str, set[str]] = {}
+    errors: list[str] = []
     for config in _active_external_sync_configs(db):
         try:
             engine = _get_external_engine(config["db_url"])
@@ -155,15 +156,23 @@ def _external_framed_ips(db: Session, logins: list[str]) -> dict[str, str]:
                     ).all():
                         norm = _norm(value)
                         if norm:
-                            framed.setdefault(username, norm)
+                            # Every observed value is kept. setdefault silently
+                            # dropped the second row of a login carrying two
+                            # Framed-IPs across targets -- exactly the
+                            # disagreement this worklist exists to surface.
+                            framed.setdefault(username, set()).add(norm)
         except Exception as exc:  # noqa: BLE001 - reported, never guessed around
-            framed.setdefault("__error__", str(exc))
+            errors.append(str(exc))
+    if errors:
+        framed["__error__"] = set(errors)
     return framed
 
 
-def _fresh_session_ips(db: Session) -> dict[str, str]:
+def _fresh_session_ips(db: Session) -> dict[str, set[str]]:
+    """login -> EVERY fresh session address. Two live sessions on one login is
+    itself the finding; collapsing them would hide it."""
     cutoff = datetime.now(UTC) - ACTIVE_SESSION_FRESHNESS
-    fresh: dict[str, str] = {}
+    fresh: dict[str, set[str]] = {}
     for session in db.scalars(select(RadiusActiveSession)).all():
         seen = session.last_update or session.session_start
         if seen is None:
@@ -174,7 +183,7 @@ def _fresh_session_ips(db: Session) -> dict[str, str]:
             continue
         norm = _norm(session.framed_ip_address)
         if norm:
-            fresh.setdefault(session.username, norm)
+            fresh.setdefault(session.username, set()).add(norm)
     return fresh
 
 
@@ -227,8 +236,14 @@ def build_worklist(db: Session) -> dict[str, Any]:
     )
 
     assigned: dict[str, list[tuple[str, str]]] = {}
-    for subscription_id, assignment_id, address in db.execute(
-        select(IPAssignment.subscription_id, IPAssignment.id, IPv4Address.address)
+    primary_by_subscription: dict[str, str] = {}
+    for subscription_id, assignment_id, is_primary, address in db.execute(
+        select(
+            IPAssignment.subscription_id,
+            IPAssignment.id,
+            IPAssignment.is_primary,
+            IPv4Address.address,
+        )
         .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
         .where(IPAssignment.is_active.is_(True))
         .where(IPAssignment.ip_version == IPVersion.ipv4)
@@ -237,10 +252,24 @@ def build_worklist(db: Session) -> dict[str, Any]:
         assigned.setdefault(str(subscription_id), []).append(
             (str(assignment_id), _norm(address))
         )
+        if is_primary:
+            primary_by_subscription[str(subscription_id)] = _norm(address)
+
+    # A login carrying several ACTIVE subscriptions is bound to a session by the
+    # reconciler's lowest-id pick, which is a guess. Rows on such a login are
+    # marked unadjudicable rather than silently attributed to one of them.
+    from app.models.catalog import SubscriptionStatus
+
+    active_by_login: dict[str, int] = {}
+    for item in subscriptions:
+        name = (item.login or "").strip()
+        if name and item.status == SubscriptionStatus.active:
+            active_by_login[name] = active_by_login.get(name, 0) + 1
+    duplicate_logins = {name for name, count in active_by_login.items() if count > 1}
 
     logins = sorted({(s.login or "").strip() for s in subscriptions if s.login})
     framed_by_login = _external_framed_ips(db, logins)
-    radius_error = framed_by_login.pop("__error__", "")
+    radius_error = ", ".join(sorted(framed_by_login.pop("__error__", set())))
     session_by_login = _fresh_session_ips(db)
 
     missing: dict[str, list[dict[str, Any]]] = {}
@@ -275,16 +304,27 @@ def build_worklist(db: Session) -> dict[str, Any]:
                     "owner_decision": preview.decision.value,
                     "owner_applicable": preview.applicable,
                     "preview_fingerprint": preview.fingerprint,
-                    "radius_framed_ip": framed_by_login.get(login, ""),
-                    "fresh_session_ip": session_by_login.get(login, ""),
+                    "radius_framed_ip": sorted(framed_by_login.get(login, set())),
+                    "fresh_session_ip": sorted(session_by_login.get(login, set())),
+                    "observations_disagree": (
+                        len(framed_by_login.get(login, set())) > 1
+                        or len(session_by_login.get(login, set())) > 1
+                    ),
+                    "duplicate_login_binding": login in duplicate_logins,
                 }
             )
             continue
 
         owned_addresses = sorted({address for _, address in owned})
+        # Preview the PRIMARY, not whichever address happens to sort first. A
+        # service may hold several; only one is served, and previewing an
+        # additional holding would describe a repair nobody asked for.
+        primary_ip = primary_by_subscription.get(sub_id, "")
         if column_ip and owned_addresses and column_ip not in owned_addresses:
             column_address_id = address_ids.get(column_ip)
-            assignment_address_id = address_ids.get(owned_addresses[0])
+            assignment_address_id = address_ids.get(
+                primary_ip or (owned_addresses[0] if len(owned_addresses) == 1 else "")
+            )
             column_preview = _preview(db, subscription.id, column_address_id)
             assignment_preview = _preview(db, subscription.id, assignment_address_id)
             mismatch.append(
@@ -296,8 +336,20 @@ def build_worklist(db: Session) -> dict[str, Any]:
                     # Four sources, side by side, no winner implied.
                     "served_column": column_ip,
                     "exact_assignment": ",".join(owned_addresses),
-                    "external_radius": framed_by_login.get(login, ""),
-                    "fresh_session": session_by_login.get(login, ""),
+                    "primary_assignment": primary_ip,
+                    "primary_marked": bool(primary_ip),
+                    # Sorted lists, not single values: a login carrying two
+                    # radreply rows or two live sessions is itself a finding.
+                    "external_radius": sorted(framed_by_login.get(login, set())),
+                    "fresh_session": sorted(session_by_login.get(login, set())),
+                    "observations_disagree": (
+                        len(framed_by_login.get(login, set())) > 1
+                        or len(session_by_login.get(login, set())) > 1
+                    ),
+                    "adjudicable": bool(primary_ip)
+                    and len(framed_by_login.get(login, set())) <= 1
+                    and len(session_by_login.get(login, set())) <= 1
+                    and login not in duplicate_logins,
                     "if_column_wins": {
                         "decision": column_preview.decision.value,
                         "applicable": column_preview.applicable,
@@ -342,15 +394,15 @@ def _print_human(result: dict[str, Any]) -> None:
             )
             print(f"    sub={row['subscription_id']}  addr_id={row['ipv4_address_id']}")
     print(f"\nMISMATCH column vs assignment: {result['mismatch_total']}")
-    print("  (four sources side by side — no winner inferred)")
-    print(
-        f"  {'login':11} {'column':16} {'assignment':16} {'radius':16} {'session':16}"
-    )
+    print("  (all sources side by side, every observation kept — no winner inferred)")
+    print(f"  {'login':11} {'column':16} {'primary':16} {'radius':16} {'session':16}")
     for row in result["mismatch"]:
         print(
             f"  {row['login']:11} {row['served_column']:16} "
-            f"{row['exact_assignment']:16} {row['external_radius'] or '-':16} "
-            f"{row['fresh_session'] or '-':16}"
+            f"{row['primary_assignment'] or '(unmarked)':16} "
+            f"{','.join(row['external_radius']) or '-':16} "
+            f"{','.join(row['fresh_session']) or '-':16}"
+            f"{'  ADJUDICABLE' if row['adjudicable'] else '  FAIL-CLOSED'}"
         )
         print(
             f"    sub={row['subscription_id']}  "
