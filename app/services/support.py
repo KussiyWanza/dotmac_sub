@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import wraps
@@ -87,6 +88,22 @@ class TicketCreationRoutingMode(str, Enum):
 
     evaluate_policy = "evaluate_policy"
     preserve_requested_team = "preserve_requested_team"
+
+
+class CustomerReplyStaffNotificationSource(str, Enum):
+    """Authoritative recipient source for a customer-reply staff email."""
+
+    assigned_staff = "assigned_staff"
+    helpdesk_fallback = "helpdesk_fallback"
+    not_applicable = "not_applicable"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerReplyStaffNotificationOutcome:
+    """Typed result of staging the customer-reply staff consequence."""
+
+    recipients: tuple[str, ...]
+    source: CustomerReplyStaffNotificationSource
 
 
 def _ticket_error(code: str, message: str, **details: object) -> SupportTicketError:
@@ -1366,6 +1383,122 @@ class Tickets:
         )
 
     @staticmethod
+    def _notify_staff_of_customer_comment(
+        db: Session, ticket: Ticket, comment: TicketComment
+    ) -> CustomerReplyStaffNotificationOutcome:
+        """Email current individual assignees when a customer adds a public reply.
+
+        Active staff identity is resolved from both SystemUser and canonical Person
+        identifiers because historical Ticket assignment fields contain both forms.
+        The customer-scoped support address is the deliberate fallback; service-team
+        membership is not fanned out, which avoids emailing every team member.
+        """
+        if not Tickets._notifications_enabled(db):
+            return CustomerReplyStaffNotificationOutcome(
+                recipients=(),
+                source=CustomerReplyStaffNotificationSource.not_applicable,
+            )
+        if comment.is_internal or (
+            comment.author_type != TicketCommentAuthorType.customer.value
+        ):
+            return CustomerReplyStaffNotificationOutcome(
+                recipients=(),
+                source=CustomerReplyStaffNotificationSource.not_applicable,
+            )
+
+        customer_ids = {
+            value
+            for value in (
+                ticket.subscriber_id,
+                ticket.customer_account_id,
+                ticket.customer_person_id,
+            )
+            if value is not None
+        }
+        if comment.author_person_id not in customer_ids:
+            return CustomerReplyStaffNotificationOutcome(
+                recipients=(),
+                source=CustomerReplyStaffNotificationSource.not_applicable,
+            )
+
+        assignment_ids = {
+            value
+            for value in (
+                ticket.technician_person_id,
+                ticket.ticket_manager_person_id,
+                ticket.site_coordinator_person_id,
+                ticket.assigned_to_person_id,
+            )
+            if value is not None
+        }
+        assignment_ids.update(
+            row.person_id
+            for row in db.query(TicketAssignee.person_id)
+            .filter(TicketAssignee.ticket_id == ticket.id)
+            .all()
+        )
+
+        recipients: tuple[str, ...] = ()
+        if assignment_ids:
+            from app.models.system_user import SystemUser
+
+            staff = (
+                db.query(SystemUser)
+                .filter(SystemUser.is_active.is_(True))
+                .filter(
+                    or_(
+                        SystemUser.id.in_(assignment_ids),
+                        SystemUser.person_party_id.in_(assignment_ids),
+                    )
+                )
+                .all()
+            )
+            recipients = tuple(
+                sorted(
+                    {
+                        user.email.strip().lower()
+                        for user in staff
+                        if user.email and user.email.strip()
+                    }
+                )
+            )
+
+        source = CustomerReplyStaffNotificationSource.assigned_staff
+        if not recipients:
+            from app.services.brand_profiles import resolve_brand
+
+            support_email = (
+                resolve_brand(
+                    db,
+                    subscriber_id=ticket.subscriber_id or ticket.customer_account_id,
+                )
+                .support_email.strip()
+                .lower()
+            )
+            recipients = (support_email,) if support_email else ()
+            source = CustomerReplyStaffNotificationSource.helpdesk_fallback
+
+        ticket_ref = ticket.number or str(ticket.id)[:8]
+        preview = " ".join((comment.body or "").split())[:400]
+        subject = f"New customer reply on ticket {ticket_ref}"
+        body = "\n".join(
+            (
+                f"A customer added a reply to ticket {ticket_ref} ({ticket.title}).",
+                "",
+                preview,
+                "",
+                f"Open: /admin/support/tickets/{ticket.id}",
+            )
+        )
+        for recipient in recipients:
+            queue_staff_email(db, recipient=recipient, subject=subject, body=body)
+
+        return CustomerReplyStaffNotificationOutcome(
+            recipients=recipients,
+            source=source,
+        )
+
+    @staticmethod
     def _notify_customer_of_status_change(
         db: Session, ticket: Ticket, previous_status: str
     ) -> None:
@@ -2617,6 +2750,7 @@ class Tickets:
         )
         Tickets._queue_mention_notifications(db, ticket, payload.body, actor_id)
         Tickets._notify_customer_of_comment(db, ticket, comment)
+        Tickets._notify_staff_of_customer_comment(db, ticket, comment)
         if mentioned_agent_ids:
             from app.services import ticket_mentions
 
@@ -2649,6 +2783,7 @@ class Tickets:
                 db, ticket=ticket, payload=payload, actor_id=actor_id, request=request
             )
             Tickets._queue_mention_notifications(db, ticket, payload.body, actor_id)
+            Tickets._notify_staff_of_customer_comment(db, ticket, comment)
             comments.append(comment)
         db.flush()
         for comment in comments:

@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.subscriber import Subscriber
-from app.models.support import TicketChannel
+from app.models.support import TicketChannel, TicketCommentAuthorType
 from app.schemas.billing import (
     AccountBalanceResponse,
     AutopayEnableRequest,
@@ -1613,6 +1613,8 @@ def my_add_ticket_comment(
         TicketCommentCreate(
             body=payload.body,
             is_internal=False,
+            author_type=TicketCommentAuthorType.customer,
+            author_person_id=UUID(subscriber_id),
             attachments=[AttachmentMeta(**item) for item in uploaded],
         ),
         actor_id=subscriber_id,

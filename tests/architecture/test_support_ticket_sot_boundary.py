@@ -103,6 +103,21 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
     )
 
 
+def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:
+    lifecycle = _source("app/services/support.py")
+    assert "class CustomerReplyStaffNotificationOutcome" in lifecycle
+    assert "def _notify_staff_of_customer_comment" in lifecycle
+    assert "CustomerReplyStaffNotificationSource.helpdesk_fallback" in lifecycle
+    assert "Tickets._notify_staff_of_customer_comment(db, ticket, comment)" in lifecycle
+    for adapter in (
+        "app/api/me.py",
+        "app/api/support.py",
+        "app/services/crm_portal.py",
+        "app/services/web_support_tickets.py",
+    ):
+        assert "queue_staff_email" not in _source(adapter)
+
+
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:
     source = _source("app/services/ticket_work_order_handoff.py")
     assert "execute_owner_command(" in source

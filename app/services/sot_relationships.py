@@ -19690,6 +19690,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "ticket CSAT and satisfaction",
                     "ticket audit official timeline and transactional events",
                 ),
+                depends_on=(
+                    "support.ticket_configuration",
+                    "support.ticket_assignment_evaluation",
+                    "support.ticket_automation_evaluation",
+                    "customer.identity_scope",
+                    "auth.staff_provisioning",
+                    "customer.branding",
+                    "communications.notification_service",
+                ),
                 contract=ServiceContract(
                     concerns=tuple(
                         ConcernContract(
@@ -19711,6 +19720,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "customer identity evidence",
                                 "assignment policy proposal",
                                 "automation policy proposal",
+                                *(
+                                    (
+                                        "active assigned staff contact identity",
+                                        "customer-scoped helpdesk contact",
+                                        "staff notification delivery queue",
+                                    )
+                                    if name
+                                    == "ticket lifecycle timestamps and consequences"
+                                    else ()
+                                ),
                             ),
                             canonical_writer="support.ticket_lifecycle",
                         )
@@ -19793,6 +19812,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "typed action proposal derived from a matching active rule; "
                                 "never a Ticket mutation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active assigned staff contact identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser identity and email resolved from current "
+                                "Ticket SystemUser or canonical Person assignment identifiers"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer-scoped helpdesk contact",
+                            owner="customer.branding",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "ResolvedBrand.support_email under organization, reseller, "
+                                "platform, and legacy brand precedence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="staff notification delivery queue",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "durable queued Notification rows and post-commit delivery state"
                             ),
                         ),
                     ),

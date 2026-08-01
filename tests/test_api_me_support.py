@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import me as me_api
-from app.models.support import TicketChannel
+from app.models.support import TicketChannel, TicketCommentAuthorType
 
 
 def _subscriber_principal():
@@ -160,3 +160,5 @@ def test_my_add_ticket_comment_forces_public(monkeypatch):
     )
     # A customer can never post a staff-internal note.
     assert captured["payload"].is_internal is False
+    assert captured["payload"].author_type == TicketCommentAuthorType.customer
+    assert str(captured["payload"].author_person_id) == principal["subscriber_id"]

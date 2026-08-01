@@ -78,6 +78,17 @@ transaction. Audit and event evidence include the creation routing mode and
 final team identifier, including a null identifier for intentional
 unassignment.
 
+Customer-authored public replies have one staff-email consequence owned by the
+lifecycle command. After the comment is staged, the owner resolves active
+individual assignees from current Ticket assignment fields and queues one email
+per distinct staff address in the same transaction. It does not fan out to all
+members of the assigned Service Team. When no active individual assignee has an
+email address, the customer-scoped branding `support_email` is the single
+helpdesk fallback. Internal, staff, system, or customer-identity-mismatched
+comments do not trigger this consequence. The durable notification queue owns
+post-commit SMTP delivery and retry; transport failure never removes the saved
+reply.
+
 ## Related owners
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.
