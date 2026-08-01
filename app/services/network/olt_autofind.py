@@ -17,6 +17,10 @@ from app.models.network import (
 )
 from app.models.ont_autofind import OltAutofindCandidate
 from app.services import tr069 as tr069_service
+from app.services.network._common import (
+    is_identifying_mac_address,
+    normalize_mac_address,
+)
 from app.services.network.ont_assignment_alignment import (
     project_ont_topology_from_fsp_observation,
 )
@@ -97,8 +101,13 @@ def persist_authorized_ont_inventory(
             ont.model = candidate.model
         if candidate.software_version:
             ont.software_version = candidate.software_version
-        if candidate.mac:
-            ont.mac_address = candidate.mac
+        # An OLT will happily report a locally administered placeholder for an
+        # ONT that has not presented a real address -- 227 units shared one such
+        # value -- and because device lookups match on MAC with a limit of one,
+        # storing it makes an arbitrary unit answer to it. Leave the column NULL
+        # instead: absent identity is recoverable, wrong identity is not.
+        if candidate.mac and is_identifying_mac_address(candidate.mac):
+            ont.mac_address = normalize_mac_address(candidate.mac)
 
     project_ont_topology_from_fsp_observation(
         db,
