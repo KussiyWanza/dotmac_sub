@@ -846,9 +846,7 @@ def test_domain_sot_relationships_resolve_owning_service_by_concern():
     assert ticket_lifecycle.name == "support.ticket_lifecycle"
     assert ticket_lifecycle.module == "app.services.support"
 
-    ticket_vocabulary = sot_relationships.owning_service_for(
-        "ticket status vocabulary"
-    )
+    ticket_vocabulary = sot_relationships.owning_service_for("ticket status vocabulary")
     assert ticket_vocabulary is not None
     assert ticket_vocabulary.name == "support.ticket_vocabulary"
     assert sot_relationships.dependencies_for("support.ticket_configuration") == (
