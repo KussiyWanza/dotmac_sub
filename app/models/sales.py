@@ -475,8 +475,8 @@ class Quote(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    subscriber_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("subscribers.id"), nullable=False
+    subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subscribers.id"), nullable=True
     )
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id")
@@ -520,6 +520,15 @@ class Quote(Base):
         uselist=False,
         foreign_keys="Project.quote_id",
     )
+
+    @property
+    def person_id(self) -> uuid.UUID | None:
+        """Return the authoritative recipient through ``Quote -> Lead -> Party``.
+
+        Party identity is intentionally not duplicated on the Quote row.
+        """
+
+        return self.lead.party_id if self.lead is not None else None
 
     @hybrid_property
     def sales_order_id(self):

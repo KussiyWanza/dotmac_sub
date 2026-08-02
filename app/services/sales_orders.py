@@ -58,6 +58,7 @@ from app.models.project import Project, ProjectTask
 from app.models.sales import (
     Quote,
     QuoteLineItem,
+    QuoteStatus,
     SalesOrder,
     SalesOrderLine,
     SalesOrderPaymentStatus,
@@ -1303,6 +1304,13 @@ class SalesOrders(ListResponseMixin):
             )
             if not quote:
                 raise HTTPException(status_code=404, detail="Quote not found")
+            if quote.status != QuoteStatus.accepted.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "A Quote-linked Sales Order is created only by Quote acceptance"
+                    ),
+                )
             _validate_quote_subscriber_context(db, quote=quote, subscriber=subscriber)
             existing = (
                 db.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).first()
@@ -1340,30 +1348,28 @@ class SalesOrders(ListResponseMixin):
         return sales_order
 
     @staticmethod
-    def create_from_quote(
-        db: Session, quote_id: str, *, commit: bool = True
+    def _stage_from_quote_acceptance(
+        db: Session, *, quote: Quote, subscriber_id: UUID
     ) -> SalesOrder:
-        quote = db.get(
-            Quote,
-            coerce_uuid(quote_id),
-            options=[selectinload(Quote.line_items), selectinload(Quote.lead)],
-        )
-        if not quote:
-            raise HTTPException(status_code=404, detail="Quote not found")
+        """Stage the unique SalesOrder and copied lines without committing."""
+
         existing = db.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).first()
         if existing:
+            if existing.subscriber_id != subscriber_id:
+                raise SalesOrderLifecycleError(
+                    "quote_order_subscriber_mismatch",
+                    "Existing SalesOrder does not match the accepted Quote account",
+                )
             return existing
 
-        subscriber = _ensure_subscriber(db, quote.subscriber_id)
+        subscriber = _ensure_subscriber(db, subscriber_id)
         _validate_quote_subscriber_context(db, quote=quote, subscriber=subscriber)
-
-        order_number = _generate_order_number(db)
         sales_order = SalesOrder(
             quote_id=quote.id,
-            subscriber_id=quote.subscriber_id,
+            subscriber_id=subscriber_id,
             owner_agent_id=quote.lead.owner_agent_id if quote.lead else None,
             source=quote.lead.lead_source if quote.lead else None,
-            order_number=order_number,
+            order_number=_generate_order_number(db),
             status=SalesOrderStatus.confirmed.value,
             payment_status=SalesOrderPaymentStatus.pending.value,
             currency=quote.currency,
@@ -1375,26 +1381,52 @@ class SalesOrders(ListResponseMixin):
         )
         db.add(sales_order)
         db.flush()
-
         for item in quote.line_items:
             amount = item.amount
             if amount is None:
                 amount = Decimal(item.quantity or 0) * Decimal(item.unit_price or 0)
-            line = SalesOrderLine(
-                sales_order_id=sales_order.id,
-                inventory_item_id=item.inventory_item_id,
-                description=item.description,
-                quantity=item.quantity,
-                unit_price=item.unit_price,
-                amount=amount,
-                metadata_=dict(item.metadata_) if item.metadata_ else None,
+            db.add(
+                SalesOrderLine(
+                    sales_order_id=sales_order.id,
+                    inventory_item_id=item.inventory_item_id,
+                    description=item.description,
+                    quantity=item.quantity,
+                    unit_price=item.unit_price,
+                    amount=amount,
+                    metadata_=dict(item.metadata_) if item.metadata_ else None,
+                )
             )
-            db.add(line)
-
-        if commit:
-            db.commit()
-            db.refresh(sales_order)
+        db.flush()
         return sales_order
+
+    @staticmethod
+    def create_from_quote(
+        db: Session, quote_id: str, *, commit: bool = True
+    ) -> SalesOrder:
+        quote = db.get(
+            Quote,
+            coerce_uuid(quote_id),
+            options=[selectinload(Quote.line_items), selectinload(Quote.lead)],
+        )
+        if not quote:
+            raise HTTPException(status_code=404, detail="Quote not found")
+        if quote.status != QuoteStatus.accepted.value:
+            raise SalesOrderLifecycleError(
+                "quote_acceptance_required",
+                "A Sales Order is created only by accepting its Quote",
+            )
+        if quote.subscriber_id is None:
+            raise SalesOrderLifecycleError(
+                "quote_subscriber_required",
+                "Only an accepted Quote with a converted account can create an order",
+            )
+        existing = db.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).first()
+        if existing is None:
+            raise SalesOrderLifecycleError(
+                "quote_acceptance_repair_required",
+                "Replay Quote acceptance to repair its missing Sales Order",
+            )
+        return existing
 
     @staticmethod
     def get(db: Session, sales_order_id: str):

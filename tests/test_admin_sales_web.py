@@ -689,10 +689,14 @@ def test_quotes_list_context(db_session):
 
 def test_quote_detail_context_line_items_deposit_and_accept_state(db_session):
     subscriber = _make_subscriber(db_session)
+    lead = sales_service.leads.create(
+        db_session, LeadCreate(subscriber_id=subscriber.id)
+    )
     quote = sales_service.quotes.create(
         db_session,
         QuoteCreate(
             subscriber_id=subscriber.id,
+            lead_id=lead.id,
             metadata_={
                 "source": "portal_self_serve",
                 "deposit_percent": 50,

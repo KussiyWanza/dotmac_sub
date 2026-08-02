@@ -1,9 +1,9 @@
 # Party Customer Lifecycle and Attribution
 
-**Status:** Approved; end-to-end native lifecycle implemented through revision 389
+**Status:** Approved; end-to-end native lifecycle implemented through revision 457
 **Decision owner:** Michael
 **System of record:** Sub
-**Schema revision:** 389
+**Schema revision:** 457
 
 ## Decision
 
@@ -20,13 +20,14 @@ interaction observation
 reviewed Party identity --> Lead + immutable origin
                               |
                               v
-                  exact Subscriber account conversion
+                    manually authored Quote(s)
                               |
                               v
-                            Quote
+                     accepted Quote boundary
                               |
                               v
-                         Sales Order
+             exact Subscriber account conversion
+                     + Lead Won + Sales Order
                          /         \
                         v           v
           Project / implementation  pending Subscription
@@ -58,7 +59,9 @@ person or organization is; each named domain owner keeps its own lifecycle.
 | Lead identity and origin | `sales.lead_lifecycle` | Party-first Lead, immutable origin, reviewed account attachment |
 | Referral program | `referrals.program` | Capture policy, canonical program and account-attachment records, qualification/reward policy, and atomic transitions |
 | Referral account orchestration | `referrals.account_conversion` | Exact Referral/Party/Lead context into atomic account creation or reviewed attachment |
-| Pipeline and Quote | `sales.service` | Opportunity progress and account-specific commercial offer |
+| Pipeline and Quote | `sales.service` | Opportunity progress and Lead-backed commercial offer |
+| Quote authoring | `sales.quote_authoring` | Atomic Lead-backed Quote, lines, initial status consequences, audit, and outbox staging |
+| Accepted-Quote conversion | `sales.quote_acceptance` | Sole sales conversion event; atomic account, order, Project, Tasks, WorkOrders, audit, and outbox staging |
 | Sales Order | `sales.orders` | Accepted/manual order and fulfilment handoff |
 | Sales implementation coordination | `sales.fulfillment` | Structural Project/InstallationProject creation and verified release coordination |
 | Service Order lifecycle | `operations.service_order_lifecycle` | Implementation gate, provisioning outcome, and activation consequence |
@@ -82,7 +85,9 @@ Revision 355 makes `Lead.party_id` the reviewed identity link and makes
 2. records binding time, source, and reason;
 3. does not create a Subscriber, role, contact point, or permission;
 4. deduplicates open Leads by Party and pipeline; and
-5. may attach a Subscriber later only when its reviewed Party matches.
+5. may attach a Subscriber later only through an approved conversion owner
+   when its reviewed Party matches. In the sales workflow that owner is
+   `sales.quote_acceptance`.
 
 An exact account-attachment retry is idempotent. A different account or Party
 is refused until a reviewed merge/repoint workflow exists. Legacy
@@ -179,10 +184,13 @@ and Ticket links.
 
 ## Downstream alignment
 
-Revision 355 adds command guards without duplicating Party onto every table:
+Revision 457 completes the Lead-first commercial boundary without duplicating
+Party onto every downstream table:
 
-- A Quote linked to a Lead must use a Subscriber whose Party matches the Lead.
-  A legacy unbound Lead must use its exact legacy Subscriber.
+- Every new Quote requires a Lead and may exist without a Subscriber until it
+  is accepted. A Lead may have multiple Quotes.
+- A Quote carrying legacy Subscriber context must match the Lead Party. A
+  legacy unbound Lead must use its exact legacy Subscriber.
 - A Sales Order linked to a Quote must use the Quote's exact Subscriber.
 - A Ticket may be Lead-only, which supports pre-sales questions. If it also
   links Subscriber/customer account/person rows, every linked Subscriber must
@@ -190,9 +198,12 @@ Revision 355 adds command guards without duplicating Party onto every table:
 - `Subscriber.sales_order_id`, Subscription, and downstream support links stay
   with their current owners and are measured for convergence by the audit.
 
-Quote still requires a Subscriber today. Creating or reusing the reviewed
-account is therefore an explicit conversion step before an account-specific
-Quote, not an accidental side effect of Lead capture.
+Draft/Sent Quote authoring creates no Subscriber or downstream fulfillment
+records. Creating or transitioning a Lead-backed Quote as Accepted is the only sales event
+that creates or attaches the reviewed account, marks the Lead Won, creates the
+SalesOrder and copied lines, and establishes the configured Project, Tasks, and
+WorkOrders. Those state changes plus audit and durable event records commit in
+one transaction and replay by Quote identity without duplicates.
 
 ## Subscription and billing block independence
 

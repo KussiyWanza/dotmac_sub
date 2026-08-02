@@ -149,6 +149,8 @@ class ProjectTemplateTaskBase(BaseModel):
     priority: ProjectTaskPriority | None = None
     sort_order: int = 0
     effort_hours: int | None = None
+    auto_create_work_order: bool = False
+    work_order_requires_as_built_evidence: bool = True
     is_active: bool = True
 
 
@@ -163,6 +165,8 @@ class ProjectTemplateTaskUpdate(BaseModel):
     priority: ProjectTaskPriority | None = None
     sort_order: int | None = None
     effort_hours: int | None = None
+    auto_create_work_order: bool | None = None
+    work_order_requires_as_built_evidence: bool | None = None
     is_active: bool | None = None
 
 

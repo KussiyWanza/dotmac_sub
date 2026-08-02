@@ -225,10 +225,10 @@ class LeadRead(LeadBase):
 
 
 class QuoteBase(BaseModel):
-    """Quote linked to a subscriber in the unified party model."""
+    """Lead-backed commercial offer; Subscriber is attached on acceptance."""
 
-    subscriber_id: UUID  # Required — links to Subscriber
-    lead_id: UUID | None = None
+    subscriber_id: UUID | None = None
+    lead_id: UUID
     # Staff person UUID carried verbatim — staff map for display.
     owner_person_id: UUID | None = None
     status: QuoteStatus = QuoteStatus.draft

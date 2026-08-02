@@ -1,11 +1,10 @@
 """A quote with no line items must not be able to commit the business.
 
 #1198 gave staff a quote form but no way to add line items, and its status
-dropdown offered every status including ``accepted``. ``Quotes.create`` runs
-``_handle_quote_accepted`` whenever the incoming status is ``accepted``, so an
-operator could create a quote worth exactly nothing and, in the same request,
-convert the party to a customer and spawn a sales order and an install project
-for a job with no money attached.
+dropdown offered every status including ``accepted``. Accepting a Quote now
+runs the atomic sales-conversion coordinator, so a Quote worth exactly nothing
+must still be rejected before it can create a customer, order, or
+implementation scope.
 
 The invariant belongs to the sales service, not the form: web, API and importer
 all mutate quotes through it.
@@ -15,15 +14,37 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.sales import Quote, QuoteStatus, SalesOrder
-from app.schemas.sales import QuoteCreate, QuoteLineItemCreate, QuoteUpdate
+from app.models.party import Party
+from app.models.sales import Lead, Quote, QuoteStatus, SalesOrder
+from app.schemas.sales import LeadCreate, QuoteCreate, QuoteLineItemCreate, QuoteUpdate
 from app.services import sales as sales_service
 
 
+def _lead(db_session, subscriber) -> Lead:
+    if subscriber.party_id is None:
+        party = Party(
+            display_name=f"{subscriber.first_name} {subscriber.last_name}",
+            party_type="person",
+            status="active",
+        )
+        db_session.add(party)
+        db_session.flush()
+        subscriber.party_id = party.id
+        db_session.commit()
+    return sales_service.leads.create(
+        db_session, LeadCreate(subscriber_id=subscriber.id)
+    )
+
+
 def _draft(db_session, subscriber) -> Quote:
+    lead = _lead(db_session, subscriber)
     return sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, status=QuoteStatus.draft),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            status=QuoteStatus.draft,
+        ),
     )
 
 
@@ -42,10 +63,15 @@ def _add_line(db_session, quote, *, unit_price="50000.00") -> None:
 def test_cannot_create_a_quote_that_is_already_accepted(db_session, subscriber):
     """The exact path #1198 opened: an accepted quote with no lines would have
     run the whole fulfilment pipeline for zero money."""
+    lead = _lead(db_session, subscriber)
     with pytest.raises(ValueError, match="starts as a draft"):
         sales_service.quotes.create(
             db_session,
-            QuoteCreate(subscriber_id=subscriber.id, status=QuoteStatus.accepted),
+            QuoteCreate(
+                subscriber_id=subscriber.id,
+                lead_id=lead.id,
+                status=QuoteStatus.accepted,
+            ),
         )
 
     # Nothing was persisted, and no sales order was spawned.
@@ -54,10 +80,15 @@ def test_cannot_create_a_quote_that_is_already_accepted(db_session, subscriber):
 
 
 def test_cannot_create_a_quote_that_is_already_sent(db_session, subscriber):
+    lead = _lead(db_session, subscriber)
     with pytest.raises(ValueError, match="starts as a draft"):
         sales_service.quotes.create(
             db_session,
-            QuoteCreate(subscriber_id=subscriber.id, status=QuoteStatus.sent),
+            QuoteCreate(
+                subscriber_id=subscriber.id,
+                lead_id=lead.id,
+                status=QuoteStatus.sent,
+            ),
         )
     assert db_session.query(Quote).count() == 0
 

@@ -588,10 +588,9 @@ class SelfServeQuotes:
 
         Idempotent on the quote's accepted state — a repeat call (e.g. a
         payment-verify retry) returns the same already-created sales order.
-        The accept fires the unchanged sales-service pipeline
-        (``Quotes.update(status=accepted)`` → ``create_from_quote`` +
-        ``_ensure_project_from_quote``, §2.2 step 4); the deposit is then
-        only *marked* on the sales order — never a second payment (risk #2).
+        The Accepted transition enters the atomic ``sales.quote_acceptance``
+        coordinator; the deposit is then only *marked* on the canonical sales
+        order — never a second payment (risk #2).
         """
         quote = SelfServeQuotes.get_for_subscriber(db, subscriber_id, quote_id)
 

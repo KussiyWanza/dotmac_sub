@@ -29,6 +29,7 @@ from app.models.catalog import (
     PriceType,
     ServiceType,
 )
+from app.models.party import Party
 from app.models.sales import Lead, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services.sales import selfserve
@@ -54,10 +55,18 @@ def _cfg(**overrides) -> dict:
 
 
 def _subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="Ada Obi",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
         first_name="Ada",
         last_name="Obi",
         email=f"ada-{uuid.uuid4().hex[:10]}@example.com",
+        party_id=party.id,
     )
     db.add(sub)
     db.commit()

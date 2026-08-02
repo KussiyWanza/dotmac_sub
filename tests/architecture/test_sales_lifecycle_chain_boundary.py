@@ -83,6 +83,48 @@ def test_fulfillment_consumers_are_receipted_owner_commands():
     )
 
 
+def test_quote_acceptance_is_the_only_atomic_sales_conversion_boundary():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    sales = _source("app/services/sales/service.py")
+    api = _source("app/api/crm_sales.py")
+    conversion = _source("app/services/sales/account_conversion.py")
+    orders = _source("app/services/sales_orders.py")
+
+    assert 'owner="sales.quote_acceptance"' in coordinator
+    assert "execute_owner_command(" in coordinator
+    assert "stage_lead_account_conversion(" in coordinator
+    assert "_stage_from_quote_acceptance(" in coordinator
+    assert "ensure_implementation_scope(" in coordinator
+    assert "stage_automated_project_task_work_order(" in coordinator
+    assert "def _stage_accept_quote(" in coordinator
+    assert "def stage_accept_quote(" not in coordinator
+    assert "db.commit(" not in coordinator
+    assert "db.rollback(" not in coordinator
+    assert "def convert_lead_account(" not in conversion
+    assert "execute_owner_command(" not in conversion
+    assert "A Quote-linked Sales Order is created only by Quote acceptance" in orders
+    assert "Replay Quote acceptance to repair its missing Sales Order" in orders
+
+    assert "_handle_quote_accepted" not in sales
+    assert "_upgrade_party_status_to_customer" not in sales
+    assert "A Lead becomes Won only through Quote acceptance" in sales
+    assert "Subscriber conversion is owned by Quote acceptance" in sales
+    assert "sales.quote_acceptance.required" in api
+
+
+def test_quote_authoring_delegates_initial_conversion_to_acceptance_owner():
+    authoring = _source("app/services/sales/quote_authoring.py")
+
+    assert 'owner="sales.quote_authoring"' in authoring
+    assert "execute_owner_command(" in authoring
+    assert "QuoteStatus.accepted" in authoring
+    assert "quote_acceptance.stage_accept_quote(" in authoring
+    assert "stage_lead_account_conversion" not in authoring
+    assert "_stage_from_quote_acceptance" not in authoring
+    assert "db.commit(" not in authoring
+    assert "db.rollback(" not in authoring
+
+
 def test_released_output_carries_sales_linkage():
     src = _source("app/services/service_order_lifecycle.py")
     released = src.split("EventType.service_order_released", 1)[1]

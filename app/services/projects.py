@@ -1446,6 +1446,14 @@ def prepare_sales_project(
         ProjectPriority,
         "default_project_priority",
     ).value
+    project_template = (
+        db.query(ProjectTemplate)
+        .filter(
+            ProjectTemplate.project_type == normalized_type,
+            ProjectTemplate.is_active.is_(True),
+        )
+        .one_or_none()
+    )
     number = generate_number(
         db=db,
         domain=SettingDomain.projects,
@@ -1463,6 +1471,7 @@ def prepare_sales_project(
         description="Implementation scope created from an accepted sales order",
         customer_address=(customer_address or "").strip() or None,
         project_type=normalized_type,
+        project_template_id=(project_template.id if project_template else None),
         status=project_status,
         priority=project_priority,
         subscriber_id=subscriber_id,
@@ -1477,7 +1486,14 @@ def prepare_sales_project(
     db.add(project)
     db.flush()
     _sync_project_sla_clock(db, project)
-    _seed_fiber_installation_tasks(db, project)
+    if project_template is not None:
+        ProjectTemplateTasks.replace_project_tasks(
+            db,
+            project_id=str(project.id),
+            template_id=str(project_template.id),
+        )
+    else:
+        _seed_fiber_installation_tasks(db, project)
     emit_event(
         db,
         EventType.project_created,

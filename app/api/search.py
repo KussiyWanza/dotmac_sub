@@ -65,6 +65,15 @@ def search_people(
     return typeahead_service.people_response(db, q, limit)
 
 
+@router.get("/parties", response_model=ListResponse[TypeaheadItem])
+def search_parties(
+    q: str = Query(min_length=2),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    return typeahead_service.parties_response(db, q, limit)
+
+
 @router.get("/customers", response_model=ListResponse[TypeaheadItem])
 def search_customers(
     q: str = Query(min_length=2),

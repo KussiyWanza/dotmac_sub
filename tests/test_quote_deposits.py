@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.billing import Invoice, InvoiceStatus, Payment
+from app.models.party import Party
 from app.models.quote_mirror import QuoteMirror
 from app.models.sales import SalesOrder
 from app.models.subscriber import Subscriber
@@ -23,8 +24,18 @@ from app.services.sales import selfserve
 
 
 def _subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="C R",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
-        first_name="C", last_name="R", email=f"c-{uuid.uuid4().hex[:8]}@example.com"
+        first_name="C",
+        last_name="R",
+        email=f"c-{uuid.uuid4().hex[:8]}@example.com",
+        party_id=party.id,
     )
     db.add(sub)
     db.commit()

@@ -1986,6 +1986,18 @@ def build_template_task_form_context(
             "description": _value("description"),
             "sort_order": _value("sort_order"),
             "effort_hours": _value("effort_hours"),
+            "auto_create_work_order": (
+                str(values.get("auto_create_work_order") or "").lower()
+                in {"1", "true", "on", "yes"}
+                if form is not None
+                else bool(task and task.auto_create_work_order)
+            ),
+            "work_order_requires_as_built_evidence": (
+                str(values.get("work_order_requires_as_built_evidence") or "").lower()
+                in {"1", "true", "on", "yes"}
+                if form is not None
+                else bool(task is None or task.work_order_requires_as_built_evidence)
+            ),
         },
     }
     if error:
@@ -2000,6 +2012,10 @@ def _template_task_payload_data(**form) -> dict:
     data: dict[str, object] = {
         "title": title,
         "description": str(form.get("description") or "").strip() or None,
+        "auto_create_work_order": bool(form.get("auto_create_work_order")),
+        "work_order_requires_as_built_evidence": bool(
+            form.get("work_order_requires_as_built_evidence")
+        ),
     }
     effort_raw = str(form.get("effort_hours") or "").strip()
     if effort_raw:

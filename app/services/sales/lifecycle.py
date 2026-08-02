@@ -22,6 +22,7 @@ from app.models.sales import (
     LeadOriginCapture,
     LeadSourcePlatform,
     LeadStatus,
+    QuoteStatus,
 )
 from app.models.subscriber import Subscriber
 
@@ -322,6 +323,42 @@ def validate_lead_subscriber_alignment(
         raise LeadLifecycleError(
             "Legacy unbound Lead and downstream record must use the same Subscriber"
         )
+
+
+def stage_quote_acceptance(db: Session, *, lead: Lead) -> None:
+    """Stage the sole sales transition that marks a Lead Won."""
+
+    if not lead.is_active:
+        raise LeadLifecycleError("Inactive Lead cannot receive a Quote outcome")
+    if lead.status in {LeadStatus.won.value, LeadStatus.lost.value}:
+        if lead.status != LeadStatus.won.value:
+            raise LeadLifecycleError(
+                "Quote acceptance conflicts with the Lead's existing closed status"
+            )
+        return
+    lead.status = LeadStatus.won.value
+    lead.closed_at = lead.closed_at or datetime.now(UTC)
+    db.flush()
+
+
+def stage_quote_outcome(
+    db: Session, *, lead: Lead, quote_status: QuoteStatus
+) -> None:
+    """Stage a non-fulfillment Quote outcome through the Lead lifecycle owner."""
+
+    if quote_status != QuoteStatus.rejected:
+        return
+    if not lead.is_active:
+        raise LeadLifecycleError("Inactive Lead cannot receive a Quote outcome")
+    if lead.status in {LeadStatus.won.value, LeadStatus.lost.value}:
+        if lead.status != LeadStatus.lost.value:
+            raise LeadLifecycleError(
+                "Quote rejection conflicts with the Lead's existing closed status"
+            )
+        return
+    lead.status = LeadStatus.lost.value
+    lead.closed_at = lead.closed_at or datetime.now(UTC)
+    db.flush()
 
 
 def _capture_values(payload: dict[str, Any], *, lead_source: str) -> dict[str, Any]:

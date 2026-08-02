@@ -80,7 +80,7 @@ def test_capture_origin_is_append_only_in_the_orm(db_session):
     db_session.rollback()
 
 
-def test_exact_account_conversion_creates_customer_and_pending_subscriber_roles(
+def test_quote_acceptance_participant_creates_customer_and_pending_subscriber_roles(
     db_session,
 ):
     captured = capture.capture_lead(
@@ -92,14 +92,14 @@ def test_exact_account_conversion_creates_customer_and_pending_subscriber_roles(
         email=f"captured-{uuid4().hex}@example.com",
     )
 
-    result = account_conversion.convert_lead_account(
+    result = account_conversion.stage_lead_account_conversion(
         db_session,
         lead_id=captured.lead.id,
         party_id=captured.lead.party_id,
         new_account=account,
         actor_id="pytest",
     )
-    replay = account_conversion.convert_lead_account(
+    replay = account_conversion.stage_lead_account_conversion(
         db_session,
         lead_id=captured.lead.id,
         party_id=captured.lead.party_id,
@@ -129,7 +129,7 @@ def test_account_conversion_refuses_a_different_party(db_session):
     )
 
     with pytest.raises(account_conversion.LeadAccountConversionError) as exc:
-        account_conversion.convert_lead_account(
+        account_conversion.stage_lead_account_conversion(
             db_session,
             lead_id=captured.lead.id,
             party_id=uuid4(),

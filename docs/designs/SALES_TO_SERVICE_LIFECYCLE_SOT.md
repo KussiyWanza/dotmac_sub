@@ -1,6 +1,6 @@
 # Sales-to-Service Lifecycle Source of Truth
 
-**Status:** Approved and implemented by migration 389
+**Status:** Approved and implemented through migration 457
 **System of record:** Sub
 **Decision owner:** Michael
 
@@ -10,11 +10,12 @@
 signed interaction / staff capture
   -> IntegrationInbox receipt (when external)
   -> Party + immutable Lead origin
-  -> exact Lead/Party account conversion
-  -> Quote
-  -> SalesOrder
-  -> Project + InstallationProject
-  -> WorkOrder(s), optionally scoped to ProjectTask
+  -> manually authored Lead-backed Quote(s)
+  -> accepted Quote
+  -> exact Lead/Party account conversion + Lead Won
+  -> SalesOrder + copied Quote lines
+  -> Project + InstallationProject + configured ProjectTemplate Tasks
+  -> configured WorkOrder(s), each scoped to its ProjectTask
   -> staff-verified implementation evidence
   -> ServiceOrder release
   -> successful provisioning result
@@ -90,7 +91,9 @@ verified deposit-invoice payment.
 | Verified provider receipt | `integration.inbox` |
 | Party-first capture and source replay | `sales.capture` |
 | Immutable origin | `sales.lead_lifecycle` |
-| Exact Lead/Party to account conversion | `sales.account_conversion` |
+| Atomic Lead-backed New Quote authoring | `sales.quote_authoring` |
+| Atomic Quote acceptance and sales conversion | `sales.quote_acceptance` |
+| Flush-only exact Lead/Party account conversion participant | `sales.account_conversion` |
 | Pipeline and Quote | `sales.service` |
 | Sales Order and financial status | `sales.orders` |
 | Structural shadow contract terms | `billing.contracts` |
@@ -116,8 +119,8 @@ depend on HTTP request/response or exception types.
 - Screen identifiers: `sales-leads-list`, `sales-lead-create`,
   `sales-lead-edit`, and `sales-lead-detail`.
 - Audience and job: authorized sales staff triage opportunities, maintain the
-  commercial context of an existing Party/Subscriber identity, and start a
-  lead-backed Quote.
+  commercial context of an existing Party identity, and manually start one or
+  more Lead-backed Quotes without creating a customer account.
 - Authoritative owners: `sales.lead_lifecycle` owns Lead identity/origin and
   Party alignment; `sales.service` owns Lead, Pipeline, Stage, summary, and
   Quote projections and commands; Party/Subscriber services own contact
@@ -143,6 +146,50 @@ depend on HTTP request/response or exception types.
   history, import/export, bulk Lead commands, aging analytics, or parallel
   Lead persistence is introduced by these screens.
 
+## Selfcare New Quote page contract
+
+- Screen identifier and route: `sales-quote-create` at
+  `/admin/sales/quotes/new`, posting to `/admin/sales/quotes` with
+  POST-Redirect-GET and HTTP 303 on success.
+- Audience and job: staff with `crm:quote:write` create a pricing proposal for
+  one eligible Lead while retaining the existing optional Install Location.
+- Decision owners: `sales.quote_authoring` owns typed validation, Lead/Party
+  recipient resolution, line-reference validation, Decimal calculations,
+  metadata enrichment, initial status orchestration, idempotency, audit, and
+  transactional event staging. `sales.quote_acceptance` exclusively owns every
+  Accepted transition and conversion, including initial Accepted authoring. Tax
+  configuration, Lead lifecycle, account,
+  order, Project, Task, WorkOrder, and fulfillment owners retain their named
+  decisions.
+- Identity contract: Lead is the only recipient or opportunity selector. The
+  server locks the submitted active/open Lead, validates its Party binding, and
+  derives the Quote recipient through `Quote -> Lead -> Party`. Browser values
+  for Person, customer, Subscriber, account, or owner never establish identity;
+  the authenticated SystemUser supplies Quote ownership server-side.
+- First viewport: Quotes breadcrumb, New Quote title and purpose, required Lead,
+  Draft-default status, NGN-default currency, optional Project Type, and the
+  start of the responsive Line Items editor.
+- Authoring contract: one empty row remains visible; completely empty rows are
+  ignored; custom descriptions are allowed; active Selfcare offers and native
+  field-inventory items are suggested in batches; submitted identifiers are
+  batch-resolved and must match their descriptions. Amount, Subtotal, configured
+  Tax Total, and Total are server-derived with Decimal money rounding. Manual
+  Tax Total is accepted only without a configured Tax Rate.
+- Lifecycle contract: Draft has no downstream consequences; Sent sets
+  `sent_at`; Accepted invokes the atomic acceptance coordinator in the same
+  authoring transaction; Rejected stages Lead Lost through the Lead lifecycle
+  owner; Expired changes only the Quote. Exact submission replay returns the
+  same Quote, while conflicting reuse fails closed.
+- States and recovery: ordinary validation failures render an accessible error
+  banner and preserve all scalar, location, line, and suggestion-identifier
+  values. Native browser constraints cover required Lead, currency, and numeric
+  bounds. The submit control exposes a Submitting state and rejects an in-flight
+  duplicate submission.
+- Responsive projection: the form card is centered at `max-w-3xl`; multi-column
+  rows stack on narrow screens; each Line Item becomes a touch-friendly card;
+  keyboard focus, accessible labels, and light/dark variants use shared admin
+  design tokens.
+
 ## Configuration versus code contracts
 
 Operational values are not embedded in orchestration code. The default sales
@@ -161,13 +208,26 @@ configuration. Changing one requires a migration/versioned contract and tests.
 1. Capture never creates a Subscriber implicitly and never deduplicates a
    person by email, phone, name, or social handle. Exact provider-event replay
    is idempotent; different content under the same event identity is rejected.
-2. Account conversion locks the Lead and requires its exact Party. It creates
-   or attaches one Subscriber through the account and Party owners, activates
-   the customer role, and leaves the subscriber role pending.
-3. Every non-cancelled SalesOrder receives at most one structurally linked
+2. A Quote is authored manually from an exact Lead. The Lead may have multiple
+   Quotes, and Draft/Sent Quote authoring creates no Subscriber, SalesOrder,
+   Project, ProjectTask, InstallationProject, or WorkOrder. Initial Accepted
+   authoring enters the same atomic acceptance coordinator before the authoring
+   transaction may commit.
+3. `sales.quote_acceptance` is the only sales conversion event. It locks the
+   Quote and Lead and, in one owner transaction, marks the Lead Won, creates or
+   attaches the exact Subscriber, copies the Quote and lines into one
+   SalesOrder, creates one Project and InstallationProject, instantiates the
+   active ProjectTemplate tasks, creates configured WorkOrders, and stages the
+   audit and outbox events. Any participant or event-staging failure rolls the
+   complete change back. Durable event delivery occurs only after commit.
+4. Acceptance replay is idempotent by Quote identity. Structural unique keys
+   and deterministic ProjectTask WorkOrder keys return the canonical account,
+   SalesOrder, Project, Tasks, and WorkOrders without duplicates. A conflicting
+   Lead, Party, account, or lifecycle state fails closed.
+5. Every non-cancelled SalesOrder receives at most one structurally linked
    Project and InstallationProject. ProjectTask may own several WorkOrders;
    WorkOrder owns the foreign key.
-4. A partially paid SalesOrder records the receipt but creates no Subscription
+6. A partially paid SalesOrder records the receipt but creates no Subscription
    or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
    atomically with the paid transition; the lifecycle projection handler
    creates one pending Subscription and one idempotent ServiceOrder per
@@ -175,7 +235,7 @@ configuration. Changing one requires a migration/versioned contract and tests.
    same receipted transaction stages the Phase 1 structural shadow input. An
    unresolved consequence (for example an offer that no longer resolves)
    fails the delivery visibly instead of being skipped.
-5. Sales ServiceOrders remain `draft` until the vendor-project owner records an
+7. Sales ServiceOrders remain `draft` until the vendor-project owner records an
    append-only staff verification event. After that fact commits, the registered
    lifecycle projection handler asks `sales.fulfillment` to complete the native
    Project and release linked ServiceOrders. Replay is idempotent and failure is
@@ -183,23 +243,26 @@ configuration. Changing one requires a migration/versioned contract and tests.
    The committed `service_order.released` output then moves the sales-linked
    ServiceOrder into `provisioning` through its lifecycle owner; repair and
    reprovisioning orders keep manual progression.
-6. Billing cannot directly activate a sales-created pending Subscription.
+8. Billing cannot directly activate a sales-created pending Subscription.
    Only a successful provisioning result may transition the linked ServiceOrder
    to `active`; that transition asks the subscription owner to activate access.
-7. Successful activation emits the committed service-order completion fact.
+9. Successful activation emits the committed service-order completion fact.
    The lifecycle projection handler asks the CX owner to create a handoff only
    when funding, implementation, provisioning, and Subscription evidence all
    agree. CX staff acceptance is separately actor/time/reason evidenced; its
    committed `customer_experience.accepted` output asks `sales.orders` to
    fulfil the SalesOrder. The CX owner does not write sales state inline.
-8. Support Tickets and ticket-origin WorkOrders stay attached to the same
+10. Support Tickets and ticket-origin WorkOrders stay attached to the same
    Subscriber/Party history but do not rewrite sales attribution.
 
 ## Failure and repair
 
-Money, implementation verification, provisioning outcomes, and CX acceptance
-are never inferred. A downstream failure retains already-authoritative facts
-and is retried by projection/reconciliation.
+Quote acceptance is a synchronous structural boundary: no acceptance fact is
+authoritative unless its account, order, implementation scope, configured
+tasks/WorkOrders, audit, and outbox records all committed together. Money,
+implementation verification, provisioning outcomes, and CX acceptance after
+that boundary are never inferred. A later downstream delivery failure retains
+already-authoritative facts and is retried by projection/reconciliation.
 
 Run the PII-free audit:
 

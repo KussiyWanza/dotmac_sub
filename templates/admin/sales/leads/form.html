@@ -42,15 +42,15 @@
                 </div>
                 <div class="relative">
                     <label class="{{ label_class }}" for="contact-search">Person/Contact <span class="text-red-500">*</span></label>
-                    <input type="hidden" id="subscriber_id" name="subscriber_id" value="{{ lead_form.subscriber_id }}">
+                    <input type="hidden" id="party_id" name="party_id" value="{{ lead_form.party_id }}">
                     <input type="hidden" id="contact_label" name="contact_label" value="{{ lead_form.contact_label }}">
-                    <input class="{{ input_class }}{% if field_errors.get('subscriber_id') %} border-red-500{% endif %}"
+                    <input class="{{ input_class }}{% if field_errors.get('party_id') %} border-red-500{% endif %}"
                            id="contact-search" value="{{ lead_form.contact_label }}" required autocomplete="off"
                            placeholder="Search name, email, or phone"
                            aria-autocomplete="list" aria-controls="contact-results"
-                           aria-describedby="contact-help{% if field_errors.get('subscriber_id') %} subscriber_id-error{% endif %}">
-                    <p id="contact-help" class="mt-1 text-xs text-slate-500 dark:text-slate-400">Select an existing identity record. Typing does not create a new customer.</p>
-                    {{ field_error('subscriber_id') }}
+                           aria-describedby="contact-help{% if field_errors.get('party_id') %} party_id-error{% endif %}">
+                    <p id="contact-help" class="mt-1 text-xs text-slate-500 dark:text-slate-400">Select an existing Party identity. No Subscriber account is created until a Quote is accepted.</p>
+                    {{ field_error('party_id') }}
                     <div id="contact-results" class="absolute z-20 mt-1 hidden max-h-64 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800" role="listbox"></div>
                 </div>
                 <div>
@@ -191,7 +191,7 @@
     const probability = document.getElementById("probability");
     const probabilityValue = document.getElementById("probability-value");
     const contactSearch = document.getElementById("contact-search");
-    const contactId = document.getElementById("subscriber_id");
+    const contactId = document.getElementById("party_id");
     const contactLabel = document.getElementById("contact_label");
     const results = document.getElementById("contact-results");
     let timer = null;
@@ -276,7 +276,7 @@
         timer = window.setTimeout(async () => {
             controller = new AbortController();
             try {
-                const response = await fetch(`/api/v1/search/people?q=${encodeURIComponent(query)}&limit=20`, {
+                const response = await fetch(`/api/v1/search/parties?q=${encodeURIComponent(query)}&limit=20`, {
                     headers: {"Accept": "application/json"},
                     signal: controller.signal
                 });
