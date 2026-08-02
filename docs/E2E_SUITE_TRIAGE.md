@@ -113,9 +113,43 @@ issue.
 
 ## Process finding
 
-Rot accumulated because the workflow is invisible: schedule-only, not
-required, and failing nightly with nobody paged. Options (decision for the
-tracking issue): make the e2e job a required-but-allowed-to-be-flaky signal
-on PRs touching templates/page objects, or alert on nightly failure, or
-both. Until then any branch's e2e run must be judged by diffing its FAILED
-set against a same-environment pure-dev baseline, never by raw counts.
+Rot accumulated because the workflow was invisible: schedule-only, not
+required, and failing nightly with nobody paged. Decision (2026-08-02):
+both an alert and a PR gate, plus a failure ratchet so the nightly is
+green-by-default instead of permanently red with accepted failures.
+
+## The ratchet, gate, and alert (this branch)
+
+- **Quarantine ratchet** — `tests/playwright/quarantine.json` lists every
+  known-failing spec with reason, issue, category, owner, and a
+  `review_by` date. The Playwright `conftest.py` applies **strict xfail**
+  to listed specs: a known failure reports as xfailed (run stays green),
+  while a pass reports as XPASS(strict) = failure, so a repaired spec must
+  be removed from the file. Unlisted failures fail the run — the count
+  only ratchets down. Entries past `review_by` lose protection and go red
+  again until re-reviewed. Setup errors (which xfail cannot cover) may use
+  `"action": "skip"`; intermittently-failing specs may use
+  `"action": "flaky"` (non-strict xfail) so neither outcome breaks the
+  run until they are repaired — expiry still forces review.
+- **E2E Gate** (`.github/workflows/e2e-gate.yml`) — an always-reported PR
+  check. It passes immediately when the PR touches nothing e2e-relevant,
+  and runs the full Playwright suite from the PR's own source when the
+  diff touches `templates/`, `static/`, `tests/playwright/`, `app/web/`,
+  `app/services/web_*`, `scripts/seed/`, or the e2e workflows. Branch
+  protection can require "E2E Gate" without ever waiting on a skipped
+  workflow.
+- **Nightly alert** (`.github/workflows/e2e.yml`) — one deduplicated
+  health issue: created on the first scheduled failure, commented on
+  (not duplicated) while red, closed automatically by the first green
+  nightly.
+
+## Burn-down order for the 49 quarantined specs
+
+1. Retired/moved routes (`retired-routes`, 9 specs).
+2. Authentication headings and locator drift (`auth-drift`, 7).
+3. Reseller portal (`reseller-portal`, 8).
+4. Permissions (`permissions`, 8).
+5. Remaining tail (`tail`, 17 + 1 setup error + 2 flaky).
+
+Each batch removes its quarantine entries in the same change that repairs
+the specs — strict XPASS enforces this.

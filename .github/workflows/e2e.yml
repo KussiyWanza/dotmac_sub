@@ -1,10 +1,12 @@
 name: E2E (Playwright)
 
-# The browser suite in tests/playwright/ — 17 specs that previously never ran
-# in CI. Boots the real image against PostGIS+Redis (same recipe as the
-# Docker Build & Health Check job), seeds RBAC + an admin, and drives the app
-# over HTTP. Nightly + on demand; not a PR gate (the integration-test job's
-# module flows are the per-PR gate).
+# The browser suite in tests/playwright/. Boots the real image against
+# PostGIS+Redis (same recipe as the Docker Build & Health Check job), seeds
+# RBAC + an admin, and drives the app over HTTP. Nightly + on demand; the
+# per-PR path-filtered run lives in e2e-gate.yml. Known failures are
+# ratcheted in tests/playwright/quarantine.json, so a red nightly always
+# means a NEW failure; the alert step below keeps one deduplicated health
+# issue open while red and closes it when green.
 
 on:
   schedule:
@@ -32,6 +34,9 @@ jobs:
     permissions:
       contents: read
       packages: read
+      # The nightly alert step creates/comments/closes the deduplicated
+      # health issue.
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -134,6 +139,33 @@ jobs:
       - name: App logs on failure
         if: failure()
         run: docker logs e2e-app --tail 200
+
+      - name: Maintain the deduplicated nightly alert issue
+        # One open issue tracks nightly e2e health: created on the first
+        # failure, updated (not duplicated) while red, closed when green.
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          TITLE="Nightly e2e suite is failing"
+          NUM="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')"
+          if [ "$JOB_STATUS" = "success" ]; then
+            if [ -n "$NUM" ]; then
+              gh issue close "$NUM" --repo "$GITHUB_REPOSITORY" \
+                --comment "Nightly e2e is green again: $RUN_URL"
+            fi
+          else
+            if [ -n "$NUM" ]; then
+              gh issue comment "$NUM" --repo "$GITHUB_REPOSITORY" \
+                --body "Still failing: $RUN_URL"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+                --body "$(printf 'The scheduled Playwright run failed: %s\n\nThis is the single deduplicated alert for nightly e2e health — later failures comment here instead of opening new issues, and the first green nightly closes it.\n\nTriage reference: #1895 and docs/E2E_SUITE_TRIAGE.md.' "$RUN_URL")"
+            fi
+          fi
 
       - name: Cleanup
         if: always()
