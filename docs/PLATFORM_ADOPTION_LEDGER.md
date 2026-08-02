@@ -1,152 +1,277 @@
-# Platform Adoption Ledger — dotmac_sub (Phase 0)
+# Platform Adoption Ledger — dotmac_sub
 
-**Status:** Draft for review — Phase 0 of the platform adoption program. No code or
-schema changes are authorized by this document.
+**Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
+plan. Supersedes the 2026-07-19 Phase-0 draft, which was surveyed before the
+kernel was released and against `origin/main` 7807afcd. No code, schema, or
+dependency change is authorized by this document alone.
 **Decision authority:** `dotmac_starter_mt` `docs/adr/0003-unified-deployment-profiles.md`
-(one platform kernel; products are thin assemblies) and
-`docs/superpowers/plans/2026-07-18-existing-product-adoption.md` (this repo's track).
-**Companion source of truth in this repo:** `docs/SOT_RELATIONSHIP_MAP.md` and its
+and the execution plan
+`dotmac_starter_mt/docs/superpowers/plans/2026-08-02-dotmac-sub-kernel-improvements.md`
+(non-authoritative intent; this repo's checked-in docs and registries govern).
+**Companion sources of truth in this repo:** `docs/SOT_RELATIONSHIP_MAP.md` and its
 executable registry `app/services/sot_relationships.py` — the per-domain owners named
-there remain authoritative; this ledger classifies each concern *against the future
-kernel contracts*, it does not re-assign ownership.
-**Recon basis:** repo state at `origin/main` 7807afcd, surveyed 2026-07-19.
+there remain authoritative. This ledger classifies kernel surfaces *against* those
+owners; it does not re-assign ownership.
+**Recon basis:** repo state at `origin/dev` `0d045baae05c91fb9307772d7aaad181b928715f`,
+surveyed 2026-08-02, against released `dotmac-kernel==0.1.0a7` (source of record:
+`dotmac_starter_mt/packages/dotmac-kernel/src/dotmac_kernel/`, package
+`__init__.py` `SUPPORTED_MODULES`/`INTERNAL_MODULES` manifest, now released as
+`0.1.0a8`). Rebased onto `origin/dev` `e2ce6d02c` (2026-08-02), with the
+collision inventory re-verified at each rebase rather than assumed to hold:
+
+- against `d14543bde` and its 20 intervening commits: the only schema change is
+  migration 456, which ALTERs the existing `ont_wan_service_instances` table
+  (new columns + the `ontwanservicelifecycle` enum type) and adds no new
+  tables; new model classes (`PostingProducer`, `PostingSourceKind`,
+  `OntWanServiceLifecycle`) have no kernel counterpart.
+- against `e2ce6d02c` and its 6 further commits (prepaid subledger authority
+  cutover): migration 457 creates `customer_subledger_opening_positions` and
+  `customer_subledger_authority_cutovers`; the new models add
+  `customer_posting_groups`. None of those names collides with a kernel table,
+  so the six documented collisions (`parties`, `party_roles`, `roles`,
+  `user_credentials`, `audit_events`, `domain_settings`) are unchanged.
+
+Collision findings unchanged. The recon is re-run on every rebase because a
+stale inventory would silently under-report the very risk the S7 ADR gate
+exists to hold.
 
 ## The adoption frame
 
 ```text
-dotmac_sub = platform kernel + dedicated-one-tenant assembly + ISP domain modules
+Sub authoritative intent
+  -> existing owner command and transaction (execute_owner_command)
+  -> existing event/integration delivery (events.store, integration.*)
+  -> kernel-compatible provider/value/capability contract
+  -> exact observed result or acknowledgement
+  -> existing Sub reconciler and repair owner
 ```
 
-- The ISP **operator** (this deployment) becomes exactly one platform `Tenant`.
-- **Subscribers, resellers, organizations remain product-domain records** beneath that
-  tenant — never platform tenants.
-- Adoption is incremental: seams and adapters first; identity/tenancy/entitlement
-  replacement only after the matching kernel contract is *released* and parity tests
-  pass. No big-bang rewrite, no shared database with other products.
+- Sub remains authoritative for subscriber, subscription, billing, collections,
+  service readiness, network intent, RADIUS/OLT/ONT/ACS, IPAM, topology, support,
+  vendor-work, and official timeline state.
+- The ISP **operator** deployment eventually maps to exactly one platform `Tenant`
+  (S7 ADR gate). Subscribers, resellers, customer organizations, and staff are
+  never platform tenants.
+- **Kernel adapters get NO owner rows.** `app/services/sot_relationships.py` is the
+  owner registry; an adapter over a kernel contract calls a registered Sub owner
+  through `app.services.owner_commands.execute_owner_command` and is never itself
+  registered as an owner, never commits, and never becomes a transaction authority.
 
-Classifications used below:
+## Classification of every kernel public module
+
+Classes:
 
 | Class | Meaning |
 |---|---|
-| **reuse** | Shape already matches the kernel contract; adopt it (nearly) as-is when released |
-| **adapt** | Keep the existing owner; put the kernel contract behind an adapter seam |
-| **product-owned** | ISP-domain forever; the kernel never owns this |
-| **migrate-later** | Known convergence target, blocked on prerequisites or a forcing event |
-| **retire** | Already scheduled or newly proposed for removal |
+| **consume-pure** | DB-free public contract; import and use directly once the dependency lands (S2+) |
+| **adapt** | Usable early, but only behind a Sub-owned adapter/declaration seam; parts of the module remain forbidden |
+| **defer-db** | Touches kernel persistence (tables, engine, migrations) or is gated on the S7 operator-tenant/migration ADR; forbidden until that gate is green |
+| **prohibited** | Would create a second owner, second identity, or second runtime stack in Sub; out of scope for this program |
 
-## Ledger
+Every module in kernel `SUPPORTED_MODULES` (plus the kernel-internal `display`)
+is classified below. Anything not listed (including any `dotmac_kernel._*`) is
+kernel-private and forbidden outright.
 
-### Identity, authorization, context
+| Kernel module | Class | Slice | Notes |
+| --- | --- | --- | --- |
+| `dotmac_kernel.money` | consume-pure | S2/S5 | `Money`/`Currency`/immutable `ExchangeRate` at typed Sub/ERP boundaries only. Sub billing columns (`Numeric(12,2)`, NGN) and invoice arithmetic are not rewritten |
+| `dotmac_kernel.capabilities` | consume-pure | S3 | `CapabilityCatalogue`; every capability code names exactly one existing SOT domain owner. Never an entitlement or permission decision |
+| `dotmac_kernel.profiles` | consume-pure | S3 | `DeploymentProfileSpec`/`DeploymentProfileRegistry` as dedicated-ISP composition preflight. Profile names never appear in business logic |
+| `dotmac_kernel.assembly` | consume-pure | S3 | `ProductAssemblySpec` is composition metadata only; `app.main` remains the runtime owner |
+| `dotmac_kernel.testing` (+ `.fakes`, `.harness`, `.provisioning`) | consume-pure | S2/S4 | Test-only: development/test dependency group and `tests/` — not imported under `app/`. Sub's PostgreSQL isolation canaries are retained. `dotmac_kernel.testing.licensing` is gated with S8 |
+| `dotmac_kernel.features` | adapt | S3 | `FeatureManifest`/`NavItem` as declaration metadata only. `mount_features` is app-factory machinery and stays forbidden (no remount) |
+| `dotmac_kernel.providers` / `.providers.provisioning` | adapt | S4 | `ProvisioningProvider` protocol/result types behind a thin adapter over the existing `access.radius_projection` owner. The adapter gets no owner row; vendor/OLT/ONT semantics stay product-owned |
+| `dotmac_kernel.messaging` (+ `.envelope`, `.inbox`, `.models`, `.outbox`, `.platform`, `.platform_relay`, `.platform_worker`, `.relay`, `.worker`) | defer-db | S7+ | Defines `inbox_records`, `outbox_events`, `platform_inbox_records`, `platform_outbox_events` tables and relay workers. Never added beside `events.store` and `integration.*` during pure-contract phases; semantics may be used as conformance criteria only |
+| `dotmac_kernel.entitlements` | defer-db | S8 | `tenant_entitlement_grants` table. Only after the operator-tenant bridge (S7) and capability catalogue (S3) are proven. Commercial product/module availability only — never subscriber financial-access, service-readiness, or RBAC |
+| `dotmac_kernel.licensing` | defer-db | S8 | The verifier itself is DB-free, but adoption is gated on entitlements persistence and the S7 ADR; a Sub-owned WS8 receiver comes after both |
+| `dotmac_kernel.db` | defer-db | S7 | Importing constructs the SQLAlchemy engine from `DATABASE_URL`. `app/db.py` remains Sub's session/transaction authority; any kernel engine use requires the S7 ADR |
+| `dotmac_kernel.migrations` | defer-db | S7 | Kernel Alembic revisions `0001`–`0012`. Never added to Sub's `alembic.ini` (`script_location = alembic`, no `version_locations`) before the S7 ADR and migration canaries |
+| `dotmac_kernel.audit` | defer-db | deferred | `AuditEvent` model collides with Sub's (`audit_events` table). Sub's writers stay `record_audit_event` + `AuditEvents.stage` (pinned by `tests/architecture/test_audit_writer_surfaces.py`); kernel audit adapts behind them after parity, never as a second writer |
+| `dotmac_kernel.settings_models` / `.settings_resolver` / `.settings_admin` | defer-db | deferred | Kernel `DomainSetting` collides with Sub's (`domain_settings` table and class name). Sub's owner stays `app/services/settings_spec.py`; kernel settings adapt behind `resolve_value` parity, never as a second settings writer |
+| `dotmac_kernel.models` | prohibited | — | Kernel Party/identity family (`tenants`, `tenant_domains`, `parties`, `party_persons`, `party_organizations`, `roles`, `party_roles`, `user_credentials`, `auth_sessions`). Sub identity is not replaced during this program; even post-S7, only `Tenant`/`TenantDomain` could enter via an ADR that amends this ledger |
+| `dotmac_kernel.models_platform` | prohibited | — | `PlatformAdmin`/`PlatformSession` — Sub keeps its own staff identity (`app/models/system_user.py`, `app/models/auth.py`) |
+| `dotmac_kernel.config` | prohibited | — | `app/config.py` remains Sub's settings owner; a second `Settings`/`validate_settings` authority is a drift source |
+| `dotmac_kernel.security` | prohibited | — | Sub's credential/session/MFA crypto is owned by its auth stack (`app/services/auth_flow.py` et al.); no second hasher/token issuer |
+| `dotmac_kernel.deps` / `.web_deps` / `.platform_auth` | prohibited | — | Kernel route guards and platform auth are a second RBAC/identity surface; Sub guards live in `app/services/auth_dependencies.py` |
+| `dotmac_kernel.middleware.csrf` / `.observability` / `.rate_limit` / `.security_headers` / `.tenant` | prohibited | — | A second middleware stack. Note the exact class-name collision with Sub's `ObservabilityMiddleware` below. `TenantResolverMiddleware` could only enter via the S7 ADR amending this ledger |
+| `dotmac_kernel.app_factory` | prohibited | — | No `create_app` cutover; `app.main` is the runtime owner. Mounting it would collide on `/admin` and `/static` |
+| `dotmac_kernel.crud` | prohibited | — | Reference CRUD features are not adopted as Sub domain services |
+| `dotmac_kernel.templating` / `.branding` | prohibited | — | Sub owns its Jinja environment, templates, and branding (`app/models/branding.py`, `templates/`) |
+| `dotmac_kernel.identity` | prohibited | — | Helpers over the kernel Party model; Sub identity is out of scope |
+| `dotmac_kernel.query` | prohibited | — | Trivial pagination/escape helpers with existing Sub equivalents; excluded to keep the surface exactly plan-shaped. May be promoted by a later ledger amendment |
+| `dotmac_kernel.errors` / `.exceptions` / `.logging` | prohibited | — | Sub owns its error taxonomy (`app/errors.py`) and logging config (`app/logging.py`); kernel error handlers are app-factory wiring |
+| `dotmac_kernel.display` | prohibited | — | Kernel-internal (`INTERNAL_MODULES`); forbidden by the kernel itself |
 
-| Concern | Current authority | Class | Notes |
-|---|---|---|---|
-| Tenant/operator context | **None exists** — single-operator app; no `tenant_id` columns, no tenancy middleware | **reuse** | Greenfield for the kernel tenant-context contract; one tenant row at adoption. `Organization` (`app/models/organization.py`) is a B2B customer party, NOT tenancy |
-| Request principal context | `auth` dict from `require_user_auth` (`app/services/auth_dependencies.py`) | adapt | Wrap in the kernel request-context shape; do not rewrite consumers |
-| Subscriber/reseller/staff identity | `app/models/subscriber.py` (`Subscriber`, `Reseller`, `ResellerUser`), `app/models/system_user.py` | **product-owned** | These are the product parties under the one tenant. `PartyStatus`/`UserType` enums + `person_id = synonym("subscriber_id")` show a Party migration already started in-schema |
-| Credentials, sessions, MFA, API keys | `app/models/auth.py` (`UserCredential` with XOR principal constraint, `Session`, `MFAMethod`, `ApiKey`); single flow owner `app/services/auth_flow.py` for all four surfaces (admin/customer/reseller web + JSON/mobile API) | adapt | Single owner already; the `person_id` synonym and XOR-principal constraint are the natural adapter seam to the kernel Party/identity contract |
-| Roles/permissions | `app/models/rbac.py` + guards in `app/services/auth_dependencies.py` (`require_role`, `require_permission`, `require_scoped_permission`, `require_method_permission`); router-level declarative modes in `app/main.py` | adapt | String permission keys (`<domain>:read/:write`) map cleanly onto manifest-declared codes. **Convergence item:** a second `require_scoped_permission` implementation exists in `app/services/field/vendor_auth.py` — fold into the central guard (migrate-later) |
-| Settings | `DomainSetting` (`app/models/domain_settings.py`) + `app/services/settings_spec.py` registry/resolver + seed/cache | adapt | Same settings-as-data shape the kernel standardizes; kernel contract slots behind `resolve_value` |
-| Feature flags / module gates | `app/services/control_registry.py` (`is_enabled` — MODULE/FEATURE/SAFETY layers) over `module_manager.py` | adapt | Already one read path with declared fail direction. Legacy alias keys are instrumented for removal: **retire** those |
-| Audit | `AuditEvent` (`app/models/audit.py`); writers `app/services/audit.py` (`AuditEvents.create/.record`) and the `record_audit_event` façade (`app/services/audit_adapter.py`) | adapt | Two sanctioned surfaces (adapter + in-transaction `stage`), zero stray callers — pinned by `tests/architecture/test_audit_writer_surfaces.py`. Kernel audit contract adopts behind `record_audit_event` |
-| Session/transaction ownership | `app/db.py` (`get_db` never commits; `task_session` commits; `form_write` rollback guard) + `app/services/unit_of_work.py` | adapt | **Mixed commit ownership** (services, `auth_dependencies` API-key touch, `task_session`, `UnitOfWork(auto_commit)`). The kernel one-transaction-owner contract is the formalization target |
+## Kernel import allowlist (`app/`)
 
-### Commercial lifecycles
+The executable form of the table above, enforced by
+`tests/architecture/test_kernel_import_boundary.py`. Only these modules may ever
+be imported under `app/`, and only once the dependency lands (S2). Today the
+count of kernel imports in `app/` is zero, and the guard already enforces this
+list. This section and the test's allowlist must stay in exact sync (the test
+parses this section).
 
-| Concern | Current authority | Class | Notes |
-|---|---|---|---|
-| Catalog/offers/pricing | `app/models/catalog.py` + `app/services/catalog/*`, exposed to network via `service_intent.*` adapters | adapt | Catalog stays ISP-shaped; kernel entitlement/offer contracts sit behind the existing `service_intent` seam. Note: `catalog.py` mixes commercial and network-access models in one module |
-| Subscription lifecycle | `app/services/account_lifecycle.py` (legal transitions, suspend/restore/activate/expire/cancel, `compute_account_status`) + `EnforcementLock` ledger; access decision in `access_resolution.py`; network consequence in `enforcement.py` | **reuse** | Already kernel-shaped (state machine + lock ledger + observation/decision/consequence split). Raw-writer consolidation was completed by the 2026-07-13 re-audit (see `tests/test_access_enforcement_strays.py`) and is now pinned by `tests/architecture/test_subscription_status_writers.py` |
-| Billing/invoicing/payments/ledger | `app/services/billing/*` over `app/models/billing.py` (invoice-state legality, allocations, ledger, credit notes, tax) | adapt | Money is **Decimal-clean** (`Numeric(12,2)`, no float money found); single-currency NGN hardcoded on 8 tables. Kernel `Money` type = reuse; FX is a later low-friction bolt-on |
-| Dunning/collections | `app/services/collections/_core.py` + policy sets; "dunning owns postpaid enforcement; prepaid enforcement owns prepaid access" | product-owned | ISP-policy machinery, not kernel material |
-| Usage/metering/FUP | `app/models/usage.py` + `app/tasks/usage.py` (RADIUS accounting import, rating runs, quota, FUP) | product-owned | Kernel metering could front `UsageRatingRun`/`QuotaBucket` at earliest migrate-later. **Convergence item:** FUP *decision* logic lives inside the task body against the repo's own thin-task rule — extract to a service before any kernel job-contract adoption |
+- `dotmac_kernel.assembly`
+- `dotmac_kernel.capabilities`
+- `dotmac_kernel.features`
+- `dotmac_kernel.money`
+- `dotmac_kernel.profiles`
+- `dotmac_kernel.providers`
+- `dotmac_kernel.providers.provisioning`
 
-### Operations and infrastructure
+Rules the guard enforces beyond the module list:
 
-| Concern | Current authority | Class | Notes |
-|---|---|---|---|
-| Provisioning / network operations | `NetworkOperation` (`app/models/network_operation.py`) + `app/services/network_operations.py` (tracked-operation lifecycle, `tracked_operation`/`run_tracked_action`); vendor adapters under `app/services/adapters/` and `app/services/network/` | adapt | A homegrown provider-job contract; the kernel provider-job interface becomes an adapter over it. Vendor/OLT/ONT semantics stay product-owned forever |
-| Events / outbox / jobs | `EventStore` + `app/services/events/dispatcher.py` (persist-then-dispatch with retries); explicit ERP outbox `app/services/dotmac_erp/outbox.py`; task idempotency (`IdempotencyKey`), heartbeats (`TaskExecution`), Postgres advisory locks | **reuse** | Matches the kernel command/outbox/job contract shape nearly 1:1 — the ERP outbox is the template, the event store the generalization target. DB-backed beat (`DbScheduler`) stays product-owned |
-| Outbound webhooks | `integration.delivery` + `webhook.http` `events.deliver.v1` binding | **reuse** | Canonical subscription, HMAC signing, delivery, retry, dead-letter, and replay owner; superseded webhook tables/tasks are removed |
-| Payment gateway inbound | Paystack/Flutterwave typed capabilities + `integration.inbox` → `services/api_billing_webhooks.py` consequence adapter | **reuse** | Signature-verified receipt identity and replay are platform-owned; billing alone decides settlement and money state |
-| Files | `StoredFile` + `app/services/object_storage.py` (S3-compatible) | reuse | Direct fit for the kernel storage provider interface |
-| Notifications | Policy layers (`notification_channel_policy`, event policies, suppression) over transports (email/SMS/WhatsApp) | adapt | Policy stays product-owned; transports are provider-interface candidates. Rule already enforced: domain services request an outcome, never construct rows or pick channels |
-| Search | DB typeahead only (`services/typeahead.py`) | product-owned | No index; no kernel contract needed |
-| Observability | `app/metrics.py` (Prometheus), `app/observability.py`, optional OTel (`app/telemetry.py`), `/health`, task-reliability services | reuse | Kernel health/telemetry contract maps directly |
-| Secrets | `app/services/secrets.py` (OpenBao/`bao://` URI resolver) + credential crypto/rotation | reuse | Already kernel-grade; four-tier policy documented in the SOT map |
-| Migrations/deploy/CI | 307 alembic revisions (`upgrade heads`); `scripts/deploy.sh` (backup → pin → migrate → recreate → health gate → retention); CI with import-linter boundary gate | product-owned | Per-repo mechanics. Kernel adoption extends the import-linter contracts to guard new kernel seams |
+- Bare `import dotmac_kernel` / `from dotmac_kernel import X` is forbidden in
+  `app/`: the top-level package re-exports identity, audit, and entitlement
+  names indiscriminately; imports must name the specific allowlisted submodule.
+- `mount_features` may not be imported from `dotmac_kernel.features` (app-factory
+  machinery).
+- `dotmac_kernel.testing.*` is consume-pure for `tests/` and the dev dependency
+  group only; it is not on the `app/` allowlist.
 
-### External integrations
+## Collision inventory (kernel 0.1.0a7 vs Sub at 0d045baa)
 
-| Concern | Current authority | Class | Notes |
-|---|---|---|---|
-| ERP sync | `dotmac.erp` versioned capabilities + `field_erp_sync` outbox + reconcilers | **reuse** | Transport operations use one version-pinned installation; financial and operations owners decide every consequence |
-| CRM observations and mirrors | `dotmac.crm` versioned capabilities + `integration.inbox` + domain mirror reconcilers | **reuse** | The transitional native-sync dual writer and CRM-specific delivery store are removed; Sub is authoritative for support and operational state |
-| Field/customer mobile APIs | `app/api/field/*`, `/api/v1` subscriber surface | product-owned | Sub is authoritative; apps are API-only clients per the app-independence standard |
-| Splynx legacy | `models/splynx_*.py` | retire | No live tasks reference them; archive-table drop program already in flight |
+Verified by comparing the kernel's `models.py`/`models_platform.py`/feature
+tables and migrations against Sub's `app/models/**` `__tablename__` set (531
+tables) and `alembic/`.
 
-## Multiple-writer findings (the Phase-0 actionable list)
+### Python package names
 
-These are the parallel decision paths the adoption plan requires a cutover-and-removal
-gate for. Verified at 7807afcd:
+No collision: Sub's code lives under `app/` (plus `alembic/`, `scripts/`,
+`tests/`); the kernel imports as `dotmac_kernel`. Sub's `src/` contains only CSS.
 
-1. **`Subscription.status` single-writer consolidation — DONE, now pinned.** At
-   this cutover the only modules assigning `SubscriptionStatus` are the owner
-   (`account_lifecycle`) and the snapshot-restore tool
-   (`web_system_restore_tool.py`, maintenance exemption). Generic catalog
-   updates reject lifecycle fields and cannot create administrative locks.
-   The historical strays (CRM API, reseller portal, and catalog update — S3 of
-   the 2026-07-13 re-audit) are routed through the owner. The consolidation is
-   pinned by `tests/architecture/test_subscription_status_writers.py`
-   (AST-based, shrink-only allowlist, sensitivity-proven).
-1b. **`Subscriber.status` mutated in-memory for display** — `web_reports.py`
-   (three sites) and `subscriber_growth.py` assign a *derived* `AccountStatus`
-   onto live ORM `Subscriber` rows purely for report filtering/rendering. The
-   request path never commits, but mutating persistent objects for presentation
-   is an autoflush hazard and makes the UI a parallel projection of account
-   status. Candidate cleanup: derive into a view-model field instead of the ORM
-   attribute.
-2. **Audit writer consolidation — DONE, now pinned.** At origin/main there are
-   zero direct `AuditEvents.create/.record` callers; the two sanctioned
-   surfaces are `record_audit_event` (adapter, request/consequence paths) and
-   `AuditEvents.stage` (stages in the caller's transaction — the correct
-   surface for commit-owning services; billing uses it deliberately). Pinned by
-   `tests/architecture/test_audit_writer_surfaces.py`.
-3. **Scoped-permission guard duplication — RESOLVED.** The vendor variant was a
-   misnamed alias for `require_native_vendor_context` (membership check, zero
-   permission evaluation) whose name satisfied the route-guard architecture
-   test. The alias is deleted; the vendor-portal router depends on
-   `require_native_vendor_context` explicitly; `/api/v1/vendor` is allowlisted
-   as a self-scoped surface; route-level behavior pins added
-   (`tests/test_vendor_portal_auth.py`). Granting the vendor surface a real
-   RBAC claim (e.g. `vendor:portal:access`) would be a behavior change and
-   remains an explicit product decision.
-4. **Commit ownership is mixed** across services, `task_session`, `UnitOfWork`, and
-   `auth_dependencies` — no single transaction owner yet.
-5. **FUP decisions extracted — DONE.** The enforcement sweep (enforce/warn/reset
-   hysteresis, repeat-upsell policy, notification fan-out; ~570 lines) moved
-   verbatim from the Celery task body to `app/services/fup_enforcement.py`,
-   registered as `access.fup_enforcement_sweep` in the SOT relationships
-   registry; `app/tasks/usage.py` keeps only task shells, advisory-lock
-   plumbing, task names, and queue chaining.
-6. **CRM dual-write — RESOLVED.** `crm_native_sync` and its task are removed.
-   Verified CRM events enter `integration.inbox`; domain reconcilers are the
-   only writers of Sub mirrors and operational consequences.
+### SQLAlchemy table names — six REAL collisions
 
-## Phase 1 next steps (separate PRs, after this ledger is accepted)
+Kernel tables that already exist, with different shapes and different owners, in
+Sub's schema:
 
-1. Pin OpenAPI snapshots + representative generated-client tests for the JSON/mobile
-   surfaces (the docs/OpenAPI endpoint is currently live at FastAPI defaults).
-2. Pin golden lifecycle scenarios and DB invariants for the critical money/service
-   paths (invoice settlement, prepaid credit, suspend/restore).
-3. Declare the `subscriber_management` `ProductAssemblySpec` (modules, providers,
-   brand, surfaces, compatibility) once the kernel publishes the spec contract.
-4. Review the `Subscriber.status` display-mutation sites (finding 1b) — move the
-   derived status into a view-model field rather than the ORM attribute.
+| Table | Kernel owner | Sub owner |
+| --- | --- | --- |
+| `parties` | `dotmac_kernel.models.Party` (platform identity) | `app/models/party.py::Party` (Sub party model) |
+| `party_roles` | `dotmac_kernel.models.PartyRole` | `app/models/party.py` |
+| `roles` | `dotmac_kernel.models.Role` | `app/models/rbac.py::Role` |
+| `user_credentials` | `dotmac_kernel.models.UserCredential` | `app/models/auth.py::UserCredential` |
+| `audit_events` | `dotmac_kernel.audit.AuditEvent` | `app/models/audit.py::AuditEvent` |
+| `domain_settings` | `dotmac_kernel.settings_models.DomainSetting` | `app/models/domain_settings.py::DomainSetting` |
 
-## Explicitly out of scope for Phase 0
+The colliding class names (`Party`, `PartyRole`, `Role`, `UserCredential`,
+`AuditEvent`, `DomainSetting`) are also identical, so a careless import would
+shadow a Sub model. This is why `dotmac_kernel.models`, `.audit`, and
+`.settings_models` are not on the allowlist and why kernel metadata must never
+reach a Sub engine: `Base.metadata.create_all` or autogenerate against a shared
+`MetaData` would corrupt or duplicate live Sub tables. Any future kernel-table
+adoption (S7) must resolve these six by schema separation or renaming in the
+ADR before one migration runs.
 
-- Adding `tenant_id` columns to any ISP table (needs a separate multi-tenant product
-  decision per the adoption plan).
-- Renaming or merging `Subscriber`/`Organization` into the kernel Party tables.
-- Any dual-write, schema change, or writer replacement.
+Non-collisions worth recording: kernel `tenants`, `tenant_domains`,
+`party_persons`, `party_organizations`, `auth_sessions`, `inbox_records`,
+`outbox_events`, `platform_inbox_records`, `platform_outbox_events`,
+`platform_admins`, `platform_sessions`, `platform_audit_events`, and
+`tenant_entitlement_grants` do not exist in Sub today (Sub's `sessions`,
+`integration_inbox`, `inbox_*` team-inbox tables, and `service_entitlements`
+are different names with different owners).
+
+### Alembic
+
+- Both sides use the default `alembic_version` table. Sub's `alembic/env.py`
+  widens `version_num` to `VARCHAR(255)` for its descriptive revision IDs and
+  pre-creates the table (`ensure_alembic_version_table`). Composing kernel
+  revisions into Sub's `version_locations` would put two independent heads in
+  one version table — forbidden before the S7 ADR.
+- Kernel revision IDs are `0001_initial_tenant_schema` … `0012_platform_outbox`
+  (four-digit prefixes); Sub's files use three-digit-and-up prefixes
+  (`001_squashed_initial_schema` …, 498 files plus `versions_archive`). The ID
+  strings do not collide today, but Sub's numeric-prefix guard
+  (`tests/architecture/test_migration_prefix_collisions.py`) only scans
+  `alembic/versions/` and would not see kernel files — the S7 ADR must extend
+  it before any composition.
+- Sub's `alembic/env.py` also installs idempotent schema-op wrappers for its
+  squash; kernel migrations were not written against that regime.
+- Concrete corruption scenario, recorded so nobody "just tries it": kernel
+  revision `0004_custom_fields` executes `op.add_column("parties", ...)` — run
+  against Sub's database it would silently ALTER Sub's own live `parties`
+  table (collision above), not a kernel table.
+
+### Middleware
+
+- **REAL class-name collision:** `ObservabilityMiddleware` exists in Sub
+  (`app/observability.py`, installed in `app/main.py`) and in the kernel
+  (`dotmac_kernel.middleware.observability`). Importing both in one module
+  would shadow silently.
+- Kernel `CSRFMiddleware` (double-submit `csrf_token` cookie + `X-CSRF-Token`
+  header) overlaps Sub's own CSRF machinery (`app/csrf.py`); kernel
+  `SecurityHeadersMiddleware`/`RateLimitMiddleware` overlap Sub's nginx/app
+  layers; `TenantResolverMiddleware` presumes kernel `Tenant`/`TenantDomain`
+  tables. All kernel middleware are prohibited (see table).
+
+### Route prefixes
+
+Sub mounts `/api/v1`, `/admin` (web routers), and `/static` in `app/main.py`.
+The kernel app factory mounts `/static`, feature `/admin/*` surfaces, and the
+platform auth router. `/admin` and `/static` are direct collisions — one more
+reason `dotmac_kernel.app_factory` and `mount_features` stay prohibited.
+
+### Settings owners
+
+Sub's settings authority is `DomainSetting` + the `app/services/settings_spec.py`
+registry/resolver (seed + cache). The kernel's settings stack targets a
+same-named model and table (collision above). One writer rule: kernel settings
+adapt behind the Sub resolver after parity, or not at all.
+
+### Audit writers
+
+Sub's two sanctioned surfaces are `record_audit_event`
+(`app/services/audit_adapter.py`) and `AuditEvents.stage`
+(`app/services/audit.py`), pinned by
+`tests/architecture/test_audit_writer_surfaces.py`. Kernel
+`write_audit_event`/`write_platform_audit_event` would be a second writer into
+a colliding `audit_events` table — deferred behind the existing surfaces.
+
+### Identity and session names
+
+- Both Sub's portal auth (`app/services/web_auth.py`) and the kernel's
+  (`dotmac_kernel.web_deps`) use an **`access_token` cookie** — a live conflict
+  the moment any kernel web surface were mounted (it never is, see table).
+  Sub's refresh-cookie name is setting-driven (`_refresh_cookie_name`).
+- Sub's session table is `sessions` (`app/models/auth.py::Session`); the
+  kernel's is `auth_sessions` (`AuthSession`) — no table collision, but two
+  session authorities is exactly the second-identity path this ledger prohibits.
+
+## Owner registry
+
+The executable owner registry is `app/services/sot_relationships.py` (with
+`docs/SOT_RELATIONSHIP_MAP.md` as its narrative map). All adoption slices leave
+it authoritative and unchanged in meaning:
+
+- Kernel adapters (S4+) are **not** owners and get **no rows** in the registry.
+- `execute_owner_command` (`app/services/owner_commands.py`) remains the single
+  transaction authority; adapters call registered owners and never commit.
+- The S4 pilot boundary, `access.radius_projection`, is already registered and
+  stays the projection owner behind any `ProvisioningProvider` adapter.
+
+## S1 acceptance claim
+
+Adding `dotmac-kernel==0.1.0a7` as a dependency, by itself:
+
+- **runs no kernel migrations** — Sub's `alembic.ini` keeps
+  `script_location = alembic` with no `version_locations`; kernel revisions are
+  inert package data;
+- **mounts no routes** — `create_app` is never called and `mount_features` is
+  forbidden by the import guard; Sub's route inventory is unchanged;
+- **constructs no engine** — every allowlisted module is import-safe by the
+  kernel's own manifest (no `DATABASE_URL` read); `dotmac_kernel.db` and bare
+  `import dotmac_kernel` are rejected by the guard;
+- **changes no Sub transaction or owner** — `app/db.py`,
+  `execute_owner_command`, and `app/services/sot_relationships.py` are
+  untouched; no adapter holds an owner row.
+
+The guard proving the import half of this claim is
+`tests/architecture/test_kernel_import_boundary.py`, including a
+negative-control test that fails the checker on a synthetic forbidden import.
+
+## Explicitly out of scope for this ledger
+
+- Adding the dependency itself (S2), any `tenant_id` column, or any schema change.
+- Renaming or merging `Subscriber`/`Organization`/`Party` into kernel identity.
+- Any dual-write, second writer, second outbox/inbox, or writer replacement.
 - Shared database or ORM imports with dotmac_erp or the vendor control plane.
