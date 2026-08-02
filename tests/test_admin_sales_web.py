@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.models.party import Party
 from app.models.rbac import Role, SystemUserRole
-from app.models.sales import SalesOrder
+from app.models.sales import LeadStatus, SalesOrder
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.schemas.sales import (
@@ -113,7 +113,18 @@ def _make_stage(db, pipeline, name="New", order_index=0, default_probability=25)
 def _make_lead(db, subscriber, **overrides):
     payload = {"subscriber_id": subscriber.id, "title": "Fiber install"}
     payload.update(overrides)
-    return sales_service.leads.create(db, LeadCreate(**payload))
+    requested_status = payload.get("status")
+    if requested_status == LeadStatus.won.value:
+        payload["status"] = LeadStatus.qualified.value
+    lead = sales_service.leads.create(db, LeadCreate(**payload))
+    if requested_status == LeadStatus.won.value:
+        # Reporting tests need historical Won state; the public transition is
+        # exercised separately through Quote acceptance.
+        lead.status = LeadStatus.won.value
+        lead.closed_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(lead)
+    return lead
 
 
 # ---------------------------------------------------------------------------

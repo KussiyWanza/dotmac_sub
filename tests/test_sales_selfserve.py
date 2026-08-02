@@ -31,6 +31,7 @@ from app.models.catalog import (
     ServiceType,
 )
 from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import Lead, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services.sales import selfserve
@@ -73,6 +74,19 @@ def _subscriber(db) -> Subscriber:
         party_binding_reason="Self-serve sales fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Self-serve quote {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub

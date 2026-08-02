@@ -65,6 +65,7 @@ from app.services import sales as sales_service
 from app.services import sales_orders as sales_orders_service
 from app.services import web_catalog_subscriptions, web_system_users
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
 from app.services.field.inventory import field_inventory_lookup
 from app.services.list_query import (
     ListDefinition,
@@ -2063,6 +2064,7 @@ def create_quote_from_form(
         ),
         lines=tuple(line_drafts),
     )
+    db_session_adapter.release_read_transaction(db)
     outcome = quote_authoring.author_quote(db, command)
     return str(outcome.quote_id)
 

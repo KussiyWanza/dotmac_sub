@@ -42,6 +42,7 @@ def test_selfcare_lead_create_update_summary_and_delete(db_session):
             default_probability=60,
         ),
     )
+    subscriber_count = db_session.query(Subscriber).count()
 
     lead_id, existing = web_sales.create_lead_from_form(
         db_session,
@@ -72,7 +73,7 @@ def test_selfcare_lead_create_update_summary_and_delete(db_session):
     assert detail["contact"].email == email
     assert summary.open_leads == open_summary.open_leads
     assert summary.pipeline_value == open_summary.pipeline_value
-    assert db_session.query(Subscriber).count() == 0
+    assert db_session.query(Subscriber).count() == subscriber_count
 
     web_sales.deactivate_lead(db_session, lead_id=lead_id)
     assert sales.leads.get(db_session, lead_id).is_active is False

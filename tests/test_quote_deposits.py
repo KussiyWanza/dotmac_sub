@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app.models.billing import Invoice, InvoiceStatus, Payment
 from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror
 from app.models.sales import SalesOrder
 from app.models.subscriber import Subscriber
@@ -42,6 +43,19 @@ def _subscriber(db) -> Subscriber:
         party_binding_reason="Quote deposit fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Quote deposit {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub

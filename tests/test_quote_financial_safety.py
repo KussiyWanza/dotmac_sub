@@ -21,6 +21,7 @@ from app.models.project import ProjectTemplate
 from app.models.sales import Lead, Quote, QuoteStatus, SalesOrder
 from app.schemas.sales import LeadCreate, QuoteCreate, QuoteLineItemCreate, QuoteUpdate
 from app.services import sales as sales_service
+from app.services.sales import quote_acceptance
 
 
 def _lead(db_session, subscriber) -> Lead:
@@ -124,7 +125,9 @@ def test_cannot_accept_a_quote_with_no_line_items(db_session, subscriber):
     quote = _draft(db_session, subscriber)
     assert quote.total == 0
 
-    with pytest.raises(ValueError, match="at least one line item"):
+    with pytest.raises(
+        quote_acceptance.QuoteAcceptanceError, match="at least one line item"
+    ):
         sales_service.quotes.update(
             db_session, str(quote.id), QuoteUpdate(status=QuoteStatus.accepted)
         )

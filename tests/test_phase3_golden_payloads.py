@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 from app.models.domain_settings import DomainSetting, SettingDomain, SettingValueType
 from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror, QuoteSyncState
 from app.models.referral import ReferralMirror, ReferralProgramCache
 from app.models.subscriber import Reseller, Subscriber
@@ -87,6 +88,19 @@ def _subscriber(db, reseller_id=None) -> Subscriber:
         party_binding_reason="Golden payload fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Golden quote {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub
