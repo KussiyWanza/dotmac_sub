@@ -766,6 +766,7 @@ def summarize_customer_path(
     )
     unparented = getattr(path, "unparented_radio", None)
     ap_unresolved = path.radio is None and unparented is not None
+    radio_resolution = getattr(path, "radio_resolution", None)
     return AccessPathSummary(
         subscription_id=subscription.id,
         subscriber_id=subscription.subscriber_id,
@@ -794,9 +795,7 @@ def summarize_customer_path(
             effective_signal.observed_at if effective_signal else None
         ),
         radio_resolution=(
-            path.radio_resolution.value
-            if getattr(path, "radio_resolution", None) is not None
-            else None
+            radio_resolution.value if radio_resolution is not None else None
         ),
         radio_ap_unresolved=ap_unresolved,
         endpoint_display=_endpoint_display(path),

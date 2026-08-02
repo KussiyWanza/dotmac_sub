@@ -232,7 +232,7 @@ def _finish_at_node(
     return path
 
 
-def _wireless_cpe_filters(*, parented: bool) -> list:
+def _wireless_cpe_filters() -> list:
     """Shared eligibility filters for the wireless radio arm.
 
     "Active" = CPE row not retired/inactive AND UISP has not reported the
@@ -247,17 +247,13 @@ def _wireless_cpe_filters(*, parented: bool) -> list:
             CPEDevice.last_uisp_status != "vanished",
         ),
     ]
-    if parented:
-        filters.append(CPEDevice.parent_network_device_id.isnot(None))
-    else:
-        filters.append(CPEDevice.parent_network_device_id.is_(None))
     return filters
 
 
-def _active_wireless_cpe(
+def _wireless_cpe_candidates(
     session: Session, subscription: Subscription
-) -> tuple[CPEDevice | None, RadioResolutionTier | None]:
-    """The subscription's active radio with a known parent AP, plus provenance.
+) -> tuple[CPEDevice | None, RadioResolutionTier | None, CPEDevice | None]:
+    """Resolve parented and unparented radio candidates in one query.
 
     Two tiers, exact-first: a radio bound to THIS subscription
     (``subscription_id`` match, ``RadioResolutionTier.subscription``) beats any
@@ -269,68 +265,42 @@ def _active_wireless_cpe(
     resolve the same AP.
     """
     if subscription.subscriber_id is None:
-        return None, None
-    base_order = (CPEDevice.uisp_synced_at.desc().nullslast(), CPEDevice.id)
-    exact = (
-        session.query(CPEDevice)
-        .filter(
-            CPEDevice.subscription_id == subscription.id,
-            *_wireless_cpe_filters(parented=True),
-        )
-        .order_by(*base_order)
-        .first()
-    )
-    if exact is not None:
-        return exact, RadioResolutionTier.subscription
-    legacy = (
+        return None, None, None
+    rows = (
         session.query(CPEDevice)
         .filter(
             CPEDevice.subscriber_id == subscription.subscriber_id,
-            *_wireless_cpe_filters(parented=True),
+            *_wireless_cpe_filters(),
         )
-        .order_by(*base_order)
-        .first()
-    )
-    if legacy is not None:
-        return legacy, RadioResolutionTier.subscriber_legacy
-    return None, None
-
-
-def _unparented_wireless_cpe(
-    session: Session, subscription: Subscription
-) -> CPEDevice | None:
-    """An active, non-vanished radio with NO parent AP edge, if one exists.
-
-    Looked up only after the parented lookup missed: it powers the explicit
-    "AP unresolved" display (the radio is known, the AP mapping is the gap)
-    instead of a silent fall-through to the coarse NAS arm. Same exact-first
-    ordering as ``_active_wireless_cpe``.
-    """
-    if subscription.subscriber_id is None:
-        return None
-    base_order = (CPEDevice.uisp_synced_at.desc().nullslast(), CPEDevice.id)
-    exact = (
-        session.query(CPEDevice)
-        .filter(
-            CPEDevice.subscription_id == subscription.id,
-            CPEDevice.device_type == DeviceType.wireless_radio,
-            *_wireless_cpe_filters(parented=False),
+        .order_by(
+            CPEDevice.uisp_synced_at.desc().nullslast(),
+            CPEDevice.id,
         )
-        .order_by(*base_order)
-        .first()
+        .all()
     )
-    if exact is not None:
-        return exact
-    return (
-        session.query(CPEDevice)
-        .filter(
-            CPEDevice.subscriber_id == subscription.subscriber_id,
-            CPEDevice.device_type == DeviceType.wireless_radio,
-            *_wireless_cpe_filters(parented=False),
+    exact = [row for row in rows if row.subscription_id == subscription.id]
+    legacy = [row for row in rows if row.subscription_id != subscription.id]
+    ordered = (*exact, *legacy)
+    parented = next(
+        (row for row in ordered if row.parent_network_device_id is not None), None
+    )
+    unparented = next(
+        (
+            row
+            for row in ordered
+            if row.parent_network_device_id is None
+            and row.device_type == DeviceType.wireless_radio
+        ),
+        None,
+    )
+    tier = None
+    if parented is not None:
+        tier = (
+            RadioResolutionTier.subscription
+            if parented.subscription_id == subscription.id
+            else RadioResolutionTier.subscriber_legacy
         )
-        .order_by(*base_order)
-        .first()
-    )
+    return parented, tier, unparented
 
 
 def _live_session_nas_device_id(session: Session, subscription: Subscription):
@@ -429,7 +399,9 @@ def resolve_customer_path(session: Session, subscription: Subscription) -> Custo
     # a wireless subscriber's PPPoE often terminates on a NAS at the BTS, and
     # the NAS arm would resolve them coarsely (NAS -> basestation) while the
     # radio arm pins them to their actual AP.
-    cpe, radio_resolution = _active_wireless_cpe(session, subscription)
+    cpe, radio_resolution, unparented_radio = _wireless_cpe_candidates(
+        session, subscription
+    )
     if cpe is not None:
         node = session.get(NetworkDevice, cpe.parent_network_device_id)
         if node is not None:
@@ -440,13 +412,11 @@ def resolve_customer_path(session: Session, subscription: Subscription) -> Custo
             return _finish_at_node(session, path, node)
         # Parent edge points nowhere (row deleted mid-sync): fall through to
         # the NAS arm rather than dead-ending a resolvable subscriber.
-    unparented_radio: CPEDevice | None = None
     if cpe is None:
         # No parented radio: remember an unparented one (if any) so surfaces
         # can render the repairable "AP unresolved" gap alongside whatever
         # the NAS arm resolves below. Stamped onto whichever path object the
         # NAS arms return — they build their own CustomerPath.
-        unparented_radio = _unparented_wireless_cpe(session, subscription)
         path.unparented_radio = unparented_radio
 
     # Non-fiber: the NAS the customer terminates on. Prefer the LIVE session's

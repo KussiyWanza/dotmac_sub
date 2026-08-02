@@ -13,7 +13,7 @@ naturally from the next sync run. Lock budget: trivial (nullable ADD COLUMN,
 no rewrite on PostgreSQL). Downgrade drops the columns.
 
 Revision ID: 455_add_cpe_rf_signal_columns
-Revises: 453_ipv4_primary_assignment_marker
+Revises: 454_clear_non_identifying_ont_macs
 Create Date: 2026-08-01
 """
 
@@ -25,7 +25,7 @@ from sqlalchemy import inspect
 from alembic import op
 
 revision = "455_add_cpe_rf_signal_columns"
-down_revision = "453_ipv4_primary_assignment_marker"
+down_revision = "454_clear_non_identifying_ont_macs"
 branch_labels = None
 depends_on = None
 
