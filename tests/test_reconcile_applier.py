@@ -197,7 +197,9 @@ def _authorized_ppp():
         decision=PppDeliveryDecision.authorized,
         refusal=None,
         ont_id="test-ont",
-        instance_ids=("test-instance",),
+        subscription_id="test-subscription",
+        instance_id="test-instance",
+        instance_revision=1,
     )
 
 

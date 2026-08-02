@@ -125,7 +125,37 @@ decision a migration must not make.
 - `network.ont_reconcile` — converges ONT state; must not decide PPP intent.
 - `network.cpe_dialer_credential_sync` — producer gate, currently disabled
   (`default=False, on_missing=False`).
-- Delivery-time authorization consumes `active_primary_internet_intent`. The
-  last-boundary invariant is enforcement inside `apply_plan`, where an absent or
-  wrong-scope ruling equals refusal, and refused PPP drift stays visible rather
-  than being silently reconciled away.
+
+## Delivery-time authorization
+
+`network.ppp_delivery_authorization` is the only consumer allowed to turn intent
+into permission to write to a device. Its contract:
+
+1. **Resolve one exact active assignment** on the ONT → `subscription_id`. Zero
+   and many are distinct refusals; many is never resolved by picking.
+2. **Require `active_primary_internet_intent(ont_id, subscription_id)`.** Legacy
+   `is_active` is deliberately NOT read — migration 456 leaves it untouched, so
+   reading it would authorise exactly the `unverified` rows this owner
+   quarantined.
+3. **Bind the ruling** to ONT, subscription, service-instance id, instance
+   `revision`, and credential/plan scope. `PppDeliveryRuling.authorizes()` is
+   re-checked at the point of use, so a ruling granted for service A cannot
+   deliver service B, and one taken before a `replace` cannot authorise a write
+   after it.
+4. **Typed end-to-end.** `ApplyContext.ppp_authorization` is
+   `PppDeliveryRuling | None`, not `Any`. `None` is a refusal: a plan may not
+   deliver PPP because nobody checked.
+5. **Purpose-aware classification.** Actions are classified by what they do to
+   PPP termination, never by class name alone. `OltCreateServicePort` and
+   `OltDeleteServicePort` carry a `slot`, so management ports (VLAN 201) keep
+   converging while WAN ports are withheld; `AcsAddObject`/`AcsDeleteObject` are
+   PPP only when the path targets `WANPPPConnection`. An indeterminate purpose
+   fails closed.
+6. **Refused work stays visible.** Withheld actions are returned as
+   `ApplyResult.refused_ppp` and recorded as residual drift. A pass that refused
+   anything is finalised `out_of_sync`, never `synced` — the model defines
+   `synced` as "zero residual drift", and reporting convergence while dialer
+   work was withheld makes the containment invisible.
+
+Because every pre-owner row is `unverified`, this gate refuses all of them until
+they are adjudicated through owner commands.

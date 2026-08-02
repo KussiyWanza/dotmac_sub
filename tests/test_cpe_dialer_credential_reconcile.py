@@ -111,24 +111,30 @@ def _assigned_ont(db, subscriber, *, serial, desired=None) -> OntUnit:
     )
     db.add(ont)
     db.flush()
+    subscription = _subscription_for(db, subscriber)
     db.add(
         OntAssignment(
             ont_unit_id=ont.id,
             subscriber_id=subscriber.id,
-            subscription_id=_subscription_for(db, subscriber).id,
+            subscription_id=subscription.id,
             active=True,
         )
     )
-    # Declared PPPoE service intent. Authorisation comes from
-    # OntWanServiceInstance, not from OntAssignment fields -- migration 084
+    # Declared PPPoE service intent, owner-managed. Authorisation comes from
+    # `lifecycle_state == active` at exact ont+subscription grain, not from
+    # legacy `is_active` and not from OntAssignment fields -- migration 084
     # cleared those, so surviving values there are residue.
-    from app.models.network import OntWanServiceInstance
+    from app.models.network import OntWanServiceInstance, OntWanServiceLifecycle
 
     db.add(
         OntWanServiceInstance(
             ont_id=ont.id,
+            subscription_id=subscription.id,
             name="internet",
+            service_type="internet",
             connection_type="pppoe",
+            is_primary=True,
+            lifecycle_state=OntWanServiceLifecycle.active,
             is_active=True,
         )
     )
