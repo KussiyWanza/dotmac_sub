@@ -29,15 +29,54 @@ def _detail_path(test_identities: dict) -> str:
     return f"/admin/customers/person/{account_id}"
 
 
+def _open_network_tab(page: Page) -> None:
+    """The Network Access card lives inside the detail page's Network tab."""
+
+    page.get_by_role("button", name="Network", exact=True).click()
+
+
 def _ensure_subscription_login(e2e_db, test_identities: dict) -> None:
-    """The Network Access card renders only for subscriptions with access."""
+    """The Network Access card renders only for subscriptions with access.
+
+    The shared e2e seed does not always produce an active subscription, so
+    this spec provisions a minimal offer + active subscription directly when
+    absent — throwaway rows in a throwaway database.
+    """
 
     subscription_id = test_identities["customer"].get("subscription_id")
-    if not subscription_id:
-        pytest.skip("seeded customer has no active subscription")
-    subscription = e2e_db.get(Subscription, subscription_id)
+    subscription = (
+        e2e_db.get(Subscription, subscription_id) if subscription_id else None
+    )
     if subscription is None:
-        pytest.skip("seeded subscription row is missing")
+        from app.models.catalog import (
+            AccessType,
+            CatalogOffer,
+            PriceBasis,
+            ServiceType,
+            SubscriptionStatus,
+        )
+
+        account_id = test_identities["customer"]["account"]["id"]
+        offer = e2e_db.query(CatalogOffer).order_by(CatalogOffer.created_at).first()
+        if offer is None:
+            offer = CatalogOffer(
+                name="E2E Network Path",
+                code="E2E-NET-PATH",
+                service_type=ServiceType.residential,
+                access_type=AccessType.fiber,
+                price_basis=PriceBasis.flat,
+            )
+            e2e_db.add(offer)
+            e2e_db.flush()
+        subscription = Subscription(
+            subscriber_id=account_id,
+            offer_id=offer.id,
+            status=SubscriptionStatus.active,
+            login="e2e-network-path",
+        )
+        e2e_db.add(subscription)
+        e2e_db.commit()
+        return
     if not subscription.login and not subscription.ipv4_address:
         subscription.login = "e2e-network-path"
         e2e_db.commit()
@@ -54,6 +93,7 @@ class TestCustomerNetworkPath:
         _ensure_subscription_login(e2e_db, test_identities)
         _mark_admin_tour_seen(admin_page)
         admin_page.goto(f"{settings.base_url}{_detail_path(test_identities)}")
+        _open_network_tab(admin_page)
 
         expect(admin_page.get_by_role("heading", name="Network Access")).to_be_visible()
         # The serving endpoint block always states which record proved the
@@ -78,6 +118,7 @@ class TestCustomerNetworkPath:
         _mark_admin_tour_seen(admin_page)
         admin_page.set_viewport_size({"width": 390, "height": 844})
         admin_page.goto(f"{settings.base_url}{_detail_path(test_identities)}")
+        _open_network_tab(admin_page)
 
         expect(admin_page.get_by_role("heading", name="Network Access")).to_be_visible()
         overflow = admin_page.evaluate(
