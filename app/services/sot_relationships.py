@@ -15517,10 +15517,185 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="network.outage_impact",
                 module="app.services.network.outage_impact",
-                owns=("affected-customer impact", "outage scope impact"),
+                owns=(
+                    "affected-customer impact",
+                    "outage scope impact",
+                    "tokenized cabinet audience membership",
+                ),
                 depends_on=(
                     "network.access_path",
                     "network.forwarding_topology",
+                ),
+                notes=(
+                    "resolve_fdh_audience projects the exact subscription "
+                    "membership behind one FDH plus an order-independent "
+                    "membership token; consumers (network.cabinet_notice) "
+                    "compare that token between preview and execution instead "
+                    "of trusting a snapshot."
+                ),
+            ),
+            SOTService(
+                name="network.cabinet_notice",
+                module="app.services.network.cabinet_notice",
+                owns=(
+                    "operator-initiated cabinet service notices",
+                    "cabinet notice recipient preview and drift protection",
+                ),
+                depends_on=(
+                    "network.outage_impact",
+                    "communications.customer_policy",
+                    "communications.intents",
+                ),
+                notes=(
+                    "Service (transactional) communication, deliberately NOT a "
+                    "campaign: campaigns hard-filter on marketing consent and would "
+                    "silently drop most of a cabinet from an outage notice. One "
+                    "deduplicated email per distinct customer via a durable "
+                    "communication-intent dedupe key; preview binds membership "
+                    "(scope token) and content + per-recipient dispositions "
+                    "(impact token), and execution refuses on drift."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="operator-initiated cabinet service notices",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "tokenized cabinet audience",
+                                "customer notification policy decisions",
+                                "operator notice command",
+                            ),
+                            canonical_writer="network.cabinet_notice",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "cabinet notice recipient preview and drift protection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "tokenized cabinet audience",
+                                "customer notification policy decisions",
+                                "operator notice command",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="tokenized cabinet audience",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "resolve_fdh_audience: exact active "
+                                "subscriptions behind the FDH plus the "
+                                "order-independent membership scope token"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer notification policy decisions",
+                            owner="communications.customer_policy",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "cohort policy evaluation for channel=email, "
+                                "category=service: channel configuration, "
+                                "account status, preferences, durable "
+                                "suppression ledger, dedupe window"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="operator notice command",
+                            owner="network.cabinet_notice",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed draft (subject/body, CRLF-normalized) "
+                                "plus explicit confirmation restating the "
+                                "previewed eligible count, scope token, and "
+                                "impact token"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Preview is read-only. Send owns its commit: the "
+                            "intents, the dispatch event, and the audit trail "
+                            "land atomically in the command or not at all; "
+                            "the admin web adapter never commits."
+                        ),
+                        locking=(
+                            "No mutation locks of its own; per-customer "
+                            "dedupe keys make concurrent confirms converge on "
+                            "one intent per customer per content."
+                        ),
+                        idempotency=(
+                            "Identical content to the same cabinet and "
+                            "customer is a durable no-op via the "
+                            "communication-intent dedupe key; edited content "
+                            "is a new key and requires a fresh preview."
+                        ),
+                        retries=(
+                            "A retried or double-submitted confirm re-runs "
+                            "the drift check and dedupe-key short-circuit; it "
+                            "never queues a second email for the same "
+                            "cabinet, customer, and content."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "cabinet_notice.validation_error",
+                            "cabinet_notice.membership_drift",
+                            *owner_command_boundary_error_codes(
+                                "network.cabinet_notice"
+                            ),
+                        ),
+                        mapping_owner=(
+                            "admin web adapter (validation -> 400, drift -> "
+                            "409 with a refreshed preview)"
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("cabinet_notice.dispatched",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Operational breadcrumb (fdh, scope token, "
+                            "queued/deduplicated/suppressed counts, actor); "
+                            "customer emails are queued directly through "
+                            "communication intents, never via this event."
+                        ),
+                        replay=(
+                            "Re-dispatching an already-sent notice queues "
+                            "nothing (dedupe keys) and emits a new event "
+                            "whose counts show zero queued."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "none — manual cabinet outages had no customer "
+                            "communication path (the outage-impact page was "
+                            "preview-only and the classifier dispatcher is "
+                            "incident-bound)"
+                        ),
+                        new_owner="network.cabinet_notice",
+                        verification=(
+                            "Membership/content drift 409 tests, marketing-"
+                            "unsubscribed-still-eligible regression pin, "
+                            "per-customer dedupe and idempotent re-send "
+                            "tests, adapter permission and commit tests."
+                        ),
+                        cutover_gate=(
+                            "The cabinet detail and outage-impact pages link "
+                            "only to this console for messaging cabinet "
+                            "audiences."
+                        ),
+                        fallback_retirement=(
+                            "No campaign segment or ad hoc email path targets "
+                            "cabinet audiences."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_cabinet_notice.py",),
                 ),
             ),
             SOTService(

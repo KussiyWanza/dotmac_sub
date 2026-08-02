@@ -60,7 +60,9 @@ DEFAULT_MAX_QUEUE_AGE_HOURS = 72
 # A duplicate is the lesser evil for criticals; loss is the lesser evil for
 # bulk. True exactly-once (provider idempotency keys) is a follow-up.
 _AT_MOST_ONCE_CATEGORIES = frozenset({"general"})
-_AT_MOST_ONCE_EVENT_TYPES = frozenset({"service_bulk_message"})
+_AT_MOST_ONCE_EVENT_TYPES = frozenset(
+    {"service_bulk_message", "cabinet_service_notice"}
+)
 
 
 def _reclaim_policy(notification) -> str:
