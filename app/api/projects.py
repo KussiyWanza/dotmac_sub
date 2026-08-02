@@ -23,7 +23,9 @@ from app.schemas.project import (
     ProjectCreate,
     ProjectRead,
     ProjectTaskCreate,
+    ProjectTaskDependenciesReplace,
     ProjectTaskRead,
+    ProjectTaskStatusTransition,
     ProjectTaskUpdate,
     ProjectUpdate,
 )
@@ -305,6 +307,34 @@ def update_project_task(
     task_id: str, payload: ProjectTaskUpdate, db: Session = Depends(get_db)
 ):
     return projects_service.project_tasks.update(db, task_id, payload)
+
+
+@router.post(
+    "/project-tasks/{task_id}/transition",
+    response_model=ProjectTaskRead,
+    tags=["project-tasks"],
+    dependencies=[Depends(require_permission("project:task:write"))],
+)
+def transition_project_task_status(
+    task_id: str,
+    payload: ProjectTaskStatusTransition,
+    db: Session = Depends(get_db),
+):
+    return projects_service.project_tasks.transition_status(db, task_id, payload)
+
+
+@router.put(
+    "/project-tasks/{task_id}/dependencies",
+    response_model=ProjectTaskRead,
+    tags=["project-tasks"],
+    dependencies=[Depends(require_permission("project:task:write"))],
+)
+def replace_project_task_dependencies(
+    task_id: str,
+    payload: ProjectTaskDependenciesReplace,
+    db: Session = Depends(get_db),
+):
+    return projects_service.project_tasks.replace_dependencies(db, task_id, payload)
 
 
 @router.delete(

@@ -24,6 +24,17 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
         "canonical project aggregate",
         "customer communication delivery intent",
     )
+    relationship_integrity = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name
+        == "project-task relationship integrity and completion readiness"
+    )
+    assert relationship_integrity.input_names == (
+        "canonical project aggregate",
+        "project transition protocol",
+        "authorized project command",
+    )
     reassignment = next(
         concern
         for concern in lifecycle.contract.concerns
@@ -61,6 +72,24 @@ def test_project_adapters_do_not_complete_transactions() -> None:
     for relative in ("app/api/projects.py", "app/web/admin/projects.py"):
         source = (ROOT / relative).read_text()
         assert ".commit(" not in source
+
+
+def test_project_task_relationship_integrity_stays_in_lifecycle_owner() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+    schemas = (ROOT / "app/schemas/project.py").read_text()
+    api = (ROOT / "app/api/projects.py").read_text()
+
+    assert "class ProjectTaskStatusTransition" in schemas
+    assert "class ProjectTaskDependenciesReplace" in schemas
+    assert "def _lock_project_task_scope(" in service
+    assert "def _require_task_completion_ready(" in service
+    assert "def _dependency_graph_has_cycle(" in service
+    assert "def transition_status(" in service
+    assert '"status" in payload.model_fields_set and not _status_transition' in service
+    assert "def replace_dependencies(" in service
+    assert '"/project-tasks/{task_id}/transition"' in api
+    assert '"/project-tasks/{task_id}/dependencies"' in api
+    assert "ProjectTaskDependency(" not in api
 
 
 def test_task_reassignment_email_is_owned_by_project_lifecycle() -> None:

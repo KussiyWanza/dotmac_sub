@@ -99,3 +99,20 @@ same transaction as authoritative state. Events are delivered after commit by
 the durable dispatcher. Retryable database concurrency failures retry the whole
 command; validation, authorization, stale evidence, relationship ambiguity, and
 idempotency conflicts do not.
+
+ProjectTask relationship integrity is enforced only by
+`operations.project_lifecycle`. Task mutations first observe the native task
+scope, lock the authoritative Project, then lock and revalidate the task. An
+archived Project or task fails closed. Parent and dependency targets must be
+active, distinct tasks in the same native Project; parent chains and dependency
+graphs cannot contain cycles. Moving a task between Projects is not a generic
+edit and requires a separately designed transfer command.
+
+Status transitions use a typed command containing the expected status,
+requested status, actor context, and business reason. Stale expected status is
+rejected. Generic task update rejects status writes, and admin/API status
+adapters delegate to the typed transition command. A task cannot transition to
+`done` while any authoritative dependency
+is inactive or not itself `done`. Dependency replacement is atomic, replaces
+the full reviewed set, records audit evidence, and emits
+`project_task.dependencies_replaced` in the same owner transaction.
