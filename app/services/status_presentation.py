@@ -382,6 +382,28 @@ _SLA_VERDICT_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "no_contractual_sla": ("No contractual SLA", StatusTone.neutral, StatusIcon.info),
 }
 
+_TOPOLOGY_HOP_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    "up": ("Up", StatusTone.positive, StatusIcon.check),
+    "down": ("Down", StatusTone.negative, StatusIcon.x),
+    "degraded": ("Degraded", StatusTone.warning, StatusIcon.alert),
+    # An unenriched hop is honestly unknown — never dressed up as up or down.
+    "unknown": ("Unknown", StatusTone.neutral, StatusIcon.minus),
+}
+
+_ACCESS_ENDPOINT_SOURCE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    "live_session": ("Live session", StatusTone.positive, StatusIcon.check),
+    "provisioning": ("Provisioned NAS", StatusTone.neutral, StatusIcon.info),
+    "ont_assignment": ("ONT assignment", StatusTone.neutral, StatusIcon.info),
+    "uisp_observation": ("UISP observation", StatusTone.neutral, StatusIcon.info),
+    "unresolved": ("Unresolved", StatusTone.warning, StatusIcon.alert),
+}
+
+_RADIO_SIGNAL_FRESHNESS_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    "fresh": ("Observed", StatusTone.neutral, StatusIcon.check),
+    "stale": ("Stale", StatusTone.warning, StatusIcon.clock),
+    "unavailable": ("Signal unavailable", StatusTone.neutral, StatusIcon.minus),
+}
+
 _ACCESS_SESSION_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "connected": ("Connected", StatusTone.positive, StatusIcon.check),
     "stale": ("Last seen", StatusTone.warning, StatusIcon.clock),
@@ -716,6 +738,43 @@ def device_operational_status_presentation(
 
     value = _status_value(getattr(status, "status", status))
     return _presentation(value, _DEVICE_OPERATIONAL_PRESENTATIONS)
+
+
+def topology_hop_status_presentation(state: str | None) -> StatusPresentation:
+    """Project an access-path hop's observed state without re-deriving it.
+
+    network.access_path owns hop identity and ordering; observation owners
+    supply the up/down/degraded/unknown word. This mapping owns only its
+    label, tone, and icon so path chips stop carrying template colour maps.
+    """
+    return _presentation(_status_value(state), _TOPOLOGY_HOP_PRESENTATIONS)
+
+
+def path_gap_presentation(code: str | None) -> StatusPresentation:
+    """Project an access-path break as a warning without softening the code.
+
+    Every provable gap renders in the warning tone; the owner's break code is
+    the label so support quotes the exact machine word back to engineering.
+    """
+    value = str(code or "unknown").strip()
+    return StatusPresentation(
+        value=value,
+        label=value,
+        tone=StatusTone.warning,
+        icon=StatusIcon.alert,
+    )
+
+
+def access_endpoint_source_presentation(source: str | None) -> StatusPresentation:
+    """Project which record proved the serving endpoint, named not implied."""
+    return _presentation(_status_value(source), _ACCESS_ENDPOINT_SOURCE_PRESENTATIONS)
+
+
+def radio_signal_freshness_presentation(freshness: str | None) -> StatusPresentation:
+    """Project owner-resolved RF observation freshness without re-aging it."""
+    return _presentation(
+        _status_value(freshness), _RADIO_SIGNAL_FRESHNESS_PRESENTATIONS
+    )
 
 
 def connection_health_status_presentation(

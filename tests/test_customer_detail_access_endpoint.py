@@ -49,16 +49,23 @@ def test_endpoint_projection_reports_serving_endpoint(monkeypatch):
         details, "resolve_customer_path", lambda _db, _sub: _fiber_path()
     )
 
-    endpoint, trace = details._build_access_endpoint_projection(
-        None, _subscription_stub()
-    )
+    projection = details._build_access_endpoint_projection(None, _subscription_stub())
+    endpoint = projection.endpoint
 
-    assert endpoint["endpoint_display"] == "Gudu OLT (0/1/3)"
-    assert endpoint["pon_port_label"] == "0/1/3"
+    assert endpoint.endpoint_display == "Gudu OLT (0/1/3)"
+    assert endpoint.pon_port_label == "0/1/3"
     # Fibre resolves from the ONT assignment, not the NAS-arm live/provisioned flag.
-    assert endpoint["endpoint_source"] == "ont_assignment"
-    assert endpoint["endpoint_complete"] is True
-    assert [node["kind"] for node in trace["nodes"]] == [
+    assert endpoint.endpoint_source == "ont_assignment"
+    assert endpoint.source_presentation.label == "ONT assignment"
+    assert endpoint.endpoint_complete is True
+    assert [node.kind for node in projection.view.nodes] == [
+        "ont",
+        "pon_port",
+        "olt",
+        "network_device",
+    ]
+    # The legacy trace projection stays available for evidence consumers.
+    assert [node["kind"] for node in projection.trace_dict["nodes"]] == [
         "ont",
         "pon_port",
         "olt",
@@ -74,12 +81,12 @@ def test_endpoint_projection_degrades_without_breaking_the_page(monkeypatch):
 
     monkeypatch.setattr(details, "resolve_customer_path", _boom)
 
-    endpoint, trace = details._build_access_endpoint_projection(
-        None, _subscription_stub()
-    )
+    projection = details._build_access_endpoint_projection(None, _subscription_stub())
 
-    assert endpoint == {"endpoint_source": "unresolved"}
-    assert trace is None
+    assert projection.endpoint.endpoint_source == "unresolved"
+    assert projection.endpoint.source_presentation.label == "Unresolved"
+    assert projection.view is None
+    assert projection.trace is None
 
 
 def test_card_carries_endpoint_separately_from_provisioned_site():

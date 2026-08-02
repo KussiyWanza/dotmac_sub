@@ -34432,6 +34432,186 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.customer_network_path_projection",
+                module="app.services.customer_network_path",
+                owns=(
+                    "customer network path graph projection",
+                    "customer serving-endpoint presentation projection",
+                    "shared network graph view contract",
+                ),
+                depends_on=(
+                    "network.access_path",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "network.access_path owns path identity, ordering, and "
+                    "gaps; observation owners own each hop's state and "
+                    "freshness; ui.status_presentation owns label/tone/icon "
+                    "meaning. This read owner composes those facts into the "
+                    "shared NetworkGraphView (app.services.network_graph) and "
+                    "the serving-endpoint presentation. It makes no topology, "
+                    "health, outage, or notification decision, performs no "
+                    "device I/O, and never manufactures a hop, an edge, or a "
+                    "status. The graph contract is the one vocabulary for the "
+                    "Customer 360 network path and the future network "
+                    "explorer surface."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer network path graph projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("customer serving-endpoint presentation projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="shared network graph view contract",
+                            role=OwnerRole.POLICY,
+                            input_names=("shared network graph vocabulary",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="subscription access-path resolution",
+                            owner="network.access_path",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "resolved CustomerPath with AccessPathSummary "
+                                "and SubscriberTopologyTrace identity, "
+                                "ordering, hop states, evidence sources, "
+                                "observation times, and typed breaks"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="semantic status presentation vocabulary",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "StatusPresentation label/tone/icon "
+                                "projections for hop states, path gaps, "
+                                "serving-endpoint sources, and RF signal "
+                                "freshness"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="shared network graph vocabulary",
+                            owner="ui.customer_network_path_projection",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "NetworkGraphNode, NetworkGraphEdge, "
+                                "NetworkGraphGap, NetworkGraphEvidence, "
+                                "NetworkGraphMeasurement, and NetworkGraphView "
+                                "typed invariants in app.services.network_graph"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Projects already-resolved access paths on the "
+                            "adapter session without a business write and "
+                            "without device, SSH, UISP, OLT, or ACS I/O."
+                        ),
+                        locking="Read projection acquires no mutation locks.",
+                        idempotency=(
+                            "The same resolved path, observations, and "
+                            "presentation vocabulary produce the same graph "
+                            "view and endpoint presentation."
+                        ),
+                        retries=(
+                            "Read projection calls are safe to retry; a "
+                            "failed resolution degrades to an explicit "
+                            "unresolved projection per subscription."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.services.web_customer_details",
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="customer network path graph projection",
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                            writer="ui.customer_network_path_projection",
+                            freshness=(
+                                "Recomputed on read; every hop retains its "
+                                "owner's observed_at and freshness word, and "
+                                "unknown, stale, unavailable, and "
+                                "not-applicable stay distinct."
+                            ),
+                            stale_behavior=(
+                                "Renders the owner's stale or unknown word "
+                                "with its evidence age; it never converts "
+                                "missing or aged observations into up or "
+                                "down."
+                            ),
+                            drift_signal=(
+                                "Customer network path projection and "
+                                "template-boundary tests, and access-path "
+                                "trace contract changes."
+                            ),
+                            rebuild_operation=(
+                                "Recompute on read from the current "
+                                "access-path resolution; nothing is "
+                                "persisted."
+                            ),
+                            repair_owner="ui.customer_network_path_projection",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "templates/admin/customers/detail.html inline "
+                            "topology-trace tone mapping, endpoint-source "
+                            "labels, and RF freshness styling"
+                        ),
+                        new_owner="ui.customer_network_path_projection",
+                        verification=(
+                            "Customer network path projection, presentation, "
+                            "multi-subscription, query-budget, and "
+                            "template-boundary tests."
+                        ),
+                        cutover_gate=(
+                            "The customer detail template renders only "
+                            "owner-provided presentations and composed "
+                            "display strings for path hops, gaps, endpoint "
+                            "source, and RF signal."
+                        ),
+                        fallback_retirement=(
+                            "detail.html no longer maps hop states or "
+                            "endpoint sources to colours or labels; the "
+                            "inline node.state and endpoint_source label "
+                            "branches are removed."
+                        ),
+                    ),
+                    steward="network operations UI",
+                    design_refs=(
+                        "docs/designs/CUSTOMER_NETWORK_PATH.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_customer_network_path.py",
+                        "tests/test_customer_detail_access_endpoint.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.status_presentation",
                 module="app.services.status_presentation",
                 owns=(
@@ -34444,6 +34624,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "customer connection health labels, semantic tones, and icon keys",
                     "RADIUS access-session observation labels, semantic tones, and icon keys",
                     "service access availability labels, semantic tones, and icon keys",
+                    "access-path hop state labels, semantic tones, and icon keys",
+                    "access-path gap presentation semantics",
+                    "serving-endpoint source labels, semantic tones, and icon keys",
+                    "RF signal freshness labels, semantic tones, and icon keys",
                     "support-ticket status labels, semantic tones, and icon keys",
                     "field work-order status labels, semantic tones, and icon keys",
                     "vendor installation-project status labels, semantic tones, and icon keys",
@@ -34462,6 +34646,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "network.device_state",
                     "network.connection_health",
                     "network.outage_lifecycle",
+                    "network.access_path",
+                    "network.radio_signal",
                     "support.ticket_lifecycle",
                     "operations.work_order_status",
                     "operations.vendor_project_lifecycle",
@@ -34480,6 +34666,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             ),
         ),
         entrypoints=(
+            "app.services.customer_network_path",
+            "app.services.network_graph",
             "app.schemas.catalog.SubscriptionRead",
             "app.schemas.billing.InvoiceRead",
             "app.schemas.billing.PaymentRead",
