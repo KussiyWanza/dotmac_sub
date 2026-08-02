@@ -1,93 +1,69 @@
-"""Only an explicit managed-ONT PPPoE intent authorises a dialer projection.
+"""The producer gate delegates to the delivery-authorization owner.
 
-This reconciler staged a PPPoE credential into desired state for 1,374 of 1,523
-production ONTs. 1,372 of those services are `routing` + `dhcp` and one is
-`bridging` -- none of which places PPPoE termination on the ONT. It selected
-every subscriber-assigned ONT without consulting WAN mode, and resolved the
-credential at subscriber grain by creation order.
+An earlier version of this gate read `OntAssignment.wan_mode`, `ip_mode` and
+`pppoe_username`. Migration 084 copied those into desired config and then set
+them `NULL`, so the 12 production survivors are unexplained residue and cannot
+authorise a device write.
 
-The projection is a device write. Absent or unrecognised intent must therefore
-be ineligible, not defaulted to the one value that authorises writing.
+One owner now answers "may this ONT terminate PPP" for both the producer and
+delivery, so the producer cannot stage what delivery would refuse to send. The
+ruling matrix itself is covered in `test_ppp_delivery_authorization.py`.
 """
 
 from __future__ import annotations
 
-import pytest
-
+from app.models.network import OntUnit, OntWanServiceInstance
 from app.services.cpe_dialer_credential_reconcile import termination_intent
 
 
-@pytest.mark.parametrize(
-    ("wan_mode", "ip_mode"),
-    [("routing", "dhcp"), ("routing", None), (None, None), ("routing", "static_ip")],
-)
-def test_operator_entered_intent_is_the_only_thing_that_authorises(wan_mode, ip_mode):
-    """Neither WAN field can say PPPoE, so the username is the whole signal."""
-    eligible, reason = termination_intent(wan_mode, ip_mode, "acct-1")
+def _ont(db_session, serial):
+    ont = OntUnit(serial_number=serial, is_active=True)
+    db_session.add(ont)
+    db_session.flush()
+    return ont
+
+
+def test_declared_pppoe_service_intent_authorises(db_session):
+    ont = _ont(db_session, "HWTC-GATE-OK")
+    db_session.add(
+        OntWanServiceInstance(
+            ont_id=ont.id, name="internet", connection_type="pppoe", is_active=True
+        )
+    )
+    db_session.commit()
+
+    eligible, reason = termination_intent(db_session, ont.id)
 
     assert eligible is True
     assert reason == "managed_ont_pppoe"
 
 
-def test_routing_without_operator_intent_is_ineligible():
-    """The production majority: 1,372 ONTs carried a dialer on this shape.
+def test_no_declared_intent_refuses(db_session):
+    """The production majority: 1,373 services carried a staged dialer."""
+    ont = _ont(db_session, "HWTC-GATE-NONE")
+    db_session.commit()
 
-    `routing` says only that the ONT is not bridging. It is not consent to dial.
-    """
-    eligible, reason = termination_intent("routing", "dhcp", None)
-
-    assert eligible is False
-    assert "no_ont_pppoe_intent" in reason
-
-
-@pytest.mark.parametrize(
-    ("wan_mode", "ip_mode"),
-    [("bridging", "dhcp"), ("bridge", None), (None, "bridged"), ("setup_via_onu", "")],
-)
-def test_bridge_signal_in_either_field_is_ineligible(wan_mode, ip_mode):
-    eligible, reason = termination_intent(wan_mode, ip_mode, "acct-1")
+    eligible, reason = termination_intent(db_session, ont.id)
 
     assert eligible is False
-    assert reason == "bridge_termination"
+    assert reason == "no_pppoe_service_intent"
 
 
-def test_bridge_beats_a_conflicting_pppoe_signal():
-    """Contradictory intent must not resolve toward writing.
+def test_the_gate_no_longer_reads_migration_084_residue():
+    """Guard against reintroducing the cleared fields as an authority."""
+    from pathlib import Path
 
-    Bridging places termination on a downstream router whatever the other
-    field claims, so the conflict is refused rather than averaged.
-    """
-    eligible, reason = termination_intent("bridging", "dhcp", "acct-1")
+    source = Path("app/services/cpe_dialer_credential_reconcile.py").read_text(
+        encoding="utf-8"
+    )
+    gate = source[source.index("def termination_intent(") :]
+    gate = gate[: gate.index("\ndef ", 1)]
 
-    assert eligible is False
-    assert reason == "bridge_termination"
+    # Strip the docstring: it names the cleared fields precisely to explain
+    # why they are not read, and matching on the word would flag the warning.
+    body = gate.split('"""')[-1]
 
-
-def test_absent_intent_is_ineligible_not_assumed_pppoe():
-    """The fail-open this replaces.
-
-    `_normalise_wan_mode` ends with `return "pppoe"`, so an unset mode read as
-    PPPoE intent. Defaulting an unknown to the value that authorises a device
-    write is the wrong direction.
-    """
-    eligible, reason = termination_intent(None, None, None)
-
-    assert eligible is False
-    assert "no_ont_pppoe_intent" in reason
-
-
-@pytest.mark.parametrize("ip_mode", ["static_ip", "dhcp", "inactive"])
-def test_no_ip_mode_authorises_a_dial_on_its_own(ip_mode):
-    eligible, _ = termination_intent("routing", ip_mode, None)
-
-    assert eligible is False
-
-
-def test_the_gate_is_not_the_permissive_helper():
-    """Guard against someone 'simplifying' this back onto _normalise_wan_mode."""
-    from app.services.network.reconcile.adapters import _normalise_wan_mode
-
-    # The old helper calls an absent mode PPPoE...
-    assert _normalise_wan_mode(None, None) == "pppoe"
-    # ...and the gate must not.
-    assert termination_intent(None, None, None)[0] is False
+    assert "authorize_ppp_delivery" in gate
+    assert ".wan_mode" not in body
+    assert ".ip_mode" not in body
+    assert "assignment_pppoe_username" not in body

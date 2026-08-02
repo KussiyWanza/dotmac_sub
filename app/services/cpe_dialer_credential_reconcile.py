@@ -135,6 +135,7 @@ class DialerCredentialReconcileStats:
     projected: int = 0
     awaiting_device: int = 0
     skipped_no_credential: int = 0
+    skipped_ambiguous_credential: int = 0
     skipped_no_secret: int = 0
     drifts: tuple[DialerCredentialDrift, ...] = ()
 
@@ -146,6 +147,7 @@ class DialerCredentialReconcileStats:
             "projected": self.projected,
             "awaiting_device": self.awaiting_device,
             "skipped_no_credential": self.skipped_no_credential,
+            "skipped_ambiguous_credential": self.skipped_ambiguous_credential,
             "skipped_no_secret": self.skipped_no_secret,
             "drifts": [
                 {
@@ -243,46 +245,33 @@ def _candidate_rows(db: Session, ont_ids: Sequence[str] | None) -> list[Any]:
     return list(db.execute(stmt).all())
 
 
-#: Values in either WAN field that place termination off the ONT.
-_BRIDGE_INTENT = frozenset({"bridge", "bridged", "bridging", "setup_via_onu"})
+def termination_intent(db: Session, ont_id: Any) -> tuple[bool, str]:
+    """Whether this ONT is the authorised PPPoE termination for its service.
 
+    Delegates to ``network.ppp_delivery_authorization``, which reads the
+    ``OntWanServiceInstance`` service-intent model. This deliberately does NOT
+    read ``OntAssignment.wan_mode``, ``ip_mode`` or ``pppoe_username``:
+    migration 084 copied those into desired config and then explicitly set them
+    ``NULL``, so surviving values are unexplained residue and cannot authorise
+    a device write. An earlier version of this gate trusted exactly those 12
+    survivors.
 
-def termination_intent(
-    wan_mode: Any, ip_mode: Any, assignment_pppoe_username: Any
-) -> tuple[bool, str]:
-    """Whether the ONT is the authorised PPPoE termination for this service.
-
-    Returns ``(eligible, reason)``. Eligible ONLY on a positive signal.
-
-    Neither WAN field can express PPPoE: ``wan_mode`` is
-    ``{routing, bridging}`` and ``ip_mode`` is
-    ``{inactive, static_ip, dhcp}``. So "the assignment says routing" is not
-    consent to dial -- routing merely says the ONT is not bridging.
-
-    The one positive signal the schema carries is the operator-entered
-    ``OntAssignment.pppoe_username``. That is a DIFFERENT field from the
-    ``OntUnit.desired_config`` this reconciler writes, so reading it is not
-    circular: the operator states that this ONT dials PPPoE for this service,
-    and the reconciler then keeps the credential aligned with the authoritative
-    record. Absent that statement there is no authorisation, which is why 1,373
-    of 1,374 production projections should never have happened.
-
-    A bridge signal in either field wins outright, because bridging places
-    termination on a downstream router whatever else is set.
+    One owner answers the question for both halves of the containment, so the
+    producer cannot stage what delivery would refuse to send.
     """
-    wan = str(wan_mode or "").strip().lower()
-    ip = str(ip_mode or "").strip().lower()
+    from app.services.network.ppp_delivery_authorization import (
+        authorize_ppp_delivery,
+    )
 
-    if wan in _BRIDGE_INTENT or ip in _BRIDGE_INTENT:
-        return False, "bridge_termination"
-    if not str(assignment_pppoe_username or "").strip():
-        return False, f"no_ont_pppoe_intent:{wan or '-'}/{ip or '-'}"
-    return True, "managed_ont_pppoe"
+    ruling = authorize_ppp_delivery(db, ont_id)
+    return ruling.authorized, (
+        ruling.refusal.value if ruling.refusal else "managed_ont_pppoe"
+    )
 
 
 def _authoritative_credentials(
     db: Session, subscription_ids: list[Any]
-) -> dict[Any, AccessCredential]:
+) -> tuple[dict[Any, AccessCredential], frozenset[Any]]:
     """Exactly one active credential per EXACT subscription, or none.
 
     Previously this keyed by subscriber and kept the oldest row by
@@ -296,7 +285,7 @@ def _authoritative_credentials(
     projection is a device write.
     """
     if not subscription_ids:
-        return {}
+        return {}, frozenset()
     rows = db.scalars(
         select(AccessCredential)
         .where(AccessCredential.subscription_id.in_(subscription_ids))
@@ -306,11 +295,18 @@ def _authoritative_credentials(
     by_subscription: dict[Any, list[AccessCredential]] = {}
     for row in rows:
         by_subscription.setdefault(row.subscription_id, []).append(row)
-    return {
-        subscription_id: found[0]
-        for subscription_id, found in by_subscription.items()
-        if len(found) == 1
-    }
+    return (
+        {
+            subscription_id: found[0]
+            for subscription_id, found in by_subscription.items()
+            if len(found) == 1
+        },
+        frozenset(
+            subscription_id
+            for subscription_id, found in by_subscription.items()
+            if len(found) > 1
+        ),
+    )
 
 
 def reconcile_cpe_dialer_credentials(
@@ -337,11 +333,7 @@ def reconcile_cpe_dialer_credentials(
     eligible_rows = []
     skipped: dict[str, int] = {}
     for row in rows:
-        ok, reason = termination_intent(
-            getattr(row, "wan_mode", None),
-            getattr(row, "ip_mode", None),
-            getattr(row, "assignment_pppoe_username", None),
-        )
+        ok, reason = termination_intent(db, row.id)
         if ok:
             eligible_rows.append(row)
         else:
@@ -355,17 +347,28 @@ def reconcile_cpe_dialer_credentials(
         )
     rows = eligible_rows
 
-    credentials = _authoritative_credentials(
+    credentials, ambiguous_credential_subscriptions = _authoritative_credentials(
         db, [row.subscription_id for row in rows if row.subscription_id is not None]
     )
 
     checked = in_sync = projected = awaiting = no_credential = no_secret = 0
+    ambiguous_credential = 0
     drifts: list[DialerCredentialDrift] = []
     repaired_count = 0
 
     for row in rows:
         checked += 1
         credential = credentials.get(row.subscription_id)
+        if (
+            credential is None
+            and row.subscription_id in ambiguous_credential_subscriptions
+        ):
+            # Several active credentials for one service. Nobody has said which
+            # is authoritative, and that is a different fact from having none --
+            # collapsing them hid a real ownership question behind a benign
+            # "no credential" count.
+            ambiguous_credential += 1
+            continue
         if credential is None:
             # Not this reconciler's problem: an ONT with no access credential
             # is surfaced by pppoe_health as CATEGORY_NO_CREDENTIAL.
@@ -450,6 +453,7 @@ def reconcile_cpe_dialer_credentials(
         projected=projected,
         awaiting_device=awaiting,
         skipped_no_credential=no_credential,
+        skipped_ambiguous_credential=ambiguous_credential,
         skipped_no_secret=no_secret,
         drifts=tuple(drifts),
     )

@@ -47,6 +47,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
+from app.services.network.ppp_delivery_authorization import (
+    authorize_ppp_delivery,
+)
 
 from .adapters import (
     ACS_DELIVERY_FAULT_REASONS,
@@ -285,10 +288,21 @@ def reconcile_ont(
                 )
 
             # ── Apply ───────────────────────────────────────────────────────
+            # Resolve delivery-time PPP authorization from the service-intent
+            # model. This is deliberately not derived from the plan: the plan
+            # says what desired state wants, and this says whether the service
+            # is allowed to terminate PPP on this ONT at all.
+            ppp_ruling = authorize_ppp_delivery(db, ont.id)
+            if not ppp_ruling.authorized:
+                logger.info(
+                    "reconcile_ppp_delivery_not_authorized",
+                    extra=ppp_ruling.as_log_extra(),
+                )
             ctx = ApplyContext(
                 olt_adapter=olt_adapter,
                 acs_client=acs_client,
                 resolve_secret=secret_resolver,
+                ppp_authorization=ppp_ruling,
             )
             apply_outcome = apply_plan(plan, ctx, deadline=deadline)
 

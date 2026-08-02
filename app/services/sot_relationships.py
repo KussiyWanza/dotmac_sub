@@ -15171,6 +15171,129 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=("network.identity",),
             ),
             SOTService(
+                name="network.ppp_delivery_authorization",
+                module="app.services.network.ppp_delivery_authorization",
+                owns=(
+                    "delivery-time PPP termination authorization",
+                    "PPP delivery action-bundle membership",
+                ),
+                depends_on=(
+                    "network.ont_assignment_identity",
+                    "network.nas_inventory",
+                ),
+                notes=(
+                    "Second, independent half of the CPE dialer containment. The "
+                    "producer decides whether to STAGE a credential; this decides "
+                    "whether a staged plan may REACH a device, and does not trust "
+                    "the producer. delivery.pending_apply, stored desired values "
+                    "and credential fingerprints are evidence that something once "
+                    "wrote desired state, never authorization to deliver it: "
+                    "production carries 1,318 ONTs with pending_apply set and PPP "
+                    "credentials staged onto 1,373 services whose termination is "
+                    "not the ONT. Intent is read from OntWanServiceInstance, which "
+                    "already expresses connection_type=pppoe, rather than "
+                    "introducing another parallel field. OntAssignment.wan_mode, "
+                    "ip_mode and pppoe_username are deliberately NOT read: "
+                    "migration 084 copied them into desired config and then set "
+                    "them NULL, so surviving values are unexplained residue. The "
+                    "whole PPP bundle is gated -- ACS credential writes, object "
+                    "create/delete, NAT, OMCI provisioning and OLT service-port "
+                    "work -- because each can establish or disturb a termination "
+                    "on its own. Unrelated ONT reconciliation is untouched. An "
+                    "absent ruling is a refusal, so the gate is not skippable by a "
+                    "caller that forgot to resolve it."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="delivery-time PPP termination authorization",
+                            role=OwnerRole.POLICY,
+                            input_names=("active ONT WAN service instances",),
+                        ),
+                        ConcernContract(
+                            name="PPP delivery action-bundle membership",
+                            role=OwnerRole.POLICY,
+                            input_names=("planned reconcile actions",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="active ONT WAN service instances",
+                            owner="network.ont_assignment_identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_wan_service_instances",
+                        ),
+                        AuthorityInput(
+                            name="planned reconcile actions",
+                            owner="network.ont_assignment_commands",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="reconcile planner Plan.actions",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure ruling. Reads service intent inside the "
+                            "caller's session and writes nothing; the caller "
+                            "carries the ruling into apply."
+                        ),
+                        locking="none",
+                        idempotency=(
+                            "A ruling is a function of stored intent, so the "
+                            "same inputs always yield the same decision."
+                        ),
+                        retries=(
+                            "Not retryable and not retried: a refusal is an "
+                            "answer, not a transient failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "no_pppoe_service_intent",
+                            "ambiguous_pppoe_service_intent",
+                            "bridged_service_intent",
+                            "unresolvable_ont",
+                        ),
+                        mapping_owner="app.services.network.reconcile.applier",
+                        fail_closed_on=(
+                            "no active PPPoE service instance",
+                            "more than one active PPPoE service instance",
+                            "an active bridged service instance",
+                            "an ONT identity that cannot be resolved",
+                            "an absent ruling at apply time",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.ppp_delivery_authorization",
+                        old_owner="implicit: staged desired state",
+                        verification=(
+                            "tests/test_ppp_delivery_authorization.py pins that "
+                            "the whole PPP bundle is gated, that unrelated "
+                            "reconciliation is not, and that an absent ruling "
+                            "refuses rather than passes."
+                        ),
+                        cutover_gate=(
+                            "OntWanServiceInstance gaining exact subscription_id "
+                            "ownership and a one-active-primary constraint is the "
+                            "open architecture decision; until then intent is read "
+                            "at ONT grain."
+                        ),
+                        fallback_retirement=(
+                            "The 1,318-row staged backlog is removed by a "
+                            "separately reviewed operation that recomputes "
+                            "pending_apply rather than mass-clearing it."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/test_ppp_delivery_authorization.py",
+                        "tests/test_cpe_dialer_credential_intent_gate.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.nas_local_secret_boundary",
                 module="app.services.nas.local_secret_policy",
                 owns=(
