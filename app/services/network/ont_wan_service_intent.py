@@ -519,7 +519,11 @@ def retire_ont_intents_in_transaction(
 
 
 def active_primary_internet_intent(
-    db: Session, *, ont_id: UUID, subscription_id: UUID
+    db: Session,
+    *,
+    ont_id: UUID,
+    subscription_id: UUID,
+    for_update: bool = False,
 ) -> OntWanServiceInstance | None:
     """The one active primary Internet intent binding this ONT to this service.
 
@@ -527,19 +531,25 @@ def active_primary_internet_intent(
     ONT-grain answer would authorise a credential belonging to whichever
     service happens to share the device.
     """
+    statement = (
+        select(OntWanServiceInstance)
+        .where(OntWanServiceInstance.ont_id == ont_id)
+        .where(OntWanServiceInstance.subscription_id == subscription_id)
+        .where(OntWanServiceInstance.is_primary.is_(True))
+        .where(OntWanServiceInstance.lifecycle_state == OntWanServiceLifecycle.active)
+    )
+    if for_update:
+        # A delivery ruling binds `revision`, so the row must not change
+        # between the ruling and the write. Two ORM reads in one session can
+        # both be served from the identity map, which would return the stale
+        # revision and leave the TOCTOU window open -- `populate_existing`
+        # forces the refresh and `with_for_update` holds the row.
+        statement = statement.with_for_update().execution_options(
+            populate_existing=True
+        )
     rows = [
         row
-        for row in db.execute(
-            select(OntWanServiceInstance)
-            .where(OntWanServiceInstance.ont_id == ont_id)
-            .where(OntWanServiceInstance.subscription_id == subscription_id)
-            .where(OntWanServiceInstance.is_primary.is_(True))
-            .where(
-                OntWanServiceInstance.lifecycle_state == OntWanServiceLifecycle.active
-            )
-        )
-        .scalars()
-        .all()
+        for row in db.execute(statement).scalars().all()
         # Internet-scoped: the singular-primary invariant is Internet-only, so
         # a primary IPTV or VoIP instance must not answer this question.
         if _enum_value(row.service_type) == PRIMARY_CONSTRAINED_SERVICE_TYPE

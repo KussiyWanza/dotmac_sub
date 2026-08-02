@@ -111,7 +111,7 @@ def test_the_gate_no_longer_reads_migration_084_residue():
     # why they are not read, and matching on the word would flag the warning.
     body = gate.split('"""')[-1]
 
-    assert "authorize_ppp_delivery" in gate
+    assert "authorize_ppp_termination_intent" in gate
     assert ".wan_mode" not in body
     assert ".ip_mode" not in body
     assert "assignment_pppoe_username" not in body

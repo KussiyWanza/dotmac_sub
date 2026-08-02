@@ -1137,3 +1137,223 @@ def test_tr069_profile_change_is_olt_only_and_persists_after_readback(
     assert observation.olt_tr069_profile_id == 5
     assert observation.acs_present is True
     assert observation.acs_observed_software_version == "V5R020"
+
+
+# ── PPP refusal is residual drift, not a hard failure ───────────────────────
+
+
+def _acs_device_missing_pppoe(ont, *, stale_ssid: bool = False) -> dict:
+    """A device document identical to the synced baseline except the PPPoE
+    username, so the planner emits PPP work that delivery must refuse.
+
+    ``stale_ssid`` additionally diverges the Wi-Fi SSID, so one full-scope pass
+    carries both unrelated repair work and PPP work.
+    """
+    import copy
+
+    device = copy.deepcopy(_synced_acs_device(ont))
+    wan = device["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]["1"]
+    wan["WANPPPConnection"]["1"]["Username"]["_value"] = "SOMEONE-ELSES-LOGIN"
+    if stale_ssid:
+        lan = device["InternetGatewayDevice"]["LANDevice"]["1"]
+        lan["WLANConfiguration"]["1"]["SSID"]["_value"] = "STALE-SSID"
+    return device
+
+
+def test_refused_ppp_is_reported_as_out_of_sync_not_synced(
+    db_session, ont, stub_desired, stub_ont_status
+):
+    """The public result must not contradict the row it just wrote.
+
+    The pass succeeds -- nothing was rejected and everything unrelated
+    converged -- but PPP was withheld, so both the persisted status and the
+    returned status are `out_of_sync`, with no `last_error` because nothing
+    failed.
+    """
+    result = reconcile_ont(
+        db_session,
+        ont.id,
+        mode="sweep",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=_StubAcsClient(device=_acs_device_missing_pppoe(ont)),
+    )
+
+    assert result.success is True
+    assert result.failure is None
+    assert result.sync_status == "out_of_sync"
+    assert ont.sync_status == OntSyncStatus.out_of_sync
+    assert result.sync_status == ont.sync_status.value, (
+        "returned status must equal the persisted status"
+    )
+    # Policy-withheld work carries no error: that is what distinguishes it
+    # from a hard failure for the mode guard.
+    assert ont.last_error is None
+    assert any("ppp_delivery" in drift.field for drift in result.drift_after)
+
+
+class _StatefulAcsClient(_StubAcsClient):
+    """An ACS stub that reflects writes back into its device document.
+
+    The plain stub never updates the document, so post-apply verification
+    always reports a just-written field as still divergent. That makes it
+    impossible to prove CONVERGENCE -- only dispatch. This one applies each
+    written parameter to the document, so a second pass can legitimately reach
+    `synced` for the fields it wrote.
+    """
+
+    def set_parameter_values(self, device_id, params, **kwargs):
+        result = super().set_parameter_values(device_id, params, **kwargs)
+        # `params` is a {path: value} mapping here; older call shapes pass
+        # (path, value) pairs. Handle both rather than silently iterating the
+        # characters of a dict key.
+        items = (
+            params.items()
+            if isinstance(params, dict)
+            else [(entry[0], entry[1]) for entry in params]
+        )
+        for path, value in items:
+            node = self._device
+            keys = str(path).split(".")
+            for key in keys[:-1]:
+                node = node.setdefault(key, {})
+                if not isinstance(node, dict):  # pragma: no cover - defensive
+                    return result
+            node[keys[-1]] = {
+                "_value": value,
+                "_object": False,
+                "_writable": True,
+            }
+        return result
+
+
+def test_a_ppp_refusal_does_not_freeze_ordinary_sync(
+    db_session, ont, stub_desired, stub_ont_status
+):
+    """Second pass: an unrelated change actually CONVERGES while PPP stays
+    refused.
+
+    The refusal recurs every pass by design, so blocking sync on it would
+    freeze the device permanently. This drives a real Wi-Fi SSID change through
+    a stateful ACS stub and asserts the second pass succeeds, that Wi-Fi is
+    gone from the residual drift, and that only the refused PPP work keeps the
+    ONT out_of_sync.
+    """
+    first = reconcile_ont(
+        db_session,
+        ont.id,
+        mode="sweep",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=_StatefulAcsClient(device=_acs_device_missing_pppoe(ont)),
+    )
+    assert first.sync_status == "out_of_sync"
+    assert ont.last_error is None
+
+    # A full-scope sync carrying BOTH unrelated repair work (the Wi-Fi SSID
+    # has drifted) and PPP work. A wifi-only proposed_change would scope the
+    # plan to Wi-Fi and never exercise the refusal at all.
+    acs = _StatefulAcsClient(device=_acs_device_missing_pppoe(ont, stale_ssid=True))
+    second = reconcile_ont(
+        db_session,
+        ont.id,
+        mode="sync",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=acs,
+    )
+
+    # The guard opened...
+    assert second.failure is None, f"unrelated sync must not fail: {second.failure}"
+    assert second.success is True
+
+    # ...the Wi-Fi change converged...
+    assert any("KURSI" in str(call) for call in acs.spv_calls), (
+        "the drifted Wi-Fi SSID must be repaired"
+    )
+    assert not any("wifi" in drift.field for drift in second.drift_after), (
+        "a converged Wi-Fi change must not remain in residual drift"
+    )
+
+    # ...and ONLY the refused PPP work keeps the ONT out of sync.
+    assert second.sync_status == "out_of_sync"
+    assert second.drift_after, "the refusal must stay visible"
+    assert all("ppp_delivery" in drift.field for drift in second.drift_after)
+    assert ont.last_error is None, "a policy refusal is not a failure"
+    assert not any("WANPPPConnection" in str(call) for call in acs.spv_calls)
+
+
+def test_an_authorized_ppp_readback_failure_still_hard_fails(
+    db_session, ont, stub_desired, stub_ont_status, subscription
+):
+    """The containment must not soften genuine PPP failures.
+
+    When delivery IS authorized, `residual_ppp_drift` is empty, so a PPP write
+    that lands but does not read back stays a real VERIFICATION_MISMATCH with a
+    `last_error` -- and therefore still blocks the next sync-mode pass.
+    """
+    from app.models.catalog import AccessCredential
+    from app.models.network import (
+        OntAssignment,
+        OntWanServiceInstance,
+        OntWanServiceLifecycle,
+    )
+    from app.services.cpe_dialer_credential_reconcile import dialer_fingerprint
+    from app.services.credential_crypto import encrypt_credential
+    from app.services.network.ont_desired_config import set_desired_config_values
+
+    db_session.add(
+        OntAssignment(ont_unit_id=ont.id, subscription_id=subscription.id, active=True)
+    )
+    db_session.add(
+        OntWanServiceInstance(
+            ont_id=ont.id,
+            subscription_id=subscription.id,
+            name="internet",
+            service_type="internet",
+            connection_type="pppoe",
+            is_primary=True,
+            lifecycle_state=OntWanServiceLifecycle.active,
+            is_active=True,
+        )
+    )
+    # Real credential authority: without it the delivery is refused and this
+    # test would silently stop exercising the authorized path it exists for.
+    username, secret = "100024456", "s3cret-pppoe"
+    db_session.add(
+        AccessCredential(
+            subscriber_id=subscription.subscriber_id,
+            subscription_id=subscription.id,
+            username=username,
+            secret_hash=encrypt_credential(secret),
+            is_active=True,
+        )
+    )
+    set_desired_config_values(
+        ont,
+        {
+            "delivery.dialer_credential_fingerprint": dialer_fingerprint(
+                username, secret
+            )
+        },
+    )
+    db_session.add(ont)
+    db_session.commit()
+
+    # The stub accepts the write but keeps reporting the stale username, so
+    # verification cannot confirm convergence.
+    result = reconcile_ont(
+        db_session,
+        ont.id,
+        mode="sweep",
+        olt_adapter=_StubOltAdapter(present=True),
+        acs_client=_StubAcsClient(device=_acs_device_missing_pppoe(ont)),
+    )
+
+    assert result.success is False
+    assert result.failure is not None
+    # Not a policy refusal: authorization succeeded, so residual_ppp_drift is
+    # empty and none of the softening paths apply.
+    assert result.drift_after == () or not any(
+        "ppp_delivery" in d.field for d in result.drift_after
+    )
+    assert ont.sync_status == OntSyncStatus.out_of_sync
+    # A hard failure records an error, which is what makes it block sync.
+    assert ont.last_error is not None

@@ -97,7 +97,10 @@ from .planner import Plan
 from .state import AppliedAction, ReconcileFailure, ReconcileFailureReason
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from app.services.network.ppp_delivery_authorization import PppDeliveryRuling
+    from app.services.network.ppp_delivery_authorization import (
+        PppDeliveryRuling,
+        PppDeliveryScope,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +150,11 @@ class ApplyContext:
     #: object whose ``authorized`` attribute happened to be truthy, would have
     #: been believed.
     ppp_authorization: PppDeliveryRuling | None = None
-    #: The exact service this apply pass is delivering for. Checked against the
-    #: ruling's binding, so a ruling granted for another service on the same
-    #: ONT cannot authorise this one.
-    ppp_subscription_id: str | None = None
-    #: The credential/plan scope being delivered, if any.
-    ppp_credential_scope: str | None = None
+    #: What is actually being delivered, derived from live state and the plan
+    #: rather than copied off the ruling. The ruling must match it exactly.
+    #: ``None`` refuses: a caller that cannot say what it is delivering may not
+    #: deliver PPP.
+    ppp_scope: PppDeliveryScope | None = None
 
 
 @dataclass(frozen=True)
@@ -240,17 +242,15 @@ def apply_plan(
     # Scope-checked at the point of USE. A ruling that authorises something is
     # still the wrong ruling if it was granted for a different service or a
     # superseded instance revision.
-    ppp_allowed = ruling is not None and ruling.authorizes(
-        ont_id=ruling.ont_id,
-        subscription_id=ctx.ppp_subscription_id,
-        credential_scope=ctx.ppp_credential_scope,
-    )
+    ppp_allowed = ruling is not None and ruling.authorizes(ctx.ppp_scope)
     if ruling is None:
         refusal = PppDeliveryRefusal.no_active_service_intent.value
     elif ruling.refusal is not None:
         refusal = ruling.refusal.value
     else:
-        # Authorized ruling that does not bind to this delivery.
+        # Authorized ruling that does not bind to this delivery: wrong ONT,
+        # wrong service, superseded intent revision, or a plan whose PPP
+        # content differs from the one the ruling was granted against.
         refusal = PppDeliveryRefusal.scope_mismatch.value
 
     for action in plan.actions:
