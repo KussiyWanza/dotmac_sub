@@ -60,7 +60,8 @@ jobs:
             -e POSTGRES_DB=dotmac_sub_e2e \
             --health-cmd "pg_isready -U postgres" --health-interval 5s \
             --health-retries 10 postgis/postgis:16-3.4
-          docker run -d --name e2e-redis --network e2e-net redis:7
+          docker run -d --name e2e-redis --network e2e-net \
+            -p 127.0.0.1:56379:6379 redis:7
           for i in $(seq 1 30); do
             docker exec e2e-db pg_isready -U postgres >/dev/null 2>&1 && break
             sleep 2
@@ -113,6 +114,10 @@ jobs:
           PLAYWRIGHT_BROWSER: "chromium"
           E2E_SUITE: ${{ inputs.suite || 'all' }}
           TEST_DATABASE_URL: "postgresql+psycopg://postgres@127.0.0.1:55432/dotmac_sub_e2e"
+          # Portal fixtures mint sessions runner-side; without this the store
+          # writes to the poisoned root-conftest Redis URL and every portal
+          # spec bounces to the login page.
+          E2E_REDIS_URL: "redis://127.0.0.1:56379/0"
           E2E_ADMIN_USERNAME: "e2e.admin@example.com"
           E2E_ADMIN_PASSWORD: "E2eAdminPass123!"
         run: |

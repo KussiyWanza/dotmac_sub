@@ -55,21 +55,35 @@ class TestLoginPage:
 
 
 class TestLogout:
-    """Tests for logout functionality."""
+    """Tests for logout functionality.
 
-    def test_logout_clears_session(self, admin_page: Page, settings):
+    These specs destroy the session they run in, so they log in with their
+    own throwaway context — never the shared session-scoped admin storage
+    state, whose server-side session a logout would revoke for every
+    remaining admin spec in the run.
+    """
+
+    def _login_fresh(self, anon_page: Page, settings) -> None:
+        login = LoginPage(anon_page, settings.base_url)
+        login.goto()
+        login.login(settings.admin_username, settings.admin_password)
+        login.expect_redirect_to_dashboard()
+
+    def test_logout_clears_session(self, anon_page: Page, settings):
         """Logout should clear session and redirect to login."""
-        admin_page.goto(f"{settings.base_url}/auth/logout")
-        admin_page.wait_for_url("**/auth/login**")
-        expect(admin_page.get_by_role("heading", name="Sign in")).to_be_visible()
+        self._login_fresh(anon_page, settings)
+        anon_page.goto(f"{settings.base_url}/auth/logout")
+        anon_page.wait_for_url("**/auth/login**")
+        expect(anon_page.get_by_role("heading", name="Sign in")).to_be_visible()
 
-    def test_logout_prevents_access(self, admin_page: Page, settings):
+    def test_logout_prevents_access(self, anon_page: Page, settings):
         """After logout, accessing protected pages should redirect to login."""
-        admin_page.goto(f"{settings.base_url}/auth/logout")
-        admin_page.wait_for_url("**/auth/login**")
+        self._login_fresh(anon_page, settings)
+        anon_page.goto(f"{settings.base_url}/auth/logout")
+        anon_page.wait_for_url("**/auth/login**")
         # Try to access protected page
-        admin_page.goto(f"{settings.base_url}/admin/dashboard")
-        admin_page.wait_for_url("**/auth/login**")
+        anon_page.goto(f"{settings.base_url}/admin/dashboard")
+        anon_page.wait_for_url("**/auth/login**")
 
 
 class TestProtectedRoutes:

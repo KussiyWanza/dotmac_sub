@@ -502,9 +502,21 @@ def admin_auth_api_context(
     context.dispose()
 
 
+_TOUR_SUPPRESS_SCRIPT = "window.localStorage.setItem('dotmac_admin_tour_seen_v1', '1')"
+
+
+def _suppress_admin_tour(context) -> None:
+    """The first-login quick tour opens an aria-modal dialog that removes the
+    whole page from the accessibility tree; specs must see the page, not the
+    tour."""
+
+    context.add_init_script(_TOUR_SUPPRESS_SCRIPT)
+
+
 @pytest.fixture()
 def admin_context(browser, settings: E2ESettings, admin_storage_state: Path):
     context = browser.new_context(storage_state=admin_storage_state)
+    _suppress_admin_tour(context)
     context.set_default_timeout(settings.action_timeout_ms)
     context.set_default_navigation_timeout(settings.navigation_timeout_ms)
     yield context
@@ -517,6 +529,7 @@ def admin_context(browser, settings: E2ESettings, admin_storage_state: Path):
 @pytest.fixture()
 def agent_context(browser, settings: E2ESettings, agent_storage_state: Path):
     context = browser.new_context(storage_state=agent_storage_state)
+    _suppress_admin_tour(context)
     context.set_default_timeout(settings.action_timeout_ms)
     context.set_default_navigation_timeout(settings.navigation_timeout_ms)
     yield context
