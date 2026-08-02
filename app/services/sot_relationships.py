@@ -2892,6 +2892,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.shadow_verification.nested_owner_command",
                             "billing.shadow_verification.nested_transaction_completion",
                             "billing.shadow_verification.operator_approval_required",
+                            (
+                                "billing.shadow_verification."
+                                "opening_position_already_captured"
+                            ),
                             "billing.shadow_verification.verification_blockers_present",
                             "billing.shadow_verification.verification_run_not_found",
                         ),
@@ -3232,6 +3236,231 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.customer_subledger_opening_positions",
+                module="app.services.billing.subledger_opening",
+                owns=(
+                    "reviewed customer-subledger opening-position capture",
+                    "customer-subledger authority cutover activation",
+                ),
+                depends_on=(
+                    "billing.shadow_verification",
+                    "customer.accounts",
+                    "events.dispatcher",
+                    "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
+                ),
+                notes=(
+                    "ADR 0007 Phase 3 migration owner. It captures only the exact "
+                    "operator- and finance-approved verifier result. Each immutable "
+                    "opening evidence row and shadow posting group commit together. "
+                    "The residual is verified legacy position minus already-recorded "
+                    "shadow position at the preview cutoff, so forward groups are not "
+                    "double-counted. Quarantined accounts are absent and remain "
+                    "fail-closed; this owner never assigns them zero."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "reviewed customer-subledger opening-position capture"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "approved opening-position verification run",
+                                "verified prepaid funding position",
+                                "recorded customer postings",
+                                "canonical customer account",
+                            ),
+                            canonical_writer=(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer-subledger authority cutover activation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "approved subledger parity verification run",
+                                "recorded customer postings",
+                            ),
+                            canonical_writer=(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="approved opening-position verification run",
+                            owner="billing.shadow_verification",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable phase_3_opening_preview run with exact "
+                                "result fingerprint plus operator and finance approval"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified prepaid funding position",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "reviewed active baseline plus canonical native "
+                                "post-baseline money facts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded customer postings",
+                            owner="financial.customer_subledger",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable shadow posting groups and typed effects "
+                                "recorded before the preview cutoff"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer account",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Subscriber identity and currency scope",
+                        ),
+                        AuthorityInput(
+                            name="approved subledger parity verification run",
+                            owner="billing.shadow_verification",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable phase_3_subledger_parity run with zero "
+                                "blockers plus operator and finance approval"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The fingerprint-bound capture enters execute_owner_command "
+                            "once; every opening evidence row, posting group, and capture "
+                            "event commits or rolls back as one transaction."
+                        ),
+                        locking=(
+                            "The approved verification run is locked before capture; "
+                            "unique account/currency and posting idempotency constraints "
+                            "arbitrate concurrent attempts."
+                        ),
+                        idempotency=(
+                            "One immutable opening per account/currency. Exact replay of "
+                            "the same reviewed run returns the recorded cohort; changed "
+                            "rows or fingerprints fail closed."
+                        ),
+                        retries=(
+                            "Retry the complete command with the same approved run and "
+                            "idempotency key only after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "approval_required"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "authority_already_activated"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "corrupt_reviewed_preview"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "idempotency_conflict"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "invalid_result_fingerprint"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "missing_idempotency_key"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "missing_review_reference"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "opening_position_already_captured"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "quarantine_ownership_incomplete"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "stale_reviewed_preview"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "verification_run_not_found"
+                            ),
+                        ),
+                        mapping_owner="billing migration command adapters",
+                        fail_closed_on=(
+                            "missing operator or finance approval",
+                            "changed or corrupt reviewed fingerprint",
+                            "quarantined account inclusion",
+                            "an existing account/currency opening",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "customer_subledger.opening_positions_captured",
+                            "customer_subledger.authority_activated",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries run, fingerprint, currency, captured and "
+                            "quarantined counts, and authority_moved=false."
+                        ),
+                        replay=(
+                            "Rebuild consumers from immutable opening evidence and "
+                            "posting groups; capture replay emits no second event."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "implicit runtime baseline plus multi-source legacy balance "
+                            "formula with no subledger opening posting"
+                        ),
+                        new_owner=("financial.customer_subledger_opening_positions"),
+                        verification=(
+                            "Fingerprint-bound preview/capture, quarantine exclusion, "
+                            "atomic rollback, idempotency, and cohort parity tests."
+                        ),
+                        cutover_gate=(
+                            "Every non-quarantined cohort account has one reviewed "
+                            "opening, per-account/currency/lane variance is zero, all "
+                            "forward facts are covered, and finance approves the run."
+                        ),
+                        fallback_retirement=(
+                            "Retire this migration command after read cutover; opening "
+                            "postings remain immutable history."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_subledger_opening_positions.py",
+                        "tests/architecture/test_customer_subledger_ownership.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="runtime.durable_timers",
                 module="app.services.runtime_durable_timers",
                 owns=(
@@ -3455,6 +3684,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "billing.obligations",
                     "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
                 ),
                 notes=(
                     "ADR 0007 Phase 5. Read-only planner over one exact "
@@ -3470,6 +3700,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded billing obligations",
                                 "typed per-currency subledger position",
+                                "prepaid opening-position quarantine",
                             ),
                         ),
                     ),
@@ -3487,6 +3718,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "prepaid funding and unapplied credit lanes for "
                                 "the obligation's account and currency"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="prepaid opening-position quarantine",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "evidence-bound accounts without an approved active "
+                                "prepaid funding baseline and their owned finance work items"
                             ),
                         ),
                     ),
@@ -3507,9 +3747,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         retries="Reads may be retried without side effects.",
                     ),
                     errors=ErrorContract(
-                        domain_codes=(),
+                        domain_codes=(
+                            "collections.prepaid_policy.opening_position_quarantined",
+                        ),
                         mapping_owner="collections adapters",
-                        fail_closed_on=("a naive evaluation instant",),
+                        fail_closed_on=(
+                            "a naive evaluation instant",
+                            "an unresolved prepaid opening-position quarantine",
+                        ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.SHADOWING,
@@ -10079,6 +10324,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="financial.prepaid_service_renewals",
                 module="app.services.prepaid_service_renewals",
                 owns=(
+                    "prepaid service renewal execution",
                     "due prepaid service-cycle funding preview",
                     "settled-payment evidence validation and evaluation outcome",
                     "locked and idempotent prepaid renewal debit",
@@ -10092,7 +10338,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "bounded scheduled renewal catch-up",
                 ),
                 depends_on=(
+                    "billing.contracts",
+                    "customer.accounts",
                     "financial.account_adjustments",
+                    "financial.customer_subledger",
                     "financial.invoices",
                     "financial.payments",
                     "financial.prepaid_funding_reconstruction",
@@ -10130,6 +10379,296 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "_finalize_invoice_payment_effects and "
                     "finalize_invoice_application_for_owner. The retired inline "
                     "project_paid_invoice_billing_anchors helper is gone."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="prepaid service renewal execution",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="due prepaid service-cycle funding preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "settled-payment evidence validation and "
+                                "evaluation outcome"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "settled payment evidence",
+                                "prepaid subscription and renewal terms",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="locked and idempotent prepaid renewal debit",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="exact debit-to-entitlement evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="prepaid subscription paid-through advancement",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=("funded service entitlement evidence",),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="billing-anchor projection from entitlement evidence",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=("funded service entitlement evidence",),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="billing-anchor retraction after funding reversal",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=(
+                                "settled payment evidence",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="stale billing-anchor drift repair",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="canonical prepaid renewed-through outcome",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "funded service entitlement evidence",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="post-credit-application due-service consequence",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="bounded scheduled renewal catch-up",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="prepaid subscription and renewal terms",
+                            owner="billing.contracts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Subscription billing mode, status, frozen unit_price, "
+                                "cadence, and next_billing_at anchor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="settled payment evidence",
+                            owner="financial.payments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active succeeded Payment plus its PaymentSettlement "
+                                "and exact allocation evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified customer funding position",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "reviewed funding baseline plus canonical forward "
+                                "money facts, excluding quarantined accounts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="funded service entitlement evidence",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active ServiceEntitlement linked to the exact renewal "
+                                "debit and service period"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Settlement-triggered and scheduled public commands enter "
+                            "execute_owner_command once on a transaction-free session. "
+                            "Validation, draft consequence, debit, entitlement, anchor, "
+                            "posting group, renewed outcome, and restoration commit or "
+                            "roll back together."
+                        ),
+                        locking=(
+                            "The account is locked before idempotency lookup and funding "
+                            "re-preview; entitlement overlap and adjustment uniqueness "
+                            "prevent a second funded result for the same period."
+                        ),
+                        idempotency=(
+                            "The service period deterministically keys its adjustment; "
+                            "settlement events and scheduled passes carry typed command "
+                            "keys, and replay must match the exact debit, entitlement, "
+                            "period, and posting effects."
+                        ),
+                        retries=(
+                            "The durable event redriver or scheduled adapter retries the "
+                            "whole owner command after rollback; stale funding requires a "
+                            "fresh preview and ambiguous evidence remains fail-closed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.prepaid_service_renewals"
+                            ),
+                            "financial.prepaid_service_renewals.adjustment_rejected",
+                            "financial.prepaid_service_renewals.idempotency_conflict",
+                            "financial.prepaid_service_renewals.incomplete_entitlement",
+                            "financial.prepaid_service_renewals.ineligible_billing_mode",
+                            "financial.prepaid_service_renewals.ineligible_status",
+                            "financial.prepaid_service_renewals.insufficient_funding",
+                            "financial.prepaid_service_renewals.invalid_amount",
+                            "financial.prepaid_service_renewals.invalid_currency",
+                            "financial.prepaid_service_renewals.invalid_effective_at",
+                            "financial.prepaid_service_renewals.invalid_period",
+                            "financial.prepaid_service_renewals.missing_anchor",
+                            "financial.prepaid_service_renewals.missing_evidence_ref",
+                            "financial.prepaid_service_renewals.missing_price",
+                            "financial.prepaid_service_renewals.mode_not_prepaid",
+                            "financial.prepaid_service_renewals.payment_account_mismatch",
+                            "financial.prepaid_service_renewals.payment_not_found",
+                            "financial.prepaid_service_renewals.payment_not_settled",
+                            "financial.prepaid_service_renewals.period_already_funded",
+                            "financial.prepaid_service_renewals.settlement_missing",
+                            "financial.prepaid_service_renewals.settlement_time_missing",
+                            "financial.prepaid_service_renewals.stale_anchor",
+                            "financial.prepaid_service_renewals.stale_preview",
+                            "financial.prepaid_service_renewals.subscription_not_eligible",
+                            "financial.prepaid_service_renewals.subscription_not_found",
+                            "financial.prepaid_service_renewals.unsupported_cadence",
+                        ),
+                        mapping_owner=(
+                            "billing automation, durable event, and staff adapters"
+                        ),
+                        fail_closed_on=(
+                            "missing or non-canonical settlement evidence",
+                            "quarantined or insufficient funding",
+                            "stale preview or entitlement overlap",
+                            "posting-group failure",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_service.renewed",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries the exact account, subscription, debit, "
+                            "entitlement, funded period, amount, currency, and trigger."
+                        ),
+                        replay=(
+                            "The period-keyed adjustment and posting group return the "
+                            "recorded result; no second renewed outcome is staged."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "prepaid entitlement and paid-through anchor projection"
+                            ),
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                            writer="financial.prepaid_service_renewals",
+                            freshness=(
+                                "Atomic with the renewal debit or recomputed from exact "
+                                "surviving entitlement evidence after reversal."
+                            ),
+                            stale_behavior=(
+                                "Renewal and enforcement fail closed; stale-anchor drift "
+                                "remains owned reconciliation work."
+                            ),
+                            drift_signal=(
+                                "The subscription anchor differs from exact active "
+                                "entitlement and approved grant coverage."
+                            ),
+                            rebuild_operation=(
+                                "Run the fingerprint-bound stale billing-anchor repair "
+                                "or replay the exact funding-change event."
+                            ),
+                            repair_owner="financial.prepaid_service_renewals",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "billing_automation.run_invoice_cycle and durable event "
+                            "handler caller-owned transactions"
+                        ),
+                        new_owner="financial.prepaid_service_renewals",
+                        verification=(
+                            "Scheduled and event-triggered command-boundary, atomicity, "
+                            "idempotent posting, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "Both live renewal entry paths invoke the typed public owner "
+                            "command and each new funded period has exactly one matching "
+                            "prepaid-consumption posting group."
+                        ),
+                        fallback_retirement=(
+                            "Direct caller-transaction renewal writes and the generic "
+                            "account-adjustment posting fallback are rejected by guards."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_prepaid_service_renewals.py",
+                        "tests/test_subledger_forward_shadow.py",
+                        "tests/architecture/test_prepaid_billing_anchor_ownership.py",
+                    ),
                 ),
             ),
             SOTService(

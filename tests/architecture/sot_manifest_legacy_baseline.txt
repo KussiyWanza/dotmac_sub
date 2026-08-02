@@ -61,7 +61,6 @@ financial.payment_arrangements
 financial.payments
 financial.prepaid_funding_reconstruction
 financial.prepaid_plan_change
-financial.prepaid_service_renewals
 financial.provider_payment_settlements
 financial.tax_configuration
 gis.geocoding

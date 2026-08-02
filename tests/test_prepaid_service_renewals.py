@@ -12,6 +12,8 @@ from app.models.billing import (
     LedgerEntryType,
     LedgerSource,
     Payment,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
     PaymentStatus,
     ServiceEntitlement,
 )
@@ -30,11 +32,14 @@ from app.services.customer_financial_ledger import calculate_customer_balance
 from app.services.domain_errors import DomainError
 from app.services.events.handlers.prepaid_renewal import PrepaidRenewalHandler
 from app.services.events.types import Event, EventType
+from app.services.owner_commands import CommandContext
 from app.services.prepaid_service_renewals import (
     FundingChangeRenewalDisposition,
     PrepaidServiceRenewalError,
+    RunDuePrepaidServiceRenewalsCommand,
     apply_due_prepaid_service_after_funding_change,
     confirm_prepaid_service_renewal,
+    execute_due_prepaid_service_renewals,
     preview_prepaid_service_renewal,
     run_due_prepaid_service_renewals,
 )
@@ -281,6 +286,141 @@ def test_scheduled_owner_funds_current_due_cycle(db_session, subscriber, subscri
     assert db_session.query(AccountAdjustment).count() == 1
     assert db_session.query(ServiceEntitlement).count() == 1
     assert calculate_customer_balance(db_session, subscriber.id) == Decimal("50.00")
+
+
+def _scheduled_command(run_at: datetime, *, key: str):
+    return RunDuePrepaidServiceRenewalsCommand(
+        context=CommandContext.system(
+            actor="pytest:billing_automation",
+            scope="prepaid_service_renewals",
+            reason="verify the scheduled owner root",
+            idempotency_key=key,
+        ),
+        run_at=run_at,
+    )
+
+
+def test_scheduled_public_owner_stages_exact_consumption_group(
+    db_session, subscriber, subscription
+):
+    from app.models.customer_subledger import (
+        CustomerPositionEffect,
+        CustomerPostingGroup,
+        PositionEffectKind,
+        PostingCommandKind,
+    )
+
+    _prepare_scheduled_cycle(db_session, subscriber, subscription)
+    run_at = datetime(2026, 7, 1, 12, tzinfo=UTC)
+
+    summary = execute_due_prepaid_service_renewals(
+        db_session,
+        _scheduled_command(run_at, key="pytest:scheduled-renewal-owner"),
+    )
+
+    assert summary["prepaid_renewals_funded"] == 1
+    group = db_session.query(CustomerPostingGroup).one()
+    adjustment = db_session.query(AccountAdjustment).one()
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert group.command_kind is PostingCommandKind.prepaid_consumption
+    assert group.producer_owner == "financial.prepaid_service_renewals"
+    assert group.source_kind == "account_adjustment"
+    assert group.source_id == adjustment.id
+    effects = (
+        db_session.query(CustomerPositionEffect)
+        .filter(CustomerPositionEffect.group_id == group.id)
+        .all()
+    )
+    assert {effect.effect for effect in effects} == {
+        PositionEffectKind.customer_credit_consumed,
+        PositionEffectKind.prepaid_funding_reserved,
+        PositionEffectKind.prepaid_funding_consumed,
+    }
+    assert {effect.entitlement_id for effect in effects} == {entitlement.id}
+    assert {Decimal(str(effect.amount)) for effect in effects} == {Decimal("50.00")}
+
+    # The same scheduled instant observes no second due period and never
+    # duplicates the already committed group.
+    db_session.commit()
+    replay = execute_due_prepaid_service_renewals(
+        db_session,
+        _scheduled_command(run_at, key="pytest:scheduled-renewal-owner"),
+    )
+    assert replay["prepaid_renewals_funded"] == 0
+    assert db_session.query(CustomerPostingGroup).count() == 1
+
+
+def test_scheduled_posting_failure_rolls_back_renewal_business_result(
+    db_session, subscriber, subscription, monkeypatch
+):
+    from app.models.customer_subledger import CustomerPostingGroup
+
+    _prepare_scheduled_cycle(db_session, subscriber, subscription)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("renewal posting unavailable")
+
+    monkeypatch.setattr(
+        "app.services.billing.customer_subledger.stage_posting_group", _boom
+    )
+    with pytest.raises(RuntimeError, match="renewal posting unavailable"):
+        execute_due_prepaid_service_renewals(
+            db_session,
+            _scheduled_command(
+                datetime(2026, 7, 1, 12, tzinfo=UTC),
+                key="pytest:scheduled-renewal-atomicity",
+            ),
+        )
+
+    assert db_session.query(AccountAdjustment).count() == 0
+    assert db_session.query(ServiceEntitlement).count() == 0
+    assert db_session.query(CustomerPostingGroup).count() == 0
+
+
+def test_funding_event_uses_owner_root_for_renewal_consumption(
+    db_session, subscriber, subscription
+):
+    from app.models.customer_subledger import CustomerPostingGroup
+
+    _prepare_scheduled_cycle(db_session, subscriber, subscription)
+    paid_at = datetime(2026, 7, 20, 17, 30, tzinfo=UTC)
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("50.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=paid_at,
+        is_active=True,
+    )
+    db_session.add(payment)
+    db_session.flush()
+    db_session.add(
+        PaymentSettlement(
+            payment_id=payment.id,
+            amount=payment.amount,
+            unallocated_amount=payment.amount,
+            prepaid_amount=Decimal("0.00"),
+            currency=payment.currency,
+            origin=PaymentSettlementOrigin.system,
+            idempotency_key=f"pytest:settlement:{payment.id}",
+        )
+    )
+    db_session.commit()
+
+    event = Event(
+        event_type=EventType.payment_received,
+        payload={"payment_id": str(payment.id)},
+        account_id=subscriber.id,
+    )
+    PrepaidRenewalHandler().handle(db_session, event)
+
+    group = (
+        db_session.query(CustomerPostingGroup)
+        .filter_by(producer_owner="financial.prepaid_service_renewals")
+        .one()
+    )
+    assert group.command_kind.value == "prepaid_consumption"
+    assert group.source_kind == "account_adjustment"
 
 
 def test_scheduled_owner_dry_run_writes_nothing(db_session, subscriber, subscription):

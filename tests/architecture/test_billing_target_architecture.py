@@ -207,6 +207,59 @@ def test_cutover_evidence_is_durable_and_cannot_move_authority() -> None:
     assert "AuthorityMigrationState.CUT_OVER" in obligations
 
 
+def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None:
+    root = Path(__file__).resolve().parents[2]
+    renewals = (root / "app/services/prepaid_service_renewals.py").read_text(
+        encoding="utf-8"
+    )
+    opening = (root / "app/services/billing/subledger_opening.py").read_text(
+        encoding="utf-8"
+    )
+    verifier = (root / "app/services/billing/shadow_verification.py").read_text(
+        encoding="utf-8"
+    )
+    subledger = (root / "app/services/billing/customer_subledger.py").read_text(
+        encoding="utf-8"
+    )
+    policy = (root / "app/services/collections/prepaid_policy.py").read_text(
+        encoding="utf-8"
+    )
+    operator = (root / "scripts/billing/billing_target_shadow.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "execute_due_prepaid_service_renewals" in renewals
+    assert "execute_prepaid_service_after_settlement" in renewals
+    assert "PostingProducer.prepaid_service_renewals" in renewals
+    assert "require_existing=True" in renewals
+    assert "CustomerPostingGroup(" not in renewals
+
+    assert "expected_result_fingerprint" in opening
+    assert 'run.phase != "phase_3_opening_preview"' in opening
+    assert 'run.phase != "phase_3_subledger_parity"' in opening
+    assert "if not run.approved" in opening
+    assert "quarantine_ownership_incomplete" in opening
+    assert "CustomerPostingGroup(" not in opening
+    assert "CustomerSubledgerAuthorityCutover(" in opening
+
+    assert 'phase="phase_3_opening_preview"' in verifier
+    assert 'phase="phase_3_subledger_parity"' in verifier
+    assert '"postings_manufactured": False' in verifier
+    assert "resolve_positions(" in verifier
+    assert "authority_cutover(db)" in subledger
+    assert "BillingRecordAuthority.authoritative" in subledger
+    assert "opening_position_quarantined" in policy
+
+    for command in (
+        "preview-subledger-openings",
+        "approve-verification",
+        "capture-subledger-openings",
+        "verify-subledger-parity",
+        "activate-subledger-authority",
+    ):
+        assert command in operator
+
+
 def test_phase2_shadow_obligations_take_money_only_from_rating() -> None:
     root = Path(__file__).resolve().parents[2]
     contracts = (root / "app/services/billing/contracts.py").read_text(encoding="utf-8")

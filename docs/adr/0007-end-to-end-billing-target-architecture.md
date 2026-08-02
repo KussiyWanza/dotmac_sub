@@ -829,6 +829,36 @@ coherent reviewable slice with its own forward-fix plan.
   permanent opening-baseline branch, `balance_after` authority, and legacy
   `financial.ledger` writer paths.
 
+Current prepaid cutover implementation:
+
+- Forward money owners stage typed, idempotent posting groups in the same owner
+  transaction. Prepaid renewal execution is now a public owner command; the
+  hourly runner and funding-change event consumer enter that boundary on clean
+  sessions, and exact command replay cannot manufacture a posting for a
+  pre-shadow renewal.
+- `billing.shadow_verification` records an exhaustive, fingerprinted opening
+  proposal for the prepaid funding cohort. It excludes the evidence-quarantined
+  accounts, records their exact identities, and calculates each eligible
+  residual as the verified legacy position minus already-recorded shadow
+  position. Operator and finance approvals are separate immutable facts.
+- `financial.customer_subledger_opening_positions` is the sole migration writer.
+  It converts only the approved residuals into immutable opening evidence and
+  posting groups. Zero residuals still receive an explicit zero-effect group;
+  no account is omitted merely because its opening is zero.
+- A second durable verifier compares every eligible account and currency after
+  capture, records all semantic lanes, and classifies every observation-window
+  money fact as missing, exact, or duplicate posting coverage. Cutover is
+  impossible while any blocker is non-zero.
+- The one irreversible authority record is bound to that exact approved parity
+  fingerprint. Default position reads then include historical shadow groups and
+  new authoritative groups; new postings switch to authoritative without a
+  race gap. The evidence-quarantined cohort remains outside the opening capture,
+  must retain open finance-owned work items, and is rejected fail-closed by the
+  prepaid target policy instead of being evaluated from a partial position.
+- This cutover is limited to the operational prepaid position cohort. The
+  legacy formulas and sweeps named in later phases are not retired merely by
+  creating the Phase 3 authority record.
+
 ### Phase 4: durable owner-output chain
 
 - Expand: add versioned event contracts, consumer receipts, attempt states,

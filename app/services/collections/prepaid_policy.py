@@ -18,13 +18,18 @@ from app.models.billing_contract import (
     BillingRecordAuthority,
 )
 from app.models.collections_case import CollectionsReason
-from app.services.billing.customer_subledger import resolve_position
+from app.services.billing.customer_subledger import authority_cutover, resolve_position
 from app.services.collections.mode_policies import (
     ACTIONABLE_STATES,
     CollectionsProposal,
     aware,
     require_aware,
 )
+from app.services.domain_errors import DomainError
+
+
+class PrepaidPolicyError(DomainError):
+    """Fail-closed target-policy rejection with a stable typed code."""
 
 
 def plan_prepaid_consequence(
@@ -55,6 +60,39 @@ def plan_prepaid_consequence(
     if outstanding <= 0:
         return None
 
+    # The Phase 3 authority cutover deliberately excludes accounts whose
+    # historical funding position has no reviewed baseline.  A default
+    # authoritative read for one of those accounts would contain only
+    # post-cutover facts and could therefore manufacture an adverse decision.
+    # Keep the exception cohort explicit and fail closed until finance resolves
+    # its owned opening-debt item.  Explicit shadow/authoritative reads remain
+    # available to migration verifiers through ``authority=...``.
+    if authority is None and authority_cutover(db) is not None:
+        from app.services.prepaid_funding_reconstruction import (
+            prepaid_funding_quarantined_account_ids,
+        )
+
+        quarantined = prepaid_funding_quarantined_account_ids(
+            db,
+            (obligation.account_id,),
+            currency=obligation.currency,
+        )
+        if obligation.account_id in quarantined:
+            raise PrepaidPolicyError(
+                code="collections.prepaid_policy.opening_position_quarantined",
+                message=(
+                    "Prepaid collections cannot evaluate an account whose "
+                    "opening funding position is awaiting finance review."
+                ),
+                details={
+                    "account_id": str(obligation.account_id),
+                    "currency": obligation.currency,
+                    "work_item_fingerprint": (
+                        f"prepaid-funding:opening-debt:{obligation.account_id}"
+                    ),
+                },
+            )
+
     position = resolve_position(
         db,
         account_id=obligation.account_id,
@@ -76,4 +114,4 @@ def plan_prepaid_consequence(
     )
 
 
-__all__ = ["plan_prepaid_consequence"]
+__all__ = ["PrepaidPolicyError", "plan_prepaid_consequence"]

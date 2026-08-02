@@ -12,6 +12,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from app.models.billing_contract import (
@@ -30,7 +31,10 @@ from app.models.event_store import EventStore
 from app.services.collections.lifecycle import CollectionsLifecycle
 from app.services.collections.mode_policies import CollectionsProposal
 from app.services.collections.postpaid_policy import plan_postpaid_consequence
-from app.services.collections.prepaid_policy import plan_prepaid_consequence
+from app.services.collections.prepaid_policy import (
+    PrepaidPolicyError,
+    plan_prepaid_consequence,
+)
 from app.services.owner_commands import CommandContext
 
 NOW = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
@@ -159,6 +163,29 @@ def test_prepaid_policy_never_touches_receivables(db_session):
         )
         is None
     )
+
+
+def test_prepaid_policy_fails_closed_for_cutover_quarantine(db_session, monkeypatch):
+    prepaid = _obligation(
+        accounting_treatment=AccountingTreatment.prepaid_consumption,
+        collection_timing=CollectionTiming.advance,
+    )
+    monkeypatch.setattr(
+        "app.services.collections.prepaid_policy.authority_cutover",
+        lambda db: object(),
+    )
+    monkeypatch.setattr(
+        "app.services.prepaid_funding_reconstruction.prepaid_funding_quarantined_account_ids",
+        lambda db, account_ids, *, currency: {prepaid.account_id},
+    )
+
+    with pytest.raises(PrepaidPolicyError) as exc_info:
+        plan_prepaid_consequence(db_session, obligation=prepaid, now=NOW)
+
+    assert (
+        exc_info.value.code == "collections.prepaid_policy.opening_position_quarantined"
+    )
+    assert str(prepaid.account_id) in exc_info.value.details["work_item_fingerprint"]
 
 
 # --- collections.lifecycle ---------------------------------------------------
