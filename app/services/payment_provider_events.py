@@ -901,11 +901,12 @@ def _stage_financial_consequences(
                     provider_event_id=event.id,
                 )
             else:
-                Refunds.stage_provider_event_refund(
+                refund_result = Refunds.stage_provider_event_refund(
                     db,
                     payment_id=str(payment.id),
                     provider_event_id=event.id,
                 )
+                _stage_refund_posting(db, refund_result)
         elif new_status is PaymentStatus.reversed:
             if payment.billing_account_id is not None:
                 ConsolidatedPaymentReversals.stage_provider_event(
@@ -914,11 +915,12 @@ def _stage_financial_consequences(
                     provider_event_id=event.id,
                 )
             else:
-                PaymentReversals.stage_provider_event_reversal(
+                reversal_result = PaymentReversals.stage_provider_event_reversal(
                     db,
                     payment_id=str(payment.id),
                     provider_event_id=event.id,
                 )
+                _stage_reversal_posting(db, reversal_result)
         elif new_status is PaymentStatus.succeeded and payment.billing_account_id:
             ConsolidatedPaymentSettlements.stage_settle_verified(
                 db,
@@ -1199,3 +1201,135 @@ __all__ = [
     "WEBHOOK_PARTICIPANT_SCOPE",
     "payment_provider_events",
 ]
+
+
+def _posting_instant(value):
+    from datetime import UTC as _UTC
+
+    if value is None:
+        raise ValueError(
+            "provider-event money record has no instant for posting provenance"
+        )
+    return value.replace(tzinfo=_UTC) if value.tzinfo is None else value
+
+
+def _stage_refund_posting(db, result) -> None:
+    """One shadow posting group per provider refund (ADR 0007 Phase 3).
+
+    A partial refund is a NEW economic posting, never a reversal. Staged at
+    the deciding owner root after the participant returns; shadow authority
+    only.
+    """
+    if result.idempotent_replay:
+        return
+    from app.services.owner_commands import owner_command_active
+
+    if not owner_command_active(db):
+        # Legacy root without an owner command: the money transition
+        # proceeds unposted and the verifier owns the gap as
+        # producer_not_owner_wrapped debt. Never break the transition.
+        return
+    from decimal import Decimal as _Decimal
+
+    from app.models.customer_subledger import (
+        PositionEffectKind,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        EffectInput,
+        StagePostingGroupCommand,
+        stage_posting_group,
+    )
+    from app.services.owner_commands import current_command_context
+
+    refund = result.refund
+    effects = [
+        EffectInput(
+            effect=PositionEffectKind.credit_refunded,
+            amount=_Decimal(str(refund.amount)),
+            payment_id=result.payment.id,
+        )
+    ]
+    if result.credit_consumption_ledger_entry is not None:
+        effects.append(
+            EffectInput(
+                effect=PositionEffectKind.customer_credit_consumed,
+                amount=_Decimal(
+                    str(abs(result.credit_consumption_ledger_entry.amount))
+                ),
+                payment_id=result.payment.id,
+            )
+        )
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=result.payment.account_id,
+            currency=refund.currency,
+            command_kind=PostingCommandKind.refund,
+            producer_owner=PostingProducer.payment_provider_events,
+            source_kind=PostingSourceKind.payment_refund,
+            source_id=refund.id,
+            occurred_at=_posting_instant(refund.created_at),
+            effects=tuple(effects),
+            idempotency_key=f"posting:payment_refund:{refund.id}",
+        ),
+        context=current_command_context(db),
+    )
+
+
+def _stage_reversal_posting(db, result) -> None:
+    """A true reversal negates and links ONE complete original group.
+
+    If the original settlement predates the forward-shadow (no group
+    exists), nothing is staged: the verifier classifies the gap as
+    original_group_missing evidence debt instead of inventing history.
+    """
+    if result.idempotent_replay:
+        return
+    from app.services.owner_commands import owner_command_active
+
+    if not owner_command_active(db):
+        return
+    from sqlalchemy import select as _select
+
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        StageReversalCommand,
+        stage_reversal,
+    )
+    from app.services.owner_commands import current_command_context
+
+    original = (
+        db.execute(
+            _select(CustomerPostingGroup).where(
+                CustomerPostingGroup.source_kind == PostingSourceKind.payment.value,
+                CustomerPostingGroup.source_id == result.payment.id,
+                CustomerPostingGroup.command_kind != PostingCommandKind.reversal,
+                CustomerPostingGroup.reverses_group_id.is_(None),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if original is None:
+        return
+    reversal = result.reversal
+    stage_reversal(
+        db,
+        StageReversalCommand(
+            original_group_id=original.id,
+            producer_owner=PostingProducer.payment_provider_events,
+            source_kind=PostingSourceKind.payment_reversal,
+            source_id=reversal.id,
+            occurred_at=_posting_instant(reversal.created_at),
+            idempotency_key=f"posting:payment_reversal:{reversal.id}",
+        ),
+        context=current_command_context(db),
+    )

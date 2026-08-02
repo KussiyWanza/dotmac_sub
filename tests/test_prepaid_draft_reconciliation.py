@@ -238,6 +238,30 @@ def test_reviewed_opening_funding_settles_exact_remainder_atomically(
     assert consumption.ledger_entry.invoice_id == invoice.id
     assert consumption.ledger_entry.affects_customer_position is False
     assert entitlement.source_invoice_id == invoice.id
+    # ADR 0007 Phase 3 forward-shadow: exactly one posting group per
+    # opening-funding consumption, replay-safe, at the deciding owner.
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        PositionEffectKind,
+        PostingCommandKind,
+    )
+
+    groups = (
+        db_session.query(CustomerPostingGroup)
+        .filter(
+            CustomerPostingGroup.producer_owner
+            == "financial.prepaid_draft_reconciliation"
+        )
+        .all()
+    )
+    assert len(groups) == 1
+    assert groups[0].command_kind is PostingCommandKind.prepaid_consumption
+    assert groups[0].source_id == consumption.id
+    assert groups[0].authority.value == "shadow"
+    assert [e.effect for e in groups[0].effects] == [
+        PositionEffectKind.prepaid_funding_consumed
+    ]
+    assert Decimal(str(groups[0].effects[0].amount)) == Decimal("2000.00")
     assert subscription.next_billing_at == entitlement.ends_at
     assert prepaid_available_balance(db_session, subscriber.id) == Decimal("0.00")
 

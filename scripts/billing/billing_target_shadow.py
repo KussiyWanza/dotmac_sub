@@ -352,6 +352,117 @@ def _cmd_correct_renewal_terms(db, args) -> int:
     return 0
 
 
+def _cmd_verify_prepaid_forward(db, args) -> int:
+    from app.services.billing.shadow_verification import (
+        RecordPhase3ForwardVerificationCommand,
+        record_phase3_forward_run,
+    )
+
+    result = record_phase3_forward_run(
+        db,
+        RecordPhase3ForwardVerificationCommand(
+            cutoff_at=_instant(args.cutoff),
+            observation_started_at=_instant(args.window_start),
+            observation_ended_at=_instant(args.window_end),
+            code_version=args.code_version,
+            database_schema_version=args.schema_version,
+        ),
+        context=_context(
+            "record forward-shadow posting coverage and debt evidence",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "run_id": result.run_id,
+            "cohort_count": result.cohort_count,
+            "opening_position_debt": result.opening_position_debt_count,
+            "entitlement_evidence_debt": result.entitlement_evidence_debt_count,
+            "posting_covered": result.posting_covered_count,
+            "producer_not_owner_wrapped": result.producer_not_owner_wrapped_count,
+            "work_items": result.work_item_count,
+            "source_fingerprint": result.source_fingerprint,
+            "result_fingerprint": result.result_fingerprint,
+            "replayed": result.replayed,
+            "authority_moved": False,
+            "repair_requested": False,
+        }
+    )
+    return 0
+
+
+def _cmd_position_compare(db, args) -> int:
+    from decimal import Decimal
+
+    from app.models.billing_contract import BillingRecordAuthority
+    from app.services.billing.customer_subledger import resolve_position
+    from app.services.prepaid_funding_reconstruction import (
+        prepaid_funding_quarantined_account_ids,
+        verified_prepaid_funding_balance,
+    )
+
+    account = UUID(args.account)
+    currency = args.currency
+    quarantined = prepaid_funding_quarantined_account_ids(db, [account])
+    subledger = resolve_position(
+        db,
+        account_id=account,
+        currency=currency,
+        authority=BillingRecordAuthority.shadow,
+    )
+    subledger_total = (
+        subledger.prepaid_funding_reserved + subledger.unapplied_customer_credit
+    )
+    if account in quarantined:
+        _emit(
+            {
+                "account_id": account,
+                "currency": currency,
+                "classification": "quarantined_no_baseline",
+                "legacy": None,
+                "subledger": subledger_total,
+                "lanes": {
+                    "prepaid_funding_reserved": subledger.prepaid_funding_reserved,
+                    "unapplied_customer_credit": subledger.unapplied_customer_credit,
+                    "prepaid_funding_consumed": subledger.prepaid_funding_consumed,
+                    "refunded_total": subledger.refunded_total,
+                    "adjustment_total": subledger.adjustment_total,
+                },
+                "authority_moved": False,
+                "repair_requested": False,
+            }
+        )
+        return 0
+    legacy = verified_prepaid_funding_balance(db, account, currency=currency)
+    variance = Decimal(str(subledger_total)) - Decimal(str(legacy))
+    _emit(
+        {
+            "account_id": account,
+            "currency": currency,
+            "classification": (
+                "parity"
+                if variance == Decimal("0")
+                # Opening postings do not exist yet by design, so the
+                # expected steady-state class is a legacy-side surplus.
+                else "expected_variance_opening_postings_absent"
+            ),
+            "legacy": legacy,
+            "subledger": subledger_total,
+            "variance": variance,
+            "lanes": {
+                "prepaid_funding_reserved": subledger.prepaid_funding_reserved,
+                "unapplied_customer_credit": subledger.unapplied_customer_credit,
+                "prepaid_funding_consumed": subledger.prepaid_funding_consumed,
+                "refunded_total": subledger.refunded_total,
+                "adjustment_total": subledger.adjustment_total,
+            },
+            "authority_moved": False,
+            "repair_requested": False,
+        }
+    )
+    return 0
+
+
 def _instant(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -562,6 +673,26 @@ def main() -> int:
     p.add_argument("--reference", default=None)
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_correct_renewal_terms)
+
+    p = sub.add_parser(
+        "verify-prepaid-forward",
+        help="record forward-shadow posting coverage and debt evidence",
+    )
+    p.add_argument("--cutoff", required=True)
+    p.add_argument("--window-start", required=True)
+    p.add_argument("--window-end", required=True)
+    p.add_argument("--code-version", required=True)
+    p.add_argument("--schema-version", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_verify_prepaid_forward)
+
+    p = sub.add_parser(
+        "position-compare",
+        help="legacy vs shadow subledger position per account/currency/lane",
+    )
+    p.add_argument("--account", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.set_defaults(func=_cmd_position_compare)
 
     p = sub.add_parser(
         "verify-rating-cohort",

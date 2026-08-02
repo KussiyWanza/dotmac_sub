@@ -847,6 +847,57 @@ class AccountCreditDeposits:
             payment = creation.payment
             already_recorded = creation.idempotent_replay
 
+        if not already_recorded:
+            # ADR 0007 Phase 3 forward-shadow: one posting group per money
+            # transition, staged inside this owner's transaction. Shadow
+            # authority only; no read path consumes it yet.
+            from app.models.customer_subledger import (
+                PositionEffectKind,
+                PostingCommandKind,
+                PostingProducer,
+                PostingSourceKind,
+            )
+            from app.services.billing.customer_subledger import (
+                EffectInput,
+                StagePostingGroupCommand,
+                stage_posting_group,
+            )
+
+            stage_posting_group(
+                db,
+                StagePostingGroupCommand(
+                    account_id=intent.account_id,
+                    currency=currency,
+                    command_kind=PostingCommandKind.customer_credit_deposit,
+                    producer_owner=PostingProducer.account_credit_deposits,
+                    source_kind=PostingSourceKind.payment,
+                    source_id=payment.id,
+                    # Missing paid_at fails closed: a posting instant is
+                    # financial provenance, never a wall-clock guess.
+                    occurred_at=(
+                        payment.paid_at.replace(tzinfo=UTC)
+                        if payment.paid_at.tzinfo is None
+                        else payment.paid_at
+                    )
+                    if payment.paid_at is not None
+                    else (_ for _ in ()).throw(
+                        DepositEligibilityError(
+                            "deposit_settlement_missing_paid_at",
+                            "Settled payment has no paid_at instant for "
+                            "posting provenance.",
+                        )
+                    ),
+                    effects=(
+                        EffectInput(
+                            effect=PositionEffectKind.customer_credit_created,
+                            amount=credited_amount,
+                            payment_id=payment.id,
+                        ),
+                    ),
+                    idempotency_key=f"posting:payment:{payment.id}",
+                ),
+                context=context,
+            )
         # Race policy: cash is accepted, then any invoice that appeared after
         # intent creation immediately consumes the evidenced credit.
         application = AccountCreditApplications.apply(db, str(intent.account_id))

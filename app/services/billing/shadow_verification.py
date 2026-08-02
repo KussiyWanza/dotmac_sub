@@ -13,7 +13,7 @@ import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -71,6 +71,11 @@ _PHASE2_RUN_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="phase cutover verification evidence",
     name="record_phase2_verification_run",
+)
+_PHASE3_FORWARD_RUN_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="phase cutover verification evidence",
+    name="record_phase3_forward_verification_run",
 )
 _APPROVAL_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
@@ -1427,3 +1432,344 @@ __all__ = [
     "RecordPhase1VerificationCommand",
     "RecordPhase2VerificationCommand",
 ]
+
+
+@dataclass(frozen=True)
+class RecordPhase3ForwardVerificationCommand:
+    """Exact Phase 3 forward-shadow cohort cutoff and build identity."""
+
+    cutoff_at: datetime
+    observation_started_at: datetime
+    observation_ended_at: datetime
+    code_version: str
+    database_schema_version: str
+    cohort_name: str = "prepaid_funding_candidates"
+    policy_version: str = "adr-0007-phase-3-forward-v1"
+    evidence_schema_version: int = 3
+
+
+@dataclass(frozen=True)
+class Phase3ForwardVerificationResult:
+    """Durable forward-shadow evidence: debts separated, nothing invented."""
+
+    run_id: UUID
+    cohort_count: int
+    opening_position_debt_count: int
+    entitlement_evidence_debt_count: int
+    posting_covered_count: int
+    producer_not_owner_wrapped_count: int
+    work_item_count: int
+    source_fingerprint: str
+    result_fingerprint: str
+    replayed: bool
+
+
+_OPENING_DEBT_PREFIX = "prepaid-funding:opening-debt:"
+_ENTITLEMENT_DEBT_PREFIX = "prepaid-coverage:entitlement-debt:"
+_DEBT_SLA_HOURS = 72
+
+
+def _phase3_result(run: BillingCutoverVerificationRun, *, replayed: bool):
+    classification: dict = dict(run.cohort_classification or {})
+    details: dict = dict(classification.get("_details") or {})
+    return Phase3ForwardVerificationResult(
+        run_id=run.id,
+        cohort_count=run.cohort_count,
+        opening_position_debt_count=len(details.get("opening_position_debt", [])),
+        entitlement_evidence_debt_count=len(
+            details.get("entitlement_evidence_debt", {})
+        ),
+        posting_covered_count=run.covered_count,
+        producer_not_owner_wrapped_count=run.unresolved_count,
+        work_item_count=int(details.get("work_item_count", 0)),
+        source_fingerprint=run.source_fingerprint,
+        result_fingerprint=run.result_fingerprint,
+        replayed=replayed,
+    )
+
+
+def record_phase3_forward_run(
+    db: Session,
+    command: RecordPhase3ForwardVerificationCommand,
+    *,
+    context: CommandContext,
+) -> Phase3ForwardVerificationResult:
+    """Record the forward-shadow posting-coverage and debt evidence.
+
+    Evidence only: this run never manufactures postings for unwrapped
+    producers, never repairs a legacy source, and never moves authority.
+    Every debt row is durably classified and carried by an owned work item.
+    """
+
+    return execute_owner_command(
+        db,
+        definition=_PHASE3_FORWARD_RUN_COMMAND,
+        context=context,
+        operation=lambda: _record_phase3_forward_run(
+            db, command=command, context=context
+        ),
+    )
+
+
+def _record_phase3_forward_run(
+    db: Session,
+    *,
+    command: RecordPhase3ForwardVerificationCommand,
+    context: CommandContext,
+) -> Phase3ForwardVerificationResult:
+    from app.models.billing import (
+        AccountAdjustment,
+        Payment,
+        PaymentAllocation,
+        PaymentRefund,
+        PaymentReversal,
+        PaymentSettlement,
+    )
+    from app.models.customer_subledger import CustomerPostingGroup
+    from app.models.network_monitoring import AlertSeverity
+    from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
+    from app.services.observability import Finding, record_finding, resolve_findings
+    from app.services.prepaid_enforcement_planner import (
+        candidate_prepaid_funding_account_ids,
+    )
+    from app.services.prepaid_funding_reconstruction import (
+        prepaid_funding_quarantined_account_ids,
+    )
+    from app.services.prepaid_threshold import resolve_prepaid_threshold_decisions
+
+    if not context.idempotency_key:
+        raise _error(
+            "missing_idempotency_key",
+            "A verification run requires a business idempotency key.",
+        )
+    existing = db.execute(
+        select(BillingCutoverVerificationRun).where(
+            BillingCutoverVerificationRun.idempotency_key == context.idempotency_key
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.phase != "phase_3_forward":
+            raise _error(
+                "idempotency_conflict",
+                "Verification idempotency key belongs to another phase.",
+                run_id=str(existing.id),
+            )
+        return _phase3_result(existing, replayed=True)
+
+    cohort = sorted(candidate_prepaid_funding_account_ids(db), key=str)
+    quarantined = sorted(prepaid_funding_quarantined_account_ids(db, cohort), key=str)
+    decisions = resolve_prepaid_threshold_decisions(db, cohort)
+    entitlement_debt: dict[str, list[str]] = {}
+    for account_id in cohort:
+        decision = decisions.get(str(account_id))
+        if decision is None:
+            continue
+        unresolved = [
+            str(value) for value in decision.unresolved_projection_subscription_ids
+        ]
+        if unresolved:
+            entitlement_debt[str(account_id)] = sorted(unresolved)
+
+    window_start = command.observation_started_at
+    window_end = command.observation_ended_at
+
+    def _facts(model, kind, created_col):
+        rows = db.execute(
+            select(model.id).where(
+                created_col >= window_start, created_col < window_end
+            )
+        ).scalars()
+        return [(kind, row) for row in rows]
+
+    facts: list[tuple[str, UUID]] = []
+    facts += [
+        ("payment", row)
+        for row in db.execute(
+            select(PaymentSettlement.payment_id)
+            .join(Payment, Payment.id == PaymentSettlement.payment_id)
+            .where(
+                PaymentSettlement.created_at >= window_start,
+                PaymentSettlement.created_at < window_end,
+                Payment.account_id.is_not(None),
+            )
+        ).scalars()
+    ]
+    facts += _facts(
+        PaymentAllocation, "payment_allocation", PaymentAllocation.created_at
+    )
+    facts += _facts(
+        PrepaidOpeningFundingConsumption,
+        "prepaid_opening_funding_consumption",
+        PrepaidOpeningFundingConsumption.consumed_at,
+    )
+    facts += _facts(PaymentRefund, "payment_refund", PaymentRefund.created_at)
+    facts += _facts(PaymentReversal, "payment_reversal", PaymentReversal.created_at)
+    facts += _facts(
+        AccountAdjustment, "account_adjustment", AccountAdjustment.created_at
+    )
+
+    fact_ids = [fact_id for _, fact_id in facts]
+    grouped: set[tuple[str, UUID]] = set()
+    if fact_ids:
+        for group_kind, group_source_id in db.execute(
+            select(
+                CustomerPostingGroup.source_kind, CustomerPostingGroup.source_id
+            ).where(CustomerPostingGroup.source_id.in_(fact_ids))
+        ).all():
+            grouped.add((str(group_kind), group_source_id))
+
+    covered = sorted(
+        f"{kind}:{fact_id}" for kind, fact_id in facts if (kind, fact_id) in grouped
+    )
+    unwrapped = sorted(
+        f"{kind}:{fact_id}" for kind, fact_id in facts if (kind, fact_id) not in grouped
+    )
+
+    work_items = 0
+    for account_id in quarantined:
+        record_finding(
+            db,
+            Finding(
+                fingerprint=f"{_OPENING_DEBT_PREFIX}{account_id}",
+                domain="prepaid_enforcement",
+                source="billing.shadow_verification",
+                severity=AlertSeverity.warning,
+                title="Prepaid opening position needs reviewed evidence",
+                summary=(
+                    "Legacy account without an active reviewed funding "
+                    "baseline: opening-position evidence debt. Resolve via "
+                    "the reconstruction pipeline; never assign zero or a "
+                    "legacy fallback."
+                ),
+                details={
+                    "owner": "finance-billing",
+                    "account_id": str(account_id),
+                    "debt": "opening_position",
+                    "sla_due_at": (
+                        datetime.now(UTC) + timedelta(hours=_DEBT_SLA_HOURS)
+                    ).isoformat(),
+                },
+            ),
+        )
+        work_items += 1
+    resolve_findings(
+        db,
+        managed_prefix=_OPENING_DEBT_PREFIX,
+        active_fingerprints={
+            f"{_OPENING_DEBT_PREFIX}{account_id}" for account_id in quarantined
+        },
+    )
+    for debt_account, subscription_ids in sorted(entitlement_debt.items()):
+        record_finding(
+            db,
+            Finding(
+                fingerprint=f"{_ENTITLEMENT_DEBT_PREFIX}{debt_account}",
+                domain="prepaid_enforcement",
+                source="billing.shadow_verification",
+                severity=AlertSeverity.warning,
+                title="Prepaid coverage needs obligation/entitlement evidence",
+                summary=(
+                    "Paid service exists without a resolvable entitlement "
+                    "projection: obligation/application evidence debt. Only "
+                    "the coverage owner may create or correct entitlements."
+                ),
+                details={
+                    "owner": "finance-billing",
+                    "account_id": debt_account,
+                    "debt": "entitlement_evidence",
+                    "subscription_ids": subscription_ids,
+                    "sla_due_at": (
+                        datetime.now(UTC) + timedelta(hours=_DEBT_SLA_HOURS)
+                    ).isoformat(),
+                },
+            ),
+        )
+        work_items += 1
+    resolve_findings(
+        db,
+        managed_prefix=_ENTITLEMENT_DEBT_PREFIX,
+        active_fingerprints={
+            f"{_ENTITLEMENT_DEBT_PREFIX}{debt_account}"
+            for debt_account in entitlement_debt
+        },
+    )
+
+    classification = {
+        "covered": covered,
+        "unresolved": unwrapped,
+        "ambiguous": [],
+        "unexpected_unlinked": [],
+        "duplicate": [],
+        "shadow_variance": [],
+        "expected_difference": sorted(
+            {str(a) for a in quarantined} | set(entitlement_debt)
+        ),
+        "gap": [],
+        "overlap": [],
+        "_details": {
+            "opening_position_debt": [str(a) for a in quarantined],
+            "entitlement_evidence_debt": entitlement_debt,
+            "producer_not_owner_wrapped": unwrapped,
+            "work_item_count": work_items,
+        },
+    }
+    source_rows = {
+        "cohort": [str(a) for a in cohort],
+        "facts": sorted(f"{kind}:{fact_id}" for kind, fact_id in facts),
+        "window": [window_start.isoformat(), window_end.isoformat()],
+        "policy_version": command.policy_version,
+    }
+    run = BillingCutoverVerificationRun(
+        phase="phase_3_forward",
+        cohort_name=command.cohort_name,
+        evidence_schema_version=command.evidence_schema_version,
+        policy_version=command.policy_version,
+        cutoff_at=command.cutoff_at,
+        observation_started_at=command.observation_started_at,
+        observation_ended_at=command.observation_ended_at,
+        cohort_count=len(cohort),
+        covered_count=len(covered),
+        unresolved_count=len(unwrapped),
+        ambiguous_count=0,
+        unexpected_unlinked_count=0,
+        duplicate_count=0,
+        shadow_variance_count=0,
+        expected_difference_count=len(classification["expected_difference"]),
+        gap_count=0,
+        overlap_count=0,
+        source_fingerprint=_digest(source_rows),
+        result_fingerprint=_digest(classification),
+        currency_totals={},
+        cohort_classification=classification,
+        event_outcomes={
+            "migration_evidence_only": True,
+            "authority_moved": False,
+            "repair_requested": False,
+            "postings_manufactured": False,
+        },
+        code_version=command.code_version,
+        database_schema_version=command.database_schema_version,
+        idempotency_key=context.idempotency_key,
+        command_id=context.command_id,
+        correlation_id=context.correlation_id,
+        actor=context.actor,
+        reason=context.reason,
+    )
+    db.add(run)
+    db.flush()
+    emit_event(
+        db,
+        EventType.billing_cutover_verification_recorded,
+        {
+            "run_id": str(run.id),
+            "phase": run.phase,
+            "cohort_count": run.cohort_count,
+            "covered_count": run.covered_count,
+            "expected_difference_count": run.expected_difference_count,
+            "blocker_count": run.unresolved_count,
+            "source_fingerprint": run.source_fingerprint,
+            "result_fingerprint": run.result_fingerprint,
+        },
+        actor=context.actor,
+    )
+    return _phase3_result(run, replayed=False)

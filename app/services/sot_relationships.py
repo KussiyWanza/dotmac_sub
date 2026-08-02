@@ -3169,6 +3169,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.customer_subledger.invalid_effect_amount",
                             "financial.customer_subledger.invalid_posting_currency",
                             "financial.customer_subledger.invalid_posting_instant",
+                            "financial.customer_subledger.idempotency_conflict",
                             "financial.customer_subledger.missing_idempotency_key",
                             "financial.customer_subledger.posting_group_already_reversed",
                             "financial.customer_subledger.posting_group_not_found",
