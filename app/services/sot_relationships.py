@@ -17032,6 +17032,92 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.service_impact",
+                module="app.services.network.service_impact",
+                owns=("per-subscription service impact evidence resolution",),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.outage_impact",
+                    "network.radius_sessions",
+                ),
+                notes=(
+                    "Read-only six-state impact resolver "
+                    "(OUTAGE_SLA_SPINE §1): audience membership from the "
+                    "immutable scope revisions proves exposure; the incident "
+                    "lifecycle word supplies provider-fault evidence; live "
+                    "RADIUS sessions prove continued service and prevent "
+                    "accrual. Exposure is never downtime, a lone dark "
+                    "endpoint or stale telemetry resolves unknown rather "
+                    "than confirmed, and excluded stays reserved for the "
+                    "maintenance owner. It persists nothing and sends "
+                    "nothing; the downtime ledger consumes its words."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "per-subscription service impact evidence resolution"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "incident lifecycle and scope revisions",
+                                "live session observations",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="incident lifecycle and scope revisions",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "live OutageIncident status words plus the "
+                                "immutable scope revisions carrying exact "
+                                "audience membership and tokens"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live session observations",
+                            owner="network.radius_sessions",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "RadiusActiveSession rows as "
+                                "continued-service proof per subscription"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Resolves impact words from committed incident, "
+                            "revision, and session state without a business "
+                            "write and without device I/O."
+                        ),
+                        locking="Read resolution acquires no mutation locks.",
+                        idempotency=(
+                            "The same incident status, scope revision, and "
+                            "session set produce the same impact words and "
+                            "evidence."
+                        ),
+                        retries="Read resolution calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.web.admin.network_monitoring",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.service_impact",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/services/topology/test_service_impact.py",),
+                ),
+            ),
+            SOTService(
                 name="network.outage_auto_notify",
                 module="app.services.topology.outage_auto_notify",
                 owns=(
