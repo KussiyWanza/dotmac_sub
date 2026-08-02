@@ -328,3 +328,14 @@ def test_recovery_billing_no_longer_owns_a_parallel_settlement_writer():
     assert "preview_prepaid_recovery_settlement" not in source
     assert "settle_single_invoice_from_credit" not in source
     assert "restore_account_services" not in source
+
+
+def test_subscription_page_uses_owner_bill_now_eligibility_and_invoice_route():
+    workflow = Path("app/services/web_catalog_subscription_workflows.py").read_text()
+    template = Path("templates/admin/catalog/subscription_detail.html").read_text()
+
+    assert "resolve_prepaid_recovery_draft_eligibility(" in workflow
+    assert "prepaid_bill_now_eligibility.eligible" in template
+    assert "prepaid_bill_now_eligibility.reason" in template
+    assert "prepaid_bill_now_eligibility.existing_invoice_id" in template
+    assert "Open existing invoice" in template

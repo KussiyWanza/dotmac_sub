@@ -59,7 +59,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.network.huawei_cli_response import project_huawei_result_evidence
 
@@ -95,6 +95,12 @@ from .actions import (
 )
 from .planner import Plan
 from .state import AppliedAction, ReconcileFailure, ReconcileFailureReason
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.services.network.ppp_delivery_authorization import (
+        PppDeliveryRuling,
+        PppDeliveryScope,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +141,29 @@ class ApplyContext:
     resolve_secret: SecretResolver = passthrough_secret
     wan_ppp_instances: dict[int, int] = field(default_factory=dict)
     #: Delivery-time PPP authorization, resolved by
-    #: ``network.ppp_delivery_authorization`` from the service-intent model.
-    #: ``None`` means the caller never asked, which is treated as a refusal:
-    #: a plan may not deliver PPP merely because nobody checked.
-    ppp_authorization: Any = None
+    #: ``network.ppp_delivery_authorization`` from the owner-managed service
+    #: intent. ``None`` means the caller never asked, which is treated as a
+    #: refusal: a plan may not deliver PPP merely because nobody checked.
+    #:
+    #: Typed end-to-end on purpose. The first version accepted ``Any`` and
+    #: probed it with ``getattr``, so a caller passing the wrong object, or an
+    #: object whose ``authorized`` attribute happened to be truthy, would have
+    #: been believed.
+    ppp_authorization: PppDeliveryRuling | None = None
+    #: What is actually being delivered, derived from live state and the plan
+    #: rather than copied off the ruling. The ruling must match it exactly.
+    #: ``None`` refuses: a caller that cannot say what it is delivering may not
+    #: deliver PPP.
+    ppp_scope: PppDeliveryScope | None = None
+
+
+@dataclass(frozen=True)
+class RefusedAction:
+    """One action withheld by PPP delivery authorization."""
+
+    action_name: str
+    purpose: str
+    refusal: str
 
 
 @dataclass(frozen=True)
@@ -148,11 +173,19 @@ class ApplyResult:
     ``actions_applied`` lists every action up to and including the failing
     one (if any). ``halted_by`` is the failure that stopped the apply pass;
     None on success.
+
+    ``refused_ppp`` lists PPP-bearing actions withheld by delivery
+    authorization. It is deliberately NOT a failure: unrelated reconciliation
+    must still converge. But it is residual drift, so a pass that refused
+    anything must not be finalised as ``synced`` -- the model defines ``synced``
+    as "zero residual drift", and silently reporting a device as converged
+    while its dialer work was withheld is how a containment becomes invisible.
     """
 
     success: bool
     actions_applied: tuple[AppliedAction, ...]
     halted_by: ReconcileFailure | None
+    refused_ppp: tuple[RefusedAction, ...] = ()
 
 
 class ApplyError(Exception):
@@ -192,32 +225,52 @@ def apply_plan(
     applied so far.
     """
     from app.services.network.ppp_delivery_authorization import (
+        PppActionPurpose,
         PppDeliveryRefusal,
-        is_ppp_bundle_action,
+        classify_action,
     )
 
     applied: list[AppliedAction] = []
+    refused_ppp: list[RefusedAction] = []
 
     # Delivery-time authorization, independent of whatever staged the desired
     # state. pending_apply, stored values and fingerprints are evidence that
     # something once wrote desired state; none of them authorises sending it to
     # a device. An absent ruling is a refusal, not a pass: the gate must not be
     # skippable by a caller that simply forgot to resolve it.
-    ruling = getattr(ctx, "ppp_authorization", None)
-    ppp_allowed = bool(getattr(ruling, "authorized", False))
-    refusal = (
-        getattr(getattr(ruling, "refusal", None), "value", None)
-        if ruling is not None
-        else PppDeliveryRefusal.no_pppoe_service_intent.value
-    )
+    ruling = ctx.ppp_authorization
+    # Scope-checked at the point of USE. A ruling that authorises something is
+    # still the wrong ruling if it was granted for a different service or a
+    # superseded instance revision.
+    ppp_allowed = ruling is not None and ruling.authorizes(ctx.ppp_scope)
+    if ruling is None:
+        refusal = PppDeliveryRefusal.no_active_service_intent.value
+    elif ruling.refusal is not None:
+        refusal = ruling.refusal.value
+    else:
+        # Authorized ruling that does not bind to this delivery: wrong ONT,
+        # wrong service, superseded intent revision, or a plan whose PPP
+        # content differs from the one the ruling was granted against.
+        refusal = PppDeliveryRefusal.scope_mismatch.value
 
     for action in plan.actions:
-        if not ppp_allowed and is_ppp_bundle_action(action):
-            # Skipped, not failed: unrelated reconciliation must still converge.
+        purpose = classify_action(action)
+        if not ppp_allowed and purpose is not PppActionPurpose.not_ppp:
+            # Skipped, not failed: unrelated reconciliation must still
+            # converge. Recorded as residual drift so the pass cannot be
+            # finalised as synced.
+            refused_ppp.append(
+                RefusedAction(
+                    action_name=type(action).__name__,
+                    purpose=purpose.value,
+                    refusal=refusal,
+                )
+            )
             logger.warning(
                 "reconcile_ppp_delivery_refused",
                 extra={
                     "action": type(action).__name__,
+                    "ppp_action_purpose": purpose.value,
                     "ppp_delivery_refusal": refusal,
                     "ruling_present": ruling is not None,
                 },
@@ -231,6 +284,7 @@ def apply_plan(
                     reason=ReconcileFailureReason.TIMEOUT,
                     message=(f"apply deadline exceeded before {type(action).__name__}"),
                 ),
+                refused_ppp=tuple(refused_ppp),
             )
         try:
             applied.append(_execute(action, ctx))
@@ -253,12 +307,14 @@ def apply_plan(
                     message=exc.message,
                     evidence=exc.evidence,
                 ),
+                refused_ppp=tuple(refused_ppp),
             )
 
     return ApplyResult(
         success=True,
         actions_applied=tuple(applied),
         halted_by=None,
+        refused_ppp=tuple(refused_ppp),
     )
 
 

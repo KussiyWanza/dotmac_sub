@@ -411,6 +411,7 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
     incidents. No auto-detection, no notification sending."""
     from app.models.network import FdhCabinet
     from app.models.network_monitoring import NetworkDevice, PopSite
+    from app.services.network.service_impact import summarize_incident_impact
     from app.services.operational_escalation_delivery import delivery_audit_for_entity
     from app.services.status_presentation import outage_status_presentation
     from app.services.topology.affected import (
@@ -422,6 +423,7 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
         is_stale_open,
         list_operator_open_incidents,
     )
+    from app.services.topology.outage_tickets import infrastructure_link_for
     from app.services.topology.reachability import reachability_overview
 
     context = _base_context(request, db, active_page="monitoring")
@@ -450,6 +452,11 @@ def outages_console(request: Request, db: Session = Depends(get_db)):
                 "target": target,
                 "stale": is_stale_open(inc),
                 "status_presentation": outage_status_presentation(inc.status),
+                # Exposure vs confirmed split from network.service_impact —
+                # audience membership is exposure, never automatic downtime.
+                "impact": summarize_incident_impact(db, inc),
+                # The one canonical infrastructure ticket, when bound.
+                "infrastructure_link": infrastructure_link_for(db, inc.id),
                 "delivery_audit": delivery_audit_for_entity(
                     db,
                     entity_type="outage",

@@ -89,11 +89,15 @@ def _payment(
     account,
     *,
     amount: Decimal,
+    settlement_amount: Decimal | None = None,
+    provider_fee: Decimal = Decimal("0.00"),
     paid_at: datetime = datetime(2026, 7, 23, 10, tzinfo=UTC),
 ):
+    canonical_credit = settlement_amount if settlement_amount is not None else amount
     payment = Payment(
         account_id=account.id,
         amount=amount,
+        provider_fee=provider_fee,
         currency="NGN",
         status=PaymentStatus.succeeded,
         paid_at=paid_at,
@@ -107,7 +111,7 @@ def _payment(
         payment_id=payment.id,
         entry_type=LedgerEntryType.credit,
         source=LedgerSource.payment,
-        amount=amount,
+        amount=canonical_credit,
         currency="NGN",
         memo="Reviewed test payment",
         is_active=True,
@@ -120,8 +124,8 @@ def _payment(
         PaymentSettlement(
             payment_id=payment.id,
             unallocated_ledger_entry_id=entry.id,
-            amount=amount,
-            unallocated_amount=amount,
+            amount=canonical_credit,
+            unallocated_amount=canonical_credit,
             prepaid_amount=Decimal("0.00"),
             currency="NGN",
             origin=PaymentSettlementOrigin.system,
@@ -131,6 +135,63 @@ def _payment(
     )
     db.commit()
     return payment
+
+
+def test_fee_inclusive_mixed_source_uses_participant_remainder(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("7421.37"),
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("522.25"),
+    )
+    payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("7012.84"),
+        provider_fee=Decimal("113.72"),
+        settlement_amount=Decimal("6899.12"),
+    )
+
+    preview = preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert payment.amount == Decimal("7012.84")
+    assert payment.provider_fee == Decimal("113.72")
+    assert payment.settlement.amount == Decimal("6899.12")
+    assert payment.settlement.unallocated_amount == Decimal("6899.12")
+    assert preview.payment_backed_credit == Decimal("6899.12")
+    assert preview.opening_funding_required == Decimal("522.25")
+    assert preview.disposition is PrepaidDraftDisposition.reviewed_opening_fundable
+    invoice_id = invoice.id
+    preview_fingerprint = preview.fingerprint
+    db_session.commit()
+
+    result = reconcile_prepaid_draft_invoice(
+        db_session,
+        _command(
+            invoice_id,
+            preview_fingerprint,
+            key=f"pytest-fee-inclusive-mixed-{invoice_id}",
+        ),
+    )
+
+    db_session.refresh(invoice)
+    assert result.payment_applied_amount == Decimal("6899.12")
+    assert result.opening_funding_applied_amount == Decimal("522.25")
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert db_session.query(PaymentAllocation).one().amount == Decimal("6899.12")
+    assert db_session.query(PrepaidOpeningFundingConsumption).one().amount == Decimal(
+        "522.25"
+    )
 
 
 def _command(invoice_id, fingerprint: str, *, key: str):

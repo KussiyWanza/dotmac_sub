@@ -1,6 +1,7 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import status_badge, status_presentation_badge %}
 {% from "components/ui/record.html" import subscriber_hero %}
+{% from "admin/customers/_network_path.html" import network_path_graph %}
 
 {% block title %}{{ customer_name }} - Customer - Admin{% endblock %}
 
@@ -1930,57 +1931,59 @@
                                 {% if card.nas_name %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">NAS Device</p>
-                                    <a href="/admin/nas/{{ card.nas_id }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ card.nas_name }}</a>
+                                    <a href="/admin/network/nas/devices/{{ card.nas_id }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ card.nas_name }}</a>
                                 </div>
                                 {% endif %}
                                 {% if card.access_endpoint and card.access_endpoint.endpoint_display %}
+                                {% set ep_source = card.access_endpoint.source_presentation %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving Endpoint</p>
                                     <p class="font-medium text-slate-900 dark:text-white">{{ card.access_endpoint.endpoint_display }}</p>
-                                    <p class="text-xs {% if card.access_endpoint.endpoint_source == 'live_session' %}text-emerald-600 dark:text-emerald-400{% else %}text-slate-500 dark:text-slate-400{% endif %}">
-                                        {% if card.access_endpoint.endpoint_source == 'live_session' %}Live session
-                                        {% elif card.access_endpoint.endpoint_source == 'ont_assignment' %}ONT assignment
-                                        {% elif card.access_endpoint.endpoint_source == 'uisp_observation' %}UISP observation
-                                        {% else %}Provisioned NAS{% endif %}
-                                    </p>
-                                    {% if card.access_endpoint.endpoint_complete is false %}
-                                    <p class="text-xs text-amber-600 dark:text-amber-400">Partial{% if card.access_endpoint.gap %} &mdash; {{ card.access_endpoint.gap }}{% endif %}</p>
+                                    <p class="text-xs status-tone-{{ ep_source.tone.value if ep_source.tone.value is defined else ep_source.tone }} status-foreground">{{ ep_source.label }}</p>
+                                    {% if card.access_endpoint.partial_notice %}
+                                    <p class="text-xs status-tone-warning status-foreground">{{ card.access_endpoint.partial_notice }}</p>
                                     {% endif %}
                                 </div>
                                 {% if card.access_endpoint.access_kind == 'ap' %}
+                                {% set rf_fresh = card.access_endpoint.rf_freshness_presentation %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving AP</p>
                                     <p class="font-medium text-slate-900 dark:text-white">{{ card.access_endpoint.serving_ap_name or card.access_endpoint.endpoint_display }}</p>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">RF signal</p>
-                                    {% if card.access_endpoint.rf_signal_freshness == 'fresh' %}
-                                    <p class="font-medium text-slate-900 dark:text-white">{{ '%.0f'|format(card.access_endpoint.rf_signal_dbm) }} dBm</p>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400">Observed at {{ card.access_endpoint.rf_signal_observed_at }}</p>
-                                    {% elif card.access_endpoint.rf_signal_freshness == 'stale' %}
-                                    <p class="font-medium text-amber-600 dark:text-amber-400">Stale (last {{ '%.0f'|format(card.access_endpoint.rf_signal_dbm) }} dBm at {{ card.access_endpoint.rf_signal_observed_at }})</p>
-                                    {% else %}
-                                    <p class="font-medium text-slate-500 dark:text-slate-400">Signal unavailable</p>
+                                    <p class="font-medium status-tone-{{ rf_fresh.tone.value if rf_fresh.tone.value is defined else rf_fresh.tone }} status-foreground">{{ card.access_endpoint.rf_display }}</p>
+                                    {% if card.access_endpoint.rf_observed_display %}
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.rf_observed_display }}</p>
                                     {% endif %}
                                 </div>
-                                {% elif card.access_endpoint.radio_ap_unresolved %}
+                                {% elif card.access_endpoint.ap_unresolved_notice %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving AP</p>
-                                    <p class="font-medium text-amber-600 dark:text-amber-400">AP unresolved</p>
-                                    {% if card.access_endpoint.radio_label %}
-                                    <p class="text-xs text-slate-500 dark:text-slate-400">Radio {{ card.access_endpoint.radio_label }} has no serving-AP mapping &mdash; see the unmatched-radio queue</p>
-                                    {% endif %}
+                                    <p class="font-medium status-tone-warning status-foreground">AP unresolved</p>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.ap_unresolved_notice }}
+                                        {% if card.access_endpoint.ap_unresolved_repair_href and can(request, card.access_endpoint.ap_unresolved_repair_permission) %}
+                                        <a href="{{ card.access_endpoint.ap_unresolved_repair_href }}" class="underline">Review queue</a>
+                                        {% endif %}
+                                    </p>
                                 </div>
                                 {% endif %}
-                                {% elif card.access_endpoint and card.access_endpoint.endpoint_source == 'unresolved' %}
+                                {% elif card.access_endpoint and card.access_endpoint.source_presentation %}
+                                {% set ep_source = card.access_endpoint.source_presentation %}
+                                {% if card.access_endpoint.endpoint_source == 'unresolved' %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving Endpoint</p>
-                                    <p class="font-medium text-amber-600 dark:text-amber-400">Unresolved</p>
+                                    <p class="font-medium status-tone-{{ ep_source.tone.value if ep_source.tone.value is defined else ep_source.tone }} status-foreground">{{ ep_source.label }}</p>
                                     {% if card.access_endpoint.gap %}
                                     <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.gap }}</p>
                                     {% endif %}
-                                    {% if card.access_endpoint.radio_ap_unresolved %}
-                                    <p class="text-xs text-amber-600 dark:text-amber-400">Radio {{ card.access_endpoint.radio_label or '' }} has no serving-AP mapping &mdash; see the unmatched-radio queue</p>
+                                    {% if card.access_endpoint.ap_unresolved_notice %}
+                                    <p class="text-xs status-tone-warning status-foreground">{{ card.access_endpoint.ap_unresolved_notice }}
+                                        {% if card.access_endpoint.ap_unresolved_repair_href and can(request, card.access_endpoint.ap_unresolved_repair_permission) %}
+                                        <a href="{{ card.access_endpoint.ap_unresolved_repair_href }}" class="underline">Review queue</a>
+                                        {% endif %}
+                                    </p>
                                     {% endif %}
                                 </div>
+                                {% endif %}
                                 {% endif %}
                                 {% if card.pop_site_name %}
                                 <div>
@@ -2026,7 +2029,7 @@
                                         <a href="/admin/support/tickets/{{ card.known_incident.infrastructure_ticket_id }}" class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">Open the covering ticket</a>
                                         {% endif %}
                                         {% if card.known_incident.incident_id %}
-                                        <a href="/admin/network/outages/{{ card.known_incident.incident_id }}" class="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40">View incident</a>
+                                        <a href="/admin/network/outages" class="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40">View incidents</a>
                                         {% endif %}
                                     </div>
                                     {% endif %}
@@ -2057,33 +2060,31 @@
                                 <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">{{ card.access_state.source }}</p>
                             </div>
                             {% endif %}
-                            {% if card.topology_trace and (card.topology_trace.nodes or card.topology_trace.breaks) %}
+                            {% if card.network_path and (card.network_path.nodes or card.network_path.gaps) %}
                             <div class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
-                                <p class="mb-2 text-xs text-slate-500 dark:text-slate-400">Active Path</p>
-                                <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                                    {% for node in card.topology_trace.nodes %}
-                                    <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs
-                                        {% if node.state == 'down' %}border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300
-                                        {% elif node.state == 'up' %}border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300
-                                        {% elif node.state == 'degraded' %}border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300
-                                        {% else %}border-slate-300 bg-slate-50 text-slate-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300{% endif %}"
-                                        title="{{ node.kind }}{% if node.observed_at %} · seen {{ node.observed_at }}{% endif %}{% if node.source %} · {{ node.source }}{% endif %}">
-                                        {{ node.label }}
-                                    </span>
-                                    {% if not loop.last %}<span class="text-slate-400 dark:text-slate-500">&rarr;</span>{% endif %}
-                                    {% endfor %}
-                                </div>
-                                {% for gap in card.topology_trace.breaks %}
-                                <p class="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                                    <span class="font-medium">{{ gap.code }}</span> &mdash; {{ gap.message }}
+                                <p class="mb-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                                    <span>Active Path</span>
+                                    {% if can(request, 'network:device:read') %}
+                                    <a href="/admin/network/explorer?subject=subscription:{{ card.subscription_id }}" class="font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open in Explorer</a>
+                                    {% endif %}
                                 </p>
-                                {% endfor %}
-                                {% for node in card.topology_trace.nodes %}
-                                {% if node.detail and node.detail.onu_rx_signal_dbm is not none %}
-                                <p class="mt-2 text-xs text-slate-600 dark:text-slate-400">ONT receive power: <span class="font-mono">{{ node.detail.onu_rx_signal_dbm }} dBm</span></p>
+                                {{ network_path_graph(card.network_path, request) }}
+                                {% include "admin/customers/_service_impact_panel.html" %}
+                                {% if card.access_endpoint and card.access_endpoint.access_kind == 'olt' and can(request, 'network:fiber:read') %}
+                                <details class="mt-2">
+                                    <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200" data-testid="fiber-plant-toggle">Fibre plant details</summary>
+                                    <div class="mt-2"
+                                         hx-get="/admin/customers/subscriptions/{{ card.subscription_id }}/fiber-path"
+                                         hx-trigger="load"
+                                         hx-swap="innerHTML">
+                                        <div class="text-xs text-slate-500 dark:text-slate-400">Loading fibre plant path...</div>
+                                    </div>
+                                </details>
                                 {% endif %}
-                                {% endfor %}
                             </div>
+                            {% endif %}
+                            {% if not (card.network_path and (card.network_path.nodes or card.network_path.gaps)) %}
+                            {% include "admin/customers/_service_impact_panel.html" %}
                             {% endif %}
                             {% if card.ticket_prefill_url %}
                             <div class="mt-3">

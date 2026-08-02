@@ -13,5 +13,8 @@ def test_prepaid_recovery_billing_has_no_parallel_settlement_writer():
 def test_bill_now_never_voids_an_existing_invoice():
     source = Path("app/services/prepaid_recovery_billing.py").read_text()
 
-    assert "open_recovery_invoice" in source
+    assert "_unresolved_service_invoices" in source
+    assert "InvoiceLine.amount >" in source
+    assert "PaymentAllocation.invoice_id" in source
+    assert "LedgerEntry.invoice_id" in source
     assert "Invoices.void" not in source

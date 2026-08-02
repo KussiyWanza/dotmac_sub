@@ -22,7 +22,10 @@ to `financial.prepaid_draft_reconciliation`.
 
 ## Operator flow
 
-1. The administrator reviews and manually voids the obsolete draft invoice.
+1. The Bill Now eligibility read checks every active unresolved invoice with an
+   active positive line for the exact subscription. If one exists, the service
+   page disables Bill Now and links to that invoice. The administrator reviews
+   and, only when legitimate, closes it through the invoice owner.
 2. On the suspended prepaid service, select **Bill now** and review the exact
    full-cycle draft preview. Confirmation creates a draft only.
 3. Open that draft invoice and select **Reconcile prepaid draft** when the
@@ -37,8 +40,16 @@ to `financial.prepaid_draft_reconciliation`.
 
 - The backend requires prepaid mode, suspended lifecycle state, and an active
   prepaid lock; hiding or showing a button is never authorization.
-- One active recovery invoice per service is allowed. An existing draft must be
-  explicitly voided; Bill Now never voids it automatically.
+- Any active unresolved ordinary or recovery invoice with a positive line for
+  the exact service blocks replacement. Payment allocations, ledger entries,
+  credit-note activity, non-draft lifecycle state, overlapping entitlement, or
+  multiple documents select a typed manual-review action; a pristine single
+  draft selects the existing draft reconciler. Bill Now never voids it.
+- The account is locked before the exact subscription and the service-scoped
+  invoice query is repeated under lock. Unrelated subscriptions on the account
+  do not block creation.
+- Replay of the same confirmed recovery fingerprint returns the matching draft
+  without creating another invoice.
 - Draft creation binds the price, tax, period, and subscription state.
 - Reconciliation is all-or-nothing. Insufficient, unbacked, stale, or ambiguous
   funding leaves the invoice and access unchanged.

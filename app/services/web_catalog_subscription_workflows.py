@@ -40,6 +40,7 @@ from app.services.prepaid_recovery_billing import (
     PrepaidRecoveryDraftConfirmation,
     create_prepaid_recovery_draft,
     preview_prepaid_recovery_draft,
+    resolve_prepaid_recovery_draft_eligibility,
 )
 from app.services.subscription_correction import (
     CorrectSubscriptionCommand,
@@ -446,6 +447,15 @@ def subscription_detail_page_context(
         ),
     }
     context.update(core.subscription_detail_context(db, subscription))
+    if (
+        subscription.status == SubscriptionStatus.suspended
+        and subscription.billing_mode.value == "prepaid"
+    ):
+        context["prepaid_bill_now_eligibility"] = (
+            resolve_prepaid_recovery_draft_eligibility(
+                db, subscription_id=subscription.id
+            )
+        )
     return context
 
 

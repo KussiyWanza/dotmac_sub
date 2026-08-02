@@ -191,6 +191,14 @@ class OltDeleteServicePort:
     requires_reset: ClassVar[bool] = False
 
     service_port_index: int
+    #: "mgmt", "wan", or "unknown" — informational, not CLI-emitted.
+    #:
+    #: A stale port is by definition neither desired index, so the slot is
+    #: recovered from the observed VLAN rather than the desired state. It
+    #: exists so PPP delivery authorization can tell management work from
+    #: subscriber-service work: deleting the mgmt port must keep converging
+    #: while PPP is blocked. "unknown" fails closed and is withheld.
+    slot: str = "unknown"
 
 
 @dataclass(frozen=True)

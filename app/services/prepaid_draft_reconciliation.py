@@ -1057,7 +1057,7 @@ def _stage_action(
                     preview_fingerprint=funding.fingerprint,
                     funding_position_at=funding.funding_position_at,
                 )
-                opening_amount = round_money(to_decimal(invoice.balance_due))
+                opening_amount = result.invoice_remaining
                 if opening_amount != preview.opening_funding_required:
                     _error(
                         "stale_preview",

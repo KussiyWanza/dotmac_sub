@@ -19,6 +19,7 @@ There is no cross-currency total and no generic mutable balance.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -31,6 +32,7 @@ from app.models.billing_contract import BillingRecordAuthority
 from app.models.customer_subledger import (
     CustomerPositionEffect,
     CustomerPostingGroup,
+    CustomerSubledgerAuthorityCutover,
     PositionEffectKind,
     PostingCommandKind,
     PostingProducer,
@@ -53,8 +55,19 @@ def _error(suffix: str, message: str, **details: object) -> CustomerSubledgerErr
     )
 
 
-def permitted_authority() -> BillingRecordAuthority:
-    """Return the authority this owner may write, from the manifest state."""
+def authority_cutover(
+    db: Session,
+) -> CustomerSubledgerAuthorityCutover | None:
+    """Return the one approved runtime authority activation, when present."""
+
+    return db.scalar(select(CustomerSubledgerAuthorityCutover).limit(1))
+
+
+def permitted_authority(db: Session) -> BillingRecordAuthority:
+    """Return the authority new groups may write at this runtime instant."""
+
+    if authority_cutover(db) is not None:
+        return BillingRecordAuthority.authoritative
 
     from app.services.sot_relationships import service_relationship
 
@@ -276,7 +289,7 @@ def stage_posting_group(
     group = CustomerPostingGroup(
         account_id=command.account_id,
         currency=command.currency,
-        authority=permitted_authority(),
+        authority=permitted_authority(db),
         command_kind=command.command_kind,
         producer_owner=command.producer_owner.value,
         source_kind=command.source_kind.value,
@@ -444,7 +457,20 @@ def resolve_position(
     shadow and an authoritative read never counts shadow rows.
     """
 
-    resolved_authority = authority or permitted_authority()
+    cutover = authority_cutover(db) if authority is None else None
+    resolved_authority = authority or (
+        BillingRecordAuthority.authoritative
+        if cutover is not None
+        else BillingRecordAuthority.shadow
+    )
+    authority_scope = (
+        (
+            BillingRecordAuthority.shadow,
+            BillingRecordAuthority.authoritative,
+        )
+        if authority is None and cutover is not None
+        else (resolved_authority,)
+    )
     lanes = {
         "collectible_receivable": Decimal("0"),
         "unapplied_customer_credit": Decimal("0"),
@@ -468,7 +494,7 @@ def resolve_position(
         .where(
             CustomerPostingGroup.account_id == account_id,
             CustomerPostingGroup.currency == currency,
-            CustomerPostingGroup.authority == resolved_authority,
+            CustomerPostingGroup.authority.in_(authority_scope),
         )
     ).all()
 
@@ -491,6 +517,88 @@ def resolve_position(
     )
 
 
+def resolve_positions(
+    db: Session,
+    *,
+    account_ids: Iterable[UUID],
+    currency: str,
+    authority: BillingRecordAuthority | None = None,
+) -> dict[UUID, CustomerFinancialPosition]:
+    """Resolve one currency for a cohort without an account-at-a-time query.
+
+    This is the durable migration comparator's read path. It preserves the
+    exact per-lane and reversal semantics of :func:`resolve_position` while
+    making a full prepaid cohort one bounded query.
+    """
+
+    ids = tuple(sorted(set(account_ids), key=str))
+    if not ids:
+        return {}
+    cutover = authority_cutover(db) if authority is None else None
+    resolved_authority = authority or (
+        BillingRecordAuthority.authoritative
+        if cutover is not None
+        else BillingRecordAuthority.shadow
+    )
+    authority_scope = (
+        (
+            BillingRecordAuthority.shadow,
+            BillingRecordAuthority.authoritative,
+        )
+        if authority is None and cutover is not None
+        else (resolved_authority,)
+    )
+    lanes_by_account = {
+        account_id: {
+            "collectible_receivable": Decimal("0"),
+            "unapplied_customer_credit": Decimal("0"),
+            "prepaid_funding_reserved": Decimal("0"),
+            "prepaid_funding_consumed": Decimal("0"),
+            "written_off_total": Decimal("0"),
+            "refunded_total": Decimal("0"),
+            "adjustment_total": Decimal("0"),
+        }
+        for account_id in ids
+    }
+    rows = db.execute(
+        select(
+            CustomerPostingGroup.account_id,
+            CustomerPositionEffect.effect,
+            CustomerPositionEffect.amount,
+            CustomerPostingGroup.reverses_group_id,
+        )
+        .join(
+            CustomerPositionEffect,
+            CustomerPositionEffect.group_id == CustomerPostingGroup.id,
+        )
+        .where(
+            CustomerPostingGroup.account_id.in_(ids),
+            CustomerPostingGroup.currency == currency,
+            CustomerPostingGroup.authority.in_(authority_scope),
+        )
+    ).all()
+    for account_id, effect, amount, reverses_group_id in rows:
+        lanes = lanes_by_account[account_id]
+        sign = -1 if reverses_group_id is not None else 1
+        value = Decimal(amount) * sign
+        move = _LANE_MOVES.get(effect)
+        if move is not None:
+            lane, direction = move
+            lanes[lane] += value * direction
+        evidence_lane = _EVIDENCE_MOVES.get(effect)
+        if evidence_lane is not None:
+            lanes[evidence_lane] += value
+    return {
+        account_id: CustomerFinancialPosition(
+            account_id=account_id,
+            currency=currency,
+            authority=resolved_authority,
+            **lanes,
+        )
+        for account_id, lanes in lanes_by_account.items()
+    }
+
+
 __all__ = [
     "CustomerFinancialPosition",
     "CustomerSubledgerError",
@@ -498,7 +606,9 @@ __all__ = [
     "PositionEffectKind",
     "PostingCommandKind",
     "StagePostingGroupCommand",
+    "authority_cutover",
     "resolve_position",
+    "resolve_positions",
     "stage_posting_group",
     "stage_reversal",
 ]

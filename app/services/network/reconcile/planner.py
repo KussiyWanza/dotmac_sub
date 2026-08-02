@@ -484,7 +484,22 @@ def _plan_service_ports(
         idx = sp.get("index") if isinstance(sp, dict) else None
         if idx is None or idx in desired_indices:
             continue
-        actions.append(OltDeleteServicePort(service_port_index=int(idx)))
+        # Recover the slot from the observed VLAN. A stale port matches neither
+        # desired index, so the desired state cannot name it; the VLAN is the
+        # only evidence of what it was for. Unrecoverable stays "unknown",
+        # which PPP delivery authorization treats as fail-closed.
+        observed_vlan = sp.get("vlan_id") if isinstance(sp, dict) else None
+        slot = "unknown"
+        if observed_vlan is not None:
+            if desired.mgmt_vlan is not None and int(observed_vlan) == int(
+                desired.mgmt_vlan
+            ):
+                slot = "mgmt"
+            elif desired.wan_vlan is not None and int(observed_vlan) == int(
+                desired.wan_vlan
+            ):
+                slot = "wan"
+        actions.append(OltDeleteServicePort(service_port_index=int(idx), slot=slot))
         drifts.append(
             Drift(
                 field=f"olt_service_ports[{idx}]",

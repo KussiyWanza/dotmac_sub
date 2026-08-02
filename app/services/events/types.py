@@ -76,6 +76,10 @@ class EventType(enum.Enum):
     billing_shadow_delivery_recorded = "billing.shadow_delivery.recorded"
     billing_cutover_verification_recorded = "billing.cutover_verification.recorded"
     billing_cutover_verification_approved = "billing.cutover_verification.approved"
+    customer_subledger_opening_positions_captured = (
+        "customer_subledger.opening_positions_captured"
+    )
+    customer_subledger_authority_activated = "customer_subledger.authority_activated"
 
     # Billing - Bank-transfer evidence lifecycle
     payment_proof_submitted = "payment_proof.submitted"
@@ -392,6 +396,15 @@ class EventType(enum.Enum):
     outage_rerooted = "outage.rerooted"
     outage_discarded = "outage.discarded"
     outage_resolved = "outage.resolved"
+
+    # Planned maintenance lifecycle outputs (docs/designs/OUTAGE_SLA_SPINE.md
+    # §5). Staged atomically with each window transition by
+    # network.maintenance_lifecycle; no projection handler consumes them yet.
+    maintenance_announced = "maintenance.announced"
+    maintenance_started = "maintenance.started"
+    maintenance_completed = "maintenance.completed"
+    maintenance_canceled = "maintenance.canceled"
+    maintenance_overrun = "maintenance.overrun"
 
     # Custom event type for extensibility
     custom = "custom"

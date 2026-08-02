@@ -1824,6 +1824,114 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.service_level",
+                module="app.services.customer_service_level",
+                owns=("per-subscription SLA policy resolution and period score",),
+                depends_on=(
+                    "network.customer_outage_accrual",
+                    "service_intent.catalog_policy",
+                ),
+                notes=(
+                    "Shadow-phase read-time scorer (OUTAGE_SLA_SPINE §4): "
+                    "resolves the effective policy (offer-version precedence "
+                    "today; subscription/account contracts and persisted "
+                    "immutable policy versions arrive with cutover), merges "
+                    "the accrual ledger's qualifying intervals per "
+                    "Africa/Lagos calendar month, and never invents a "
+                    "contractual SLA — no policy renders measured "
+                    "availability as no_contractual_sla. Overlaps union, "
+                    "exclusions and estimated evidence report in their own "
+                    "bucket, unknown time is provisional never uptime. The "
+                    "legacy topology.customer_availability stays the "
+                    "displayed authority until the shadow-comparison gate "
+                    "cuts over; two displayed scores must never coexist."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "per-subscription SLA policy resolution and "
+                                "period score"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "qualifying downtime intervals",
+                                "offer SLA policy inputs",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="qualifying downtime intervals",
+                            owner="network.customer_outage_accrual",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "customer_outage_intervals with state, "
+                                "quality, exclusion candidates, and "
+                                "provisional/finalized ends"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="offer SLA policy inputs",
+                            owner="service_intent.catalog_policy",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "CatalogOffer.sla_profile_id and SlaProfile "
+                                "uptime/credit fields as display-only policy "
+                                "evidence until effective-dated versions land"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Scores are computed on read from committed "
+                            "ledger and catalog state; nothing is persisted "
+                            "in the shadow phase."
+                        ),
+                        locking="Read scoring acquires no mutation locks.",
+                        idempotency=(
+                            "The same intervals, policy, and period produce "
+                            "the same score and evidence digest."
+                        ),
+                        retries="Read scoring calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.services.web_customer_details",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "read-time topology.customer_availability "
+                            "trailing-window calculation"
+                        ),
+                        new_owner="customer.service_level",
+                        verification=(
+                            "shadow_compare discrepancy review across the "
+                            "active base plus the scorer's period, union, "
+                            "exclusion, and verdict tests."
+                        ),
+                        cutover_gate=(
+                            "Displayed availability switches only after the "
+                            "discrepancy review passes and evidence coverage "
+                            "gates customer visibility; two displayed scores "
+                            "never coexist."
+                        ),
+                        fallback_retirement=(
+                            "The legacy trailing-window derivation is "
+                            "retired at cutover with explicit approval."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_customer_service_level.py",),
+                ),
+            ),
+            SOTService(
                 name="customer.service_status",
                 module="app.services.service_status",
                 owns=(
@@ -2892,6 +3000,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "billing.shadow_verification.nested_owner_command",
                             "billing.shadow_verification.nested_transaction_completion",
                             "billing.shadow_verification.operator_approval_required",
+                            (
+                                "billing.shadow_verification."
+                                "opening_position_already_captured"
+                            ),
                             "billing.shadow_verification.verification_blockers_present",
                             "billing.shadow_verification.verification_run_not_found",
                         ),
@@ -3232,6 +3344,231 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.customer_subledger_opening_positions",
+                module="app.services.billing.subledger_opening",
+                owns=(
+                    "reviewed customer-subledger opening-position capture",
+                    "customer-subledger authority cutover activation",
+                ),
+                depends_on=(
+                    "billing.shadow_verification",
+                    "customer.accounts",
+                    "events.dispatcher",
+                    "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
+                ),
+                notes=(
+                    "ADR 0007 Phase 3 migration owner. It captures only the exact "
+                    "operator- and finance-approved verifier result. Each immutable "
+                    "opening evidence row and shadow posting group commit together. "
+                    "The residual is verified legacy position minus already-recorded "
+                    "shadow position at the preview cutoff, so forward groups are not "
+                    "double-counted. Quarantined accounts are absent and remain "
+                    "fail-closed; this owner never assigns them zero."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "reviewed customer-subledger opening-position capture"
+                            ),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "approved opening-position verification run",
+                                "verified prepaid funding position",
+                                "recorded customer postings",
+                                "canonical customer account",
+                            ),
+                            canonical_writer=(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer-subledger authority cutover activation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "approved subledger parity verification run",
+                                "recorded customer postings",
+                            ),
+                            canonical_writer=(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="approved opening-position verification run",
+                            owner="billing.shadow_verification",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable phase_3_opening_preview run with exact "
+                                "result fingerprint plus operator and finance approval"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified prepaid funding position",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "reviewed active baseline plus canonical native "
+                                "post-baseline money facts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded customer postings",
+                            owner="financial.customer_subledger",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable shadow posting groups and typed effects "
+                                "recorded before the preview cutoff"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer account",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Subscriber identity and currency scope",
+                        ),
+                        AuthorityInput(
+                            name="approved subledger parity verification run",
+                            owner="billing.shadow_verification",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable phase_3_subledger_parity run with zero "
+                                "blockers plus operator and finance approval"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The fingerprint-bound capture enters execute_owner_command "
+                            "once; every opening evidence row, posting group, and capture "
+                            "event commits or rolls back as one transaction."
+                        ),
+                        locking=(
+                            "The approved verification run is locked before capture; "
+                            "unique account/currency and posting idempotency constraints "
+                            "arbitrate concurrent attempts."
+                        ),
+                        idempotency=(
+                            "One immutable opening per account/currency. Exact replay of "
+                            "the same reviewed run returns the recorded cohort; changed "
+                            "rows or fingerprints fail closed."
+                        ),
+                        retries=(
+                            "Retry the complete command with the same approved run and "
+                            "idempotency key only after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.customer_subledger_opening_positions"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "approval_required"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "authority_already_activated"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "corrupt_reviewed_preview"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "idempotency_conflict"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "invalid_result_fingerprint"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "missing_idempotency_key"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "missing_review_reference"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "opening_position_already_captured"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "quarantine_ownership_incomplete"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "stale_reviewed_preview"
+                            ),
+                            (
+                                "financial.customer_subledger_opening_positions."
+                                "verification_run_not_found"
+                            ),
+                        ),
+                        mapping_owner="billing migration command adapters",
+                        fail_closed_on=(
+                            "missing operator or finance approval",
+                            "changed or corrupt reviewed fingerprint",
+                            "quarantined account inclusion",
+                            "an existing account/currency opening",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "customer_subledger.opening_positions_captured",
+                            "customer_subledger.authority_activated",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries run, fingerprint, currency, captured and "
+                            "quarantined counts, and authority_moved=false."
+                        ),
+                        replay=(
+                            "Rebuild consumers from immutable opening evidence and "
+                            "posting groups; capture replay emits no second event."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "implicit runtime baseline plus multi-source legacy balance "
+                            "formula with no subledger opening posting"
+                        ),
+                        new_owner=("financial.customer_subledger_opening_positions"),
+                        verification=(
+                            "Fingerprint-bound preview/capture, quarantine exclusion, "
+                            "atomic rollback, idempotency, and cohort parity tests."
+                        ),
+                        cutover_gate=(
+                            "Every non-quarantined cohort account has one reviewed "
+                            "opening, per-account/currency/lane variance is zero, all "
+                            "forward facts are covered, and finance approves the run."
+                        ),
+                        fallback_retirement=(
+                            "Retire this migration command after read cutover; opening "
+                            "postings remain immutable history."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_subledger_opening_positions.py",
+                        "tests/architecture/test_customer_subledger_ownership.py",
+                        "tests/architecture/test_billing_target_architecture.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="runtime.durable_timers",
                 module="app.services.runtime_durable_timers",
                 owns=(
@@ -3455,6 +3792,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "billing.obligations",
                     "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
                 ),
                 notes=(
                     "ADR 0007 Phase 5. Read-only planner over one exact "
@@ -3470,6 +3808,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded billing obligations",
                                 "typed per-currency subledger position",
+                                "prepaid opening-position quarantine",
                             ),
                         ),
                     ),
@@ -3487,6 +3826,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "prepaid funding and unapplied credit lanes for "
                                 "the obligation's account and currency"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="prepaid opening-position quarantine",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "evidence-bound accounts without an approved active "
+                                "prepaid funding baseline and their owned finance work items"
                             ),
                         ),
                     ),
@@ -3507,9 +3855,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         retries="Reads may be retried without side effects.",
                     ),
                     errors=ErrorContract(
-                        domain_codes=(),
+                        domain_codes=(
+                            "collections.prepaid_policy.opening_position_quarantined",
+                        ),
                         mapping_owner="collections adapters",
-                        fail_closed_on=("a naive evaluation instant",),
+                        fail_closed_on=(
+                            "a naive evaluation instant",
+                            "an unresolved prepaid opening-position quarantine",
+                        ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.SHADOWING,
@@ -9678,8 +10031,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.invoices",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "flush-only invoice issue/void and exact "
-                                "payment-allocation confirmation protocols"
+                                "flush-only invoice issue/void and exact payment-"
+                                "allocation confirmation protocols, including the "
+                                "authoritative post-allocation invoice remainder"
                             ),
                         ),
                     ),
@@ -9745,8 +10099,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "credit when no active baseline exists",
                             "multiple drafts or positive lines",
                             "partial or ambiguous entitlement overlap",
-                            "stale preview, changed payment capacity, or already "
-                            "consumed opening funding",
+                            "stale preview, changed payment capacity, participant "
+                            "remainder mismatch, or already consumed opening funding",
                         ),
                     ),
                     events=EventContract(
@@ -9802,8 +10156,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="financial.prepaid_draft_reconciliation",
                         verification=(
-                            "Exact mixed funding, partial funding, fifty-kobo "
-                            "shortfall, pre-boundary residue absorption, post-boundary "
+                            "Exact fee-inclusive mixed funding, partial funding, exact "
+                            "nonzero shortfall, pre-boundary residue absorption, post-boundary "
                             "unbacked or reversed payment evidence, "
                             "direct-renewal overlap, multiple drafts, stale preview, "
                             "replay, concurrency, lapsed re-anchoring, opening-funding "
@@ -10079,6 +10433,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="financial.prepaid_service_renewals",
                 module="app.services.prepaid_service_renewals",
                 owns=(
+                    "prepaid service renewal execution",
                     "due prepaid service-cycle funding preview",
                     "settled-payment evidence validation and evaluation outcome",
                     "locked and idempotent prepaid renewal debit",
@@ -10092,7 +10447,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "bounded scheduled renewal catch-up",
                 ),
                 depends_on=(
+                    "billing.contracts",
+                    "customer.accounts",
                     "financial.account_adjustments",
+                    "financial.customer_subledger",
                     "financial.invoices",
                     "financial.payments",
                     "financial.prepaid_funding_reconstruction",
@@ -10130,6 +10488,296 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "_finalize_invoice_payment_effects and "
                     "finalize_invoice_application_for_owner. The retired inline "
                     "project_paid_invoice_billing_anchors helper is gone."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="prepaid service renewal execution",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="due prepaid service-cycle funding preview",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "settled-payment evidence validation and "
+                                "evaluation outcome"
+                            ),
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "settled payment evidence",
+                                "prepaid subscription and renewal terms",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="locked and idempotent prepaid renewal debit",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="exact debit-to-entitlement evidence",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="prepaid subscription paid-through advancement",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=("funded service entitlement evidence",),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="billing-anchor projection from entitlement evidence",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=("funded service entitlement evidence",),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="billing-anchor retraction after funding reversal",
+                            role=OwnerRole.PROJECTION_WRITER,
+                            input_names=(
+                                "settled payment evidence",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="stale billing-anchor drift repair",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "funded service entitlement evidence",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="canonical prepaid renewed-through outcome",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "funded service entitlement evidence",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="post-credit-application due-service consequence",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                        ConcernContract(
+                            name="bounded scheduled renewal catch-up",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "verified customer funding position",
+                                "prepaid subscription and renewal terms",
+                            ),
+                            canonical_writer="financial.prepaid_service_renewals",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="prepaid subscription and renewal terms",
+                            owner="billing.contracts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Subscription billing mode, status, frozen unit_price, "
+                                "cadence, and next_billing_at anchor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="settled payment evidence",
+                            owner="financial.payments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active succeeded Payment plus its PaymentSettlement "
+                                "and exact allocation evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified customer funding position",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "reviewed funding baseline plus canonical forward "
+                                "money facts, excluding quarantined accounts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="funded service entitlement evidence",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active ServiceEntitlement linked to the exact renewal "
+                                "debit and service period"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Settlement-triggered and scheduled public commands enter "
+                            "execute_owner_command once on a transaction-free session. "
+                            "Validation, draft consequence, debit, entitlement, anchor, "
+                            "posting group, renewed outcome, and restoration commit or "
+                            "roll back together."
+                        ),
+                        locking=(
+                            "The account is locked before idempotency lookup and funding "
+                            "re-preview; entitlement overlap and adjustment uniqueness "
+                            "prevent a second funded result for the same period."
+                        ),
+                        idempotency=(
+                            "The service period deterministically keys its adjustment; "
+                            "settlement events and scheduled passes carry typed command "
+                            "keys, and replay must match the exact debit, entitlement, "
+                            "period, and posting effects."
+                        ),
+                        retries=(
+                            "The durable event redriver or scheduled adapter retries the "
+                            "whole owner command after rollback; stale funding requires a "
+                            "fresh preview and ambiguous evidence remains fail-closed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "financial.prepaid_service_renewals"
+                            ),
+                            "financial.prepaid_service_renewals.adjustment_rejected",
+                            "financial.prepaid_service_renewals.idempotency_conflict",
+                            "financial.prepaid_service_renewals.incomplete_entitlement",
+                            "financial.prepaid_service_renewals.ineligible_billing_mode",
+                            "financial.prepaid_service_renewals.ineligible_status",
+                            "financial.prepaid_service_renewals.insufficient_funding",
+                            "financial.prepaid_service_renewals.invalid_amount",
+                            "financial.prepaid_service_renewals.invalid_currency",
+                            "financial.prepaid_service_renewals.invalid_effective_at",
+                            "financial.prepaid_service_renewals.invalid_period",
+                            "financial.prepaid_service_renewals.missing_anchor",
+                            "financial.prepaid_service_renewals.missing_evidence_ref",
+                            "financial.prepaid_service_renewals.missing_price",
+                            "financial.prepaid_service_renewals.mode_not_prepaid",
+                            "financial.prepaid_service_renewals.payment_account_mismatch",
+                            "financial.prepaid_service_renewals.payment_not_found",
+                            "financial.prepaid_service_renewals.payment_not_settled",
+                            "financial.prepaid_service_renewals.period_already_funded",
+                            "financial.prepaid_service_renewals.settlement_missing",
+                            "financial.prepaid_service_renewals.settlement_time_missing",
+                            "financial.prepaid_service_renewals.stale_anchor",
+                            "financial.prepaid_service_renewals.stale_preview",
+                            "financial.prepaid_service_renewals.subscription_not_eligible",
+                            "financial.prepaid_service_renewals.subscription_not_found",
+                            "financial.prepaid_service_renewals.unsupported_cadence",
+                        ),
+                        mapping_owner=(
+                            "billing automation, durable event, and staff adapters"
+                        ),
+                        fail_closed_on=(
+                            "missing or non-canonical settlement evidence",
+                            "quarantined or insufficient funding",
+                            "stale preview or entitlement overlap",
+                            "posting-group failure",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_service.renewed",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries the exact account, subscription, debit, "
+                            "entitlement, funded period, amount, currency, and trigger."
+                        ),
+                        replay=(
+                            "The period-keyed adjustment and posting group return the "
+                            "recorded result; no second renewed outcome is staged."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name=(
+                                "prepaid entitlement and paid-through anchor projection"
+                            ),
+                            input_names=(
+                                "prepaid subscription and renewal terms",
+                                "settled payment evidence",
+                                "verified customer funding position",
+                                "funded service entitlement evidence",
+                            ),
+                            writer="financial.prepaid_service_renewals",
+                            freshness=(
+                                "Atomic with the renewal debit or recomputed from exact "
+                                "surviving entitlement evidence after reversal."
+                            ),
+                            stale_behavior=(
+                                "Renewal and enforcement fail closed; stale-anchor drift "
+                                "remains owned reconciliation work."
+                            ),
+                            drift_signal=(
+                                "The subscription anchor differs from exact active "
+                                "entitlement and approved grant coverage."
+                            ),
+                            rebuild_operation=(
+                                "Run the fingerprint-bound stale billing-anchor repair "
+                                "or replay the exact funding-change event."
+                            ),
+                            repair_owner="financial.prepaid_service_renewals",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "billing_automation.run_invoice_cycle and durable event "
+                            "handler caller-owned transactions"
+                        ),
+                        new_owner="financial.prepaid_service_renewals",
+                        verification=(
+                            "Scheduled and event-triggered command-boundary, atomicity, "
+                            "idempotent posting, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "Both live renewal entry paths invoke the typed public owner "
+                            "command and each new funded period has exactly one matching "
+                            "prepaid-consumption posting group."
+                        ),
+                        fallback_retirement=(
+                            "Direct caller-transaction renewal writes and the generic "
+                            "account-adjustment posting fallback are rejected by guards."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_prepaid_service_renewals.py",
+                        "tests/test_subledger_forward_shadow.py",
+                        "tests/architecture/test_prepaid_billing_anchor_ownership.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -10319,7 +10967,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
-                owns=("suspended prepaid replacement-cycle draft creation",),
+                owns=(
+                    "prepaid recovery draft eligibility and operator routing",
+                    "suspended prepaid replacement-cycle draft creation",
+                ),
                 depends_on=(
                     "access.subscription_lifecycle",
                     "events.dispatcher",
@@ -10337,13 +10988,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
+                            name="prepaid recovery draft eligibility and operator routing",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "locked prepaid subscription state",
+                                "active prepaid enforcement lock",
+                                "unresolved service-invoice evidence",
+                            ),
+                        ),
+                        ConcernContract(
                             name="suspended prepaid replacement-cycle draft creation",
                             role=OwnerRole.APPLICATION_COORDINATOR,
                             input_names=(
                                 "locked prepaid subscription state",
                                 "active prepaid enforcement lock",
                                 "contracted prepaid renewal price",
-                                "open recovery-invoice evidence",
+                                "unresolved service-invoice evidence",
                             ),
                         ),
                     ),
@@ -10367,10 +11027,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="prepaid monthly charge resolver using subscription contract and tax policy",
                         ),
                         AuthorityInput(
-                            name="open recovery-invoice evidence",
-                            owner="financial.prepaid_recovery_billing",
+                            name="unresolved service-invoice evidence",
+                            owner="financial.invoices",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="active invoice line metadata for the exact subscription and recovery-cycle intent",
+                            source=(
+                                "every active unresolved invoice with an active positive "
+                                "line for the exact subscription, including ordinary and "
+                                "recovery drafts, plus financial and coverage evidence"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -10382,12 +11046,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         locking=(
                             "Account is locked first, then the exact subscription. Active "
-                            "recovery-invoice lookup is repeated under those locks before "
-                            "the draft is written."
+                            "unresolved service-invoice lookup is repeated under those "
+                            "locks before the draft is written."
                         ),
                         idempotency=(
-                            "Recovery draft fingerprint identifies one period and an open "
-                            "invoice prevents duplicate active recovery cycles."
+                            "Recovery draft fingerprint identifies one period. Exact replay "
+                            "returns the matching recovery draft; any other unresolved "
+                            "service invoice prevents a replacement write."
                         ),
                         retries=(
                             "A stale price, service, or period preview is rejected for a "
@@ -10403,7 +11068,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_recovery_billing.ineligible_billing_mode",
                             "financial.prepaid_recovery_billing.ineligible_status",
                             "financial.prepaid_recovery_billing.prepaid_lock_missing",
-                            "financial.prepaid_recovery_billing.open_recovery_invoice",
+                            "financial.prepaid_recovery_billing.unresolved_service_invoice",
                             "financial.prepaid_recovery_billing.unsupported_cycle",
                             "financial.prepaid_recovery_billing.invalid_charge",
                             "financial.prepaid_recovery_billing.stale_preview",
@@ -10411,7 +11076,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="admin catalog adapter",
                         fail_closed_on=(
                             "missing prepaid lock or suspended service state",
-                            "an existing active recovery invoice",
+                            "any unresolved invoice claiming the exact service",
                             "stale price, service, or period evidence",
                         ),
                     ),
@@ -10433,8 +11098,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         state=AuthorityMigrationState.NATIVE,
                         new_owner="financial.prepaid_recovery_billing",
                         verification=(
-                            "Focused command, UI visibility, stale-preview, duplicate, "
-                            "price, period, and invoice-creation tests."
+                            "Focused command, typed routing, UI visibility, ordinary and "
+                            "recovery draft, activity, service scope, stale-preview, "
+                            "replay, price, period, and invoice-creation tests."
                         ),
                         cutover_gate=(
                             "Admin Bill Now invokes only this coordinator; invoice-page "
@@ -10453,6 +11119,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_invoice_templates.py",
+                        "tests/test_prepaid_recovery_billing.py",
                         "tests/architecture/test_prepaid_recovery_billing_sot.py",
                     ),
                 ),
@@ -15250,18 +15917,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "no_pppoe_service_intent",
-                            "ambiguous_pppoe_service_intent",
+                            "no_active_service_intent",
                             "bridged_service_intent",
+                            "no_active_assignment",
+                            "ambiguous_assignment",
                             "unresolvable_ont",
+                            "scope_mismatch",
                         ),
                         mapping_owner="app.services.network.reconcile.applier",
                         fail_closed_on=(
-                            "no active PPPoE service instance",
-                            "more than one active PPPoE service instance",
+                            "no ACTIVE owner-managed intent for the exact "
+                            "ont+subscription pair, which includes every "
+                            "pre-owner row quarantined as unverified",
                             "an active bridged service instance",
+                            "no active subscriber assignment on the ONT",
+                            "more than one active assignment, so no exact "
+                            "service can be resolved",
                             "an ONT identity that cannot be resolved",
+                            "a ruling presented for a different ONT, service "
+                            "or credential scope than the one being delivered",
                             "an absent ruling at apply time",
+                            "an action whose PPP purpose is indeterminate",
                         ),
                     ),
                     migration=MigrationContract(
@@ -15270,15 +15946,20 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         old_owner="implicit: staged desired state",
                         verification=(
                             "tests/test_ppp_delivery_authorization.py pins that "
-                            "the whole PPP bundle is gated, that unrelated "
-                            "reconciliation is not, and that an absent ruling "
-                            "refuses rather than passes."
+                            "PPP-bearing actions are gated while management work "
+                            "is not, that an absent or wrong-scope ruling refuses "
+                            "rather than passes, and that an unverified legacy row "
+                            "does not authorise even when legacy is_active is true."
                         ),
                         cutover_gate=(
-                            "OntWanServiceInstance gaining exact subscription_id "
-                            "ownership and a one-active-primary constraint is the "
-                            "open architecture decision; until then intent is read "
-                            "at ONT grain."
+                            "Authority is network.ont_wan_service_intent."
+                            "active_primary_internet_intent at exact "
+                            "ont+subscription grain. Legacy is_active is NOT read: "
+                            "migration 456 leaves it untouched, so reading it "
+                            "would authorise exactly the unverified rows the owner "
+                            "slice quarantined. Remaining gate: the read-only "
+                            "legacy worklist, adjudication through owner commands, "
+                            "then the partial unique indexes."
                         ),
                         fallback_retirement=(
                             "The 1,318-row staged backlog is removed by a "
@@ -15287,7 +15968,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     steward="network",
-                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    design_refs=(
+                        "docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
                     test_refs=(
                         "tests/test_ppp_delivery_authorization.py",
                         "tests/test_cpe_dialer_credential_intent_gate.py",
@@ -16241,6 +16925,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "persisted outage incident status vocabulary",
                     "outage incident lifecycle",
+                    "immutable incident scope and audience revision history",
+                    "incident ticket link composition",
                     "typed outage lifecycle output emission",
                     "committed outage output consumption",
                 ),
@@ -16249,6 +16935,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "events.dispatcher",
                     "events.owner_outputs",
                     "operations.sla_escalation",
+                    "support.ticket_lifecycle",
                 ),
                 notes=(
                     "Every incident transition stages its typed outage output "
@@ -16258,7 +16945,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "commands, which attach operational owners/watchers and "
                     "plan or cancel SLA escalations through the escalation "
                     "participants. Outage resolution emits recovery evidence "
-                    "only and never closes support Tickets or WorkOrders."
+                    "only and never closes support Tickets or WorkOrders. "
+                    "Declare, suspect, reroot, and audience-drift transitions "
+                    "append immutable scope revisions with order-independent "
+                    "membership tokens and exact entered/retained/left member "
+                    "deltas (OUTAGE_SLA_SPINE §3); the incident root stays the "
+                    "mutable latest projection while revisions preserve the "
+                    "history the downtime ledger consumes."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -16273,6 +16966,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded outage incidents",
                                 "resolved outage impact",
+                            ),
+                            canonical_writer="network.outage_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "immutable incident scope and audience revision history"
+                            ),
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded outage incidents",
+                                "resolved outage impact",
+                            ),
+                            canonical_writer="network.outage_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="incident ticket link composition",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded outage incidents",
+                                "support ticket identities",
                             ),
                             canonical_writer="network.outage_lifecycle",
                         ),
@@ -16319,6 +17032,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "operational owners, watchers, room links, "
                                 "escalation events, and deliveries"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="support ticket identities",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "support_tickets row identities for the one "
+                                "canonical infrastructure link and the "
+                                "deduplicated complaint links; ticket "
+                                "transitions stay with the Support owner"
                             ),
                         ),
                         AuthorityInput(
@@ -16426,12 +17150,407 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     steward="network operations",
                     design_refs=(
                         "docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md",
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     test_refs=(
                         "tests/services/topology/test_outage_lifecycle_chain.py",
                         "tests/architecture/test_outage_lifecycle_chain_boundary.py",
                         "tests/services/topology/test_outage_reconcile.py",
+                        "tests/services/topology/test_outage_scope_revisions.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="network.service_impact",
+                module="app.services.network.service_impact",
+                owns=("per-subscription service impact evidence resolution",),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.outage_impact",
+                    "network.radius_sessions",
+                ),
+                notes=(
+                    "Read-only six-state impact resolver "
+                    "(OUTAGE_SLA_SPINE §1): audience membership from the "
+                    "immutable scope revisions proves exposure; the incident "
+                    "lifecycle word supplies provider-fault evidence; live "
+                    "RADIUS sessions prove continued service and prevent "
+                    "accrual. Exposure is never downtime, a lone dark "
+                    "endpoint or stale telemetry resolves unknown rather "
+                    "than confirmed, and excluded stays reserved for the "
+                    "maintenance owner. It persists nothing and sends "
+                    "nothing; the downtime ledger consumes its words."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "per-subscription service impact evidence resolution"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "incident lifecycle and scope revisions",
+                                "live session observations",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="incident lifecycle and scope revisions",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "live OutageIncident status words plus the "
+                                "immutable scope revisions carrying exact "
+                                "audience membership and tokens"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live session observations",
+                            owner="network.radius_sessions",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "RadiusActiveSession rows as "
+                                "continued-service proof per subscription"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Resolves impact words from committed incident, "
+                            "revision, and session state without a business "
+                            "write and without device I/O."
+                        ),
+                        locking="Read resolution acquires no mutation locks.",
+                        idempotency=(
+                            "The same incident status, scope revision, and "
+                            "session set produce the same impact words and "
+                            "evidence."
+                        ),
+                        retries="Read resolution calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.web.admin.network_monitoring",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.service_impact",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/services/topology/test_service_impact.py",),
+                ),
+            ),
+            SOTService(
+                name="network.maintenance_lifecycle",
+                module="app.services.network.maintenance_lifecycle",
+                owns=(
+                    "planned maintenance window lifecycle",
+                    "typed maintenance lifecycle output emission",
+                    "planned-maintenance SLA exclusion eligibility",
+                ),
+                depends_on=(
+                    "network.outage_impact",
+                    "network.outage_lifecycle",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "Sole writer of network_maintenance_windows "
+                    "(OUTAGE_SLA_SPINE §5): draft, approved, announced, "
+                    "in_progress, completed, canceled, overrun. Every "
+                    "transition stages its typed maintenance.* output "
+                    "atomically with the status write. Seven calendar days "
+                    "of notice gate SLA exclusion; the audience token is "
+                    "resolved at announce and re-resolved at begin, and "
+                    "material drift refuses a silent start. Only the "
+                    "properly announced planned window is excludable — "
+                    "unannounced or emergency work and overrun time are "
+                    "unplanned downtime, and an overrun escalates to a "
+                    "declared outage through the lifecycle owner so accrual "
+                    "and consequences flow through the normal incident "
+                    "chain."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="planned maintenance window lifecycle",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "resolved maintenance audience",
+                                "declared outage escalation surface",
+                            ),
+                            canonical_writer="network.maintenance_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=("typed maintenance lifecycle output emission"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("resolved maintenance audience",),
+                            canonical_writer="network.maintenance_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=("planned-maintenance SLA exclusion eligibility"),
+                            role=OwnerRole.POLICY,
+                            input_names=("resolved maintenance audience",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="resolved maintenance audience",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "exact subscription cohorts per node, "
+                                "basestation, or cabinet with "
+                                "order-independent membership tokens"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="declared outage escalation surface",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "declare_outage command for the "
+                                "overrun-to-outage handoff with the linked "
+                                "incident identity"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each transition validates the state machine, "
+                            "writes the window, and stages its typed output "
+                            "atomically in the caller's transaction."
+                        ),
+                        locking=(
+                            "Transitions are guarded by explicit "
+                            "current-state checks; drift refusal requires an "
+                            "explicit approval flag."
+                        ),
+                        idempotency=(
+                            "Overrun escalation returns the already-linked "
+                            "incident; repeated transition calls against the "
+                            "wrong state raise instead of double-writing."
+                        ),
+                        retries=(
+                            "Failed transitions raise before any partial "
+                            "write; event staging shares the transaction."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.maintenance_lifecycle.active_caller_transaction",
+                            "network.maintenance_lifecycle.command_contract_violation",
+                            "network.maintenance_lifecycle.invalid_command_context",
+                            "network.maintenance_lifecycle.nested_owner_command",
+                            "network.maintenance_lifecycle.nested_transaction_completion",
+                        ),
+                        mapping_owner="app.web.admin.network_monitoring",
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "maintenance.announced",
+                            "maintenance.started",
+                            "maintenance.completed",
+                            "maintenance.canceled",
+                            "maintenance.overrun",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries window identity, status, "
+                            "scope, planned bounds, announcement time, "
+                            "audience count, and any linked outage; fields "
+                            "are additive."
+                        ),
+                        replay=(
+                            "No projection handler consumes these outputs "
+                            "yet; replays are safe because window state is "
+                            "the authority and transitions are "
+                            "state-guarded."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.maintenance_lifecycle",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_maintenance_lifecycle.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="network.customer_outage_accrual",
+                module="app.services.network.customer_outage_accrual",
+                owns=(
+                    "immutable customer outage interval ledger",
+                    "committed outage output accrual consumption",
+                ),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.service_impact",
+                    "network.maintenance_lifecycle",
+                    "events.owner_outputs",
+                ),
+                notes=(
+                    "Sole writer of customer_outage_intervals "
+                    "(OUTAGE_SLA_SPINE §2/§7). Reconciles the impact "
+                    "resolver's words into per-subscription intervals under "
+                    "the approved clocks: earliest qualifying observation "
+                    "start (audience entry for joiners), provisional "
+                    "first-healthy-observation end, one continuous interval "
+                    "across clearing/reopened, finalization at the proven "
+                    "recovery timestamp on resolve, and reviewed "
+                    "incident_discarded exclusion on discard — resolved_at "
+                    "never determines downtime and unknown never accrues. "
+                    "Delivery is the lifecycle projection handler invoking "
+                    "the receipted consume command per committed output; "
+                    "reruns and redeliveries converge with no duplicate or "
+                    "overlapping rows (partial unique open-interval index)."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="immutable customer outage interval ledger",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "per-subscription impact words",
+                                "incident lifecycle and scope history",
+                                "planned-maintenance exclusion eligibility",
+                            ),
+                            canonical_writer="network.customer_outage_accrual",
+                        ),
+                        ConcernContract(
+                            name=("committed outage output accrual consumption"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("receipted lifecycle output deliveries",),
+                            canonical_writer="network.customer_outage_accrual",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="per-subscription impact words",
+                            owner="network.service_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "six-state impact resolution with typed "
+                                "evidence per audience member"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="incident lifecycle and scope history",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "incident status words, lifecycle stamps, and "
+                                "immutable scope revisions with member entry "
+                                "times"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="planned-maintenance exclusion eligibility",
+                            owner="network.maintenance_lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "the reviewed planned_maintenance word when a "
+                                "properly announced window covers the "
+                                "interval start inside its planned bounds"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="receipted lifecycle output deliveries",
+                            owner="events.owner_outputs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "unique (consumer, event_id) receipts making "
+                                "each redelivery an exact no-op"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each consumed output reconciles the ledger and "
+                            "writes its receipt atomically inside one owner "
+                            "command on a fresh owner session."
+                        ),
+                        locking=(
+                            "The partial unique open-interval index per "
+                            "(incident, subscription) makes concurrent "
+                            "openers conflict at the database instead of "
+                            "double-accruing."
+                        ),
+                        idempotency=(
+                            "Reconciliation converges: reruns open nothing "
+                            "new, provisional ends clear on re-darkening, and "
+                            "(consumer, event_id) receipts short-circuit "
+                            "redeliveries."
+                        ),
+                        retries=(
+                            "A failed consequence leaves the delivery failed "
+                            "and retryable; the receipt only exists when the "
+                            "effect committed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.customer_outage_accrual.active_caller_transaction",
+                            "network.customer_outage_accrual.command_contract_violation",
+                            "network.customer_outage_accrual.invalid_command_context",
+                            "network.customer_outage_accrual.nested_owner_command",
+                            "network.customer_outage_accrual.nested_transaction_completion",
+                        ),
+                        mapping_owner=(
+                            "app.services.events.handlers.outage_lifecycle_projection"
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "outage.created",
+                            "outage.suspected",
+                            "outage.confirmed",
+                            "outage.clearing",
+                            "outage.reopened",
+                            "outage.discarded",
+                            "outage.resolved",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Consumes the version-1 outage lifecycle envelope "
+                            "(incident identity, status, scope, timestamps) "
+                            "additively; the ledger emits no events of its "
+                            "own."
+                        ),
+                        replay=(
+                            "Redeliveries short-circuit on the "
+                            "(consumer, event_id) receipt; replaying the full "
+                            "stream rebuilds identical intervals because "
+                            "reconciliation is content-idempotent."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.customer_outage_accrual",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_customer_outage_accrual.py",
                     ),
                 ),
             ),
@@ -30948,6 +32067,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin work-order list pagination normalization",
                     "admin work-order global KPI and exact-cohort link projection",
                     "admin task-originated work-order creation prefill",
+                    "admin work-order detail and linked-origin projection",
                 ),
                 depends_on=(
                     "ui.list_contracts",
@@ -31026,6 +32146,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "work-order creation protocol",
                             ),
                         ),
+                        ConcernContract(
+                            name="admin work-order detail and linked-origin projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "canonical project-task scope",
+                                "canonical subscriber scope",
+                                "work-order creation protocol",
+                            ),
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -31082,7 +32212,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.READ_ONLY,
                         boundary=(
-                            "List, KPI, and creation-prefill projection execute "
+                            "List, detail, KPI, and creation-prefill projection execute "
                             "without ORM mutation or transaction completion."
                         ),
                         locking=(
@@ -33302,6 +34432,438 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.customer_network_path_projection",
+                module="app.services.customer_network_path",
+                owns=(
+                    "customer network path graph projection",
+                    "customer serving-endpoint presentation projection",
+                    "customer passive-fibre path detail projection",
+                    "shared network graph view contract",
+                ),
+                depends_on=(
+                    "network.access_path",
+                    "network.fiber_topology",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "network.access_path owns path identity, ordering, and "
+                    "gaps; observation owners own each hop's state and "
+                    "freshness; ui.status_presentation owns label/tone/icon "
+                    "meaning. This read owner composes those facts into the "
+                    "shared NetworkGraphView (app.services.network_graph) and "
+                    "the serving-endpoint presentation. It makes no topology, "
+                    "health, outage, or notification decision, performs no "
+                    "device I/O, and never manufactures a hop, an edge, or a "
+                    "status. The graph contract is the one vocabulary for the "
+                    "Customer 360 network path and the future network "
+                    "explorer surface."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer network path graph projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("customer serving-endpoint presentation projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer passive-fibre path detail projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "validated fibre plant trace",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="shared network graph view contract",
+                            role=OwnerRole.POLICY,
+                            input_names=("shared network graph vocabulary",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="subscription access-path resolution",
+                            owner="network.access_path",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "resolved CustomerPath with AccessPathSummary "
+                                "and SubscriberTopologyTrace identity, "
+                                "ordering, hop states, evidence sources, "
+                                "observation times, and typed breaks"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="validated fibre plant trace",
+                            owner="network.fiber_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "FiberSubscriptionTrace validated hop order, "
+                                "evidence, splitter losses, and typed gap "
+                                "codes; passive hops stay not-applicable, "
+                                "never fabricated up/down"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="semantic status presentation vocabulary",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "StatusPresentation label/tone/icon "
+                                "projections for hop states, path gaps, "
+                                "serving-endpoint sources, and RF signal "
+                                "freshness"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="shared network graph vocabulary",
+                            owner="ui.customer_network_path_projection",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "NetworkGraphNode, NetworkGraphEdge, "
+                                "NetworkGraphGap, NetworkGraphEvidence, "
+                                "NetworkGraphMeasurement, and NetworkGraphView "
+                                "typed invariants in app.services.network_graph"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Projects already-resolved access paths on the "
+                            "adapter session without a business write and "
+                            "without device, SSH, UISP, OLT, or ACS I/O."
+                        ),
+                        locking="Read projection acquires no mutation locks.",
+                        idempotency=(
+                            "The same resolved path, observations, and "
+                            "presentation vocabulary produce the same graph "
+                            "view and endpoint presentation."
+                        ),
+                        retries=(
+                            "Read projection calls are safe to retry; a "
+                            "failed resolution degrades to an explicit "
+                            "unresolved projection per subscription."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.services.web_customer_details",
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="customer network path graph projection",
+                            input_names=(
+                                "subscription access-path resolution",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                            writer="ui.customer_network_path_projection",
+                            freshness=(
+                                "Recomputed on read; every hop retains its "
+                                "owner's observed_at and freshness word, and "
+                                "unknown, stale, unavailable, and "
+                                "not-applicable stay distinct."
+                            ),
+                            stale_behavior=(
+                                "Renders the owner's stale or unknown word "
+                                "with its evidence age; it never converts "
+                                "missing or aged observations into up or "
+                                "down."
+                            ),
+                            drift_signal=(
+                                "Customer network path projection and "
+                                "template-boundary tests, and access-path "
+                                "trace contract changes."
+                            ),
+                            rebuild_operation=(
+                                "Recompute on read from the current "
+                                "access-path resolution; nothing is "
+                                "persisted."
+                            ),
+                            repair_owner="ui.customer_network_path_projection",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "templates/admin/customers/detail.html inline "
+                            "topology-trace tone mapping, endpoint-source "
+                            "labels, and RF freshness styling"
+                        ),
+                        new_owner="ui.customer_network_path_projection",
+                        verification=(
+                            "Customer network path projection, presentation, "
+                            "multi-subscription, query-budget, and "
+                            "template-boundary tests."
+                        ),
+                        cutover_gate=(
+                            "The customer detail template renders only "
+                            "owner-provided presentations and composed "
+                            "display strings for path hops, gaps, endpoint "
+                            "source, and RF signal."
+                        ),
+                        fallback_retirement=(
+                            "detail.html no longer maps hop states or "
+                            "endpoint sources to colours or labels; the "
+                            "inline node.state and endpoint_source label "
+                            "branches are removed."
+                        ),
+                    ),
+                    steward="network operations UI",
+                    design_refs=(
+                        "docs/designs/CUSTOMER_NETWORK_PATH.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_customer_network_path.py",
+                        "tests/test_customer_detail_access_endpoint.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="ui.network_explorer_projection",
+                module="app.services.network_explorer",
+                owns=(
+                    "network explorer typed subject search",
+                    "network explorer subject-centred graph projection",
+                    "network explorer subject inspector projection",
+                    "network path coverage and drift projection",
+                ),
+                depends_on=(
+                    "network.identity",
+                    "network.access_path",
+                    "network.forwarding_topology",
+                    "network.device_state",
+                    "network.radio_signal",
+                    "network.outage_impact",
+                    "network.outage_lifecycle",
+                    "support.ticket_lifecycle",
+                    "ui.customer_network_path_projection",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "Subject-centred, bounded neighbourhood graphs for "
+                    "/admin/network/explorer, restated in the shared "
+                    "NetworkGraphView contract. Composes the customer path "
+                    "projection, reviewed forwarding adjacency, the binary "
+                    "device verdict, ONT observation words, and audience "
+                    "cohorts. It decides no topology, health, outage, or "
+                    "consequence; never loads the whole fleet; groups "
+                    "fan-out into explicit cohort nodes; renders site "
+                    "containment as containment, never connectivity; and "
+                    "omits customer-identity kinds for viewers without "
+                    "customer:read."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="network explorer typed subject search",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network explorer subject-centred graph projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "customer network path view",
+                                "authoritative forwarding adjacency",
+                                "binary device operation verdict",
+                                "topological audience cohorts",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network explorer subject inspector projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "customer network path view",
+                                "binary device operation verdict",
+                                "effective RF signal",
+                                "topological audience cohorts",
+                                "live incident scope state",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network path coverage and drift projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "per-subscription path gap classification",
+                                "forwarding declaration evidence states",
+                                "network inventory identity",
+                                "unmatched-radio review queue state",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="network inventory identity",
+                            owner="network.identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "OLT, PON, ONT, CPE, NAS, FDH, splitter, "
+                                "device, and site rows with their declared "
+                                "relations, observation columns, and declared "
+                                "topology links carrying capacity and "
+                                "observed utilization"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer network path view",
+                            owner="ui.customer_network_path_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "NetworkGraphView for a subscription subject "
+                                "and the canonical asset deep-link map"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="authoritative forwarding adjacency",
+                            owner="network.forwarding_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "projected authoritative forwarding graph "
+                                "adjacency and upstream mapping"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="binary device operation verdict",
+                            owner="network.device_state",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "batch-annotated working/not_working verdicts "
+                                "with machine reasons"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="topological audience cohorts",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "attached, provisioned, and served "
+                                "subscription cohorts per node, basestation, "
+                                "or cabinet"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="effective RF signal",
+                            owner="network.radio_signal",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "value + source + explicit freshness + "
+                                "reason for a radio's RF observation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="per-subscription path gap classification",
+                            owner="network.access_path",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "batched per-subscription medium and gap "
+                                "classification contractually kept in sync "
+                                "with resolve_customer_path"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="forwarding declaration evidence states",
+                            owner="network.forwarding_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "idempotent reconcile report state counts: "
+                                "agreement, drift, missing observation, and "
+                                "invalid declaration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="unmatched-radio review queue state",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "open unmatched_radio tickets with creation "
+                                "times for queue size and ageing"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live incident scope state",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "live OutageIncident rows scoped to a node, "
+                                "basestation, or FDH cabinet with status and "
+                                "lifecycle stamps"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="semantic status presentation vocabulary",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "StatusPresentation label/tone/icon "
+                                "projections for hop states, device "
+                                "verdicts, and incident statuses"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Reads one bounded subject neighbourhood on the "
+                            "adapter session without a business write and "
+                            "without device, SSH, UISP, OLT, or ACS I/O."
+                        ),
+                        locking="Read projection acquires no mutation locks.",
+                        idempotency=(
+                            "The same inventory, adjacency, observations, and "
+                            "subject produce the same search results and "
+                            "graph view."
+                        ),
+                        retries=(
+                            "Read projection calls are safe to retry; an "
+                            "unprovable subject renders an explicit missing "
+                            "state."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.web.admin.network_explorer",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ui.network_explorer_projection",
+                    ),
+                    steward="network operations UI",
+                    design_refs=(
+                        "docs/designs/NETWORK_EXPLORER.md",
+                        "docs/designs/CUSTOMER_NETWORK_PATH.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_network_explorer.py",
+                        "tests/architecture/test_thin_wrappers.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.status_presentation",
                 module="app.services.status_presentation",
                 owns=(
@@ -33314,6 +34876,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "customer connection health labels, semantic tones, and icon keys",
                     "RADIUS access-session observation labels, semantic tones, and icon keys",
                     "service access availability labels, semantic tones, and icon keys",
+                    "access-path hop state labels, semantic tones, and icon keys",
+                    "access-path gap presentation semantics",
+                    "serving-endpoint source labels, semantic tones, and icon keys",
+                    "RF signal freshness labels, semantic tones, and icon keys",
+                    "service impact state labels, semantic tones, and icon keys",
+                    "SLA verdict labels, semantic tones, and icon keys",
                     "support-ticket status labels, semantic tones, and icon keys",
                     "field work-order status labels, semantic tones, and icon keys",
                     "vendor installation-project status labels, semantic tones, and icon keys",
@@ -33332,6 +34900,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "network.device_state",
                     "network.connection_health",
                     "network.outage_lifecycle",
+                    "network.access_path",
+                    "network.radio_signal",
                     "support.ticket_lifecycle",
                     "operations.work_order_status",
                     "operations.vendor_project_lifecycle",
@@ -33350,6 +34920,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             ),
         ),
         entrypoints=(
+            "app.services.customer_network_path",
+            "app.services.network_explorer",
+            "app.services.network_graph",
             "app.schemas.catalog.SubscriptionRead",
             "app.schemas.billing.InvoiceRead",
             "app.schemas.billing.PaymentRead",

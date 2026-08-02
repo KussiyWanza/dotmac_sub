@@ -48,10 +48,19 @@
                 Back to Active Services
             </a>
             {% if status_val == 'suspended' and subscription.billing_mode and subscription.billing_mode.value == 'prepaid' %}
+            {% if prepaid_bill_now_eligibility and prepaid_bill_now_eligibility.eligible %}
             <form method="post" action="/admin/catalog/subscriptions/{{ subscription.id }}/bill-now/preview">
                 {% include "components/forms/csrf_input.html" %}
                 <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-700">Bill now</button>
             </form>
+            {% elif prepaid_bill_now_eligibility %}
+            <div class="max-w-sm rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-100">
+                <p>{{ prepaid_bill_now_eligibility.reason }}</p>
+                {% if prepaid_bill_now_eligibility.existing_invoice_id %}
+                <a class="mt-1 inline-flex font-semibold underline" href="/admin/billing/invoices/{{ prepaid_bill_now_eligibility.existing_invoice_id }}#prepaid-reconciliation">Open existing invoice</a>
+                {% endif %}
+            </div>
+            {% endif %}
             {% endif %}
             {% if correction_action_forms and can_correct_subscription %}
             <a href="#subscription-correction"

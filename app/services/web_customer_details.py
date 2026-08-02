@@ -86,16 +86,17 @@ from app.services.audit_helpers import (
 from app.services.billing_settings import resolve_payment_due_days
 from app.services.collections import get_available_balance
 from app.services.credential_crypto import decrypt_credential
+from app.services.customer_network_path import (
+    SubscriptionNetworkPath,
+    project_subscription_network_path,
+    unresolved_subscription_network_path,
+)
 from app.services.customer_support_links import ticket_customer_any_link_filter
 from app.services.invoice_collectibility import (
     open_invoice_balance_for_accounts,
     overdue_debt_filters_for_accounts,
 )
 from app.services.network._common import decode_huawei_hex_serial
-from app.services.network.access_path import (
-    build_topology_trace,
-    summarize_customer_path,
-)
 from app.services.network.radius_sessions import (
     SubscriptionSessionSnapshot,
     subscription_session_snapshots,
@@ -1306,13 +1307,14 @@ def _active_additional_routes_by_subscriber(
 
 def _build_access_endpoint_projection(
     db: Session, subscription, path=None
-) -> tuple[dict[str, object], dict[str, object] | None]:
-    """Serving endpoint + active-path trace for one subscription.
+) -> SubscriptionNetworkPath:
+    """Serving endpoint + network-path projection for one subscription.
 
-    Accepts an already-resolved path so the card, the trace and the diagnosis
-    share one resolution instead of paying for it each. Failures degrade to an
-    unresolved endpoint rather than breaking the page: an unavailable trace
-    must not take the customer record with it.
+    ui.customer_network_path_projection owns the composition; this adapter
+    only shares an already-resolved path so the card, the graph view and the
+    diagnosis pay for one resolution. Failures degrade to an unresolved
+    endpoint rather than breaking the page: an unavailable trace must not
+    take the customer record with it.
     """
 
     if path is None:
@@ -1324,39 +1326,9 @@ def _build_access_endpoint_projection(
                 getattr(subscription, "id", None),
                 exc_info=True,
             )
-            return ({"endpoint_source": "unresolved"}, None)
+            return unresolved_subscription_network_path(subscription)
 
-    summary = summarize_customer_path(subscription, path)
-    trace = build_topology_trace(subscription, path)
-    return (
-        {
-            "endpoint_display": summary.endpoint_display,
-            "endpoint_source": summary.endpoint_source,
-            "access_device_name": summary.access_device_name,
-            "access_device_id": str(summary.access_device_id)
-            if summary.access_device_id
-            else None,
-            "access_kind": summary.access_kind,
-            "pon_port_label": summary.pon_port_label,
-            "ont_serial": summary.ont_serial,
-            "radio_label": summary.radio_label,
-            "serving_ap_name": (
-                summary.access_device_name if summary.access_kind == "ap" else None
-            ),
-            "rf_signal_dbm": summary.radio_signal_dbm,
-            "rf_signal_freshness": summary.radio_signal_freshness,
-            "rf_signal_observed_at": (
-                summary.radio_signal_observed_at.isoformat()
-                if summary.radio_signal_observed_at
-                else None
-            ),
-            "radio_ap_unresolved": summary.radio_ap_unresolved,
-            "basestation_name": summary.basestation_name,
-            "gap": summary.gap,
-            "endpoint_complete": summary.endpoint_complete,
-        },
-        trace.to_dict(),
-    )
+    return project_subscription_network_path(db, subscription, path=path)
 
 
 def _build_access_state_facts(subscription) -> dict[str, object] | None:
@@ -1435,6 +1407,69 @@ def _build_known_incident(db: Session, subscription) -> dict[str, object] | None
     }
 
 
+def _build_service_impact(db: Session, subscription) -> dict[str, object] | None:
+    """The live six-state impact word from network.service_impact, or None.
+
+    None means no live incident covers this subscription — the honest
+    steady state, never a manufactured word.
+    """
+
+    from app.services.network.service_impact import resolve_subscription_impact
+    from app.services.status_presentation import service_impact_state_presentation
+
+    try:
+        impact = resolve_subscription_impact(db, subscription.id)
+    except Exception:
+        logger.warning(
+            "Service impact resolution failed for subscription %s",
+            getattr(subscription, "id", None),
+            exc_info=True,
+        )
+        return None
+    if impact is None:
+        return None
+    return {
+        "state": impact.state.value,
+        "presentation": service_impact_state_presentation(impact.state),
+        "reason": impact.reason,
+        "incident_id": impact.incident_id,
+    }
+
+
+def _build_service_level(db: Session, subscription) -> dict[str, object] | None:
+    """This period's SLA context from customer.service_level (shadow phase).
+
+    Admin-facing: verdicts render honestly, including no_contractual_sla
+    with measured availability and the provisional flag.
+    """
+
+    from app.services.customer_service_level import score_subscription_period
+    from app.services.status_presentation import sla_verdict_presentation
+
+    try:
+        score = score_subscription_period(db, subscription)
+    except Exception:
+        logger.warning(
+            "SLA scoring failed for subscription %s",
+            getattr(subscription, "id", None),
+            exc_info=True,
+        )
+        return None
+    return {
+        "verdict": score.verdict.value,
+        "presentation": sla_verdict_presentation(score.verdict),
+        "availability_percent": score.measured_availability_percent,
+        "target_percent": (
+            score.policy.availability_target_percent if score.policy else None
+        ),
+        "unavailable_seconds": score.unavailable_seconds,
+        "excluded_seconds": score.excluded_seconds,
+        "provisional": score.is_provisional,
+        "period_start": score.period_start.isoformat(),
+        "period_end": score.period_end.isoformat(),
+    }
+
+
 def _ticket_prefill_url(subscription, card: dict[str, object]) -> str:
     """Pre-filled ticket URL carrying the observed state as evidence.
 
@@ -1487,6 +1522,9 @@ def _build_network_access_cards(
     access_state_by_subscription: dict[str, dict[str, object] | None] | None = None,
     incident_by_subscription: dict[str, dict[str, object] | None] | None = None,
     service_health_by_subscription: Mapping[str, object] | None = None,
+    service_impact_by_subscription: dict[str, dict[str, object] | None] | None = None,
+    service_level_by_subscription: dict[str, dict[str, object] | None] | None = None,
+    network_path_by_subscription: dict[str, dict[str, object] | None] | None = None,
 ) -> list[dict]:
     """Build network access info cards from subscriptions with live access."""
     cards = []
@@ -1496,6 +1534,9 @@ def _build_network_access_cards(
     access_state_by_subscription = access_state_by_subscription or {}
     incident_by_subscription = incident_by_subscription or {}
     service_health_by_subscription = service_health_by_subscription or {}
+    service_impact_by_subscription = service_impact_by_subscription or {}
+    service_level_by_subscription = service_level_by_subscription or {}
+    network_path_by_subscription = network_path_by_subscription or {}
     for sub in subscriptions:
         raw_status = getattr(sub, "status", None)
         status_value = getattr(raw_status, "value", None)
@@ -1532,8 +1573,13 @@ def _build_network_access_cards(
                 # access path rather than inferred from the provisioning NAS.
                 "access_endpoint": endpoints_by_subscription.get(sub_id, {}),
                 "topology_trace": traces_by_subscription.get(sub_id),
+                # Shared NetworkGraphView projection; the template renders it
+                # without re-deriving state, tone, or labels.
+                "network_path": network_path_by_subscription.get(sub_id),
                 "access_state": access_state_by_subscription.get(sub_id),
                 "known_incident": incident_by_subscription.get(sub_id),
+                "service_impact": service_impact_by_subscription.get(sub_id),
+                "service_level": service_level_by_subscription.get(sub_id),
                 "service_health": service_health_by_subscription.get(sub_id),
             }
         )
@@ -2028,28 +2074,26 @@ def build_customer_detail_snapshot(
     )
     endpoints_by_subscription: dict[str, dict[str, object]] = {}
     traces_by_subscription: dict[str, dict[str, object] | None] = {}
+    network_path_by_subscription: dict[str, dict[str, object] | None] = {}
     access_state_by_subscription: dict[str, dict[str, object] | None] = {}
     incident_by_subscription: dict[str, dict[str, object] | None] = {}
+    service_impact_by_subscription: dict[str, dict[str, object] | None] = {}
+    service_level_by_subscription: dict[str, dict[str, object] | None] = {}
     for sub in subscriptions:
         if not sub.login and not sub.ipv4_address:
             continue
+        # One composition per subscription: access facts, known incident,
+        # live impact word, this period's SLA context, and one path
+        # resolution feeding the endpoint card, the graph view, and the
+        # trace via ui.customer_network_path_projection.
         access_state_by_subscription[str(sub.id)] = _build_access_state_facts(sub)
         incident_by_subscription[str(sub.id)] = _build_known_incident(db, sub)
-        # One path resolution feeds both the endpoint card and the trace.
-        try:
-            path = resolve_customer_path(db, sub)
-        except Exception:
-            logger.warning(
-                "Access path resolution failed for subscription %s",
-                sub.id,
-                exc_info=True,
-            )
-            endpoints_by_subscription[str(sub.id)] = {"endpoint_source": "unresolved"}
-            traces_by_subscription[str(sub.id)] = None
-            continue
-        endpoint, trace = _build_access_endpoint_projection(db, sub, path)
-        endpoints_by_subscription[str(sub.id)] = endpoint
-        traces_by_subscription[str(sub.id)] = trace
+        service_impact_by_subscription[str(sub.id)] = _build_service_impact(db, sub)
+        service_level_by_subscription[str(sub.id)] = _build_service_level(db, sub)
+        path_projection = _build_access_endpoint_projection(db, sub)
+        endpoints_by_subscription[str(sub.id)] = path_projection.endpoint.to_dict()
+        traces_by_subscription[str(sub.id)] = path_projection.trace_dict
+        network_path_by_subscription[str(sub.id)] = path_projection.view_dict
     network_access_cards = _build_network_access_cards(
         subscriptions,
         connection_by_subscription,
@@ -2059,6 +2103,9 @@ def build_customer_detail_snapshot(
         access_state_by_subscription,
         incident_by_subscription,
         service_health_by_subscription,
+        service_impact_by_subscription,
+        service_level_by_subscription,
+        network_path_by_subscription,
     )
     network_access_active_count = sum(
         1

@@ -70,6 +70,10 @@ class PostingProducer(enum.Enum):
     payment_proofs = "financial.payment_proofs"
     account_credit_applications = "financial.account_credit_applications"
     prepaid_draft_reconciliation = "financial.prepaid_draft_reconciliation"
+    prepaid_service_renewals = "financial.prepaid_service_renewals"
+    customer_subledger_opening_positions = (
+        "financial.customer_subledger_opening_positions"
+    )
     account_adjustments = "financial.account_adjustments"
 
 
@@ -86,6 +90,7 @@ class PostingSourceKind(enum.Enum):
     account_adjustment = "account_adjustment"
     prepaid_opening_funding_consumption = "prepaid_opening_funding_consumption"
     prepaid_funding_baseline = "prepaid_funding_baseline"
+    customer_subledger_opening_position = "customer_subledger_opening_position"
 
 
 class PositionEffectKind(enum.Enum):
@@ -110,6 +115,120 @@ class PositionEffectKind(enum.Enum):
 _posting_command_enum = Enum(PostingCommandKind, name="postingcommandkind")
 _effect_kind_enum = Enum(PositionEffectKind, name="positioneffectkind")
 _authority_enum = Enum(BillingRecordAuthority, name="billingrecordauthority")
+
+
+class CustomerSubledgerOpeningPosition(Base):
+    """Finance-approved residual that seeds one account/currency exactly once."""
+
+    __tablename__ = "customer_subledger_opening_positions"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "currency",
+            name="uq_customer_subledger_opening_account_currency",
+        ),
+        UniqueConstraint(
+            "verification_run_id",
+            "account_id",
+            "currency",
+            name="uq_customer_subledger_opening_run_account_currency",
+        ),
+        CheckConstraint(
+            "length(currency) = 3 AND currency = upper(currency)",
+            name="ck_customer_subledger_opening_currency",
+        ),
+        CheckConstraint(
+            "length(evidence_fingerprint) = 64",
+            name="ck_customer_subledger_opening_evidence_hash",
+        ),
+        CheckConstraint(
+            "opening_delta = legacy_position - shadow_position_before",
+            name="ck_customer_subledger_opening_exact_delta",
+        ),
+        Index(
+            "ix_customer_subledger_opening_verification_run",
+            "verification_run_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    verification_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("billing_cutover_verification_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    baseline_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("prepaid_funding_baselines.id", ondelete="RESTRICT"),
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    legacy_position: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    shadow_position_before: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False
+    )
+    opening_delta: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_reference: Mapped[str] = mapped_column(Text, nullable=False)
+    captured_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class CustomerSubledgerAuthorityCutover(Base):
+    """One irreversible activation of customer-subledger read/write authority."""
+
+    __tablename__ = "customer_subledger_authority_cutovers"
+    __table_args__ = (
+        UniqueConstraint(
+            "singleton_key",
+            name="uq_customer_subledger_authority_cutover_singleton",
+        ),
+        UniqueConstraint(
+            "verification_run_id",
+            name="uq_customer_subledger_authority_cutover_verification_run",
+        ),
+        CheckConstraint(
+            "length(result_fingerprint) = 64",
+            name="ck_customer_subledger_authority_cutover_hash",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    singleton_key: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="customer_subledger"
+    )
+    verification_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("billing_cutover_verification_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    result_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_reference: Mapped[str] = mapped_column(Text, nullable=False)
+    activated_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    cutover_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
 
 
 class CustomerPostingGroup(Base):

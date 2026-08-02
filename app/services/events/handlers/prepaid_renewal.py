@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
+from app.services.events.handlers.owner_session import owner_session
 from app.services.events.types import Event, EventType
+from app.services.owner_commands import CommandContext
 from app.services.prepaid_service_renewals import (
-    evaluate_prepaid_service_after_settlement,
+    EvaluatePrepaidServiceAfterSettlementCommand,
+    execute_prepaid_service_after_settlement,
     retract_prepaid_billing_anchors_after_funding_reversal,
 )
 
@@ -62,12 +65,24 @@ class PrepaidRenewalHandler:
             return
         account_id = _require_account_id(event)
         payment_id = _require_payment_id(event)
-        evaluation = evaluate_prepaid_service_after_settlement(
-            db,
-            account_id=account_id,
-            payment_id=payment_id,
-            evidence_ref=f"{event.event_type.value}:{event.event_id}",
-        )
+        with owner_session(db) as owner_db:
+            evaluation = execute_prepaid_service_after_settlement(
+                owner_db,
+                EvaluatePrepaidServiceAfterSettlementCommand(
+                    context=CommandContext.system(
+                        actor="system:prepaid_renewal_event",
+                        scope=str(account_id),
+                        reason=event.event_type.value,
+                        command_id=event.event_id,
+                        correlation_id=event.event_id,
+                        causation_id=event.event_id,
+                        idempotency_key=f"event:{event.event_id}",
+                    ),
+                    account_id=account_id,
+                    payment_id=payment_id,
+                    evidence_ref=f"{event.event_type.value}:{event.event_id}",
+                ),
+            )
         result = evaluation.renewal
         logger.info(
             "prepaid_renewal_after_funding_change",
