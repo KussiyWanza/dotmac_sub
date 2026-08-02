@@ -15294,6 +15294,182 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.ont_wan_service_intent",
+                module="app.services.network.ont_wan_service_intent",
+                owns=(
+                    "declared ONT WAN service intent lifecycle",
+                    "active primary Internet termination selection",
+                ),
+                depends_on=(
+                    "network.ont_assignment_identity",
+                    "access.subscription_lifecycle",
+                    "runtime.db_sessions",
+                ),
+                notes=(
+                    "OntWanServiceInstance modelled service intent but had no "
+                    "application writer: no constructor outside tests, and 8 "
+                    "production rows against 1,523 ONTs. Rows written by nothing "
+                    "cannot authorise anything, so this owner is what makes them "
+                    "mean something. Intent is declared at EXACT service grain "
+                    "(ont_id AND subscription_id): an ONT-grain row claims the "
+                    "device may terminate PPP, which is not the claim that a "
+                    "given SERVICE terminates there, and a delivery ruling built "
+                    "on the weaker claim can hand one service's credential to "
+                    "another. lifecycle_state is the single authority -- "
+                    "planned/unverified do not authorise, and is_active is "
+                    "derived and maintained only here. is_primary selects; "
+                    "priority orders and never selects authority. One active "
+                    "primary Internet instance per subscription and per ONT, "
+                    "enforced by the commands because the partial unique indexes "
+                    "land only after inventory, backfill and verification. Every "
+                    "pre-existing row starts unverified and non-authorising. "
+                    "Retirement preserves history: assignment release, service "
+                    "movement, cancellation and return-to-inventory retire "
+                    "through this owner instead of deleting service-instance "
+                    "rows, because that record is the evidence a later "
+                    "adjudication depends on."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="declared ONT WAN service intent lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "exact ONT and subscription identity",
+                                "declared service and connection type",
+                            ),
+                            canonical_writer="network.ont_wan_service_intent",
+                        ),
+                        ConcernContract(
+                            name="active primary Internet termination selection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("declared WAN service intent records",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="exact ONT and subscription identity",
+                            owner="network.ont_assignment_identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_units, subscriptions",
+                        ),
+                        AuthorityInput(
+                            name="declared service and connection type",
+                            owner="network.ont_wan_service_intent",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="operator declaration with work-order evidence",
+                        ),
+                        AuthorityInput(
+                            name="declared WAN service intent records",
+                            owner="network.ont_wan_service_intent",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_wan_service_instances",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each command enters execute_owner_command once on a "
+                            "transaction-free session. Replace retires and "
+                            "activates inside one owned transaction, so a failure "
+                            "leaves neither half applied."
+                        ),
+                        locking=(
+                            "Primary-invariant checks read active rows within the "
+                            "owned transaction; the partial unique indexes that "
+                            "will make this structural land after backfill."
+                        ),
+                        idempotency=(
+                            "Retiring an already-retired intent is a no-op that "
+                            "returns the existing revision. Activation accepts an "
+                            "expected revision and refuses on conflict."
+                        ),
+                        retries=(
+                            "No automatic retry. A duplicate-primary refusal is an "
+                            "ownership answer, not a transient failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.ont_wan_service_intent.active_caller_transaction",
+                            "network.ont_wan_service_intent.command_contract_violation",
+                            "network.ont_wan_service_intent.invalid_command_context",
+                            "network.ont_wan_service_intent.nested_owner_command",
+                            (
+                                "network.ont_wan_service_intent."
+                                "nested_transaction_completion"
+                            ),
+                            "wan_intent_missing_subscription",
+                            "wan_intent_missing_ont",
+                            "wan_intent_missing_evidence",
+                            "wan_intent_instance_not_found",
+                            "wan_intent_already_retired",
+                            "wan_intent_duplicate_primary_subscription",
+                            "wan_intent_duplicate_primary_ont",
+                            "wan_intent_revision_conflict",
+                        ),
+                        mapping_owner="app.services.network.ont_wan_service_intent",
+                        fail_closed_on=(
+                            "an intent with no subscription",
+                            "a service that already has an active primary",
+                            "an ONT already carrying another service's primary",
+                            "a revision that moved since the caller read it",
+                            "a transition with no actor or reason",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "ont_wan_service_intent.declared.v1",
+                            "ont_wan_service_intent.activated.v1",
+                            "ont_wan_service_intent.retired.v1",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries ONT, subscription, service and "
+                            "connection type, primary flag, lifecycle state, "
+                            "revision, actor, reason and evidence reference. It "
+                            "never carries PPPoE credentials."
+                        ),
+                        replay=(
+                            "Transitions are replayable as history, never as "
+                            "commands: replaying an activation would re-assert an "
+                            "ownership decision whose preconditions have moved."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.ont_wan_service_intent",
+                        old_owner="unwritten OntWanServiceInstance rows",
+                        verification=(
+                            "tests/test_ont_wan_service_intent.py pins that "
+                            "declaring does not authorise, that intent is scoped "
+                            "to a service rather than a device, that priority "
+                            "never selects authority, and that retirement "
+                            "preserves the row."
+                        ),
+                        cutover_gate=(
+                            "Partial unique indexes on active primary per "
+                            "subscription and per ONT, added after inventory, "
+                            "backfill and verification of the pre-owner rows."
+                        ),
+                        fallback_retirement=(
+                            "is_active remains readable but derived; it is "
+                            "retired once every reader consults lifecycle_state."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=(
+                        "docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ont_wan_service_intent.py",
+                        "tests/test_return_to_inventory.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.nas_local_secret_boundary",
                 module="app.services.nas.local_secret_policy",
                 owns=(
