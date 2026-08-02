@@ -20,6 +20,20 @@ Projects without a linked Subscriber do not request an email. Queue failure is
 isolated in the approved owner savepoint and recorded as durable Project audit
 evidence without rolling back Project creation.
 
+Every genuine Project or ProjectTask status transition for a subscriber-linked
+Project requests one customer communication intent from the lifecycle owner.
+The typed consequence carries the native aggregate identifiers, exact previous
+and new status enums, Subscriber identity, and lifecycle command identifier.
+Ordinary transitions default to email and identify both statuses. Completion
+transitions retain their existing milestone-specific messages and suppress the
+ordinary message, so one transition never produces both notification shapes.
+Non-status edits and Projects without a Subscriber request no status message.
+The lifecycle command identifier scopes deduplication so a retry cannot create a
+duplicate while a later legitimate transition over the same status pair remains
+deliverable. Queue failure rolls back only the optional participant savepoint;
+the transition remains authoritative and the owner records durable
+`customer_status_notification_failed` audit evidence.
+
 When an existing task gains an assignee through the lifecycle update command,
 the owner queues one email for each newly added active staff member whose
 assignment identifier resolves to either their `SystemUser` or canonical Person

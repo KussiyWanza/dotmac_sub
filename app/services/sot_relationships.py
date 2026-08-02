@@ -22401,6 +22401,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "Project and ProjectTask identity and lifecycle",
                     "project creation customer email consequence",
+                    "project and task status-change customer notification consequence",
                     "project and task allowed status transitions",
                     "project and task assignment and scheduling",
                     "project manager assistant manager service-team and task-assignee changes",
@@ -22440,6 +22441,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             role=OwnerRole.EVENT_POLICY,
                             input_names=(
                                 "canonical project aggregate",
+                                "customer communication delivery intent",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="project and task status-change customer notification consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "project transition protocol",
                                 "customer communication delivery intent",
                             ),
                         ),
