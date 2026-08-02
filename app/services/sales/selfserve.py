@@ -352,11 +352,9 @@ def _find_project_ids_for_quotes(db: Session, quote_ids: list[UUID]) -> dict[str
     whole Quote set in one query and key the result by stringified Quote UUID;
     Quotes without a native Project are absent from the map.
 
-    The old ``.first()`` had no ``ORDER BY``, so a quote referenced by more than
-    one active project resolved to an arbitrary row. We make the pick
-    deterministic here (earliest ``created_at``, then ``id``) and route the
-    single-quote helper through this same resolver, so both paths agree — the
-    common no-project / one-project cases are unaffected.
+    The structural Quote-to-Project uniqueness constraint makes the mapping
+    exact. The single-Quote helper routes through this same resolver so both
+    read paths share the authoritative selection semantics.
     """
     ids = list(dict.fromkeys(quote_ids))
     if not ids:

@@ -3,10 +3,10 @@
 Covers the two hot-path fixes shipped alongside migration 251:
 
 * **H1** — ``read_for_subscriber`` must resolve the whole quote set's install
-  ``project_id`` in ONE query (batch ``metadata->>'quote_id' IN (…)``), not a
-  per-quote JSON scan. Also asserts the batch resolver returns the same
-  quote→project mapping the single-quote helper does (no-project / one-project
-  / multi-project tie-break parity).
+  ``project_id`` in ONE query over the typed ``Project.quote_id`` relationship.
+  Also asserts the batch resolver returns the same
+  quote→project mapping the single-quote helper does (no-project and unique
+  one-project parity).
 * **H2** — ``_nearest_fiber_access_point`` orders by the KNN ``<->`` operator on
   the RAW 4326 geom (so the GiST index is usable), not by an
   ``ST_Transform(geom, 3857)`` wrap that forced a full scan. The metre distance
@@ -58,8 +58,8 @@ def _project(db, sub, quote_id, *, is_active=True) -> Project:
     project = Project(
         name="Fiber install",
         subscriber_id=sub.id,
+        quote_id=quote_id,
         status="open",
-        metadata_={"quote_id": str(quote_id)},
         is_active=is_active,
     )
     db.add(project)
@@ -108,8 +108,8 @@ def test_read_for_subscriber_resolves_projects_in_one_query(db_session):
 
     assert result["total"] == 4
     # The batch resolver is the only statement that scans projects by the
-    # metadata quote_id key. Exactly one, independent of the quote count.
-    project_lookups = counter.matching("from projects", "metadata")
+    # typed quote_id key. Exactly one, independent of the quote count.
+    project_lookups = counter.matching("from projects", "quote_id")
     assert len(project_lookups) == 1, project_lookups
     # Every payload got its project id resolved (proves batch results applied).
     assert all(item["project_id"] is not None for item in result["quotes"])
@@ -137,23 +137,22 @@ def test_batch_resolver_parity_one_project(db_session):
     assert batch[str(q.id)] == str(project.id)
     assert single == str(project.id)
     # Inactive projects are excluded (partial-index / is_active filter parity).
-    _project(db_session, sub, q.id, is_active=False)
-    assert selfserve._find_project_id_for_quote(db_session, q.id) == str(project.id)
+    project.is_active = False
+    db_session.commit()
+    assert selfserve._find_project_id_for_quote(db_session, q.id) is None
 
 
-def test_batch_resolver_parity_multi_project_tiebreak(db_session):
-    """When several active projects reference one quote, the batch resolver and
-    the single helper must agree (deterministic earliest-created wins)."""
+def test_batch_resolver_uses_unique_typed_quote_relationship(db_session):
+    """The batch and single resolvers agree on the unique typed relationship."""
     sub = _subscriber(db_session)
     q = _quote(db_session, sub)
-    first = _project(db_session, sub, q.id)
-    _second = _project(db_session, sub, q.id)
+    project = _project(db_session, sub, q.id)
 
     batch = selfserve._find_project_ids_for_quotes(db_session, [q.id])
     single = selfserve._find_project_id_for_quote(db_session, q.id)
 
     assert batch[str(q.id)] == single
-    assert single == str(first.id)
+    assert single == str(project.id)
 
 
 def test_batch_resolver_maps_mixed_set(db_session):

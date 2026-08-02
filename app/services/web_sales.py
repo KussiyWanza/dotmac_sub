@@ -1684,9 +1684,13 @@ def quote_form_item_rows(
 
 
 def creatable_quote_status_values() -> list[str]:
-    """Return the complete operational status vocabulary for initial authoring."""
+    """A new Quote may begin only as Draft or Sent.
 
-    return quote_status_values()
+    Accepted is exclusively owned by the conversion command; rejected and
+    expired are later lifecycle states.
+    """
+
+    return [QuoteStatus.draft.value, QuoteStatus.sent.value]
 
 
 def _quote_lead_options(db: Session) -> list[dict[str, str]]:
