@@ -59,6 +59,18 @@
             </div>
         </div>
 
+        {% if explorer.subject_kind == 'subscription' and can(request, 'network:fiber:read') %}
+        <details class="border-t border-slate-100 px-5 py-3 dark:border-slate-700" data-testid="explorer-fiber-plant">
+            <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">Fibre plant details</summary>
+            <div class="mt-2"
+                 hx-get="/admin/customers/subscriptions/{{ explorer.subject.split(':')[1] }}/fiber-path"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="text-xs text-slate-500 dark:text-slate-400">Loading fibre plant path...</div>
+            </div>
+        </details>
+        {% endif %}
+
         {# Accessible fallback: the same owner facts as a list, always rendered. #}
         <details class="border-t border-slate-100 px-5 py-3 dark:border-slate-700" data-testid="explorer-list-fallback">
             <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">Accessible list view</summary>
@@ -170,8 +182,9 @@
     // canonical list instead of inspecting.
     var SUBJECT_KIND = {
         network_device: 'device', ont: 'ont', radio: 'radio', olt: 'olt',
-        pon_port: 'pon_port', nas: 'nas', fdh: 'fdh', pop: 'pop_site',
-        subscription: 'subscription', subscriber: 'subscriber', ap: 'device'
+        pon_port: 'pon_port', nas: 'nas', fdh: 'fdh', splitter: 'splitter',
+        pop: 'pop_site', subscription: 'subscription', subscriber: 'subscriber',
+        ap: 'device'
     };
     var panel = document.getElementById('explorerInspector');
     var panelBody = document.getElementById('explorerInspectorBody');

@@ -34708,7 +34708,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "OLT, PON, ONT, CPE, NAS, FDH, splitter, "
                                 "device, and site rows with their declared "
-                                "relations and observation columns"
+                                "relations, observation columns, and declared "
+                                "topology links carrying capacity and "
+                                "observed utilization"
                             ),
                         ),
                         AuthorityInput(

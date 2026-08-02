@@ -80,6 +80,7 @@ _SUBJECT_KIND_LABELS = {
     "olt": "OLT",
     "pon_port": "PON port",
     "fdh": "FDH cabinet",
+    "splitter": "Splitter",
     "pop_site": "Site",
 }
 
@@ -230,6 +231,7 @@ def search_explorer_subjects(
     results.extend(_search_nas(db, like, limit_per_kind))
     results.extend(_search_devices(db, like, limit_per_kind))
     results.extend(_search_fdh(db, like, limit_per_kind))
+    results.extend(_search_splitters(db, like, limit_per_kind))
     results.extend(_search_pop_sites(db, like, limit_per_kind))
     return tuple(results)
 
@@ -428,6 +430,24 @@ def _search_fdh(db, like, limit) -> list[ExplorerSearchResult]:
     ]
 
 
+def _search_splitters(db, like, limit) -> list[ExplorerSearchResult]:
+    rows = (
+        db.query(Splitter)
+        .filter(Splitter.name.ilike(like, escape="\\"))
+        .limit(limit)
+        .all()
+    )
+    return [
+        _result(
+            "splitter",
+            splitter.id,
+            splitter.name or "Splitter",
+            splitter.splitter_ratio,
+        )
+        for splitter in rows
+    ]
+
+
 def _search_pop_sites(db, like, limit) -> list[ExplorerSearchResult]:
     rows = (
         db.query(PopSite)
@@ -467,6 +487,7 @@ def build_explorer_view(db: Session, subject: str) -> NetworkGraphView | None:
         "olt": _olt_view,
         "pon_port": _pon_port_view,
         "fdh": _fdh_view,
+        "splitter": _splitter_view,
         "pop_site": _pop_site_view,
     }.get(kind)
     if builder is None or not raw_id:
@@ -1060,6 +1081,41 @@ def _fdh_view(db, fdh_id) -> NetworkGraphView | None:
     return _view("fdh", fdh_id, nodes, edges)
 
 
+def _splitter_view(db, splitter_id) -> NetworkGraphView | None:
+    splitter = db.get(Splitter, splitter_id)
+    if splitter is None:
+        return None
+    splitter_node = _identity_node(
+        f"splitter:{splitter.id}",
+        "splitter",
+        splitter.name or "Splitter",
+        asset_id=splitter.id,
+        evidence_owner="network.splitter_inventory",
+    )
+    nodes = [splitter_node]
+    edges = []
+    if splitter.fdh_id:
+        fdh = db.get(FdhCabinet, splitter.fdh_id)
+        if fdh is not None:
+            fdh_node = _identity_node(
+                f"fdh:{fdh.id}",
+                "fdh",
+                fdh.name or fdh.code or "FDH",
+                asset_id=fdh.id,
+                href=f"{EXPLORER_PATH}?subject=fdh:{fdh.id}",
+                href_permission=EXPLORER_PAGE_PERMISSION,
+            )
+            nodes.append(fdh_node)
+            edges.append(
+                NetworkGraphEdge(
+                    source_id=splitter_node.id,
+                    target_id=fdh_node.id,
+                    kind="containment",
+                )
+            )
+    return _view("splitter", splitter_id, nodes, edges)
+
+
 def _pop_site_view(db, pop_site_id) -> NetworkGraphView | None:
     site = db.get(PopSite, pop_site_id)
     if site is None:
@@ -1131,6 +1187,7 @@ def build_inspector(
         "olt": _olt_inspector,
         "pon_port": _pon_inspector,
         "fdh": _fdh_inspector,
+        "splitter": _splitter_inspector,
         "pop_site": _pop_site_inspector,
     }.get(kind)
     if builder is None or not raw_id:
@@ -1207,6 +1264,42 @@ def _inspector(
     )
 
 
+def _device_link_facts(db, device_id) -> list[InspectorFact]:
+    """Top device links with owner-computed utilization, bounded to five.
+
+    network_topology owns link capacity and utilization; this projection only
+    composes the display string.
+    """
+
+    from app.services.network_topology import node_summary
+
+    try:
+        summary = node_summary(db, str(device_id))
+    except Exception:
+        return []
+    links = sorted(
+        summary.get("links", []),
+        key=lambda link: link.get("utilization_pct") or 0,
+        reverse=True,
+    )[:5]
+    facts = []
+    for link in links:
+        other = link.get("target_device") or link.get("source_device") or "link"
+        utilization = link.get("utilization_pct")
+        capacity = link.get("capacity_bps")
+        capacity_display = (
+            f"{round(capacity / 1e6)} Mbps" if capacity else "unknown capacity"
+        )
+        utilization_display = f"{utilization:.0f}%" if utilization is not None else "—"
+        facts.append(
+            InspectorFact(
+                label=f"Link · {other}",
+                display=f"{utilization_display} of {capacity_display}",
+            )
+        )
+    return facts
+
+
 def _device_inspector(db, device_id, _identity) -> ExplorerInspector | None:
     device = db.get(NetworkDevice, device_id)
     if device is None:
@@ -1226,6 +1319,7 @@ def _device_inspector(db, device_id, _identity) -> ExplorerInspector | None:
                     href_permission=EXPLORER_PAGE_PERMISSION,
                 )
             )
+    facts.extend(_device_link_facts(db, device.id))
     return _inspector(
         "device",
         device_id,
@@ -1500,9 +1594,56 @@ def _fdh_inspector(db, fdh_id, _identity) -> ExplorerInspector | None:
         fdh_id,
         fdh.name or fdh.code or str(fdh_id),
         state_presentation=topology_hop_status_presentation("not_applicable"),
-        facts=(InspectorFact(label="Active splitters", display=str(splitters)),),
+        facts=(
+            InspectorFact(label="Active splitters", display=str(splitters)),
+            InspectorFact(
+                label="Map",
+                display="Open fibre map",
+                href="/admin/network/fiber-map",
+                href_permission="network:fiber:read",
+            ),
+        ),
         affected_count=len(audience.subscription_ids),
         incidents=_live_incidents(db, fdh_id=fdh.id),
+    )
+
+
+def _splitter_inspector(db, splitter_id, _identity) -> ExplorerInspector | None:
+    splitter = db.get(Splitter, splitter_id)
+    if splitter is None:
+        return None
+    facts = [
+        InspectorFact(label="Ratio", display=splitter.splitter_ratio or "—"),
+        InspectorFact(
+            label="Ports",
+            display=(
+                f"{splitter.input_ports or 0} in / {splitter.output_ports or 0} out"
+            ),
+        ),
+    ]
+    if splitter.fdh_id:
+        facts.append(
+            InspectorFact(
+                label="FDH cabinet",
+                display="Open FDH neighbourhood",
+                href=f"{EXPLORER_PATH}?subject=fdh:{splitter.fdh_id}",
+                href_permission=EXPLORER_PAGE_PERMISSION,
+            )
+        )
+    facts.append(
+        InspectorFact(
+            label="Map",
+            display="Open fibre map",
+            href="/admin/network/fiber-map",
+            href_permission="network:fiber:read",
+        )
+    )
+    return _inspector(
+        "splitter",
+        splitter_id,
+        splitter.name or "Splitter",
+        state_presentation=topology_hop_status_presentation("not_applicable"),
+        facts=tuple(facts),
     )
 
 
@@ -1527,6 +1668,12 @@ def _pop_site_inspector(db, pop_site_id, _identity) -> ExplorerInspector | None:
         facts=(
             InspectorFact(label="Contained devices", display=str(device_count)),
             InspectorFact(label="Note", display="Containment is not connectivity"),
+            InspectorFact(
+                label="Map",
+                display="Open network map",
+                href="/admin/network/map",
+                href_permission="network:map:read",
+            ),
         ),
         incidents=_live_incidents(db, basestation_id=site.id),
     )

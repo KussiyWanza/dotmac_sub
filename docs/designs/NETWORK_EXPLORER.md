@@ -88,6 +88,22 @@ customer detail Active Path reciprocates with an "Open in Explorer" link.
 Customer-identity subjects refuse to inspect without `customer:read`.
 Alarm-stream context beyond live incidents is a later slice.
 
+## Fibre, geographic, and utilization layers
+
+- Passive fibre: FDH and splitter subjects render identity/continuity
+  neighbourhoods; subscription subjects offer the same lazy "Fibre plant
+  details" expansion as Customer 360 (`network:fiber:read`), reusing the
+  `/admin/customers/subscriptions/{id}/fiber-path` fragment — one renderer,
+  one owner.
+- Geographic: the explorer reuses the existing Leaflet surfaces instead of
+  building another map owner — site inspectors link to
+  `/admin/network/map` (`network:map:read`) and fibre-plant inspectors to
+  `/admin/network/fiber-map` (`network:fiber:read`).
+- Utilization: device inspectors list the top five links by owner-computed
+  utilization ("62% of 1000 Mbps") from the declared topology links; the
+  projection composes display strings only and loads them on demand inside
+  the inspector, never during initial page render.
+
 ## Performance and safety
 
 - No SSH, UISP, OLT, router, or ACS calls during rendering.

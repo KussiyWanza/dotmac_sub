@@ -343,3 +343,81 @@ def test_pon_inspector_counts_are_bounded_queries(db_session):
     facts = {fact.label: fact.display for fact in inspector.facts}
     assert facts["ONTs"] == "2"
     assert facts["ONTs online"] == "1"
+
+
+# --- fibre, geographic, utilization layers ---------------------------------
+
+
+def test_splitter_subject_walks_to_its_fdh(db_session):
+    from app.models.network import FdhCabinet, Splitter
+
+    fdh = FdhCabinet(name="FDH-12", code="F12")
+    db_session.add(fdh)
+    db_session.commit()
+    splitter = Splitter(name="SPL-12", fdh_id=fdh.id, splitter_ratio="1:8")
+    db_session.add(splitter)
+    db_session.commit()
+    db_session.refresh(splitter)
+
+    view = explorer.build_explorer_view(db_session, f"splitter:{splitter.id}")
+
+    kinds = [node.kind for node in view.nodes]
+    assert kinds == ["splitter", "fdh"]
+    assert view.edges[0].kind == "containment"
+
+    inspector = explorer.build_inspector(
+        db_session, f"splitter:{splitter.id}", include_customer_identity=False
+    )
+    facts = {fact.label: fact for fact in inspector.facts}
+    assert facts["Ratio"].display == "1:8"
+    assert facts["Map"].href == "/admin/network/fiber-map"
+    assert facts["Map"].href_permission == "network:fiber:read"
+
+
+def test_device_inspector_composes_link_utilization(db_session, monkeypatch):
+    from app.services import network_topology
+
+    device = _device(db_session, "Util-1")
+    monkeypatch.setattr(
+        network_topology,
+        "node_summary",
+        lambda _db, _id: {
+            "links": [
+                {
+                    "target_device": "Core-1",
+                    "utilization_pct": 62.0,
+                    "capacity_bps": 1_000_000_000,
+                },
+                {
+                    "target_device": "Leaf-9",
+                    "utilization_pct": None,
+                    "capacity_bps": None,
+                },
+            ]
+        },
+    )
+
+    inspector = explorer.build_inspector(
+        db_session, f"device:{device.id}", include_customer_identity=False
+    )
+
+    displays = {fact.label: fact.display for fact in inspector.facts}
+    assert displays["Link · Core-1"] == "62% of 1000 Mbps"
+    assert displays["Link · Leaf-9"] == "— of unknown capacity"
+
+
+def test_pop_site_inspector_links_existing_map(db_session):
+    from app.models.network_monitoring import PopSite
+
+    site = PopSite(name="Map POP", code="MAP")
+    db_session.add(site)
+    db_session.commit()
+    db_session.refresh(site)
+
+    inspector = explorer.build_inspector(
+        db_session, f"pop_site:{site.id}", include_customer_identity=False
+    )
+
+    map_fact = next(fact for fact in inspector.facts if fact.label == "Map")
+    assert map_fact.href == "/admin/network/map"
+    assert map_fact.href_permission == "network:map:read"
