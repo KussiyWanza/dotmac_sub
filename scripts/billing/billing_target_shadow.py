@@ -18,9 +18,11 @@ Subcommands::
     poetry run python -m scripts.billing.billing_target_shadow funding-status --order <id>
     poetry run python -m scripts.billing.billing_target_shadow pending-erp-exports [--limit 50]
 
-Everything stays shadow: consequence requests, timers, and exports carry the
-authority their owners derive from the manifest migration state, and nothing
-here can promote them.
+Everything stays shadow except the deliberately separate
+``activate-subledger-authority`` command. That command can create the one
+irreversible authority record only from an exact zero-blocker parity run with
+separate operator and finance approvals. No other command in this adapter can
+promote authority.
 """
 
 from __future__ import annotations
@@ -54,11 +56,16 @@ from app.services.runtime_durable_timers import fire_due_timers
 from app.services.sales_order_funding import SalesOrderFunding
 
 
-def _context(reason: str, *, idempotency_key: str | None = None) -> CommandContext:
+def _context(
+    reason: str,
+    *,
+    idempotency_key: str | None = None,
+    actor: str = "operator:billing_target_shadow",
+) -> CommandContext:
     from uuid import uuid4
 
     return CommandContext.system(
-        actor="operator:billing_target_shadow",
+        actor=actor,
         scope="billing-target-shadow",
         reason=reason,
         idempotency_key=idempotency_key or f"billing-target-shadow:{uuid4()}",
@@ -391,6 +398,165 @@ def _cmd_verify_prepaid_forward(db, args) -> int:
     return 0
 
 
+def _cmd_preview_subledger_openings(db, args) -> int:
+    from app.services.billing.shadow_verification import (
+        RecordPhase3OpeningPreviewCommand,
+        record_phase3_opening_preview,
+    )
+
+    result = record_phase3_opening_preview(
+        db,
+        RecordPhase3OpeningPreviewCommand(
+            cutoff_at=_instant(args.cutoff),
+            code_version=args.code_version,
+            database_schema_version=args.schema_version,
+            currency=args.currency,
+        ),
+        context=_context(
+            "record reviewed customer-subledger opening proposal",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "run_id": result.run_id,
+            "cohort_count": result.cohort_count,
+            "capture_eligible_count": result.capture_eligible_count,
+            "quarantined_count": result.quarantined_count,
+            "nonzero_opening_count": result.nonzero_opening_count,
+            "source_fingerprint": result.source_fingerprint,
+            "result_fingerprint": result.result_fingerprint,
+            "replayed": result.replayed,
+            "authority_moved": False,
+            "postings_manufactured": False,
+        }
+    )
+    return 0
+
+
+def _cmd_approve_verification(db, args) -> int:
+    method = (
+        BillingShadowVerification.approve_finance
+        if args.role == "finance"
+        else BillingShadowVerification.approve_operator
+    )
+    run_id = method(
+        db,
+        run_id=UUID(args.run),
+        approved_at=_instant(args.approved_at),
+        context=_context(
+            f"{args.role} approval of immutable billing verification evidence",
+            idempotency_key=args.idempotency_key,
+            actor=args.actor,
+        ),
+    )
+    _emit({"run_id": run_id, "approval": args.role, "recorded": True})
+    return 0
+
+
+def _cmd_capture_subledger_openings(db, args) -> int:
+    from app.services.billing.subledger_opening import (
+        CaptureCustomerSubledgerOpeningsCommand,
+        capture_customer_subledger_opening_positions,
+    )
+
+    result = capture_customer_subledger_opening_positions(
+        db,
+        CaptureCustomerSubledgerOpeningsCommand(
+            context=_context(
+                "capture finance-approved customer-subledger opening positions",
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+            ),
+            verification_run_id=UUID(args.run),
+            expected_result_fingerprint=args.result_fingerprint,
+            review_reference=args.reference,
+        ),
+    )
+    _emit(
+        {
+            "verification_run_id": result.verification_run_id,
+            "captured_count": result.captured_count,
+            "zero_count": result.zero_count,
+            "positive_total": result.positive_total,
+            "negative_total": result.negative_total,
+            "replayed": result.replayed,
+            "authority_moved": False,
+        }
+    )
+    return 0
+
+
+def _cmd_verify_subledger_parity(db, args) -> int:
+    from app.services.billing.shadow_verification import (
+        RecordPhase3SubledgerParityCommand,
+        record_phase3_subledger_parity,
+    )
+
+    result = record_phase3_subledger_parity(
+        db,
+        RecordPhase3SubledgerParityCommand(
+            cutoff_at=_instant(args.cutoff),
+            observation_started_at=_instant(args.window_start),
+            observation_ended_at=_instant(args.window_end),
+            code_version=args.code_version,
+            database_schema_version=args.schema_version,
+            currency=args.currency,
+        ),
+        context=_context(
+            "record post-opening customer-subledger parity and forward coverage",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "run_id": result.run_id,
+            "cohort_count": result.cohort_count,
+            "parity_count": result.parity_count,
+            "quarantined_count": result.quarantined_count,
+            "variance_count": result.variance_count,
+            "unwrapped_fact_count": result.unwrapped_fact_count,
+            "blocker_count": result.blocker_count,
+            "source_fingerprint": result.source_fingerprint,
+            "result_fingerprint": result.result_fingerprint,
+            "replayed": result.replayed,
+            "authority_moved": False,
+        }
+    )
+    return 0
+
+
+def _cmd_activate_subledger_authority(db, args) -> int:
+    from app.services.billing.subledger_opening import (
+        ActivateCustomerSubledgerAuthorityCommand,
+        activate_customer_subledger_authority,
+    )
+
+    result = activate_customer_subledger_authority(
+        db,
+        ActivateCustomerSubledgerAuthorityCommand(
+            context=_context(
+                "activate approved customer-subledger authority cutover",
+                idempotency_key=args.idempotency_key,
+                actor=args.actor,
+            ),
+            verification_run_id=UUID(args.run),
+            expected_result_fingerprint=args.result_fingerprint,
+            review_reference=args.reference,
+        ),
+    )
+    _emit(
+        {
+            "cutover_id": result.cutover_id,
+            "verification_run_id": result.verification_run_id,
+            "cutover_at": result.cutover_at,
+            "replayed": result.replayed,
+            "authority_moved": True,
+        }
+    )
+    return 0
+
+
 def _cmd_position_compare(db, args) -> int:
     from decimal import Decimal
 
@@ -440,11 +606,7 @@ def _cmd_position_compare(db, args) -> int:
             "account_id": account,
             "currency": currency,
             "classification": (
-                "parity"
-                if variance == Decimal("0")
-                # Opening postings do not exist yet by design, so the
-                # expected steady-state class is a legacy-side surplus.
-                else "expected_variance_opening_postings_absent"
+                "parity" if variance == Decimal("0") else "unexpected_variance"
             ),
             "legacy": legacy,
             "subledger": subledger_total,
@@ -685,6 +847,63 @@ def main() -> int:
     p.add_argument("--schema-version", required=True)
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_verify_prepaid_forward)
+
+    p = sub.add_parser(
+        "preview-subledger-openings",
+        help="record the exact reviewed opening-position cohort proposal",
+    )
+    p.add_argument("--cutoff", required=True)
+    p.add_argument("--code-version", required=True)
+    p.add_argument("--schema-version", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_preview_subledger_openings)
+
+    p = sub.add_parser(
+        "approve-verification",
+        help="record operator or finance approval on immutable clean evidence",
+    )
+    p.add_argument("--run", required=True)
+    p.add_argument("--role", choices=["operator", "finance"], required=True)
+    p.add_argument("--approved-at", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_approve_verification)
+
+    p = sub.add_parser(
+        "capture-subledger-openings",
+        help="capture the exact approved opening-position result",
+    )
+    p.add_argument("--run", required=True)
+    p.add_argument("--result-fingerprint", required=True)
+    p.add_argument("--reference", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_capture_subledger_openings)
+
+    p = sub.add_parser(
+        "verify-subledger-parity",
+        help="record post-opening position parity and forward posting coverage",
+    )
+    p.add_argument("--cutoff", required=True)
+    p.add_argument("--window-start", required=True)
+    p.add_argument("--window-end", required=True)
+    p.add_argument("--code-version", required=True)
+    p.add_argument("--schema-version", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_verify_subledger_parity)
+
+    p = sub.add_parser(
+        "activate-subledger-authority",
+        help="activate the exact operator- and finance-approved parity result",
+    )
+    p.add_argument("--run", required=True)
+    p.add_argument("--result-fingerprint", required=True)
+    p.add_argument("--reference", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_activate_subledger_authority)
 
     p = sub.add_parser(
         "position-compare",

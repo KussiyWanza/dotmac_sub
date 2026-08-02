@@ -1093,7 +1093,7 @@ def _stage_adjustment_reversal_posting(db: Session, adjustment, reversal) -> Non
         owner_command_active,
     )
 
-    if not owner_command_active(db):
+    if not owner_command_active(db, owner="financial.account_adjustments"):
         return
     from app.models.customer_subledger import (
         CustomerPostingGroup,
@@ -1192,7 +1192,7 @@ def _stage_adjustment_posting(db: Session, adjustment, preview) -> None:
         owner_command_active,
     )
 
-    if not owner_command_active(db):
+    if not owner_command_active(db, owner="financial.account_adjustments"):
         return
     from decimal import Decimal as _Decimal
 
