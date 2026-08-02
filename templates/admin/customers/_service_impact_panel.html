@@ -1,0 +1,28 @@
+{% from "components/ui/macros.html" import status_presentation_badge %}
+{# Live service impact + this period's SLA context for one subscription card.
+   network.service_impact owns the six-state word (exposure is never
+   downtime); customer.service_level owns the score; ui.status_presentation
+   owns every label and tone. This panel only arranges them. #}
+{% if card.service_impact %}
+<div class="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-800/40" data-testid="service-impact-panel">
+    <p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Service impact</p>
+    <div class="mt-1 flex flex-wrap items-center gap-2">
+        {{ status_presentation_badge(card.service_impact.presentation, size="sm") }}
+        <span class="text-xs text-slate-500 dark:text-slate-400">{{ card.service_impact.reason }}</span>
+    </div>
+</div>
+{% endif %}
+{% if card.service_level %}
+<div class="mt-2 flex flex-wrap items-center gap-2 text-xs" data-testid="service-level-panel">
+    {{ status_presentation_badge(card.service_level.presentation, size="sm") }}
+    {% if card.service_level.availability_percent is not none %}
+    <span class="text-slate-600 dark:text-slate-400">{{ card.service_level.availability_percent }}% measured this period</span>
+    {% endif %}
+    {% if card.service_level.target_percent is not none %}
+    <span class="text-slate-400 dark:text-slate-500">target {{ card.service_level.target_percent }}%</span>
+    {% endif %}
+    {% if card.service_level.provisional %}
+    <span class="text-slate-400 dark:text-slate-500">provisional</span>
+    {% endif %}
+</div>
+{% endif %}

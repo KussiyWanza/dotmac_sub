@@ -22,7 +22,14 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models.network import FdhCabinet
-from app.models.network_monitoring import NetworkDevice, OutageIncident, PopSite
+from app.models.network_monitoring import (
+    NetworkDevice,
+    OutageIncident,
+    OutageIncidentTicketLink,
+    OutageScopeRevision,
+    OutageScopeRevisionMember,
+    PopSite,
+)
 from app.services.topology.affected import (
     _dist_to_core,
     downstream_nodes,
@@ -202,6 +209,135 @@ def _emit_outage_event(session: Session, incident: OutageIncident, kind: str) ->
     emit_event(session, EventType.network_alert, payload, actor=actor)
 
 
+def _incident_scope_target(session: Session, incident: OutageIncident):
+    """(scope_type, scope_id, affected_customers kwargs) for the current root.
+
+    FDH wins over node over basestation, mirroring how a declared incident
+    carries exactly one scope. An incident whose root was re-pointed to None
+    is honestly ``unresolved`` with an empty audience.
+    """
+
+    if incident.fdh_cabinet_id is not None:
+        fdh = session.get(FdhCabinet, incident.fdh_cabinet_id)
+        return "fdh-cabinet", incident.fdh_cabinet_id, {"fdh": fdh}
+    if incident.root_node_id is not None:
+        node = session.get(NetworkDevice, incident.root_node_id)
+        return "node", incident.root_node_id, {"node": node}
+    if incident.basestation_id is not None:
+        basestation = session.get(PopSite, incident.basestation_id)
+        return "basestation", incident.basestation_id, {"basestation": basestation}
+    return "unresolved", None, {}
+
+
+def latest_scope_revision(session: Session, incident_id) -> OutageScopeRevision | None:
+    return (
+        session.query(OutageScopeRevision)
+        .filter(OutageScopeRevision.incident_id == incident_id)
+        .order_by(OutageScopeRevision.sequence.desc())
+        .first()
+    )
+
+
+def list_scope_revisions(session: Session, incident_id) -> list[OutageScopeRevision]:
+    """Full append-only scope history, oldest first."""
+
+    return (
+        session.query(OutageScopeRevision)
+        .filter(OutageScopeRevision.incident_id == incident_id)
+        .order_by(OutageScopeRevision.sequence.asc())
+        .all()
+    )
+
+
+def revision_audience_subscription_ids(revision: OutageScopeRevision) -> set[str]:
+    """The exact audience at one revision: entered + retained members."""
+
+    return {
+        str(member.subscription_id)
+        for member in revision.members
+        if member.membership in ("entered", "retained")
+    }
+
+
+def record_scope_revision(
+    session: Session,
+    incident: OutageIncident,
+    *,
+    reason: str,
+    actor: str | None = None,
+    effective_at: datetime | None = None,
+) -> OutageScopeRevision | None:
+    """Append the incident's current scope + exact audience as a revision.
+
+    Idempotent by content: when neither the scope nor the exact audience
+    membership changed since the latest revision, nothing is appended —
+    reconcile reruns and repeated transitions cannot fork or pad history.
+    History is append-only; rows are never updated or deleted
+    (OUTAGE_SLA_SPINE §3).
+    """
+
+    from app.services.bulk_actions import membership_scope_token
+    from app.services.topology.affected import affected_customers
+
+    scope_type, scope_id, target_kwargs = _incident_scope_target(session, incident)
+    subscription_ids: set[str] = set()
+    target = next(iter(target_kwargs.values()), None)
+    if target is not None:
+        impact = affected_customers(session, **target_kwargs)
+        subscription_ids = {
+            str(subscription.id) for subscription in impact["subscriptions"]
+        }
+    token = membership_scope_token(f"{scope_type}:{scope_id}", sorted(subscription_ids))
+
+    previous = latest_scope_revision(session, incident.id)
+    if (
+        previous is not None
+        and previous.new_scope_type == scope_type
+        and previous.new_scope_id == scope_id
+        and previous.membership_token == token
+    ):
+        return None
+
+    previous_audience: set[str] = (
+        revision_audience_subscription_ids(previous) if previous is not None else set()
+    )
+    entered = subscription_ids - previous_audience
+    left = previous_audience - subscription_ids
+    retained = subscription_ids & previous_audience
+
+    revision = OutageScopeRevision(
+        incident_id=incident.id,
+        sequence=(previous.sequence + 1) if previous is not None else 1,
+        effective_at=effective_at or datetime.now(UTC),
+        reason=reason,
+        actor=actor or incident.declared_by,
+        old_scope_type=previous.new_scope_type if previous is not None else None,
+        old_scope_id=previous.new_scope_id if previous is not None else None,
+        new_scope_type=scope_type,
+        new_scope_id=scope_id,
+        membership_token=token,
+        member_count=len(subscription_ids),
+        entered_count=len(entered),
+        left_count=len(left),
+    )
+    session.add(revision)
+    session.flush()
+    for subscription_id, membership in (
+        *((sid, "entered") for sid in sorted(entered)),
+        *((sid, "retained") for sid in sorted(retained)),
+        *((sid, "left") for sid in sorted(left)),
+    ):
+        session.add(
+            OutageScopeRevisionMember(
+                revision_id=revision.id,
+                subscription_id=subscription_id,
+                membership=membership,
+            )
+        )
+    session.flush()
+    return revision
+
+
 def declare_outage(
     session: Session,
     *,
@@ -248,6 +384,11 @@ def declare_outage(
     )
     session.add(incident)
     session.flush()
+    # The initial immutable scope revision snapshots the exact audience the
+    # incident opened against (OUTAGE_SLA_SPINE §3).
+    record_scope_revision(
+        session, incident, reason="declared", effective_at=incident.started_at
+    )
     # Operational owners/watchers and escalation planning are applied by the
     # outage lifecycle projection handler consuming this committed output.
     _emit_outage_event(session, incident, "outage.created")
@@ -310,6 +451,7 @@ def open_classifier_incident(
     )
     session.add(incident)
     session.flush()
+    record_scope_revision(session, incident, reason="suspected", effective_at=now)
     _emit_outage_event(session, incident, "outage.suspected")
     return incident
 
@@ -390,6 +532,7 @@ def repoint_root(
         return False
     incident.root_node_id = new_id
     session.flush()
+    record_scope_revision(session, incident, reason="rerooted")
     _emit_outage_event(session, incident, "outage.rerooted")
     return True
 
@@ -637,6 +780,139 @@ def list_stale_open_incidents(
 # redelivery is an exact no-op, and a raised failure leaves the delivery
 # durably failed and retryable. The incident transitions above never apply
 # these consequences inline.
+
+
+# --- incident ticket links (OUTAGE_SLA_SPINE ticket slice) -----------------
+# One canonical infrastructure ticket per incident, deduplicated complaint
+# links, reconciliation state only: ticket transitions stay with the Support
+# owner and network recovery never closes a Ticket or WorkOrder from here.
+
+INFRASTRUCTURE_ROLE = "infrastructure"
+COMPLAINT_ROLE = "complaint"
+_RECONCILIATION_STATES = ("native", "pending", "synced", "drift")
+
+
+def _current_revision_sequence(
+    session: Session, incident: OutageIncident
+) -> int | None:
+    revision = latest_scope_revision(session, incident.id)
+    return revision.sequence if revision is not None else None
+
+
+def links_for_incident(session: Session, incident_id) -> list[OutageIncidentTicketLink]:
+    return (
+        session.query(OutageIncidentTicketLink)
+        .filter(OutageIncidentTicketLink.incident_id == incident_id)
+        .order_by(OutageIncidentTicketLink.linked_at)
+        .all()
+    )
+
+
+def infrastructure_link_for(
+    session: Session, incident_id
+) -> OutageIncidentTicketLink | None:
+    return (
+        session.query(OutageIncidentTicketLink)
+        .filter(
+            OutageIncidentTicketLink.incident_id == incident_id,
+            OutageIncidentTicketLink.role == INFRASTRUCTURE_ROLE,
+        )
+        .first()
+    )
+
+
+def link_infrastructure_ticket(
+    session: Session,
+    incident: OutageIncident,
+    ticket_id,
+    *,
+    linked_by: str | None,
+    source: str = "operator",
+    external_ref: str | None = None,
+) -> OutageIncidentTicketLink:
+    """Bind the ONE canonical infrastructure ticket.
+
+    Idempotent for the same ticket; a different ticket while one is already
+    bound raises — replacing the canonical ticket is an explicit reviewed
+    operation, never a silent overwrite.
+    """
+
+    existing = infrastructure_link_for(session, incident.id)
+    if existing is not None:
+        if existing.ticket_id == ticket_id:
+            return existing
+        raise ValueError(
+            f"incident {incident.id} already has canonical infrastructure "
+            f"ticket {existing.ticket_id}; unlink it explicitly before "
+            "binding another"
+        )
+    link = OutageIncidentTicketLink(
+        incident_id=incident.id,
+        ticket_id=ticket_id,
+        role=INFRASTRUCTURE_ROLE,
+        linked_at=datetime.now(UTC),
+        linked_by=linked_by,
+        source=source,
+        external_ref=external_ref,
+        scope_revision_sequence=_current_revision_sequence(session, incident),
+    )
+    session.add(link)
+    session.flush()
+    return link
+
+
+def link_complaint_ticket(
+    session: Session,
+    incident: OutageIncident,
+    ticket_id,
+    *,
+    linked_by: str | None,
+    source: str = "operator",
+) -> OutageIncidentTicketLink:
+    """Attach one customer complaint ticket; the pair is deduplicated."""
+
+    existing = (
+        session.query(OutageIncidentTicketLink)
+        .filter(
+            OutageIncidentTicketLink.incident_id == incident.id,
+            OutageIncidentTicketLink.ticket_id == ticket_id,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+    link = OutageIncidentTicketLink(
+        incident_id=incident.id,
+        ticket_id=ticket_id,
+        role=COMPLAINT_ROLE,
+        linked_at=datetime.now(UTC),
+        linked_by=linked_by,
+        source=source,
+        scope_revision_sequence=_current_revision_sequence(session, incident),
+    )
+    session.add(link)
+    session.flush()
+    return link
+
+
+def mark_reconciliation(
+    session: Session,
+    link: OutageIncidentTicketLink,
+    *,
+    state: str,
+    external_ref: str | None = None,
+) -> None:
+    """Record the external CRM reconciliation state for one link."""
+
+    if state not in _RECONCILIATION_STATES:
+        raise ValueError(
+            f"unknown reconciliation state {state!r}; expected one of "
+            f"{_RECONCILIATION_STATES}"
+        )
+    link.reconciliation_state = state
+    if external_ref is not None:
+        link.external_ref = external_ref
+    session.flush()
 
 
 def _consume_definition(name: str):

@@ -1019,6 +1019,290 @@ class OutageNotificationDispatch(Base):
     )
 
 
+class OutageScopeRevision(Base):
+    """One immutable incident scope/audience revision (OUTAGE_SLA_SPINE §3).
+
+    ``OutageIncident.root_node_id`` stays the mutable latest projection;
+    these rows preserve the history a downtime ledger needs: which scope the
+    incident pointed at, exactly which subscriptions were in its audience
+    (via the member rows), and when that changed. Appended atomically with
+    the transition that changed it; never updated or deleted. ``sequence``
+    is monotonic per incident and unique-constrained so concurrent writers
+    cannot fork history.
+    """
+
+    __tablename__ = "outage_scope_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "sequence",
+            name="uq_outage_scope_revisions_incident_sequence",
+        ),
+        Index("ix_outage_scope_revisions_incident", "incident_id", "sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # declared | suspected | confirmed | rerooted | reopened | audience_drift
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(120))
+    old_scope_type: Mapped[str | None] = mapped_column(String(20))
+    old_scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    new_scope_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    new_scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Order-independent SHA-256 of the exact subscription audience
+    # (bulk_actions.membership_scope_token) — the immutable membership token.
+    membership_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    left_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    members: Mapped[list["OutageScopeRevisionMember"]] = relationship(
+        back_populates="revision",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class OutageScopeRevisionMember(Base):
+    """Exact audience membership for one scope revision.
+
+    ``membership`` records how the subscription relates to the previous
+    revision: ``entered`` (new this revision), ``retained`` (carried over),
+    or ``left`` (dropped this revision — no longer in the audience). The
+    current audience is entered + retained. No FK to subscriptions: history
+    must outlive a deleted subscription (same rationale as
+    OutageNotificationDispatch and AvailabilitySnapshot).
+    """
+
+    __tablename__ = "outage_scope_revision_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "revision_id",
+            "subscription_id",
+            name="uq_outage_scope_revision_members_row",
+        ),
+        Index("ix_outage_scope_revision_members_subscription", "subscription_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_scope_revisions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    # entered | retained | left
+    membership: Mapped[str] = mapped_column(String(10), nullable=False)
+
+    revision: Mapped[OutageScopeRevision] = relationship(back_populates="members")
+
+
+class CustomerOutageInterval(Base):
+    """One per-subscription service-impact interval (OUTAGE_SLA_SPINE §2, §7).
+
+    Written only by ``network.customer_outage_accrual``. ``ended_at`` is a
+    provisional first-healthy-observation stamp until ``finalized_at`` is set
+    after the sustained-recovery hold; a re-darkening before finalization
+    clears the provisional end so clearing→reopened stays one continuous
+    interval. A finalized row is immutable — corrections are append-only
+    adjustments, never edits. No FKs to incidents or subscriptions: downtime
+    history must outlive deleted rows (same rationale as the dispatch audit).
+    The partial unique index guarantees at most one open interval per
+    (incident, subscription), preventing duplicate or overlapping accrual.
+    """
+
+    __tablename__ = "customer_outage_intervals"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key", name="uq_customer_outage_intervals_idempotency"
+        ),
+        Index(
+            "uq_customer_outage_intervals_open",
+            "incident_id",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+            sqlite_where=text("ended_at IS NULL"),
+        ),
+        Index(
+            "ix_customer_outage_intervals_subscription",
+            "subscription_id",
+            "started_at",
+        ),
+        Index("ix_customer_outage_intervals_incident", "incident_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    # confirmed_unavailable | degraded (unknown never accrues; exposure is
+    # not an interval state — see service_impact_contracts.ImpactInterval).
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    # exact | estimated | unavailable evidence quality.
+    quality: Mapped[str] = mapped_column(String(12), nullable=False, default="exact")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    recovery_evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    scope_revision_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1
+    )
+    # e.g. incident_discarded — a reviewed reason this interval is an
+    # exclusion candidate for SLA qualification (never silently dropped).
+    exclusion_candidate: Mapped[str | None] = mapped_column(String(60))
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class OutageIncidentTicketLink(Base):
+    """Typed incident↔ticket relationship (OUTAGE_SLA_SPINE §S6).
+
+    Supersedes the ``OutageIncident.crm_ticket_id`` placeholder: exactly one
+    canonical ``infrastructure`` ticket per incident (partial unique index),
+    any number of linked ``complaint`` tickets (deduplicated per pair). The
+    link records provenance, external CRM identity, reconciliation state,
+    and the scope-revision context it was made under. Network recovery emits
+    evidence only — nothing here ever transitions a Ticket or WorkOrder.
+    """
+
+    __tablename__ = "outage_incident_ticket_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "ticket_id",
+            name="uq_outage_incident_ticket_links_pair",
+        ),
+        Index(
+            "uq_outage_incident_ticket_links_infrastructure",
+            "incident_id",
+            unique=True,
+            postgresql_where=text("role = 'infrastructure'"),
+            sqlite_where=text("role = 'infrastructure'"),
+        ),
+        Index("ix_outage_incident_ticket_links_ticket", "ticket_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("support_tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # infrastructure | complaint
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    linked_by: Mapped[str | None] = mapped_column(String(120))
+    # operator | system | crm_sync
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(String(120))
+    # native | pending | synced | drift
+    reconciliation_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="native"
+    )
+    scope_revision_sequence: Mapped[int | None] = mapped_column(Integer)
+
+
+class MaintenanceWindow(Base):
+    """One planned maintenance window (OUTAGE_SLA_SPINE §5).
+
+    Owned by ``network.maintenance_lifecycle``: draft → approved → announced
+    → in_progress → completed, plus canceled and overrun. Only an approved
+    window that was announced at least the notice period before its planned
+    start is SLA-excludable, and only inside the planned window — unannounced
+    work, newly affected customers, and overrun time count as unplanned
+    downtime. The audience token is resolved at announce and re-resolved at
+    begin; material drift requires renewed approval.
+    """
+
+    __tablename__ = "network_maintenance_windows"
+    __table_args__ = (
+        Index(
+            "ix_network_maintenance_windows_scope",
+            "scope_type",
+            "scope_id",
+            "planned_start",
+        ),
+        Index("ix_network_maintenance_windows_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    # node | basestation | fdh-cabinet (matches incident scope naming).
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    planned_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    planned_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner: Mapped[str] = mapped_column(String(120), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(120))
+    expected_impact: Mapped[str | None] = mapped_column(Text)
+    customer_message: Mapped[str | None] = mapped_column(Text)
+    backout_plan: Mapped[str | None] = mapped_column(Text)
+    audience_token: Mapped[str | None] = mapped_column(String(64))
+    audience_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    linked_outage_incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class AvailabilitySnapshot(Base):
     """Daily rolled-up availability for an infrastructure element.
 

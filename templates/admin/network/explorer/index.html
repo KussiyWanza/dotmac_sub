@@ -1,0 +1,226 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import page_header %}
+
+{% block title %}Network Explorer - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    {% call page_header(
+        title="Network Explorer",
+        subtitle="Search any customer or infrastructure asset and open its bounded neighbourhood — subject and state live in the URL",
+        icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>',
+        color="accent"
+    ) %}
+        {% if can(request, 'monitoring:read') %}
+        <a href="/admin/network/explorer/coverage" class="text-sm font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Coverage &amp; drift</a>
+        {% endif %}
+    {% endcall %}
+
+    <form method="get" action="/admin/network/explorer" class="flex flex-wrap items-center gap-2" data-testid="explorer-search-form">
+        {% if explorer.subject %}<input type="hidden" name="subject" value="{{ explorer.subject }}">{% endif %}
+        <label for="explorer-q" class="sr-only">Search customers and assets</label>
+        <input id="explorer-q" name="q" value="{{ explorer.query }}" placeholder="Customer, login, IP, ONT serial, MAC, device, OLT, NAS, FDH, site..."
+               class="w-full max-w-xl rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+        <button type="submit" class="rounded-lg bg-accent-600 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-700">Search</button>
+    </form>
+
+    {% if explorer.query %}
+    <div class="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm dark:border-slate-700/60 dark:bg-slate-800" data-testid="explorer-results">
+        {% if explorer.results %}
+        <ul class="divide-y divide-slate-100 dark:divide-slate-700">
+            {% for result in explorer.results %}
+            <li class="flex items-center gap-3 py-2">
+                <span class="inline-flex min-w-24 justify-center rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-500 dark:border-slate-600 dark:text-slate-400">{{ result.kind_label }}</span>
+                <a href="{{ result.subject_url }}{% if explorer.query %}&q={{ explorer.query | urlencode }}{% endif %}" class="text-sm font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ result.label }}</a>
+                {% if result.detail %}<span class="text-xs text-slate-500 dark:text-slate-400">{{ result.detail }}</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-slate-500 dark:text-slate-400">No typed match. Search covers customers, logins, IPs, ONT serials, radios, devices, OLTs, NAS, FDH cabinets, and sites.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if explorer.subject_missing %}
+    <div class="rounded-2xl border border-slate-200/60 bg-white p-6 text-sm text-slate-500 shadow-sm dark:border-slate-700/60 dark:bg-slate-800 dark:text-slate-400" data-testid="explorer-subject-missing">
+        This subject cannot be opened — it does not exist, cannot be proven, or requires permissions you do not hold.
+    </div>
+    {% elif explorer.view %}
+    <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <div class="flex items-center justify-between border-b border-slate-100 px-5 py-3 dark:border-slate-700">
+            <p class="text-sm font-semibold text-slate-900 dark:text-white">
+                {{ explorer.subject_kind_label or "Subject" }} neighbourhood
+                <span class="ml-2 text-xs font-normal text-slate-500 dark:text-slate-400">{{ graph.nodes | length }} nodes · evaluated {{ graph.evaluated_at }}</span>
+            </p>
+        </div>
+        <div class="relative">
+            <div id="explorerCanvas" class="h-[560px] w-full" data-testid="explorer-canvas"></div>
+            <div id="explorerInspector" class="absolute right-3 top-3 hidden w-80 max-w-[90%] rounded-xl border border-slate-200 bg-white p-4 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                <button type="button" id="explorerInspectorClose" class="absolute right-2 top-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close inspector">&times;</button>
+                <div id="explorerInspectorBody"><p class="text-xs text-slate-500 dark:text-slate-400">Loading...</p></div>
+            </div>
+        </div>
+
+        {% if explorer.subject_kind == 'subscription' and can(request, 'network:fiber:read') %}
+        <details class="border-t border-slate-100 px-5 py-3 dark:border-slate-700" data-testid="explorer-fiber-plant">
+            <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">Fibre plant details</summary>
+            <div class="mt-2"
+                 hx-get="/admin/customers/subscriptions/{{ explorer.subject.split(':')[1] }}/fiber-path"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="text-xs text-slate-500 dark:text-slate-400">Loading fibre plant path...</div>
+            </div>
+        </details>
+        {% endif %}
+
+        {# Accessible fallback: the same owner facts as a list, always rendered. #}
+        <details class="border-t border-slate-100 px-5 py-3 dark:border-slate-700" data-testid="explorer-list-fallback">
+            <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">Accessible list view</summary>
+            <div class="mt-3 grid gap-4 md:grid-cols-2">
+                <div>
+                    <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Assets</p>
+                    <ul class="space-y-1">
+                        {% for node in graph.nodes %}
+                        <li class="text-sm">
+                            <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs status-panel status-panel-{{ node.presentation.tone }} status-foreground" title="{{ node.tooltip }}">{{ node.presentation.label }}</span>
+                            {% if node.href and can(request, node.href_permission) %}
+                            <a href="{{ node.href }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ node.label }}</a>
+                            {% else %}
+                            <span class="text-slate-800 dark:text-slate-200">{{ node.label }}</span>
+                            {% endif %}
+                            <span class="text-xs text-slate-400 dark:text-slate-500">{{ node.kind }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <div>
+                    <p class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Relationships</p>
+                    <ul class="space-y-1">
+                        {% for edge in graph.edges %}
+                        <li class="text-xs text-slate-500 dark:text-slate-400">{{ edge.source_id }} &rarr; {{ edge.target_id }} <span class="text-slate-400 dark:text-slate-500">({{ edge.kind }})</span></li>
+                        {% endfor %}
+                    </ul>
+                    {% for gap in graph.gaps %}
+                    <p class="mt-2 text-xs status-tone-{{ gap.presentation.tone }} status-foreground"><span class="font-medium">{{ gap.presentation.label }}</span> &mdash; {{ gap.message }}
+                        {% if gap.repair_href and can(request, gap.repair_permission) %}<a href="{{ gap.repair_href }}" class="ml-1 underline">Repair</a>{% endif %}
+                    </p>
+                    {% endfor %}
+                </div>
+            </div>
+        </details>
+    </div>
+    {% else %}
+    <div class="rounded-2xl border border-dashed border-slate-300 p-10 text-center dark:border-slate-700" data-testid="explorer-empty">
+        <p class="text-sm font-medium text-slate-900 dark:text-white">Search for a subject to open its neighbourhood</p>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">The explorer loads a bounded graph around one subject — it never renders the whole network.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{% if explorer.view %}
+<script src="/static/js/vendor/cytoscape.min.js"></script>
+<script src="/static/js/vendor/dagre.min.js"></script>
+<script src="/static/js/vendor/cytoscape-dagre.min.js"></script>
+<script>
+(function () {
+    var graphData = {{ graph | tojson }};
+    var container = document.getElementById('explorerCanvas');
+    if (!container) { return; }
+    if (typeof cytoscape === 'undefined') {
+        container.innerHTML = '<div class="flex h-full items-center justify-center text-slate-400">Graph renderer unavailable — use the accessible list view below.</div>';
+        return;
+    }
+    try { if (typeof cytoscapeDagre !== 'undefined') { cytoscape.use(cytoscapeDagre); } } catch (e) {}
+
+    // Tones come from the owner presentations; colors come from the semantic
+    // design tokens so the canvas tracks the brand theme, never local maps.
+    function cssVar(name, fb) { var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fb; }
+    var TONE = {
+        positive: cssVar('--color-semantic-positive-600', '#16a34a'),
+        warning: cssVar('--color-semantic-warning-600', '#d97706'),
+        negative: cssVar('--color-semantic-negative-600', '#dc2626'),
+        info: cssVar('--color-semantic-info-600', '#2563eb'),
+        neutral: cssVar('--color-semantic-neutral-500', '#64748b')
+    };
+    var elements = [];
+    graphData.nodes.forEach(function (node) {
+        elements.push({ data: {
+            id: node.id,
+            label: node.label,
+            tone: (node.presentation && node.presentation.tone) || 'neutral',
+            kind: node.kind,
+            href: node.href || null
+        }});
+    });
+    graphData.edges.forEach(function (edge, index) {
+        elements.push({ data: { id: 'e' + index, source: edge.source_id, target: edge.target_id, kind: edge.kind } });
+    });
+    var cy = cytoscape({
+        container: container,
+        elements: elements,
+        style: [
+            { selector: 'node', style: {
+                'label': 'data(label)', 'font-size': '10px', 'text-valign': 'bottom', 'text-margin-y': 4,
+                'width': 26, 'height': 26,
+                'background-color': function (el) { return TONE[el.data('tone')] || TONE.neutral; },
+                'color': cssVar('--color-semantic-neutral-700', '#334155')
+            }},
+            { selector: 'node[kind = "cohort"]', style: { 'shape': 'round-rectangle', 'width': 40, 'height': 20 } },
+            { selector: 'edge', style: {
+                'width': 2, 'curve-style': 'bezier',
+                'line-color': cssVar('--color-semantic-neutral-500', '#94a3b8'),
+                'target-arrow-shape': 'triangle',
+                'target-arrow-color': cssVar('--color-semantic-neutral-500', '#94a3b8')
+            }},
+            { selector: 'edge[kind = "containment"]', style: { 'line-style': 'dashed', 'target-arrow-shape': 'none' } }
+        ],
+        layout: { name: (typeof cytoscapeDagre !== 'undefined') ? 'dagre' : 'breadthfirst', rankDir: 'TB', nodeSep: 30, rankSep: 70 },
+        wheelSensitivity: 0.2
+    });
+    // Node kind -> inspector subject kind. Cohort nodes navigate to their
+    // canonical list instead of inspecting.
+    var SUBJECT_KIND = {
+        network_device: 'device', ont: 'ont', radio: 'radio', olt: 'olt',
+        pon_port: 'pon_port', nas: 'nas', fdh: 'fdh', splitter: 'splitter',
+        pop: 'pop_site', subscription: 'subscription', subscriber: 'subscriber',
+        ap: 'device'
+    };
+    var panel = document.getElementById('explorerInspector');
+    var panelBody = document.getElementById('explorerInspectorBody');
+    var closeButton = document.getElementById('explorerInspectorClose');
+    if (closeButton) {
+        closeButton.addEventListener('click', function () { panel.classList.add('hidden'); });
+    }
+    graphData.nodes.forEach(function (node) {
+        var el = cy.getElementById(node.id);
+        if (el) { el.data('assetId', node.asset_id || null); }
+    });
+    cy.on('tap', 'node', function (evt) {
+        var kind = evt.target.data('kind');
+        var assetId = evt.target.data('assetId');
+        var subjectKind = SUBJECT_KIND[kind];
+        if (!subjectKind || !assetId) {
+            var href = evt.target.data('href');
+            if (href) { window.location.href = href; }
+            return;
+        }
+        panel.classList.remove('hidden');
+        panelBody.innerHTML = '<p class="text-xs text-slate-500 dark:text-slate-400">Loading...</p>';
+        fetch('/admin/network/explorer/inspect?subject=' + encodeURIComponent(subjectKind + ':' + assetId))
+            .then(function (response) { return response.text(); })
+            .then(function (html) { panelBody.innerHTML = html; })
+            .catch(function () {
+                panelBody.innerHTML = '<p class="text-xs text-slate-500 dark:text-slate-400">Inspector unavailable.</p>';
+            });
+    });
+    cy.on('tap', function (evt) {
+        if (evt.target === cy) { panel.classList.add('hidden'); }
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

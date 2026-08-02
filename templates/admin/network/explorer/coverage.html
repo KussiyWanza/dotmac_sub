@@ -1,0 +1,72 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import page_header, status_presentation_badge %}
+
+{% block title %}Coverage &amp; Drift - Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    {% call page_header(
+        title="Coverage & Drift",
+        subtitle="Per-subscription path coverage and the open topology worklists — aggregate device counts cannot prove a customer path",
+        icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>',
+        color="accent"
+    ) %}
+        <a href="/admin/network/explorer" class="text-sm font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open Explorer</a>
+    {% endcall %}
+
+    <div class="grid gap-4 md:grid-cols-3" data-testid="coverage-summary">
+        <div class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Active subscriptions</p>
+            <p class="mt-1 text-2xl font-semibold text-slate-900 dark:text-white">{{ coverage.active_subscriptions }}</p>
+        </div>
+        <div class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Complete end-to-end paths</p>
+            <p class="mt-1 text-2xl font-semibold text-slate-900 dark:text-white">{{ coverage.complete_paths }}</p>
+        </div>
+        <div class="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+            <p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Coverage</p>
+            <p class="mt-1 text-2xl font-semibold text-slate-900 dark:text-white">{% if coverage.coverage_percent is not none %}{{ coverage.coverage_percent }}%{% else %}&mdash;{% endif %}</p>
+        </div>
+    </div>
+
+    <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <div class="border-b border-slate-100 px-5 py-3 dark:border-slate-700">
+            <p class="text-sm font-semibold text-slate-900 dark:text-white">Coverage by access medium</p>
+        </div>
+        <div class="divide-y divide-slate-100 dark:divide-slate-700" data-testid="coverage-by-medium">
+            {% for medium in coverage.by_medium %}
+            <div class="flex items-center justify-between px-5 py-3 text-sm">
+                <span class="font-medium text-slate-900 dark:text-white">{{ medium.label }}</span>
+                <span class="text-slate-600 dark:text-slate-400">{{ medium.complete }} / {{ medium.total }}{% if medium.percent is not none %} &middot; {{ medium.percent }}%{% endif %}</span>
+            </div>
+            {% else %}
+            <p class="px-5 py-4 text-sm text-slate-500 dark:text-slate-400">No active subscriptions.</p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        <div class="border-b border-slate-100 px-5 py-3 dark:border-slate-700">
+            <p class="text-sm font-semibold text-slate-900 dark:text-white">Drift worklists</p>
+        </div>
+        <div class="divide-y divide-slate-100 dark:divide-slate-700" data-testid="coverage-metrics">
+            {% for metric in coverage.metrics %}
+            <div class="flex flex-wrap items-center justify-between gap-2 px-5 py-3">
+                <div class="min-w-0">
+                    <p class="text-sm font-medium text-slate-900 dark:text-white">{{ metric.label }}</p>
+                    {% if metric.detail %}<p class="text-xs text-slate-500 dark:text-slate-400">{{ metric.detail }}</p>{% endif %}
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="text-sm font-semibold text-slate-900 dark:text-white">{{ metric.count }}</span>
+                    {{ status_presentation_badge(metric.presentation, size="sm") }}
+                    {% if metric.href and can(request, metric.href_permission) %}
+                    <a href="{{ metric.href }}" class="text-xs font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open queue</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="border-t border-slate-100 px-5 py-3 text-xs text-slate-400 dark:border-slate-700 dark:text-slate-500">Evaluated {{ coverage.evaluated_at }}</p>
+    </div>
+</div>
+{% endblock %}
