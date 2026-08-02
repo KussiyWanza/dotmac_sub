@@ -21,6 +21,8 @@ EXPECTED_ROUTES = {
     ("GET", "/project-tasks"),
     ("GET", "/project-tasks/{task_id}"),
     ("PATCH", "/project-tasks/{task_id}"),
+    ("POST", "/project-tasks/{task_id}/transition"),
+    ("PUT", "/project-tasks/{task_id}/dependencies"),
     ("DELETE", "/project-tasks/{task_id}"),
 }
 
@@ -40,6 +42,8 @@ EXPECTED_PERMISSIONS = {
     ("GET", "/project-tasks"): "project:task:read",
     ("GET", "/project-tasks/{task_id}"): "project:task:read",
     ("PATCH", "/project-tasks/{task_id}"): "project:task:write",
+    ("POST", "/project-tasks/{task_id}/transition"): "project:task:write",
+    ("PUT", "/project-tasks/{task_id}/dependencies"): "project:task:write",
     ("DELETE", "/project-tasks/{task_id}"): "project:task:write",
 }
 

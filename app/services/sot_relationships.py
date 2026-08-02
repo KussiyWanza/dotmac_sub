@@ -22403,6 +22403,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "project creation customer email consequence",
                     "project and task status-change customer notification consequence",
                     "project and task allowed status transitions",
+                    "project-task relationship integrity and completion readiness",
                     "project and task assignment and scheduling",
                     "project manager assistant manager service-team and task-assignee changes",
                     "existing project-task reassignment email consequence",
@@ -22459,6 +22460,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "canonical project aggregate",
                                 "project transition protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="project-task relationship integrity and completion readiness",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "project transition protocol",
+                                "authorized project command",
                             ),
                         ),
                         ConcernContract(
@@ -22610,6 +22620,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "project_task.created",
                             "project_task.updated",
                             "project_task.completed",
+                            "project_task.dependencies_replaced",
                             "project.assignment_changed",
                         ),
                         schema_version=1,

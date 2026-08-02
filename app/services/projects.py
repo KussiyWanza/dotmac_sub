@@ -82,6 +82,8 @@ from app.schemas.project import (
     ProjectCreate,
     ProjectTaskCommentCreate,
     ProjectTaskCreate,
+    ProjectTaskDependenciesReplace,
+    ProjectTaskStatusTransition,
     ProjectTaskUpdate,
     ProjectTemplateCreate,
     ProjectTemplateTaskCreate,
@@ -128,12 +130,16 @@ _PROJECT_MUTATION = OwnerCommandDefinition(
 
 
 def _project_command_context(
-    *, action: str, actor: UUID | str | None, aggregate_id: UUID | str | None = None
+    *,
+    action: str,
+    actor: UUID | str | None,
+    aggregate_id: UUID | str | None = None,
+    reason: str | None = None,
 ) -> CommandContext:
     return CommandContext.system(
         actor=str(actor or "system:projects-adapter"),
         scope="operations:projects",
-        reason=action,
+        reason=reason or action,
         idempotency_key=(
             f"{action}:{aggregate_id}" if aggregate_id is not None else None
         ),
@@ -3052,6 +3058,125 @@ def _calculate_task_dates(
         _resolve_due(task_id)
 
 
+def _lock_project_task_scope(
+    db: Session,
+    task_id: UUID,
+    *,
+    require_active_task: bool = True,
+) -> tuple[Project, ProjectTask]:
+    """Lock the authoritative Project before its task and revalidate the scope."""
+
+    observed_project_id = db.scalar(
+        select(ProjectTask.project_id).where(ProjectTask.id == task_id)
+    )
+    if observed_project_id is None:
+        raise _project_error("not_found", "Project task not found")
+    project = db.scalar(
+        select(Project).where(Project.id == observed_project_id).with_for_update()
+    )
+    if project is None:
+        raise _project_error("relationship_conflict", "Task project not found")
+    task = db.scalar(
+        select(ProjectTask).where(ProjectTask.id == task_id).with_for_update()
+    )
+    if task is None:
+        raise _project_error("not_found", "Project task not found")
+    if task.project_id != project.id:
+        raise _project_error(
+            "stale_state", "Project task scope changed while acquiring locks"
+        )
+    if not project.is_active:
+        raise _project_error("invalid_transition", "Project is archived")
+    if require_active_task and not task.is_active:
+        raise _project_error("invalid_transition", "Project task is archived")
+    return project, task
+
+
+def _validate_parent_task(
+    db: Session,
+    *,
+    project_id: UUID,
+    task_id: UUID | None,
+    parent_task_id: UUID,
+) -> ProjectTask:
+    if task_id is not None and parent_task_id == task_id:
+        raise _project_error("relationship_conflict", "Task cannot parent itself")
+    parent = db.scalar(
+        select(ProjectTask).where(ProjectTask.id == parent_task_id).with_for_update()
+    )
+    if parent is None or not parent.is_active:
+        raise _project_error("not_found", "Active parent task not found")
+    if parent.project_id != project_id:
+        raise _project_error(
+            "relationship_conflict", "Parent task must belong to the same project"
+        )
+    ancestor_id = parent.parent_task_id
+    visited = {parent.id}
+    while ancestor_id is not None:
+        if ancestor_id == task_id:
+            raise _project_error(
+                "relationship_conflict", "Parent relationship would create a cycle"
+            )
+        if ancestor_id in visited:
+            raise _project_error(
+                "relationship_conflict", "Existing parent relationship contains a cycle"
+            )
+        visited.add(ancestor_id)
+        ancestor = db.get(ProjectTask, ancestor_id)
+        if ancestor is None or ancestor.project_id != project_id:
+            raise _project_error(
+                "relationship_conflict", "Parent chain leaves the authoritative project"
+            )
+        ancestor_id = ancestor.parent_task_id
+    return parent
+
+
+def _require_task_completion_ready(db: Session, task: ProjectTask) -> None:
+    blockers = (
+        db.query(ProjectTask)
+        .join(
+            ProjectTaskDependency,
+            ProjectTaskDependency.depends_on_task_id == ProjectTask.id,
+        )
+        .filter(ProjectTaskDependency.task_id == task.id)
+        .filter(
+            or_(
+                ProjectTask.is_active.is_(False),
+                ProjectTask.status != ProjectTaskStatus.done.value,
+            )
+        )
+        .order_by(ProjectTask.id)
+        .all()
+    )
+    if blockers:
+        raise _project_error(
+            "relationship_conflict",
+            "Complete all dependency tasks before completing this task",
+            blocking_task_ids=[str(blocker.id) for blocker in blockers],
+        )
+
+
+def _dependency_graph_has_cycle(
+    edges: dict[UUID, set[UUID]],
+) -> bool:
+    visiting: set[UUID] = set()
+    visited: set[UUID] = set()
+
+    def visit(node: UUID) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        if any(visit(dependency) for dependency in edges.get(node, set())):
+            return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    return any(visit(node) for node in edges)
+
+
 class ProjectTasks(ListResponseMixin):
     @staticmethod
     def create(
@@ -3071,13 +3196,20 @@ class ProjectTasks(ListResponseMixin):
                 context=context,
                 operation=lambda: ProjectTasks.create(db, payload, context=context),
             )
-        project = db.get(Project, coerce_uuid(str(payload.project_id)))
-        if not project:
+        project = db.scalar(
+            select(Project)
+            .where(Project.id == coerce_uuid(str(payload.project_id)))
+            .with_for_update()
+        )
+        if not project or not project.is_active:
             raise _project_error("not_found", "Project not found")
         if payload.parent_task_id:
-            parent = db.get(ProjectTask, coerce_uuid(str(payload.parent_task_id)))
-            if not parent:
-                raise _project_error("not_found", "Parent task not found")
+            _validate_parent_task(
+                db,
+                project_id=project.id,
+                task_id=None,
+                parent_task_id=coerce_uuid(str(payload.parent_task_id)),
+            )
         if payload.assigned_to_person_id:
             _ensure_staff_uuid(str(payload.assigned_to_person_id))
         if payload.created_by_person_id:
@@ -3248,7 +3380,13 @@ class ProjectTasks(ListResponseMixin):
         *,
         actor_id: UUID | None = None,
         context: CommandContext | None = None,
+        _status_transition: bool = False,
     ):
+        if "status" in payload.model_fields_set and not _status_transition:
+            raise _project_error(
+                "invalid_transition",
+                "Use the typed project-task status transition command",
+            )
         if context is None:
             context = _project_command_context(
                 action="update_project_task",
@@ -3266,15 +3404,10 @@ class ProjectTasks(ListResponseMixin):
                     payload,
                     actor_id=actor_id,
                     context=context,
+                    _status_transition=_status_transition,
                 ),
             )
-        task = db.scalar(
-            select(ProjectTask)
-            .where(ProjectTask.id == coerce_uuid(task_id))
-            .with_for_update()
-        )
-        if not task:
-            raise _project_error("not_found", "Project task not found")
+        project, task = _lock_project_task_scope(db, coerce_uuid(task_id))
         previous_status = task.status
         previous_assignee_ids = frozenset(task.assigned_to_person_ids)
         changed_fields: list[str] = []
@@ -3297,14 +3430,18 @@ class ProjectTasks(ListResponseMixin):
             else:
                 assignee_ids = []
         data.pop("assigned_to_person_ids", None)
-        if "project_id" in data:
-            project = db.get(Project, coerce_uuid(str(data["project_id"])))
-            if not project:
-                raise _project_error("not_found", "Project not found")
+        if "project_id" in data and coerce_uuid(str(data["project_id"])) != project.id:
+            raise _project_error(
+                "relationship_conflict",
+                "Move a task through a dedicated project-transfer command",
+            )
         if data.get("parent_task_id"):
-            parent = db.get(ProjectTask, coerce_uuid(str(data["parent_task_id"])))
-            if not parent:
-                raise _project_error("not_found", "Parent task not found")
+            _validate_parent_task(
+                db,
+                project_id=project.id,
+                task_id=task.id,
+                parent_task_id=coerce_uuid(str(data["parent_task_id"])),
+            )
         if data.get("assigned_to_person_id"):
             _ensure_staff_uuid(str(data["assigned_to_person_id"]))
         if data.get("created_by_person_id"):
@@ -3315,6 +3452,11 @@ class ProjectTasks(ListResponseMixin):
         for key, value in data.items():
             setattr(task, key, value)
         _apply_fiber_stage_defaults(db, task)
+        if (
+            previous_status != ProjectTaskStatus.done.value
+            and task.status == ProjectTaskStatus.done.value
+        ):
+            _require_task_completion_ready(db, task)
         if task.status == ProjectTaskStatus.done.value and not task.completed_at:
             task.completed_at = datetime.now(UTC)
         _sync_task_sla_clock(db, task)
@@ -3322,15 +3464,13 @@ class ProjectTasks(ListResponseMixin):
         db.flush()
         db.refresh(task)
         if assignee_ids is not None:
-            project = db.get(Project, task.project_id)
-            if project:
-                _notify_new_project_task_assignees(
-                    db,
-                    task=task,
-                    project=project,
-                    previous_assignee_ids=previous_assignee_ids,
-                    context=context,
-                )
+            _notify_new_project_task_assignees(
+                db,
+                task=task,
+                project=project,
+                previous_assignee_ids=previous_assignee_ids,
+                context=context,
+            )
         if (
             "assigned_to_person_ids" in payload.model_fields_set
             or "assigned_to_person_id" in payload.model_fields_set
@@ -3352,29 +3492,26 @@ class ProjectTasks(ListResponseMixin):
             previous_status != ProjectTaskStatus.done.value
             and task.status == ProjectTaskStatus.done.value
         ):
-            project = db.get(Project, task.project_id)
-            if project:
-                _stage_customer_status_transition(
-                    db,
-                    project=project,
-                    task=task,
-                    previous_status=previous_status,
-                    new_status=task.status,
-                    context=context,
-                )
+            _stage_customer_status_transition(
+                db,
+                project=project,
+                task=task,
+                previous_status=previous_status,
+                new_status=task.status,
+                context=context,
+            )
             emit_event(
                 db,
                 EventType.custom,
                 {"name": "project_task.completed", **event_payload},
-                subscriber_id=project.subscriber_id if project else None,
+                subscriber_id=project.subscriber_id,
             )
         elif previous_status != task.status or bool(changed_fields):
-            project = db.get(Project, task.project_id)
             emit_event(
                 db,
                 EventType.custom,
                 {"name": "project_task.updated", **event_payload},
-                subscriber_id=project.subscriber_id if project else None,
+                subscriber_id=project.subscriber_id,
             )
             if project and previous_status != task.status:
                 _stage_customer_status_transition(
@@ -3393,6 +3530,164 @@ class ProjectTasks(ListResponseMixin):
             entity_id=task.id,
             changed_fields=changed_fields,
         )
+        return task
+
+    @staticmethod
+    def transition_status(
+        db: Session,
+        task_id: str,
+        command: ProjectTaskStatusTransition,
+        *,
+        actor_id: UUID | None = None,
+        context: CommandContext | None = None,
+    ) -> ProjectTask:
+        if context is None:
+            context = _project_command_context(
+                action="transition_project_task_status",
+                actor=actor_id,
+                aggregate_id=task_id,
+                reason=command.reason,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectTasks.transition_status(
+                    db,
+                    task_id,
+                    command,
+                    actor_id=actor_id,
+                    context=context,
+                ),
+            )
+        _project, task = _lock_project_task_scope(db, coerce_uuid(task_id))
+        if task.status != command.expected_status.value:
+            raise _project_error(
+                "stale_state",
+                "Project task status changed before this transition",
+                expected_status=command.expected_status.value,
+                current_status=task.status,
+            )
+        return ProjectTasks.update(
+            db,
+            task_id,
+            ProjectTaskUpdate(status=command.status),
+            actor_id=actor_id,
+            context=context,
+            _status_transition=True,
+        )
+
+    @staticmethod
+    def replace_dependencies(
+        db: Session,
+        task_id: str,
+        command: ProjectTaskDependenciesReplace,
+        *,
+        actor_id: UUID | None = None,
+        context: CommandContext | None = None,
+    ) -> ProjectTask:
+        if context is None:
+            context = _project_command_context(
+                action="replace_project_task_dependencies",
+                actor=actor_id,
+                aggregate_id=task_id,
+                reason=command.reason,
+            )
+            db_session_adapter.release_read_transaction(db)
+            return execute_owner_command(
+                db,
+                definition=_PROJECT_MUTATION,
+                context=context,
+                operation=lambda: ProjectTasks.replace_dependencies(
+                    db,
+                    task_id,
+                    command,
+                    actor_id=actor_id,
+                    context=context,
+                ),
+            )
+        project, task = _lock_project_task_scope(db, coerce_uuid(task_id))
+        if task.status != command.expected_task_status.value:
+            raise _project_error(
+                "stale_state",
+                "Project task status changed before dependency replacement",
+            )
+        dependency_ids = [item.depends_on_task_id for item in command.dependencies]
+        if len(dependency_ids) != len(set(dependency_ids)):
+            raise _project_error("relationship_conflict", "Duplicate dependency task")
+        dependencies: dict[UUID, ProjectTask] = {}
+        if dependency_ids:
+            rows = db.scalars(
+                select(ProjectTask)
+                .where(ProjectTask.id.in_(sorted(dependency_ids, key=str)))
+                .order_by(ProjectTask.id)
+                .with_for_update()
+            ).all()
+            dependencies = {row.id: row for row in rows}
+        for dependency_id in dependency_ids:
+            dependency = dependencies.get(dependency_id)
+            if dependency is None or not dependency.is_active:
+                raise _project_error("not_found", "Active dependency task not found")
+            if dependency.project_id != project.id or dependency.id == task.id:
+                raise _project_error(
+                    "relationship_conflict",
+                    "Dependencies must be distinct tasks in the same project",
+                )
+
+        existing_rows = (
+            db.query(ProjectTaskDependency)
+            .filter(
+                ProjectTaskDependency.task_id.in_(
+                    select(ProjectTask.id).where(ProjectTask.project_id == project.id)
+                )
+            )
+            .all()
+        )
+        edges: dict[UUID, set[UUID]] = {}
+        for row in existing_rows:
+            if row.task_id != task.id:
+                edges.setdefault(row.task_id, set()).add(row.depends_on_task_id)
+        edges[task.id] = set(dependency_ids)
+        if _dependency_graph_has_cycle(edges):
+            raise _project_error(
+                "relationship_conflict", "Dependency replacement would create a cycle"
+            )
+
+        db.query(ProjectTaskDependency).filter(
+            ProjectTaskDependency.task_id == task.id
+        ).delete(synchronize_session=False)
+        for item in command.dependencies:
+            db.add(
+                ProjectTaskDependency(
+                    task_id=task.id,
+                    depends_on_task_id=item.depends_on_task_id,
+                    dependency_type=item.dependency_type.value,
+                    lag_days=item.lag_days,
+                )
+            )
+        _stage_project_audit(
+            db,
+            context=context,
+            action="replace_dependencies",
+            entity_type="project_task",
+            entity_id=task.id,
+            changed_fields=["dependencies"],
+        )
+        emit_event(
+            db,
+            EventType.custom,
+            {
+                "name": "project_task.dependencies_replaced",
+                "task_id": str(task.id),
+                "project_id": str(project.id),
+                "dependency_ids": [str(value) for value in dependency_ids],
+                "reason": command.reason,
+            },
+            subscriber_id=project.subscriber_id,
+        )
+        db.flush()
+        db.refresh(task)
         return task
 
     @staticmethod
@@ -3421,13 +3716,7 @@ class ProjectTasks(ListResponseMixin):
                     context=context,
                 ),
             )
-        task = db.scalar(
-            select(ProjectTask)
-            .where(ProjectTask.id == coerce_uuid(task_id))
-            .with_for_update()
-        )
-        if not task:
-            raise _project_error("not_found", "Project task not found")
+        _project, task = _lock_project_task_scope(db, coerce_uuid(task_id))
         task.is_active = False
         _stage_project_audit(
             db,

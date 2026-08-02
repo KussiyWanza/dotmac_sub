@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.models.project import (
     ProjectPriority,
     ProjectStatus,
+    ProjectTaskDependencyType,
     ProjectTaskPriority,
     ProjectTaskStatus,
     ProjectType,
@@ -265,6 +266,26 @@ class ProjectTaskUpdate(BaseModel):
         serialization_alias="metadata",
     )
     is_active: bool | None = None
+
+
+class ProjectTaskStatusTransition(BaseModel):
+    expected_status: ProjectTaskStatus
+    status: ProjectTaskStatus
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class ProjectTaskDependencyInput(BaseModel):
+    depends_on_task_id: UUID
+    dependency_type: ProjectTaskDependencyType = (
+        ProjectTaskDependencyType.finish_to_start
+    )
+    lag_days: int = Field(default=0, ge=0, le=365)
+
+
+class ProjectTaskDependenciesReplace(BaseModel):
+    expected_task_status: ProjectTaskStatus
+    dependencies: list[ProjectTaskDependencyInput] = Field(max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class ProjectTaskRead(ProjectTaskBase):
