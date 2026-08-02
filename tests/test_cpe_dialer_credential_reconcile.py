@@ -50,9 +50,48 @@ def _subscriber(db) -> Subscriber:
     return subscriber
 
 
+_SUBSCRIPTIONS: dict = {}
+
+
+def _subscription_for(db, subscriber):
+    """One subscription per subscriber, shared by credential and assignment.
+
+    The reconciler now works at exact-service grain, so a credential and an ONT
+    assignment only pair up when they name the SAME subscription. These fixtures
+    predate that -- the module created no subscriptions at all -- so this gives
+    each subscriber one and threads it through both sides without changing every
+    call site.
+    """
+    from app.models.catalog import (
+        AccessType,
+        CatalogOffer,
+        PriceBasis,
+        ServiceType,
+        Subscription,
+    )
+
+    existing = _SUBSCRIPTIONS.get(str(subscriber.id))
+    if existing is not None:
+        return existing
+    offer = CatalogOffer(
+        name=f"dialer-offer-{uuid.uuid4().hex[:8]}",
+        service_type=ServiceType.residential,
+        access_type=AccessType.fiber,
+        price_basis=PriceBasis.flat,
+    )
+    db.add(offer)
+    db.flush()
+    subscription = Subscription(subscriber_id=subscriber.id, offer_id=offer.id)
+    db.add(subscription)
+    db.flush()
+    _SUBSCRIPTIONS[str(subscriber.id)] = subscription
+    return subscription
+
+
 def _credential(db, subscriber, *, username=AUTHORITATIVE_USERNAME, secret=None):
     credential = AccessCredential(
         subscriber_id=subscriber.id,
+        subscription_id=_subscription_for(db, subscriber).id,
         username=username,
         secret_hash=encrypt_credential(
             AUTHORITATIVE_SECRET if secret is None else secret
@@ -76,6 +115,10 @@ def _assigned_ont(db, subscriber, *, serial, desired=None) -> OntUnit:
         OntAssignment(
             ont_unit_id=ont.id,
             subscriber_id=subscriber.id,
+            subscription_id=_subscription_for(db, subscriber).id,
+            # Operator-entered PPPoE intent: the only positive signal the
+            # schema carries, and the one thing that authorises a projection.
+            pppoe_username=AUTHORITATIVE_USERNAME,
             active=True,
         )
     )

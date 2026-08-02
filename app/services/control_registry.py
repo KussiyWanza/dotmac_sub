@@ -277,11 +277,19 @@ _FEATURE_CONTROLS: tuple[Control, ...] = (
         key="network.cpe_dialer_credential_sync",
         layer=Layer.feature,
         owner_module="network",
-        default=True,
-        on_missing=True,
+        # Default OFF, and off when the setting is absent. It was previously on
+        # in both cases, so an environment that had never configured it ran the
+        # projection anyway: on production that staged a PPPoE dialer onto 1,374
+        # of 1,523 ONTs, 1,373 of which belong to services whose WAN intent is
+        # routing+DHCP or bridging and therefore do not authorise ONT PPPoE at
+        # all. A control that manufactures competing dialers must be opted into,
+        # not opted out of.
+        default=False,
+        on_missing=False,
         description=(
             "Project the authoritative access credential onto each assigned "
-            "ONT's PPPoE dialer (fingerprint comparison; never writes RADIUS)."
+            "ONT's PPPoE dialer (fingerprint comparison; never writes RADIUS). "
+            "Requires explicit managed-ONT PPPoE termination intent."
         ),
     ),
     Control(
