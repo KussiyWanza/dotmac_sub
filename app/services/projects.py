@@ -196,6 +196,31 @@ class ProjectTaskReassignmentNotificationOutcome:
     unresolved_assignee_ids: tuple[UUID, ...]
 
 
+class ProjectCustomerStatusAggregate(enum_module.Enum):
+    project = "project"
+    project_task = "project_task"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCustomerStatusNotificationCommand:
+    """Typed customer consequence input for one committed status transition."""
+
+    aggregate: ProjectCustomerStatusAggregate
+    project_id: UUID
+    project_task_id: UUID | None
+    subscriber_id: UUID | None
+    previous_status: ProjectStatus | ProjectTaskStatus
+    new_status: ProjectStatus | ProjectTaskStatus
+    transition_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCustomerStatusNotificationOutcome:
+    command: ProjectCustomerStatusNotificationCommand
+    queued: bool
+    failure_recorded: bool
+
+
 def reconcile_project_projection(
     db: Session,
     *,
@@ -1037,6 +1062,140 @@ def _notify_customer_project_completed(db: Session, project: Project) -> None:
             NotificationChannel.push,
         ),
     )
+
+
+def _queue_customer_status_transition(
+    db: Session,
+    *,
+    project: Project,
+    task: ProjectTask | None,
+    command: ProjectCustomerStatusNotificationCommand,
+) -> bool:
+    """Queue the ordinary customer message for one genuine status transition."""
+
+    if command.subscriber_id is None:
+        return False
+    from app.models.notification import NotificationChannel
+    from app.services import customer_experience_communications
+
+    project_ref = project.number or str(project.id)
+    previous_label = command.previous_status.value.replace("_", " ").title()
+    new_label = command.new_status.value.replace("_", " ").title()
+    metadata: dict[str, object] = {
+        "type": command.aggregate.value,
+        "project_id": str(command.project_id),
+        "previous_status": command.previous_status.value,
+        "new_status": command.new_status.value,
+        "transition_id": str(command.transition_id),
+    }
+    if task is None:
+        event_type = "project_status_changed"
+        subject = f"Project status updated: {project.name}"
+        body = (
+            f"Your project '{project.name}' ({project_ref}) has moved from "
+            f"{previous_label} to {new_label}."
+        )
+        aggregate_id = project.id
+    else:
+        task_ref = task.number or str(task.id)
+        event_type = "project_task_status_changed"
+        subject = f"Project task status updated: {task.title}"
+        body = (
+            f"The task '{task.title}' ({task_ref}) in your project "
+            f"'{project.name}' ({project_ref}) has moved from {previous_label} "
+            f"to {new_label}."
+        )
+        aggregate_id = task.id
+        metadata["project_task_id"] = str(task.id)
+
+    customer_experience_communications.request_update(
+        db,
+        subscriber_id=command.subscriber_id,
+        event_type=event_type,
+        subject=subject,
+        body=body,
+        metadata=metadata,
+        dedupe_key=(
+            f"{command.aggregate.value}-status-transition:"
+            f"{aggregate_id}:{command.transition_id}"
+        ),
+        default_channels=(NotificationChannel.email,),
+    )
+    return True
+
+
+def _stage_customer_status_transition(
+    db: Session,
+    *,
+    project: Project,
+    task: ProjectTask | None,
+    previous_status: str,
+    new_status: str,
+    context: CommandContext,
+) -> ProjectCustomerStatusNotificationOutcome:
+    """Isolate optional delivery while retaining durable failure evidence."""
+
+    aggregate = (
+        ProjectCustomerStatusAggregate.project_task
+        if task is not None
+        else ProjectCustomerStatusAggregate.project
+    )
+    status_type = ProjectTaskStatus if task is not None else ProjectStatus
+    command = ProjectCustomerStatusNotificationCommand(
+        aggregate=aggregate,
+        project_id=project.id,
+        project_task_id=task.id if task is not None else None,
+        subscriber_id=project.subscriber_id,
+        previous_status=status_type(previous_status),
+        new_status=status_type(new_status),
+        transition_id=context.command_id,
+    )
+
+    def queue() -> bool:
+        if task is not None and new_status == ProjectTaskStatus.done.value:
+            _notify_customer_task_completed(db, project, task)
+            return project.subscriber_id is not None
+        if task is None and new_status == ProjectStatus.completed.value:
+            _notify_customer_project_completed(db, project)
+            return project.subscriber_id is not None
+        return _queue_customer_status_transition(
+            db,
+            project=project,
+            task=task,
+            command=command,
+        )
+
+    try:
+        queued = execute_owner_savepoint(db, queue)
+        return ProjectCustomerStatusNotificationOutcome(
+            command=command,
+            queued=queued,
+            failure_recorded=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - transition must remain valid
+        entity_type = aggregate.value
+        entity_id = task.id if task is not None else project.id
+        logger.error(
+            "project_customer_status_notification_failed entity_type=%s "
+            "entity_id=%s transition_id=%s error=%s",
+            entity_type,
+            entity_id,
+            context.command_id,
+            exc,
+        )
+        _stage_project_audit(
+            db,
+            context=context,
+            action="customer_status_notification_failed",
+            entity_type=entity_type,
+            entity_id=entity_id,
+            changed_fields=["customer_notification", "status"],
+        )
+        return ProjectCustomerStatusNotificationOutcome(
+            command=command,
+            queued=False,
+            failure_recorded=True,
+        )
 
 
 def _queue_customer_project_created_email(db: Session, project: Project) -> bool:
@@ -2527,7 +2686,14 @@ class Projects(ListResponseMixin):
                     "customer_name": customer_name,
                 },
             )
-            _notify_customer_project_completed(db, project)
+            _stage_customer_status_transition(
+                db,
+                project=project,
+                task=None,
+                previous_status=previous_status,
+                new_status=new_status,
+                context=context,
+            )
         elif (
             new_status == ProjectStatus.canceled.value
             and previous_status != ProjectStatus.canceled.value
@@ -2543,6 +2709,14 @@ class Projects(ListResponseMixin):
                     "to_status": new_status,
                 },
             )
+            _stage_customer_status_transition(
+                db,
+                project=project,
+                task=None,
+                previous_status=previous_status,
+                new_status=new_status,
+                context=context,
+            )
         elif changed_fields:
             # Emit generic update if status changed or other fields updated
             _emit_project_event(
@@ -2556,6 +2730,15 @@ class Projects(ListResponseMixin):
                     "changed_fields": changed_fields,
                 },
             )
+            if previous_status != new_status:
+                _stage_customer_status_transition(
+                    db,
+                    project=project,
+                    task=None,
+                    previous_status=previous_status,
+                    new_status=new_status,
+                    context=context,
+                )
 
         if "project_template_id" in data:
             new_template_id = (
@@ -3309,8 +3492,14 @@ class ProjectTasks(ListResponseMixin):
             previous_status != ProjectTaskStatus.done.value
             and task.status == ProjectTaskStatus.done.value
         ):
-            _notify_customer_task_completed(db, project, task)
-            db.flush()
+            _stage_customer_status_transition(
+                db,
+                project=project,
+                task=task,
+                previous_status=previous_status,
+                new_status=task.status,
+                context=context,
+            )
             emit_event(
                 db,
                 EventType.custom,
@@ -3324,6 +3513,15 @@ class ProjectTasks(ListResponseMixin):
                 {"name": "project_task.updated", **event_payload},
                 subscriber_id=project.subscriber_id,
             )
+            if project and previous_status != task.status:
+                _stage_customer_status_transition(
+                    db,
+                    project=project,
+                    task=task,
+                    previous_status=previous_status,
+                    new_status=task.status,
+                    context=context,
+                )
         _stage_project_audit(
             db,
             context=context,

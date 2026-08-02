@@ -35,6 +35,17 @@ def test_projects_owners_have_complete_typed_contracts() -> None:
         "project transition protocol",
         "authorized project command",
     )
+    status_change = next(
+        concern
+        for concern in lifecycle.contract.concerns
+        if concern.name
+        == "project and task status-change customer notification consequence"
+    )
+    assert status_change.input_names == (
+        "canonical project aggregate",
+        "project transition protocol",
+        "customer communication delivery intent",
+    )
     reassignment = next(
         concern
         for concern in lifecycle.contract.concerns
@@ -114,6 +125,21 @@ def test_project_creation_customer_email_is_owned_by_project_lifecycle() -> None
     assert 'event_type="project_created"' in service
     assert "default_channels=(NotificationChannel.email,)" in service
     assert 'action="creation_customer_email_failed"' in service
+
+
+def test_customer_status_notifications_are_owned_by_project_lifecycle() -> None:
+    service = (ROOT / "app/services/projects.py").read_text()
+    adapters = "\n".join(
+        (ROOT / relative).read_text()
+        for relative in ("app/api/projects.py", "app/web/admin/projects.py")
+    )
+
+    assert "class ProjectCustomerStatusNotificationCommand" in service
+    assert "def _stage_customer_status_transition(" in service
+    assert 'event_type = "project_status_changed"' in service
+    assert 'event_type = "project_task_status_changed"' in service
+    assert 'action="customer_status_notification_failed"' in service
+    assert "request_update(" not in adapters
 
 
 def test_project_ui_does_not_write_or_join_work_order_bindings() -> None:
