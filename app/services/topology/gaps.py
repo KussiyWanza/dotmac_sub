@@ -179,21 +179,29 @@ def _device_node_state(
 
 
 def _wireless_subscriber_state(
-    db: Session, subscriber_ids: set
+    db: Session, active_subs: Sequence
 ) -> dict[object, tuple[bool, bool]]:
-    """{subscriber_id: (has_node, has_node_with_existing_pop_site)} for the
+    """{subscription_id: (has_node, has_node_with_existing_pop_site)} for the
     wireless arm — the batched mirror of customer_path._active_wireless_cpe.
 
-    Per subscriber, the SAME radio the canonical resolver would pick (active
-    CPE with a parent AP, not UISP-vanished; most recently uisp-synced first,
-    id tie-break) decides the verdict. A subscriber whose selected radio's
-    parent node row is missing is omitted entirely, matching the resolver's
-    fall-through to the NAS arm.
+    Per subscription, the SAME radio the canonical resolver would pick decides
+    the verdict, with the same two exact-first tiers: a radio bound to THIS
+    subscription (``subscription_id`` match) beats any subscriber-level row;
+    the subscriber-level fallback covers legacy rows written before
+    subscription binding existed. Within each tier: active CPE with a parent
+    AP, not UISP-vanished; most recently uisp-synced first, id tie-break. A
+    subscription whose selected radio's parent node row is missing is omitted
+    entirely, matching the resolver's fall-through to the NAS arm.
     """
+    subscriber_ids = {row.subscriber_id for row in active_subs}
     if not subscriber_ids:
         return {}
     cpe_rows = db.execute(
-        select(CPEDevice.subscriber_id, CPEDevice.parent_network_device_id)
+        select(
+            CPEDevice.subscriber_id,
+            CPEDevice.subscription_id,
+            CPEDevice.parent_network_device_id,
+        )
         .where(
             CPEDevice.subscriber_id.in_(subscriber_ids),
             CPEDevice.parent_network_device_id.is_not(None),
@@ -208,10 +216,21 @@ def _wireless_subscriber_state(
             CPEDevice.id,
         )
     ).all()
-    # First row per subscriber = the radio _active_wireless_cpe would return.
-    selected_parent: dict[object, object] = {}
+    # First row per key = the radio the corresponding resolver tier returns.
+    exact_parent: dict[object, object] = {}
+    subscriber_parent: dict[object, object] = {}
     for row in cpe_rows:
-        selected_parent.setdefault(row.subscriber_id, row.parent_network_device_id)
+        if row.subscription_id is not None:
+            exact_parent.setdefault(row.subscription_id, row.parent_network_device_id)
+        subscriber_parent.setdefault(row.subscriber_id, row.parent_network_device_id)
+    if not subscriber_parent:
+        return {}
+
+    selected_parent: dict[object, object] = {}
+    for sub in active_subs:
+        node_id = exact_parent.get(sub.id, subscriber_parent.get(sub.subscriber_id))
+        if node_id is not None:
+            selected_parent[sub.id] = node_id
     if not selected_parent:
         return {}
 
@@ -231,10 +250,10 @@ def _wireless_subscriber_state(
         )
 
     state: dict[object, tuple[bool, bool]] = {}
-    for subscriber_id, node_id in selected_parent.items():
+    for subscription_id, node_id in selected_parent.items():
         if node_id not in ap_pop_by_node:
             continue  # node row gone: resolver falls through to the NAS arm
-        state[subscriber_id] = (
+        state[subscription_id] = (
             True,
             ap_pop_by_node[node_id] in existing_pop_ids,
         )
@@ -389,7 +408,7 @@ def classify_active_subscriptions(db: Session) -> list[dict]:
         )
     olt_node_state = _device_node_state(db, device_type="olt", device_ids=olt_ids)
     nas_node_state = _device_node_state(db, device_type="nas", device_ids=nas_ids)
-    wireless_state = _wireless_subscriber_state(db, subscriber_ids)
+    wireless_state = _wireless_subscriber_state(db, active_subs)
 
     classified: list[dict] = []
     for row in active_subs:
@@ -429,10 +448,10 @@ def classify_active_subscriptions(db: Session) -> list[dict]:
         medium = MEDIUM_UNKNOWN
         if selected_ont_id is not None:
             medium = MEDIUM_FIBER
-        elif row.subscriber_id in wireless_state:
+        elif row.id in wireless_state:
             medium = MEDIUM_WIRELESS
             has_access_device = True
-            has_node, has_complete_path = wireless_state[row.subscriber_id]
+            has_node, has_complete_path = wireless_state[row.id]
         else:
             # NAS arm, mirroring resolve_customer_path's live>static precedence:
             # the live-session NAS wins only when it resolves to a COMPLETE path

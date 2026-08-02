@@ -161,21 +161,12 @@ def test_a_crashing_container_raises_a_transport_error(echo_image):
         )
 
 
-def test_the_secret_env_file_is_removed_after_the_exchange(echo_image):
-    import os
-
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    before = (
-        set(Path(runtime_dir).glob("dm-runner-secret-*.env")) if runtime_dir else set()
-    )
+def test_the_secret_env_file_is_removed_after_the_exchange(echo_image, tmp_path):
     request = _execute_request("echo_me")
-    _transport().exchange(
+    PodmanTransport(runtime_dir=str(tmp_path)).exchange(
         request=request,
         image_ref=echo_image,
         secret_material={"gateway_credentials": SECRET_VALUE},
         deadline_at=request.envelope.deadline_at,
     )
-    after = (
-        set(Path(runtime_dir).glob("dm-runner-secret-*.env")) if runtime_dir else set()
-    )
-    assert after == before  # no secret file left behind
+    assert list(tmp_path.glob("dm-runner-secret-*.env")) == []

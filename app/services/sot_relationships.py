@@ -3169,6 +3169,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.customer_subledger.invalid_effect_amount",
                             "financial.customer_subledger.invalid_posting_currency",
                             "financial.customer_subledger.invalid_posting_instant",
+                            "financial.customer_subledger.idempotency_conflict",
                             "financial.customer_subledger.missing_idempotency_key",
                             "financial.customer_subledger.posting_group_already_reversed",
                             "financial.customer_subledger.posting_group_not_found",
@@ -13569,6 +13570,102 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.radio_signal",
+                module="app.services.network.radio_signal",
+                owns=("wireless radio RF signal freshness projection",),
+                depends_on=(),
+                notes=(
+                    "Read-side owner of how a stored RF observation may be "
+                    "presented: a value renders only alongside its freshness "
+                    "(fresh/stale/unavailable), and a radio UISP reports as "
+                    "disconnected/missing/vanished never renders a signal. "
+                    "The uisp_sync collector is the sole column writer "
+                    "(cpe_devices.rf_signal_*); it remains tracked as "
+                    "undeclared-writer debt in sot_writer_baseline.txt."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="wireless radio RF signal freshness projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "stored radio RF observation",
+                                "radio signal freshness policy",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="stored radio RF observation",
+                            owner="external:uisp",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "AP-side station RSSI observed by UISP NMS, "
+                                "collected by app.services.topology.uisp_sync "
+                                "into cpe_devices.rf_signal_dbm/source/"
+                                "observed_at alongside last_uisp_status"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="radio signal freshness policy",
+                            owner="network.radio_signal",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "thirty-minute freshness TTL (two sync runs) "
+                                "and the disconnected/missing/vanished "
+                                "presentation guard"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Resolves plain attributes of an already-loaded "
+                            "radio row; never queries, mutates, commits, or "
+                            "rolls back."
+                        ),
+                        locking="Pure projection; acquires no locks.",
+                        idempotency=(
+                            "The same stored observation and evaluation time "
+                            "produce the same effective signal and freshness."
+                        ),
+                        retries="Read-only resolution is safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="calling read projection adapters",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "last_mile hardcoded rf_signal=None (wireless "
+                            "link-signal rung unobservable)"
+                        ),
+                        new_owner="network.radio_signal",
+                        verification=(
+                            "Freshness, status-guard, and stale-never-gates "
+                            "tests across the resolver, diagnoser, and "
+                            "Customer 360 projection."
+                        ),
+                        cutover_gate=(
+                            "access_path and last_mile consumers resolve RF "
+                            "exclusively through this owner."
+                        ),
+                        fallback_retirement=(
+                            "No surface renders cpe_devices.rf_signal_dbm "
+                            "without the freshness projection."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/test_radio_signal.py",
+                        "tests/test_access_path_endpoint_projection.py",
+                        "tests/services/topology/test_last_mile.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.radius_sessions",
                 module="app.services.network.radius_sessions",
                 owns=(
@@ -15075,6 +15172,305 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=("network.identity",),
             ),
             SOTService(
+                name="network.ppp_delivery_authorization",
+                module="app.services.network.ppp_delivery_authorization",
+                owns=(
+                    "delivery-time PPP termination authorization",
+                    "PPP delivery action-bundle membership",
+                ),
+                depends_on=(
+                    "network.ont_assignment_identity",
+                    "network.nas_inventory",
+                ),
+                notes=(
+                    "Second, independent half of the CPE dialer containment. The "
+                    "producer decides whether to STAGE a credential; this decides "
+                    "whether a staged plan may REACH a device, and does not trust "
+                    "the producer. delivery.pending_apply, stored desired values "
+                    "and credential fingerprints are evidence that something once "
+                    "wrote desired state, never authorization to deliver it: "
+                    "production carries 1,318 ONTs with pending_apply set and PPP "
+                    "credentials staged onto 1,373 services whose termination is "
+                    "not the ONT. Intent is read from OntWanServiceInstance, which "
+                    "already expresses connection_type=pppoe, rather than "
+                    "introducing another parallel field. OntAssignment.wan_mode, "
+                    "ip_mode and pppoe_username are deliberately NOT read: "
+                    "migration 084 copied them into desired config and then set "
+                    "them NULL, so surviving values are unexplained residue. The "
+                    "whole PPP bundle is gated -- ACS credential writes, object "
+                    "create/delete, NAT, OMCI provisioning and OLT service-port "
+                    "work -- because each can establish or disturb a termination "
+                    "on its own. Unrelated ONT reconciliation is untouched. An "
+                    "absent ruling is a refusal, so the gate is not skippable by a "
+                    "caller that forgot to resolve it."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="delivery-time PPP termination authorization",
+                            role=OwnerRole.POLICY,
+                            input_names=("active ONT WAN service instances",),
+                        ),
+                        ConcernContract(
+                            name="PPP delivery action-bundle membership",
+                            role=OwnerRole.POLICY,
+                            input_names=("planned reconcile actions",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="active ONT WAN service instances",
+                            owner="network.ont_assignment_identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_wan_service_instances",
+                        ),
+                        AuthorityInput(
+                            name="planned reconcile actions",
+                            owner="network.ont_assignment_commands",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="reconcile planner Plan.actions",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Pure ruling. Reads service intent inside the "
+                            "caller's session and writes nothing; the caller "
+                            "carries the ruling into apply."
+                        ),
+                        locking="none",
+                        idempotency=(
+                            "A ruling is a function of stored intent, so the "
+                            "same inputs always yield the same decision."
+                        ),
+                        retries=(
+                            "Not retryable and not retried: a refusal is an "
+                            "answer, not a transient failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "no_pppoe_service_intent",
+                            "ambiguous_pppoe_service_intent",
+                            "bridged_service_intent",
+                            "unresolvable_ont",
+                        ),
+                        mapping_owner="app.services.network.reconcile.applier",
+                        fail_closed_on=(
+                            "no active PPPoE service instance",
+                            "more than one active PPPoE service instance",
+                            "an active bridged service instance",
+                            "an ONT identity that cannot be resolved",
+                            "an absent ruling at apply time",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.ppp_delivery_authorization",
+                        old_owner="implicit: staged desired state",
+                        verification=(
+                            "tests/test_ppp_delivery_authorization.py pins that "
+                            "the whole PPP bundle is gated, that unrelated "
+                            "reconciliation is not, and that an absent ruling "
+                            "refuses rather than passes."
+                        ),
+                        cutover_gate=(
+                            "OntWanServiceInstance gaining exact subscription_id "
+                            "ownership and a one-active-primary constraint is the "
+                            "open architecture decision; until then intent is read "
+                            "at ONT grain."
+                        ),
+                        fallback_retirement=(
+                            "The 1,318-row staged backlog is removed by a "
+                            "separately reviewed operation that recomputes "
+                            "pending_apply rather than mass-clearing it."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/test_ppp_delivery_authorization.py",
+                        "tests/test_cpe_dialer_credential_intent_gate.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="network.ont_wan_service_intent",
+                module="app.services.network.ont_wan_service_intent",
+                owns=(
+                    "declared ONT WAN service intent lifecycle",
+                    "active primary Internet termination selection",
+                ),
+                depends_on=(
+                    "network.ont_assignment_identity",
+                    "access.subscription_lifecycle",
+                    "runtime.db_sessions",
+                ),
+                notes=(
+                    "OntWanServiceInstance modelled service intent but had no "
+                    "application writer: no constructor outside tests, and 8 "
+                    "production rows against 1,523 ONTs. Rows written by nothing "
+                    "cannot authorise anything, so this owner is what makes them "
+                    "mean something. Intent is declared at EXACT service grain "
+                    "(ont_id AND subscription_id): an ONT-grain row claims the "
+                    "device may terminate PPP, which is not the claim that a "
+                    "given SERVICE terminates there, and a delivery ruling built "
+                    "on the weaker claim can hand one service's credential to "
+                    "another. lifecycle_state is the single authority -- "
+                    "planned/unverified do not authorise, and is_active is "
+                    "derived and maintained only here. is_primary selects; "
+                    "priority orders and never selects authority. One active "
+                    "primary Internet instance per subscription and per ONT, "
+                    "enforced by the commands because the partial unique indexes "
+                    "land only after inventory, backfill and verification. Every "
+                    "pre-existing row starts unverified and non-authorising. "
+                    "Retirement preserves history: assignment release, service "
+                    "movement, cancellation and return-to-inventory retire "
+                    "through this owner instead of deleting service-instance "
+                    "rows, because that record is the evidence a later "
+                    "adjudication depends on."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="declared ONT WAN service intent lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "exact ONT and subscription identity",
+                                "declared service and connection type",
+                            ),
+                            canonical_writer="network.ont_wan_service_intent",
+                        ),
+                        ConcernContract(
+                            name="active primary Internet termination selection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("declared WAN service intent records",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="exact ONT and subscription identity",
+                            owner="network.ont_assignment_identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_units, subscriptions",
+                        ),
+                        AuthorityInput(
+                            name="declared service and connection type",
+                            owner="network.ont_wan_service_intent",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="operator declaration with work-order evidence",
+                        ),
+                        AuthorityInput(
+                            name="declared WAN service intent records",
+                            owner="network.ont_wan_service_intent",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="ont_wan_service_instances",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each command enters execute_owner_command once on a "
+                            "transaction-free session. Replace retires and "
+                            "activates inside one owned transaction, so a failure "
+                            "leaves neither half applied."
+                        ),
+                        locking=(
+                            "Primary-invariant checks read active rows within the "
+                            "owned transaction; the partial unique indexes that "
+                            "will make this structural land after backfill."
+                        ),
+                        idempotency=(
+                            "Retiring an already-retired intent is a no-op that "
+                            "returns the existing revision. Activation accepts an "
+                            "expected revision and refuses on conflict."
+                        ),
+                        retries=(
+                            "No automatic retry. A duplicate-primary refusal is an "
+                            "ownership answer, not a transient failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.ont_wan_service_intent.active_caller_transaction",
+                            "network.ont_wan_service_intent.command_contract_violation",
+                            "network.ont_wan_service_intent.invalid_command_context",
+                            "network.ont_wan_service_intent.nested_owner_command",
+                            (
+                                "network.ont_wan_service_intent."
+                                "nested_transaction_completion"
+                            ),
+                            "wan_intent_missing_subscription",
+                            "wan_intent_missing_ont",
+                            "wan_intent_missing_evidence",
+                            "wan_intent_instance_not_found",
+                            "wan_intent_already_retired",
+                            "wan_intent_duplicate_primary_subscription",
+                            "wan_intent_duplicate_primary_ont",
+                            "wan_intent_revision_conflict",
+                        ),
+                        mapping_owner="app.services.network.ont_wan_service_intent",
+                        fail_closed_on=(
+                            "an intent with no subscription",
+                            "a service that already has an active primary",
+                            "an ONT already carrying another service's primary",
+                            "a revision that moved since the caller read it",
+                            "a transition with no actor or reason",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "ont_wan_service_intent.declared.v1",
+                            "ont_wan_service_intent.activated.v1",
+                            "ont_wan_service_intent.retired.v1",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries ONT, subscription, service and "
+                            "connection type, primary flag, lifecycle state, "
+                            "revision, actor, reason and evidence reference. It "
+                            "never carries PPPoE credentials."
+                        ),
+                        replay=(
+                            "Transitions are replayable as history, never as "
+                            "commands: replaying an activation would re-assert an "
+                            "ownership decision whose preconditions have moved."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.ont_wan_service_intent",
+                        old_owner="unwritten OntWanServiceInstance rows",
+                        verification=(
+                            "tests/test_ont_wan_service_intent.py pins that "
+                            "declaring does not authorise, that intent is scoped "
+                            "to a service rather than a device, that priority "
+                            "never selects authority, and that retirement "
+                            "preserves the row."
+                        ),
+                        cutover_gate=(
+                            "Partial unique indexes on active primary per "
+                            "subscription and per ONT, added after inventory, "
+                            "backfill and verification of the pre-owner rows."
+                        ),
+                        fallback_retirement=(
+                            "is_active remains readable but derived; it is "
+                            "retired once every reader consults lifecycle_state."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=(
+                        "docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ont_wan_service_intent.py",
+                        "tests/test_return_to_inventory.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.nas_local_secret_boundary",
                 module="app.services.nas.local_secret_policy",
                 owns=(
@@ -15298,10 +15694,185 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="network.outage_impact",
                 module="app.services.network.outage_impact",
-                owns=("affected-customer impact", "outage scope impact"),
+                owns=(
+                    "affected-customer impact",
+                    "outage scope impact",
+                    "tokenized cabinet audience membership",
+                ),
                 depends_on=(
                     "network.access_path",
                     "network.forwarding_topology",
+                ),
+                notes=(
+                    "resolve_fdh_audience projects the exact subscription "
+                    "membership behind one FDH plus an order-independent "
+                    "membership token; consumers (network.cabinet_notice) "
+                    "compare that token between preview and execution instead "
+                    "of trusting a snapshot."
+                ),
+            ),
+            SOTService(
+                name="network.cabinet_notice",
+                module="app.services.network.cabinet_notice",
+                owns=(
+                    "operator-initiated cabinet service notices",
+                    "cabinet notice recipient preview and drift protection",
+                ),
+                depends_on=(
+                    "network.outage_impact",
+                    "communications.customer_policy",
+                    "communications.intents",
+                ),
+                notes=(
+                    "Service (transactional) communication, deliberately NOT a "
+                    "campaign: campaigns hard-filter on marketing consent and would "
+                    "silently drop most of a cabinet from an outage notice. One "
+                    "deduplicated email per distinct customer via a durable "
+                    "communication-intent dedupe key; preview binds membership "
+                    "(scope token) and content + per-recipient dispositions "
+                    "(impact token), and execution refuses on drift."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="operator-initiated cabinet service notices",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "tokenized cabinet audience",
+                                "customer notification policy decisions",
+                                "operator notice command",
+                            ),
+                            canonical_writer="network.cabinet_notice",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "cabinet notice recipient preview and drift protection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "tokenized cabinet audience",
+                                "customer notification policy decisions",
+                                "operator notice command",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="tokenized cabinet audience",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "resolve_fdh_audience: exact active "
+                                "subscriptions behind the FDH plus the "
+                                "order-independent membership scope token"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer notification policy decisions",
+                            owner="communications.customer_policy",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "cohort policy evaluation for channel=email, "
+                                "category=service: channel configuration, "
+                                "account status, preferences, durable "
+                                "suppression ledger, dedupe window"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="operator notice command",
+                            owner="network.cabinet_notice",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed draft (subject/body, CRLF-normalized) "
+                                "plus explicit confirmation restating the "
+                                "previewed eligible count, scope token, and "
+                                "impact token"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Preview is read-only. Send owns its commit: the "
+                            "intents, the dispatch event, and the audit trail "
+                            "land atomically in the command or not at all; "
+                            "the admin web adapter never commits."
+                        ),
+                        locking=(
+                            "No mutation locks of its own; per-customer "
+                            "dedupe keys make concurrent confirms converge on "
+                            "one intent per customer per content."
+                        ),
+                        idempotency=(
+                            "Identical content to the same cabinet and "
+                            "customer is a durable no-op via the "
+                            "communication-intent dedupe key; edited content "
+                            "is a new key and requires a fresh preview."
+                        ),
+                        retries=(
+                            "A retried or double-submitted confirm re-runs "
+                            "the drift check and dedupe-key short-circuit; it "
+                            "never queues a second email for the same "
+                            "cabinet, customer, and content."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "cabinet_notice.validation_error",
+                            "cabinet_notice.membership_drift",
+                            *owner_command_boundary_error_codes(
+                                "network.cabinet_notice"
+                            ),
+                        ),
+                        mapping_owner=(
+                            "admin web adapter (validation -> 400, drift -> "
+                            "409 with a refreshed preview)"
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("cabinet_notice.dispatched",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Operational breadcrumb (fdh, scope token, "
+                            "queued/deduplicated/suppressed counts, actor); "
+                            "customer emails are queued directly through "
+                            "communication intents, never via this event."
+                        ),
+                        replay=(
+                            "Re-dispatching an already-sent notice queues "
+                            "nothing (dedupe keys) and emits a new event "
+                            "whose counts show zero queued."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "none — manual cabinet outages had no customer "
+                            "communication path (the outage-impact page was "
+                            "preview-only and the classifier dispatcher is "
+                            "incident-bound)"
+                        ),
+                        new_owner="network.cabinet_notice",
+                        verification=(
+                            "Membership/content drift 409 tests, marketing-"
+                            "unsubscribed-still-eligible regression pin, "
+                            "per-customer dedupe and idempotent re-send "
+                            "tests, adapter permission and commit tests."
+                        ),
+                        cutover_gate=(
+                            "The cabinet detail and outage-impact pages link "
+                            "only to this console for messaging cabinet "
+                            "audiences."
+                        ),
+                        fallback_retirement=(
+                            "No campaign segment or ad hoc email path targets "
+                            "cabinet audiences."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=("tests/test_cabinet_notice.py",),
                 ),
             ),
             SOTService(
@@ -22007,7 +22578,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "Project and ProjectTask identity and lifecycle",
                     "project creation customer email consequence",
+                    "project and task status-change customer notification consequence",
                     "project and task allowed status transitions",
+                    "project-task relationship integrity and completion readiness",
                     "project and task assignment and scheduling",
                     "project manager assistant manager service-team and task-assignee changes",
                     "existing project-task reassignment email consequence",
@@ -22050,11 +22623,29 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         ConcernContract(
+                            name="project and task status-change customer notification consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "project transition protocol",
+                                "customer communication delivery intent",
+                            ),
+                        ),
+                        ConcernContract(
                             name="project and task allowed status transitions",
                             role=OwnerRole.POLICY,
                             input_names=(
                                 "canonical project aggregate",
                                 "project transition protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="project-task relationship integrity and completion readiness",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "project transition protocol",
+                                "authorized project command",
                             ),
                         ),
                         ConcernContract(
@@ -22206,6 +22797,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "project_task.created",
                             "project_task.updated",
                             "project_task.completed",
+                            "project_task.dependencies_replaced",
                             "project.assignment_changed",
                         ),
                         schema_version=1,

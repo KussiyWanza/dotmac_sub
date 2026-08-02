@@ -29,6 +29,7 @@ from app.services.sot_manifest import (
 ResultT = TypeVar("ResultT")
 
 _ACTIVE_COMMAND_KEY = "_dotmac_active_owner_command"
+_ACTIVE_COMMAND_CONTEXT_KEY = "_dotmac_active_owner_command_context"
 _BOUNDARY_COMMIT_KEY = "_dotmac_owner_boundary_commit"
 _HELPER_ROLLBACK_KEY = "_dotmac_owner_helper_rollback"
 _AUTHORIZED_SAVEPOINT_KEY = "_dotmac_authorized_owner_savepoint"
@@ -306,6 +307,24 @@ def execute_owner_savepoint(
         db.info.pop(_AUTHORIZED_SAVEPOINT_KEY, None)
 
 
+def current_command_context(db: Session) -> CommandContext:
+    """Return the active owner command's context for participant provenance.
+
+    Participants staging typed records inside a host command (e.g. subledger
+    posting groups) inherit the command identity from here instead of
+    threading context through every call frame. Fails closed outside a
+    command.
+    """
+
+    context = db.info.get(_ACTIVE_COMMAND_CONTEXT_KEY)
+    if context is None:
+        raise OwnerCommandError(
+            code="owner_command.no_active_context",
+            message="No active owner command context on this session.",
+        )
+    return context
+
+
 def owner_command_active(db: Session, *, owner: str | None = None) -> bool:
     """Return whether ``db`` is inside the requested public owner command.
 
@@ -365,6 +384,7 @@ def execute_owner_command(
     )
     transaction = db.begin()
     db.info[_ACTIVE_COMMAND_KEY] = definition
+    db.info[_ACTIVE_COMMAND_CONTEXT_KEY] = context
     try:
         result = operation()
         if db.info.get(_HELPER_ROLLBACK_KEY):
@@ -404,3 +424,4 @@ def execute_owner_command(
         db.info.pop(_HELPER_ROLLBACK_KEY, None)
         db.info.pop(_AUTHORIZED_SAVEPOINT_KEY, None)
         db.info.pop(_ACTIVE_COMMAND_KEY, None)
+        db.info.pop(_ACTIVE_COMMAND_CONTEXT_KEY, None)

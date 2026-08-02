@@ -330,6 +330,28 @@ def test_adjustment_reversal_is_previewed_idempotent_and_structurally_linked(
     assert replay.ledger_entry.id == result.ledger_entry.id
     assert replay.preview.prepaid_funding_before == Decimal("2500.00")
     assert replay.preview.prepaid_funding_after == Decimal("5000.00")
+    # ADR 0007 Phase 3 forward-shadow: the confirmed adjustment staged one
+    # posting group and the reversal negated + linked exactly that group.
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        PostingCommandKind,
+    )
+
+    shadow_groups = (
+        db_session.query(CustomerPostingGroup)
+        .filter(CustomerPostingGroup.producer_owner == "financial.account_adjustments")
+        .all()
+    )
+    originals = [
+        g for g in shadow_groups if g.command_kind is PostingCommandKind.adjustment
+    ]
+    reversals = [
+        g for g in shadow_groups if g.command_kind is PostingCommandKind.reversal
+    ]
+    linked = [g for g in reversals if g.reverses_group_id is not None]
+    assert len(originals) >= 1
+    assert len(linked) == 1
+    assert linked[0].reverses_group_id in {g.id for g in originals}
     assert (
         db_session.query(AuditEvent)
         .filter(

@@ -31,7 +31,7 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["454_clear_non_identifying_ont_macs"]
+    assert script.get_heads() == ["456_ont_wan_service_intent_owner"]
     assert (
         script.get_revision("446_ont_commissioning_intents").down_revision
         == "445_social_comment_channels"

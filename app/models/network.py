@@ -392,6 +392,18 @@ class CPEDevice(Base):
     # Last UISP overview.status: active/disconnected/unauthorized (or
     # 'vanished' when the device disappeared from UISP).
     last_uisp_status: Mapped[str | None] = mapped_column(String(20))
+    # Current-value RF observation from the AP-side station listing.
+    # uisp_sync is the sole writer: set while the station is associated,
+    # cleared when it disconnects or vanishes. ``rf_signal_observed_at`` is the
+    # sync-run timestamp (consistent with uisp_synced_at), not a UISP payload
+    # time. No history is kept here — ont_signal_observations is the precedent
+    # if a trend table is ever needed. Readers derive freshness via
+    # app.services.network.radio_signal.resolve_effective_radio_signal.
+    rf_signal_dbm: Mapped[float | None] = mapped_column(Float)
+    rf_signal_source: Mapped[str | None] = mapped_column(String(32))
+    rf_signal_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -3552,6 +3564,24 @@ class OntProfileWanService(Base):
     profile = relationship("OntProvisioningProfile", back_populates="wan_services")
 
 
+class OntWanServiceLifecycle(enum.Enum):
+    """Lifecycle of a declared WAN service intent.
+
+    ``planned`` and ``unverified`` are NOT authority. A row only authorises
+    delivery once an owner command has moved it to ``active`` on evidence, and
+    ``retired`` preserves history rather than deleting it.
+
+    Existing rows begin at ``unverified`` regardless of ``is_active``: before
+    this owner existed nothing maintained the table, so a pre-existing row
+    records that something once wrote a value, not that anyone declared intent.
+    """
+
+    planned = "planned"
+    unverified = "unverified"
+    active = "active"
+    retired = "retired"
+
+
 class OntWanServiceInstance(Base):
     """Per-ONT WAN service instance with resolved credentials and VLANs.
 
@@ -3585,6 +3615,49 @@ class OntWanServiceInstance(Base):
         nullable=False,
         index=True,
     )
+    # Exact service grain. An ONT-grain intent row authorises "this device may
+    # terminate PPP", which is not the same claim as "this SERVICE terminates
+    # here" -- and a delivery ruling built on the weaker claim can hand one
+    # service's credential to another.
+    subscription_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscriptions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    # The one instance that carries the service's primary Internet termination.
+    # ``priority`` may ORDER instances; it must never select authority, because
+    # ordering is a display concern and authority is an ownership decision.
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    lifecycle_state: Mapped[OntWanServiceLifecycle] = mapped_column(
+        Enum(
+            OntWanServiceLifecycle,
+            name="ontwanservicelifecycle",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        server_default=OntWanServiceLifecycle.unverified.value,
+        default=OntWanServiceLifecycle.unverified,
+        index=True,
+    )
+    # Monotonic per-row revision. A delivery ruling binds it, so a ruling taken
+    # before a replace cannot authorise a write after it.
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1"), default=1
+    )
+    # Provenance for every lifecycle transition.
+    declared_by: Mapped[str | None] = mapped_column(String(160))
+    declared_reason: Mapped[str | None] = mapped_column(Text)
+    evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_reason: Mapped[str | None] = mapped_column(Text)
+    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ont_wan_service_instances.id", ondelete="SET NULL"),
+    )
     source_profile_service_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("ont_profile_wan_services.id", ondelete="SET NULL"),
@@ -3599,6 +3672,11 @@ class OntWanServiceInstance(Base):
     )
     name: Mapped[str | None] = mapped_column(String(120))
     priority: Mapped[int] = mapped_column(Integer, default=1)
+    # DERIVED from lifecycle_state, not a second authority. Retained so
+    # existing readers keep working during the migration; the owner keeps it
+    # in step with lifecycle_state and nothing else may set it. A row can be
+    # is_active=True and still non-authorising, which is exactly the state
+    # every pre-existing row starts in.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # L2: VLAN configuration (resolved at instantiation)

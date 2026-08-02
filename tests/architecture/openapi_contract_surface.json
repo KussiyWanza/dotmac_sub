@@ -16768,6 +16768,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "POST /api/v1/project-tasks/{task_id}/transition": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:task_id!"
+   ],
+   "request": "7fbec7fae563",
+   "responses": {
+    "200": "79d56547607e",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "POST /api/v1/projects": {
    "params": [
     "header:authorization",
@@ -18328,6 +18340,18 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "PUT /api/v1/project-tasks/{task_id}/dependencies": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "path:task_id!"
+   ],
+   "request": "e134e982c351",
+   "responses": {
+    "200": "79d56547607e",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "PUT /api/v1/settings/audit/{key}": {
    "params": [
     "header:authorization",
@@ -19594,9 +19618,13 @@
   "ProjectStageState": "acffacb745a6",
   "ProjectStatus": "39abcda05ebd",
   "ProjectTaskCreate": "7a6ea56e5293",
+  "ProjectTaskDependenciesReplace": "55694b3fb853",
+  "ProjectTaskDependencyInput": "3514e0577001",
+  "ProjectTaskDependencyType": "a6d396625734",
   "ProjectTaskPriority": "d00b9c84024a",
   "ProjectTaskRead": "444ab8fc494d",
   "ProjectTaskStatus": "07b9f5d6fe08",
+  "ProjectTaskStatusTransition": "62828b3ad076",
   "ProjectTaskUpdate": "be5ae31b8297",
   "ProjectType": "a29853f91876",
   "ProjectUpdate": "c8ada8baddbd",

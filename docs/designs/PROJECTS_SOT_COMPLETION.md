@@ -20,6 +20,20 @@ Projects without a linked Subscriber do not request an email. Queue failure is
 isolated in the approved owner savepoint and recorded as durable Project audit
 evidence without rolling back Project creation.
 
+Every genuine Project or ProjectTask status transition for a subscriber-linked
+Project requests one customer communication intent from the lifecycle owner.
+The typed consequence carries the native aggregate identifiers, exact previous
+and new status enums, Subscriber identity, and lifecycle command identifier.
+Ordinary transitions default to email and identify both statuses. Completion
+transitions retain their existing milestone-specific messages and suppress the
+ordinary message, so one transition never produces both notification shapes.
+Non-status edits and Projects without a Subscriber request no status message.
+The lifecycle command identifier scopes deduplication so a retry cannot create a
+duplicate while a later legitimate transition over the same status pair remains
+deliverable. Queue failure rolls back only the optional participant savepoint;
+the transition remains authoritative and the owner records durable
+`customer_status_notification_failed` audit evidence.
+
 When an existing task gains an assignee through the lifecycle update command,
 the owner queues one email for each newly added active staff member whose
 assignment identifier resolves to either their `SystemUser` or canonical Person
@@ -99,3 +113,20 @@ same transaction as authoritative state. Events are delivered after commit by
 the durable dispatcher. Retryable database concurrency failures retry the whole
 command; validation, authorization, stale evidence, relationship ambiguity, and
 idempotency conflicts do not.
+
+ProjectTask relationship integrity is enforced only by
+`operations.project_lifecycle`. Task mutations first observe the native task
+scope, lock the authoritative Project, then lock and revalidate the task. An
+archived Project or task fails closed. Parent and dependency targets must be
+active, distinct tasks in the same native Project; parent chains and dependency
+graphs cannot contain cycles. Moving a task between Projects is not a generic
+edit and requires a separately designed transfer command.
+
+Status transitions use a typed command containing the expected status,
+requested status, actor context, and business reason. Stale expected status is
+rejected. Generic task update rejects status writes, and admin/API status
+adapters delegate to the typed transition command. A task cannot transition to
+`done` while any authoritative dependency
+is inactive or not itself `done`. Dependency replacement is atomic, replaces
+the full reviewed set, records audit evidence, and emits
+`project_task.dependencies_replaced` in the same owner transaction.

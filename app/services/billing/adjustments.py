@@ -842,6 +842,7 @@ def _stage_confirmation(
         prepaid_funding_after=preview.prepaid_funding_after,
         access_consequence=preview.access_consequence,
     )
+    _stage_adjustment_posting(db, adjustment, preview)
     return AccountAdjustmentResult(
         adjustment=adjustment,
         ledger_entry=entry,
@@ -1071,10 +1072,69 @@ def _stage_reversal(
         prepaid_funding_after=preview.prepaid_funding_after,
         access_consequence=preview.access_consequence,
     )
+    _stage_adjustment_reversal_posting(db, adjustment, reversal)
     return AccountAdjustmentReversalResult(
         adjustment=adjustment,
         ledger_entry=reversal,
         preview=preview,
+    )
+
+
+def _stage_adjustment_reversal_posting(db: Session, adjustment, reversal) -> None:
+    """Link the shadow reversal to the original adjustment posting group.
+
+    A true reversal negates and links one complete original group. When the
+    original adjustment predates the forward-shadow (no group exists),
+    nothing is staged — the verifier owns the gap rather than inventing
+    history.
+    """
+    from app.services.owner_commands import (
+        current_command_context,
+        owner_command_active,
+    )
+
+    if not owner_command_active(db):
+        return
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        StageReversalCommand,
+        stage_reversal,
+    )
+
+    original = (
+        db.execute(
+            select(CustomerPostingGroup).where(
+                CustomerPostingGroup.source_kind
+                == PostingSourceKind.account_adjustment.value,
+                CustomerPostingGroup.source_id == adjustment.id,
+                CustomerPostingGroup.command_kind != PostingCommandKind.reversal,
+                CustomerPostingGroup.reverses_group_id.is_(None),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if original is None:
+        return
+    occurred = adjustment.reversed_at or datetime.now(UTC)
+    stage_reversal(
+        db,
+        StageReversalCommand(
+            original_group_id=original.id,
+            producer_owner=PostingProducer.account_adjustments,
+            source_kind=PostingSourceKind.ledger_entry,
+            source_id=reversal.id,
+            occurred_at=(
+                occurred.replace(tzinfo=UTC) if occurred.tzinfo is None else occurred
+            ),
+            idempotency_key=f"posting:adjustment_reversal:{reversal.id}",
+        ),
+        context=current_command_context(db),
     )
 
 
@@ -1119,3 +1179,55 @@ __all__ = [
     "stage_account_adjustment",
     "stage_system_account_adjustment",
 ]
+
+
+def _stage_adjustment_posting(db: Session, adjustment, preview) -> None:
+    """One shadow posting group per confirmed adjustment (ADR 0007 Ph. 3).
+
+    Renewals-driven system adjustments run without an owner command today
+    and skip: that gap is the verifier's producer_not_owner_wrapped debt.
+    """
+    from app.services.owner_commands import (
+        current_command_context,
+        owner_command_active,
+    )
+
+    if not owner_command_active(db):
+        return
+    from decimal import Decimal as _Decimal
+
+    from app.models.customer_subledger import (
+        PositionEffectKind,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        EffectInput,
+        StagePostingGroupCommand,
+        stage_posting_group,
+    )
+
+    effective = adjustment.created_at
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=adjustment.account_id,
+            currency=preview.currency,
+            command_kind=PostingCommandKind.adjustment,
+            producer_owner=PostingProducer.account_adjustments,
+            source_kind=PostingSourceKind.account_adjustment,
+            source_id=adjustment.id,
+            occurred_at=(
+                effective.replace(tzinfo=UTC) if effective.tzinfo is None else effective
+            ),
+            effects=(
+                EffectInput(
+                    effect=PositionEffectKind.adjustment_applied,
+                    amount=abs(_Decimal(str(preview.amount))),
+                ),
+            ),
+            idempotency_key=f"posting:account_adjustment:{adjustment.id}",
+        ),
+        context=current_command_context(db),
+    )

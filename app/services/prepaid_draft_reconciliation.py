@@ -847,7 +847,62 @@ def _stage_opening_funding_consumption(
     )
     db.add(consumption)
     db.flush()
+    _stage_consumption_posting(db, consumption)
     return consumption
+
+
+def _stage_consumption_posting(db: Session, consumption) -> None:
+    """One shadow posting group per opening-funding consumption.
+
+    Staged at the deciding owner root inside its own command; the
+    renewals-driven participant path carries no owner command and skips —
+    the verifier owns that gap (producer_not_owner_wrapped), never this
+    seam.
+    """
+    from app.services.owner_commands import (
+        current_command_context,
+        owner_command_active,
+    )
+
+    if not owner_command_active(db):
+        return
+    from app.models.customer_subledger import (
+        PositionEffectKind,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        EffectInput,
+        StagePostingGroupCommand,
+        stage_posting_group,
+    )
+
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=consumption.account_id,
+            currency=consumption.currency,
+            command_kind=PostingCommandKind.prepaid_consumption,
+            producer_owner=PostingProducer.prepaid_draft_reconciliation,
+            source_kind=PostingSourceKind.prepaid_opening_funding_consumption,
+            source_id=consumption.id,
+            occurred_at=(
+                consumption.consumed_at.replace(tzinfo=UTC)
+                if consumption.consumed_at.tzinfo is None
+                else consumption.consumed_at
+            ),
+            effects=(
+                EffectInput(
+                    effect=PositionEffectKind.prepaid_funding_consumed,
+                    amount=Decimal(str(consumption.amount)),
+                    invoice_id=consumption.invoice_id,
+                ),
+            ),
+            idempotency_key=(f"posting:prepaid_opening_consumption:{consumption.id}"),
+        ),
+        context=current_command_context(db),
+    )
 
 
 def _exception_alert_fingerprint(invoice_id: UUID) -> str:

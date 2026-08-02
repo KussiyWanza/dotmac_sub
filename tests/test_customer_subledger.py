@@ -14,7 +14,10 @@ from app.services.billing.customer_subledger import (
     EffectInput,
     PositionEffectKind,
     PostingCommandKind,
+    PostingProducer,
+    PostingSourceKind,
     StagePostingGroupCommand,
+    StageReversalCommand,
     resolve_position,
     stage_posting_group,
     stage_reversal,
@@ -54,14 +57,22 @@ def _in_owner_command(db, operation):
     )
 
 
-def _stage(db, account_id, *, effects, key=None, kind=PostingCommandKind.adjustment):
+def _stage(
+    db,
+    account_id,
+    *,
+    effects,
+    key=None,
+    kind=PostingCommandKind.adjustment,
+    source_id=None,
+):
     command = StagePostingGroupCommand(
         account_id=account_id,
         currency="NGN",
         command_kind=kind,
-        producer_owner="pytest.owner",
-        source_kind="pytest_source",
-        source_id=uuid4(),
+        producer_owner=PostingProducer.account_adjustments,
+        source_kind=PostingSourceKind.account_adjustment,
+        source_id=source_id if source_id is not None else uuid4(),
         occurred_at=OCCURRED,
         effects=effects,
     )
@@ -83,8 +94,8 @@ def test_staging_outside_an_owner_command_fails_closed(db_session, account_id):
         account_id=account_id,
         currency="NGN",
         command_kind=PostingCommandKind.adjustment,
-        producer_owner="pytest.owner",
-        source_kind="pytest_source",
+        producer_owner=PostingProducer.account_adjustments,
+        source_kind=PostingSourceKind.account_adjustment,
         source_id=uuid4(),
         occurred_at=OCCURRED,
         effects=(),
@@ -105,11 +116,48 @@ def test_one_posting_group_per_idempotent_business_result(db_session, account_id
         ),
     )
 
-    first = _stage(db_session, account_id, effects=effects, key="pytest:same")
-    second = _stage(db_session, account_id, effects=effects, key="pytest:same")
+    source = uuid4()
+    first = _stage(
+        db_session, account_id, effects=effects, key="pytest:same", source_id=source
+    )
+    second = _stage(
+        db_session, account_id, effects=effects, key="pytest:same", source_id=source
+    )
 
     assert second.id == first.id
     assert len(second.effects) == 1
+
+
+def test_replayed_key_with_different_meaning_is_a_conflict(db_session, account_id):
+    effects = (
+        EffectInput(
+            effect=PositionEffectKind.receivable_issued, amount=Decimal("5000.00")
+        ),
+    )
+    source = uuid4()
+    _stage(
+        db_session,
+        account_id,
+        effects=effects,
+        key="pytest:conflict",
+        source_id=source,
+    )
+    db_session.commit()
+
+    changed = (
+        EffectInput(
+            effect=PositionEffectKind.receivable_issued, amount=Decimal("7500.00")
+        ),
+    )
+    with pytest.raises(CustomerSubledgerError) as excinfo:
+        _stage(
+            db_session,
+            account_id,
+            effects=changed,
+            key="pytest:conflict",
+            source_id=source,
+        )
+    assert excinfo.value.code == ("financial.customer_subledger.idempotency_conflict")
 
 
 def test_positions_are_per_currency_and_semantic_lane(db_session, account_id):
@@ -250,9 +298,14 @@ def test_reversal_negates_the_original_and_chains_once(db_session, account_id):
         db_session,
         lambda: stage_reversal(
             db_session,
-            group_id=group_id,
+            StageReversalCommand(
+                original_group_id=group_id,
+                producer_owner=PostingProducer.account_adjustments,
+                source_kind=PostingSourceKind.account_adjustment,
+                source_id=uuid4(),
+                occurred_at=OCCURRED,
+            ),
             context=reversal_context,
-            occurred_at=OCCURRED,
         ),
     )
 
@@ -273,9 +326,14 @@ def test_reversal_negates_the_original_and_chains_once(db_session, account_id):
             db_session,
             lambda: stage_reversal(
                 db_session,
-                group_id=group_id,
+                StageReversalCommand(
+                    original_group_id=group_id,
+                    producer_owner=PostingProducer.account_adjustments,
+                    source_kind=PostingSourceKind.account_adjustment,
+                    source_id=uuid4(),
+                    occurred_at=OCCURRED,
+                ),
                 context=second_context,
-                occurred_at=OCCURRED,
             ),
         )
 

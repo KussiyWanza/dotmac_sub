@@ -1477,6 +1477,7 @@ def update_task_from_form(
     db: Session, *, request, task_id: str, actor_id: str | None, **form
 ) -> ProjectTask:
     data = _task_payload_data(**form)
+    data.pop("status", None)
     payload = ProjectTaskUpdate.model_validate(data)
     return projects_service.project_tasks.update(
         db,
@@ -1489,13 +1490,20 @@ def update_task_from_form(
 def quick_update_task_status(
     db: Session, *, request, task_id: str, actor_id: str | None, status: str
 ) -> ProjectTask:
+    task = projects_service.project_tasks.get(db, task_id)
     try:
-        payload = ProjectTaskUpdate.model_validate(
-            {"status": str(status or "").strip()}
+        from app.schemas.project import ProjectTaskStatusTransition
+
+        payload = ProjectTaskStatusTransition.model_validate(
+            {
+                "expected_status": task.status,
+                "status": str(status or "").strip(),
+                "reason": "admin quick status transition",
+            }
         )
     except ValidationError as exc:
         raise _projection_error("invalid_filter", "Invalid status") from exc
-    return projects_service.project_tasks.update(
+    return projects_service.project_tasks.transition_status(
         db,
         task_id,
         payload,

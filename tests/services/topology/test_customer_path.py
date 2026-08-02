@@ -596,3 +596,111 @@ def test_multiple_radios_pick_most_recently_synced(
 
     assert path.radio.id == newer.id
     assert path.node.id == ap_new.id
+
+
+# --- Subscription-first radio resolution (exact beats subscriber-level) ----
+
+
+def test_subscription_bound_radio_beats_newer_sibling_bound_radio(
+    db_session, subscriber, subscription, catalog_offer
+):
+    from datetime import UTC, datetime
+
+    from app.models.catalog import Subscription, SubscriptionStatus
+
+    pop = PopSite(name="Exact Site", zabbix_group_id="30")
+    db_session.add(pop)
+    db_session.flush()
+    ap_mine = _ap_node(db_session, "AP-Mine", pop_site_id=pop.id)
+    ap_sibling = _ap_node(db_session, "AP-Sibling", pop_site_id=pop.id)
+
+    sibling_sub = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=catalog_offer.id,
+        status=SubscriptionStatus.active,
+    )
+    db_session.add(sibling_sub)
+    db_session.flush()
+
+    # The sibling's radio synced LATER — recency must not beat exactness.
+    mine = _cpe(
+        db_session,
+        subscriber.id,
+        ap_mine.id,
+        synced_at=datetime(2026, 6, 1, tzinfo=UTC),
+        subscription_id=subscription.id,
+    )
+    _cpe(
+        db_session,
+        subscriber.id,
+        ap_sibling.id,
+        synced_at=datetime(2026, 7, 1, tzinfo=UTC),
+        subscription_id=sibling_sub.id,
+    )
+
+    path = resolve_customer_path(db_session, subscription)
+
+    assert path.radio.id == mine.id
+    assert path.node.id == ap_mine.id
+    assert path.radio_resolution == "subscription"
+
+
+def test_legacy_subscriber_level_radio_still_resolves(
+    db_session, subscriber, subscription
+):
+    # Rows written before subscription binding existed (subscription_id NULL)
+    # keep resolving through the subscriber-level fallback tier.
+    ap = _ap_node(db_session, "AP-Legacy")
+    cpe = _cpe(db_session, subscriber.id, ap.id)
+
+    path = resolve_customer_path(db_session, subscription)
+
+    assert path.radio.id == cpe.id
+    assert path.radio_resolution == "subscriber_legacy"
+
+
+def test_unparented_radio_is_surfaced_for_ap_unresolved_display(
+    db_session, subscriber, subscription
+):
+    from app.models.network import CPEDevice, DeviceType
+
+    orphan = CPEDevice(
+        subscriber_id=subscriber.id,
+        device_type=DeviceType.wireless_radio,
+        last_uisp_status="active",
+    )
+    db_session.add(orphan)
+    db_session.flush()
+
+    path = resolve_customer_path(db_session, subscription)
+
+    assert path.radio is None
+    assert path.unparented_radio is not None
+    assert path.unparented_radio.id == orphan.id
+    assert path.gap is not None  # no access device resolved
+
+
+def test_unparented_radio_survives_nas_fallback(db_session, subscriber, subscription):
+    # The NAS arm builds its own CustomerPath; the unparented-radio marker
+    # must survive onto the returned path so the card can still say
+    # "AP unresolved" next to the coarse NAS endpoint.
+    from app.models.network import CPEDevice, DeviceType
+
+    nas = NasDevice(name="nas-fallback", ip_address="10.9.9.9")
+    db_session.add(nas)
+    db_session.flush()
+    subscription.provisioning_nas_device_id = nas.id
+    db_session.flush()
+    orphan = CPEDevice(
+        subscriber_id=subscriber.id,
+        device_type=DeviceType.wireless_radio,
+        last_uisp_status="active",
+    )
+    db_session.add(orphan)
+    db_session.flush()
+
+    path = resolve_customer_path(db_session, subscription)
+
+    assert path.access_device_kind == "nas"
+    assert path.unparented_radio is not None
+    assert path.unparented_radio.id == orphan.id

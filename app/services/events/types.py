@@ -374,6 +374,10 @@ class EventType(enum.Enum):
     # selection + per-subscriber preferences; the notifier only supplies content.
     outage_area = "outage.area"
     outage_last_mile = "outage.last_mile"
+    # Operator-confirmed cabinet (FDH) service notice dispatched
+    # (network.cabinet_notice). Operational breadcrumb only: customer emails
+    # are queued directly through communication intents, never via this event.
+    cabinet_notice_dispatched = "cabinet_notice.dispatched"
 
     # Outage incident lifecycle outputs
     # (docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md). Staged atomically

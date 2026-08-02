@@ -49,6 +49,13 @@
             <span class="text-2xl font-bold text-slate-900 dark:text-white">{{ impact_count }}</span>
         </div>
         <p class="mt-1 text-xs text-slate-400">active subscriptions affected</p>
+        {% if impact_detail_mode == "fdh" and impact_count and selected_fdh_id %}
+        <a href="/admin/network/cabinet-notice?fdh_id={{ selected_fdh_id }}"
+           class="mt-3 inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            Message affected customers
+        </a>
+        {% endif %}
 
         {% if impact_branches %}
         <div class="mt-5">

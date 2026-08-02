@@ -279,6 +279,128 @@ def _actor(request: Request) -> str | None:
     return getattr(user, "email", None) or getattr(user, "username", None)
 
 
+def _cabinet_notice_context(request: Request, db: Session, fdh_id: str) -> dict | None:
+    """Shared page context for the cabinet-notice console; None = unknown FDH."""
+    import uuid as _uuid
+
+    from app.models.network import FdhCabinet
+    from app.services.network.outage_impact import resolve_fdh_audience
+
+    context = _base_context(request, db, active_page="monitoring")
+    try:
+        fdh = db.get(FdhCabinet, _uuid.UUID(fdh_id))
+    except (ValueError, TypeError):
+        fdh = None
+    if fdh is None:
+        return None
+    context["fdh"] = fdh
+    context["fdh_id"] = str(fdh.id)
+    context["audience"] = resolve_fdh_audience(db, fdh)
+    return context
+
+
+@router.get(
+    "/cabinet-notice",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("monitoring:read"))],
+)
+def cabinet_notice_page(
+    request: Request,
+    fdh_id: str,
+    db: Session = Depends(get_db),
+):
+    """Draft a service notice to every active customer behind one FDH.
+
+    Read-only entry point: shows the audience summary and the draft form.
+    Nothing sends without the preview -> confirm POST flow below."""
+    context = _cabinet_notice_context(request, db, fdh_id)
+    if context is None:
+        base = _base_context(request, db, active_page="monitoring")
+        base["fdh"] = None
+        return templates.TemplateResponse(
+            "admin/network/cabinet_notice.html", base, status_code=404
+        )
+    return templates.TemplateResponse("admin/network/cabinet_notice.html", context)
+
+
+@router.post(
+    "/cabinet-notice",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("monitoring:write"))],
+)
+def cabinet_notice_submit(
+    request: Request,
+    fdh_id: str = Form(...),
+    subject: str = Form(default=""),
+    body: str = Form(default=""),
+    mode: str = Form(default="preview"),
+    expected_count: int | None = Form(default=None),
+    expected_scope_token: str | None = Form(default=None),
+    expected_impact_token: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    """Preview or send a cabinet service notice.
+
+    ``mode=preview`` classifies every distinct customer (eligible /
+    missing-email / suppressed / unresolved) and binds the result into scope +
+    impact tokens carried as hidden fields. ``mode=send`` recomputes the
+    preview and dispatches only when both tokens and the eligible count still
+    match — membership or content drift re-renders the fresh preview with a
+    409 instead of sending on a stale audience. The command owner commits its
+    own transaction; this adapter never commits (transaction-ownership
+    contract)."""
+    import uuid as _uuid
+
+    from app.services.network.cabinet_notice import (
+        CabinetNoticeConfirmation,
+        CabinetNoticeDraft,
+        CabinetNoticeDriftError,
+        CabinetNoticeValidationError,
+        preview_cabinet_notice,
+        send_cabinet_notice,
+    )
+
+    context = _cabinet_notice_context(request, db, fdh_id)
+    if context is None:
+        return RedirectResponse("/admin/network/outage-impact", status_code=303)
+    context["subject"] = subject
+    context["body"] = body
+
+    draft = CabinetNoticeDraft(fdh_id=_uuid.UUID(fdh_id), subject=subject, body=body)
+    status_code = 200
+    try:
+        if mode == "send":
+            result = send_cabinet_notice(
+                db,
+                draft,
+                CabinetNoticeConfirmation(
+                    confirmed=True,
+                    expected_count=expected_count,
+                    expected_scope_token=expected_scope_token,
+                    expected_impact_token=expected_impact_token,
+                ),
+                actor=_actor(request),
+            )
+            context["result"] = result
+        else:
+            context["preview"] = preview_cabinet_notice(db, draft)
+    except CabinetNoticeValidationError as exc:
+        context["error"] = str(exc)
+        status_code = 400
+    except CabinetNoticeDriftError as exc:
+        # Show the CURRENT preview next to the conflict so the operator
+        # re-confirms against reality, never the stale audience.
+        context["conflict"] = str(exc)
+        try:
+            context["preview"] = preview_cabinet_notice(db, draft)
+        except CabinetNoticeValidationError as preview_exc:
+            context["error"] = str(preview_exc)
+        status_code = 409
+    return templates.TemplateResponse(
+        "admin/network/cabinet_notice.html", context, status_code=status_code
+    )
+
+
 @router.get(
     "/outages",
     response_class=HTMLResponse,

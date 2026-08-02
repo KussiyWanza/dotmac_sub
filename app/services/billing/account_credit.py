@@ -519,6 +519,14 @@ class AccountCreditApplications:
             result.applied = round_money(result.applied + applied)
             result.allocation_ids.append(str(confirmation.allocation.id))
             remaining = round_money(remaining - applied)
+            _stage_application_posting(
+                db,
+                allocation=confirmation.allocation,
+                invoice=invoice,
+                payment=payment,
+                currency=preview.currency,
+                amount=applied,
+            )
 
         db.flush()
         db.refresh(invoice)
@@ -625,6 +633,14 @@ class AccountCreditApplications:
                 applied = round_money(to_decimal(confirmation.allocation.amount))
                 result.applied = round_money(result.applied + applied)
                 result.allocation_ids.append(str(confirmation.allocation.id))
+                _stage_application_posting(
+                    db,
+                    allocation=confirmation.allocation,
+                    invoice=invoice,
+                    payment=payment,
+                    currency=currency,
+                    amount=applied,
+                )
                 if str(invoice.id) not in result.invoices_touched:
                     result.invoices_touched.append(str(invoice.id))
                 invoice_remaining = round_money(invoice_remaining - applied)
@@ -1248,3 +1264,77 @@ __all__ = [
     "ELIGIBLE_INVOICE_STATUSES",
     "eligible_invoices",
 ]
+
+
+def _stage_application_posting(
+    db: Session,
+    *,
+    allocation,
+    invoice,
+    payment,
+    currency: str,
+    amount,
+) -> None:
+    """One shadow posting group per credit-to-invoice allocation.
+
+    The deciding economic owner is the credit applicator, whatever host
+    command carries the transaction. Unwrapped legacy roots skip; the
+    verifier owns that gap (ADR 0007 Phase 3 forward-shadow).
+    """
+    from app.services.owner_commands import (
+        current_command_context,
+        owner_command_active,
+    )
+
+    if not owner_command_active(db):
+        return
+    from datetime import UTC as _UTC
+
+    from app.models.customer_subledger import (
+        PositionEffectKind,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        EffectInput,
+        StagePostingGroupCommand,
+        stage_posting_group,
+    )
+
+    db.flush()
+    occurred = allocation.created_at
+    if occurred is None:
+        raise AccountCreditApplicationError(
+            code="financial.account_credit_applications.missing_allocation_instant",
+            message=("Allocation has no created_at instant for posting provenance."),
+            details={"allocation_id": str(allocation.id)},
+        )
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=invoice.account_id,
+            currency=currency,
+            command_kind=PostingCommandKind.customer_credit_application,
+            producer_owner=PostingProducer.account_credit_applications,
+            source_kind=PostingSourceKind.payment_allocation,
+            source_id=allocation.id,
+            occurred_at=(
+                occurred.replace(tzinfo=_UTC) if occurred.tzinfo is None else occurred
+            ),
+            effects=(
+                EffectInput(
+                    effect=PositionEffectKind.customer_credit_consumed,
+                    amount=amount,
+                    payment_id=payment.id,
+                ),
+                EffectInput(
+                    effect=PositionEffectKind.receivable_settled,
+                    amount=amount,
+                    invoice_id=invoice.id,
+                ),
+            ),
+            idempotency_key=f"posting:payment_allocation:{allocation.id}",
+        ),
+        context=current_command_context(db),
+    )

@@ -299,6 +299,282 @@ def test_ap_side_station_list_fallback_sets_edge(db_session, subscriber, catalog
     assert client.station_list_calls == [AP_ID]
 
 
+# ---------------------------------------------------------------------------
+# RF signal ingestion (AP-side station RSSI -> cpe_devices current value)
+# ---------------------------------------------------------------------------
+
+
+def _station_entry(signal=-62.0, **extra):
+    entry = {
+        "deviceIdentification": {"id": STATION_ID},
+        "mac": STATION_MAC,
+    }
+    if signal is not None:
+        entry["rxSignal"] = signal
+    entry.update(extra)
+    return entry
+
+
+def test_ap_station_list_is_fetched_unconditionally(
+    db_session, subscriber, catalog_offer
+):
+    # Even when every station carries attributes.apDevice, the AP-side list
+    # is still fetched: it is the only source of the radio's RF signal.
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    client = FakeUispClient(
+        devices=_wireless_payload(),  # station HAS apDevice
+        stations_by_ap={AP_ID: [_station_entry()]},
+    )
+
+    sync(db_session, client)
+
+    assert client.station_list_calls == [AP_ID]
+
+
+def test_active_station_records_rf_signal(db_session, subscriber, catalog_offer):
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    client = FakeUispClient(
+        devices=_wireless_payload(),
+        stations_by_ap={AP_ID: [_station_entry(signal=-58.5)]},
+    )
+
+    result = sync(db_session, client)
+
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.rf_signal_dbm == -58.5
+    assert cpe.rf_signal_source == "uisp_ap_station"
+    assert cpe.rf_signal_observed_at is not None
+    assert result["signals_recorded"] == 1
+
+
+def test_disconnected_station_clears_rf_signal(db_session, subscriber, catalog_offer):
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    sync(
+        db_session,
+        FakeUispClient(
+            devices=_wireless_payload(),
+            stations_by_ap={AP_ID: [_station_entry()]},
+        ),
+    )
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.rf_signal_dbm is not None
+    assert cpe.rf_signal_observed_at is not None
+
+    result = sync(
+        db_session,
+        FakeUispClient(devices=_wireless_payload(status="disconnected")),
+    )
+
+    db_session.refresh(cpe)
+    assert cpe.rf_signal_dbm is None
+    assert cpe.rf_signal_source is None
+    assert cpe.rf_signal_observed_at is None
+    assert result["signals_cleared"] == 1
+
+
+def test_active_station_without_ap_entry_retains_prior_signal(
+    db_session, subscriber, catalog_offer
+):
+    # AP list call failing (or AP unmatched) must NOT clear a prior value:
+    # absence of evidence is not evidence of absence — the read-side TTL
+    # degrades it to stale instead.
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    sync(
+        db_session,
+        FakeUispClient(
+            devices=_wireless_payload(),
+            stations_by_ap={AP_ID: [_station_entry(signal=-60.0)]},
+        ),
+    )
+
+    result = sync(
+        db_session,
+        FakeUispClient(devices=_wireless_payload()),  # no AP-side entries
+    )
+
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.rf_signal_dbm == -60.0
+    assert result["signals_cleared"] == 0
+
+
+def test_out_of_range_rssi_is_rejected(db_session, subscriber, catalog_offer):
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    client = FakeUispClient(
+        devices=_wireless_payload(),
+        # 95 is a percent-style quality number, not dBm; True is a bool trap.
+        stations_by_ap={
+            AP_ID: [
+                {
+                    "deviceIdentification": {"id": STATION_ID},
+                    "mac": STATION_MAC,
+                    "rxSignal": 95,
+                    "signal": True,
+                }
+            ]
+        },
+    )
+
+    result = sync(db_session, client)
+
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.rf_signal_dbm is None
+    assert result["signals_recorded"] == 0
+
+
+def test_prune_to_missing_clears_rf_signal(db_session, subscriber, catalog_offer):
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    sync(
+        db_session,
+        FakeUispClient(
+            devices=_wireless_payload(),
+            stations_by_ap={AP_ID: [_station_entry()]},
+        ),
+    )
+
+    # The station disappears while another station keeps the inventory
+    # non-empty (prune guard requires a non-empty station list).
+    other = Subscriber(
+        first_name="Still",
+        last_name="There",
+        email=f"there-{uuid.uuid4().hex[:8]}@example.test",
+    )
+    db_session.add(other)
+    db_session.flush()
+    other_mac = "24:A4:3C:AA:BB:77"
+    _active_subscription(db_session, other, catalog_offer, other_mac)
+    survivor = _device(
+        "77777777-1111-2222-3333-444444444444",
+        "CUST-STILL-THERE",
+        mac=other_mac,
+        ap_device_id=AP_ID,
+    )
+    result = sync(
+        db_session,
+        FakeUispClient(devices=[_wireless_payload()[0], survivor]),
+    )
+
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.last_uisp_status == "missing"
+    assert cpe.rf_signal_dbm is None
+    assert cpe.rf_signal_observed_at is None
+    assert result["signals_cleared"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Unmatched-radio review queue wiring (sync-side hook)
+# ---------------------------------------------------------------------------
+
+
+def _queue_items(db_session):
+    from app.services import unmatched_radio_queue
+
+    return unmatched_radio_queue.open_items(db_session)
+
+
+def test_unmatched_station_opens_review_item(db_session):
+    from app.services.unmatched_radio_queue import REASON_UISP_UNMATCHED
+
+    _ap_node(db_session)
+    client = FakeUispClient(devices=_wireless_payload())
+
+    result = sync(db_session, client)
+
+    items = _queue_items(db_session)
+    assert len(items) == 1
+    meta = items[0].metadata_
+    assert meta["reason"] == REASON_UISP_UNMATCHED
+    assert meta["radio_mac"] == STATION_MAC.replace(":", "").lower()
+    assert meta["uisp_device_id"] == STATION_ID
+    assert result["queue_opened"] == 1
+
+
+def test_unmatched_station_rerun_bumps_not_duplicates(db_session):
+    _ap_node(db_session)
+    sync(db_session, FakeUispClient(devices=_wireless_payload()))
+
+    result = sync(db_session, FakeUispClient(devices=_wireless_payload()))
+
+    items = _queue_items(db_session)
+    assert len(items) == 1
+    assert items[0].metadata_["occurrences"] == 2
+    assert result["queue_bumped"] == 1
+    assert result["queue_opened"] == 0
+
+
+def test_ambiguous_station_opens_conflict_item(db_session, subscriber, catalog_offer):
+    from app.services.unmatched_radio_queue import REASON_CONFLICT
+
+    _ap_node(db_session)
+    other = Subscriber(
+        first_name="Other",
+        last_name="Person",
+        email=f"other-{uuid.uuid4().hex[:8]}@example.test",
+    )
+    db_session.add(other)
+    db_session.flush()
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+    _active_subscription(db_session, other, catalog_offer, STATION_MAC)
+
+    result = sync(db_session, FakeUispClient(devices=_wireless_payload()))
+
+    items = _queue_items(db_session)
+    assert len(items) == 1
+    assert items[0].metadata_["reason"] == REASON_CONFLICT
+    assert result["queue_opened"] == 1
+
+
+def test_matched_station_with_unmatched_ap_opens_ap_unresolved_item(
+    db_session, subscriber, catalog_offer
+):
+    from app.services.unmatched_radio_queue import REASON_AP_UNRESOLVED
+
+    # No network_devices row matches the AP: the CPE row is created but cannot
+    # be parented — the repairable "AP unresolved" gap becomes a work item.
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+
+    result = sync(db_session, FakeUispClient(devices=_wireless_payload()))
+
+    cpe = (
+        db_session.query(CPEDevice).filter(CPEDevice.uisp_device_id == STATION_ID).one()
+    )
+    assert cpe.parent_network_device_id is None
+    items = _queue_items(db_session)
+    assert len(items) == 1
+    meta = items[0].metadata_
+    assert meta["reason"] == REASON_AP_UNRESOLVED
+    assert meta["ap_uisp_id"] == AP_ID
+    assert result["queue_opened"] == 1
+    assert result["aps_unmatched"] == 1
+
+
+def test_matched_and_parented_station_opens_nothing(
+    db_session, subscriber, catalog_offer
+):
+    _ap_node(db_session)
+    _active_subscription(db_session, subscriber, catalog_offer, STATION_MAC)
+
+    result = sync(db_session, FakeUispClient(devices=_wireless_payload()))
+
+    assert _queue_items(db_session) == []
+    assert result["queue_opened"] == 0
+
+
 def test_ptp_master_matching_network_device_is_not_created(db_session):
     # PtP backhaul masters report role=station but are infrastructure: a name
     # match against network_devices must not create a duplicate CPE.

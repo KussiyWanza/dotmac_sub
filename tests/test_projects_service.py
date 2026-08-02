@@ -27,6 +27,9 @@ from app.models.work_order import WorkOrder
 from app.schemas.project import (
     ProjectCreate,
     ProjectTaskCreate,
+    ProjectTaskDependenciesReplace,
+    ProjectTaskDependencyInput,
+    ProjectTaskStatusTransition,
     ProjectTaskUpdate,
     ProjectUpdate,
 )
@@ -91,6 +94,134 @@ def test_project_creation_queues_customer_email(db_session, subscriber):
     assert len(emails) == 1
     assert emails[0].subject == "Project created: Office fiber build"
     assert str(project.number or project.id) in (emails[0].body or "")
+
+
+def test_project_status_change_queues_one_customer_email(db_session, subscriber):
+    project = _create_fiber_project(db_session, subscriber)
+
+    projects.update(db_session, str(project.id), ProjectUpdate(status="active"))
+
+    emails = (
+        db_session.query(Notification)
+        .filter(
+            Notification.channel == NotificationChannel.email,
+            Notification.recipient == subscriber.email,
+            Notification.event_type == "project_status_changed",
+        )
+        .all()
+    )
+    assert len(emails) == 1
+    assert "Open to Active" in (emails[0].body or "")
+    assert emails[0].metadata_["previous_status"] == "open"
+    assert emails[0].metadata_["new_status"] == "active"
+
+
+def test_project_task_status_change_queues_one_customer_email(db_session, subscriber):
+    project = _create_fiber_project(db_session, subscriber)
+    task = _tasks_for(db_session, project)[0]
+
+    project_tasks.transition_status(
+        db_session,
+        str(task.id),
+        ProjectTaskStatusTransition(
+            expected_status=task.status,
+            status="in_progress",
+            reason="start customer task",
+        ),
+    )
+
+    emails = (
+        db_session.query(Notification)
+        .filter(
+            Notification.channel == NotificationChannel.email,
+            Notification.recipient == subscriber.email,
+            Notification.event_type == "project_task_status_changed",
+        )
+        .all()
+    )
+    assert len(emails) == 1
+    assert "Todo to In Progress" in (emails[0].body or "")
+    assert emails[0].metadata_["project_task_id"] == str(task.id)
+
+
+def test_non_status_updates_do_not_queue_status_notifications(db_session, subscriber):
+    project = _create_fiber_project(db_session, subscriber)
+    task = _tasks_for(db_session, project)[0]
+
+    projects.update(db_session, str(project.id), ProjectUpdate(name="Renamed build"))
+    project_tasks.update(
+        db_session,
+        str(task.id),
+        ProjectTaskUpdate(priority="high"),
+    )
+
+    assert (
+        db_session.query(Notification)
+        .filter(
+            Notification.event_type.in_(
+                ("project_status_changed", "project_task_status_changed")
+            )
+        )
+        .count()
+        == 0
+    )
+
+
+def test_completion_uses_specialized_message_without_generic_duplicate(
+    db_session, subscriber
+):
+    project = _create_fiber_project(db_session, subscriber)
+
+    projects.update(db_session, str(project.id), ProjectUpdate(status="completed"))
+
+    assert (
+        db_session.query(Notification)
+        .filter(
+            Notification.event_type == "project_completed",
+            Notification.channel == NotificationChannel.email,
+        )
+        .count()
+        == 1
+    )
+    assert (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "project_status_changed")
+        .count()
+        == 0
+    )
+
+
+def test_status_notification_failure_keeps_transition_and_records_audit(
+    db_session, subscriber, monkeypatch
+):
+    from app.services import customer_experience_communications
+
+    project = _create_fiber_project(db_session, subscriber)
+
+    def fail_request(*args, **kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(
+        customer_experience_communications, "request_update", fail_request
+    )
+
+    updated = projects.update(
+        db_session,
+        str(project.id),
+        ProjectUpdate(status="active"),
+    )
+
+    assert updated.status == "active"
+    failure = (
+        db_session.query(AuditEvent)
+        .filter(
+            AuditEvent.entity_type == "project",
+            AuditEvent.entity_id == str(project.id),
+            AuditEvent.action == "customer_status_notification_failed",
+        )
+        .one()
+    )
+    assert failure.metadata_["changed_fields"] == ["customer_notification", "status"]
 
 
 def test_project_mutation_audits_preserve_authenticated_actor(db_session, subscriber):
@@ -242,13 +373,27 @@ class TestFiberStageEngine:
         }
 
         plan = tasks["project_plan"]
-        project_tasks.update(db_session, str(plan.id), ProjectTaskUpdate(status="done"))
+        project_tasks.transition_status(
+            db_session,
+            str(plan.id),
+            ProjectTaskStatusTransition(
+                expected_status=plan.status,
+                status="done",
+                reason="complete planning",
+            ),
+        )
         db_session.refresh(plan)
         assert plan.completed_at is not None
 
         survey = tasks["project_survey"]
-        project_tasks.update(
-            db_session, str(survey.id), ProjectTaskUpdate(status="in_progress")
+        project_tasks.transition_status(
+            db_session,
+            str(survey.id),
+            ProjectTaskStatusTransition(
+                expected_status=survey.status,
+                status="in_progress",
+                reason="start survey",
+            ),
         )
         db_session.refresh(survey)
         # Survey due anchors on the completed plan stage + 24h.
@@ -262,8 +407,14 @@ class TestTaskStateMachine:
         project = _create_fiber_project(db_session, subscriber)
         task = _tasks_for(db_session, project)[0]
 
-        updated = project_tasks.update(
-            db_session, str(task.id), ProjectTaskUpdate(status="done")
+        updated = project_tasks.transition_status(
+            db_session,
+            str(task.id),
+            ProjectTaskStatusTransition(
+                expected_status=task.status,
+                status="done",
+                reason="complete task",
+            ),
         )
         assert updated.status == "done"
         assert updated.completed_at is not None
@@ -285,7 +436,15 @@ class TestTaskStateMachine:
     def test_done_queues_customer_stage_email(self, db_session, subscriber):
         project = _create_fiber_project(db_session, subscriber)
         task = _tasks_for(db_session, project)[0]
-        project_tasks.update(db_session, str(task.id), ProjectTaskUpdate(status="done"))
+        project_tasks.transition_status(
+            db_session,
+            str(task.id),
+            ProjectTaskStatusTransition(
+                expected_status=task.status,
+                status="done",
+                reason="complete customer stage",
+            ),
+        )
 
         emails = (
             db_session.query(Notification)
@@ -294,6 +453,112 @@ class TestTaskStateMachine:
             .all()
         )
         assert any(n.subject == "Project Update - Stage Completed" for n in emails)
+
+    def test_transition_fails_closed_on_stale_expected_status(
+        self, db_session, subscriber
+    ):
+        project = _create_fiber_project(db_session, subscriber)
+        task = _tasks_for(db_session, project)[0]
+
+        with pytest.raises(ProjectServiceError) as exc:
+            project_tasks.transition_status(
+                db_session,
+                str(task.id),
+                ProjectTaskStatusTransition(
+                    expected_status="in_progress",
+                    status="done",
+                    reason="close completed stage",
+                ),
+            )
+
+        assert exc.value.code == "operations.project_lifecycle.stale_state"
+
+    def test_dependency_completion_and_cycle_guards(self, db_session, subscriber):
+        project = _create_fiber_project(db_session, subscriber)
+        predecessor = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(project_id=project.id, title="Predecessor"),
+        )
+        dependent = project_tasks.create(
+            db_session,
+            ProjectTaskCreate(project_id=project.id, title="Dependent"),
+        )
+        project_tasks.replace_dependencies(
+            db_session,
+            str(dependent.id),
+            ProjectTaskDependenciesReplace(
+                expected_task_status="todo",
+                dependencies=[
+                    ProjectTaskDependencyInput(depends_on_task_id=predecessor.id)
+                ],
+                reason="sequence field work",
+            ),
+        )
+
+        with pytest.raises(ProjectServiceError) as exc:
+            project_tasks.transition_status(
+                db_session,
+                str(dependent.id),
+                ProjectTaskStatusTransition(
+                    expected_status="todo",
+                    status="done",
+                    reason="finish dependent task",
+                ),
+            )
+        assert exc.value.code == "operations.project_lifecycle.relationship_conflict"
+
+        with pytest.raises(ProjectServiceError) as exc:
+            project_tasks.replace_dependencies(
+                db_session,
+                str(predecessor.id),
+                ProjectTaskDependenciesReplace(
+                    expected_task_status="todo",
+                    dependencies=[
+                        ProjectTaskDependencyInput(depends_on_task_id=dependent.id)
+                    ],
+                    reason="invalid reverse dependency",
+                ),
+            )
+        assert exc.value.code == "operations.project_lifecycle.relationship_conflict"
+
+        project_tasks.transition_status(
+            db_session,
+            str(predecessor.id),
+            ProjectTaskStatusTransition(
+                expected_status="todo",
+                status="done",
+                reason="finish predecessor",
+            ),
+        )
+        completed = project_tasks.transition_status(
+            db_session,
+            str(dependent.id),
+            ProjectTaskStatusTransition(
+                expected_status="todo",
+                status="done",
+                reason="finish dependent task",
+            ),
+        )
+        assert completed.status == "done"
+
+    def test_parent_relationship_must_stay_in_active_project(
+        self, db_session, subscriber
+    ):
+        first_project = _create_fiber_project(db_session, subscriber)
+        second_project = _create_fiber_project(db_session, subscriber)
+        foreign_parent = _tasks_for(db_session, second_project)[0]
+
+        with pytest.raises(ProjectServiceError) as exc:
+            project_tasks.create(
+                db_session,
+                ProjectTaskCreate(
+                    project_id=first_project.id,
+                    parent_task_id=foreign_parent.id,
+                    title="Cross-project child",
+                ),
+            )
+
+        assert exc.value.code == "operations.project_lifecycle.relationship_conflict"
 
     def test_assignee_sync_multi(self, db_session, subscriber):
         project = _create_fiber_project(db_session, subscriber)
