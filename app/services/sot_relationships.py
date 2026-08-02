@@ -34634,6 +34634,156 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.network_explorer_projection",
+                module="app.services.network_explorer",
+                owns=(
+                    "network explorer typed subject search",
+                    "network explorer subject-centred graph projection",
+                ),
+                depends_on=(
+                    "network.identity",
+                    "network.forwarding_topology",
+                    "network.device_state",
+                    "network.outage_impact",
+                    "ui.customer_network_path_projection",
+                    "ui.status_presentation",
+                ),
+                notes=(
+                    "Subject-centred, bounded neighbourhood graphs for "
+                    "/admin/network/explorer, restated in the shared "
+                    "NetworkGraphView contract. Composes the customer path "
+                    "projection, reviewed forwarding adjacency, the binary "
+                    "device verdict, ONT observation words, and audience "
+                    "cohorts. It decides no topology, health, outage, or "
+                    "consequence; never loads the whole fleet; groups "
+                    "fan-out into explicit cohort nodes; renders site "
+                    "containment as containment, never connectivity; and "
+                    "omits customer-identity kinds for viewers without "
+                    "customer:read."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="network explorer typed subject search",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network explorer subject-centred graph projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "customer network path view",
+                                "authoritative forwarding adjacency",
+                                "binary device operation verdict",
+                                "topological audience cohorts",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="network inventory identity",
+                            owner="network.identity",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "OLT, PON, ONT, CPE, NAS, FDH, splitter, "
+                                "device, and site rows with their declared "
+                                "relations and observation columns"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer network path view",
+                            owner="ui.customer_network_path_projection",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "NetworkGraphView for a subscription subject "
+                                "and the canonical asset deep-link map"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="authoritative forwarding adjacency",
+                            owner="network.forwarding_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "projected authoritative forwarding graph "
+                                "adjacency and upstream mapping"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="binary device operation verdict",
+                            owner="network.device_state",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "batch-annotated working/not_working verdicts "
+                                "with machine reasons"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="topological audience cohorts",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "attached, provisioned, and served "
+                                "subscription cohorts per node, basestation, "
+                                "or cabinet"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="semantic status presentation vocabulary",
+                            owner="ui.status_presentation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "StatusPresentation label/tone/icon "
+                                "projections for hop states and device "
+                                "verdicts"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Reads one bounded subject neighbourhood on the "
+                            "adapter session without a business write and "
+                            "without device, SSH, UISP, OLT, or ACS I/O."
+                        ),
+                        locking="Read projection acquires no mutation locks.",
+                        idempotency=(
+                            "The same inventory, adjacency, observations, and "
+                            "subject produce the same search results and "
+                            "graph view."
+                        ),
+                        retries=(
+                            "Read projection calls are safe to retry; an "
+                            "unprovable subject renders an explicit missing "
+                            "state."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.web.admin.network_explorer",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ui.network_explorer_projection",
+                    ),
+                    steward="network operations UI",
+                    design_refs=(
+                        "docs/designs/NETWORK_EXPLORER.md",
+                        "docs/designs/CUSTOMER_NETWORK_PATH.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_network_explorer.py",
+                        "tests/architecture/test_thin_wrappers.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.status_presentation",
                 module="app.services.status_presentation",
                 owns=(
@@ -34689,6 +34839,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         ),
         entrypoints=(
             "app.services.customer_network_path",
+            "app.services.network_explorer",
             "app.services.network_graph",
             "app.schemas.catalog.SubscriptionRead",
             "app.schemas.billing.InvoiceRead",

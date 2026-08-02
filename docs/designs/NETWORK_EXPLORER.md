@@ -1,0 +1,93 @@
+# Unified Network Explorer
+
+Status: adopted (programme slice PR 3 — explorer shell, typed search, and
+subject-centred bounded graphs). Presentation and information rules follow
+`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`. The Customer 360 companion
+contract is `docs/designs/CUSTOMER_NETWORK_PATH.md`.
+
+## Decision
+
+`app.services.network_explorer` is the read-only owner of the
+`/admin/network/explorer` projection: typed cross-asset search and the
+bounded neighbourhood graph around one selected subject. It restates existing
+owners and decides nothing of its own:
+
+- `ui.customer_network_path_projection` supplies subscription path views and
+  the canonical asset deep-link map; the explorer reuses the shared
+  `NetworkGraphView` contract (`app.services.network_graph`) as its only
+  wire format.
+- `network.forwarding_topology` supplies reviewed device adjacency; explorer
+  edges of kind "forwarding" restate it verbatim.
+- `network.device_state` supplies the binary working/not_working verdict for
+  monitored devices; `network.olt_observed_state` facts supply ONT words.
+- `network.outage_impact` supplies audience cohorts (attached, provisioned,
+  or served subscription counts) rendered as explicit cohort nodes.
+- `network.identity` inventory rows (OLT, PON, ONT, CPE, NAS, FDH, splitter,
+  site) supply identity and declared relations only.
+- `ui.status_presentation` supplies every label/tone/icon.
+
+Site containment renders as a dashed "containment" edge and is never
+presented as connectivity. No edge is manufactured from names, geography, or
+proximity. Passive and identity-only assets stay `not_applicable`
+("Passive"), monitored-but-unobserved stays `unknown` — the vocabulary never
+collapses.
+
+## Subjects and bounds
+
+Subject tokens are `<kind>:<uuid>` in the URL (`?subject=...&q=...`), so any
+view is shareable. Supported kinds: subscription, subscriber, ont, radio,
+device (NetworkDevice, including APs), nas, olt, pon_port, fdh, pop_site.
+ONT and radio subjects with an active subscription binding resolve to that
+subscription's path view.
+
+The explorer never loads the fleet: each builder loads one bounded
+neighbourhood, groups fan-out beyond 25 into a cohort node linking to the
+canonical list surface, and enforces a hard cap of 100 nodes per view with an
+explicit "+N more" cohort — never silent truncation.
+
+## Search
+
+`search_explorer_subjects` is typed per kind (customer, subscription
+login/IPv4, ONT serial, radio serial/MAC, OLT, NAS, device, FDH, site) with a
+bounded per-kind limit. Customer-identity kinds (subscriber, subscription,
+radio) are omitted entirely for viewers without `customer:read`, and
+customer-centred subjects refuse to open for them; infrastructure cohort
+counts remain aggregates.
+
+## Surface contract
+
+- Page gate: `network:device:read` (plus the network module gate). Per-node
+  links keep their owner-declared `href_permission` and render through the
+  `can()` global.
+- `templates/admin/network/explorer/index.html` renders the projection: the
+  vendored Cytoscape + dagre canvas maps owner tones to semantic design
+  tokens (`--color-semantic-*`), and an always-rendered accessible list
+  fallback shows the same nodes, relationships, and gaps as text.
+- `GET /admin/network/explorer/api/graph?subject=...` returns the same
+  `NetworkGraphView.to_dict()` JSON for on-demand recentring.
+- Routes authorize and render only; no SQL in `app/web`.
+
+## Performance and safety
+
+- No SSH, UISP, OLT, router, or ACS calls during rendering.
+- Bounded queries per neighbourhood; the forwarding graph is projected once
+  per request through `topology.affected.forwarding_graph_projection`.
+- Saved visual positions are not read or written by this slice; nothing this
+  page renders is persisted as network truth.
+
+## Later slices
+
+The operational inspector (device state detail, RF/optical, incidents,
+reverse impact), fibre/geographic/utilization layers, and coverage/drift
+views are later programme slices composing the same contract. Legacy
+topology/map/weathermap surfaces are retired only after the programme's
+parity gate and explicit approval.
+
+## Verification
+
+- `tests/test_network_explorer.py` — typed search and identity gating,
+  subject views, grouping and the hard node cap, honest unknown/passive
+  states, JSON safety.
+- `tests/architecture/test_sot_registry_integrity.py` and
+  `tests/architecture/test_sot_manifest_contracts.py` — contract integrity.
+- `tests/architecture/test_thin_wrappers.py` — the routes stay thin.

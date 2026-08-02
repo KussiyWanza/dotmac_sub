@@ -225,7 +225,7 @@ def build_network_graph_view(trace: SubscriberTopologyTrace) -> NetworkGraphView
 
     nodes: list[NetworkGraphNode] = []
     for index, node in enumerate(trace.nodes):
-        href, href_permission = _node_link(node.kind, node.asset_id)
+        href, href_permission = asset_link(node.kind, node.asset_id)
         nodes.append(
             NetworkGraphNode(
                 id=_node_id(node, index),
@@ -289,7 +289,9 @@ def _node_id(node, index: int) -> str:
     return f"{node.kind}#{index}"
 
 
-def _node_link(kind: str, asset_id) -> tuple[str | None, str | None]:
+def asset_link(kind: str, asset_id) -> tuple[str | None, str | None]:
+    """Canonical (href, required-permission) for an asset kind, or (None, None)."""
+
     if asset_id is None:
         return None, None
     link = _NODE_LINKS.get(kind)
@@ -424,7 +426,7 @@ def project_subscription_fiber_detail(
     nodes: list[NetworkGraphNode] = []
     for index, hop in enumerate(trace.hops):
         state = hop.operational_state or "not_applicable"
-        href, href_permission = _node_link(hop.kind, hop.asset_id)
+        href, href_permission = asset_link(hop.kind, hop.asset_id)
         nodes.append(
             NetworkGraphNode(
                 id=(

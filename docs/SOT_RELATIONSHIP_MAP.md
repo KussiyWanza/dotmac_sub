@@ -713,6 +713,8 @@ do not hand-edit these rows.
 | `ui.customer_network_path_projection` | customer serving-endpoint presentation projection | `resolver` | subscription access-path resolution ← `network.access_path`<br>semantic status presentation vocabulary ← `ui.status_presentation` | `read_only` | `complete` | network operations UI | `docs/designs/CUSTOMER_NETWORK_PATH.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_network_path.py`<br>`tests/test_customer_detail_access_endpoint.py` |
 | `ui.customer_network_path_projection` | customer passive-fibre path detail projection | `resolver` | validated fibre plant trace ← `network.fiber_topology`<br>semantic status presentation vocabulary ← `ui.status_presentation`<br>shared network graph vocabulary ← `ui.customer_network_path_projection` | `read_only` | `complete` | network operations UI | `docs/designs/CUSTOMER_NETWORK_PATH.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_network_path.py`<br>`tests/test_customer_detail_access_endpoint.py` |
 | `ui.customer_network_path_projection` | shared network graph view contract | `policy` | shared network graph vocabulary ← `ui.customer_network_path_projection` | `read_only` | `complete` | network operations UI | `docs/designs/CUSTOMER_NETWORK_PATH.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_network_path.py`<br>`tests/test_customer_detail_access_endpoint.py` |
+| `ui.network_explorer_projection` | network explorer typed subject search | `resolver` | network inventory identity ← `network.identity`<br>semantic status presentation vocabulary ← `ui.status_presentation` | `read_only` | `native` | network operations UI | `docs/designs/NETWORK_EXPLORER.md`<br>`docs/designs/CUSTOMER_NETWORK_PATH.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_explorer.py`<br>`tests/architecture/test_thin_wrappers.py` |
+| `ui.network_explorer_projection` | network explorer subject-centred graph projection | `resolver` | network inventory identity ← `network.identity`<br>customer network path view ← `ui.customer_network_path_projection`<br>authoritative forwarding adjacency ← `network.forwarding_topology`<br>binary device operation verdict ← `network.device_state`<br>topological audience cohorts ← `network.outage_impact`<br>semantic status presentation vocabulary ← `ui.status_presentation` | `read_only` | `native` | network operations UI | `docs/designs/NETWORK_EXPLORER.md`<br>`docs/designs/CUSTOMER_NETWORK_PATH.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_network_explorer.py`<br>`tests/architecture/test_thin_wrappers.py` |
 | `sales.capture` | provider-neutral Party-first Lead capture command | `application_coordinator` | validated lead-capture contract ← `sales.capture`<br>canonical Party identity state ← `party.registry`<br>canonical Lead lifecycle state ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.capture` | source-interaction idempotency and collision decision | `policy` | validated lead-capture contract ← `sales.capture`<br>immutable captured origin evidence ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.capture` | verified integration receipt to Lead consequence | `application_coordinator` | verified integration receipt ← `integration.inbox`<br>validated lead-capture contract ← `sales.capture`<br>canonical Party identity state ← `party.registry`<br>canonical Lead lifecycle state ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
@@ -2773,8 +2775,18 @@ invoice generation does not silently invoke another financial workflow.
    It makes no topology, health, outage, or notification decision, performs no
    device I/O, and never manufactures a hop, an edge, or a status. The graph
    contract is the single rendering vocabulary for the Customer 360 network
-   path and the future network explorer surface; see
+   path and the network explorer surface; see
    `docs/designs/CUSTOMER_NETWORK_PATH.md`.
+7. `ui.network_explorer_projection` (`app.services.network_explorer`) is the
+   read-only owner of `/admin/network/explorer`: typed cross-asset subject
+   search and the bounded neighbourhood graph around one subject, restated in
+   the same `NetworkGraphView` contract. It composes the customer path
+   projection, reviewed forwarding adjacency, the binary device verdict, ONT
+   observation words, and audience cohorts; it never loads the whole fleet,
+   groups fan-out into explicit cohort nodes, renders site containment as
+   containment rather than connectivity, and omits customer-identity kinds
+   for viewers without `customer:read`; see
+   `docs/designs/NETWORK_EXPLORER.md`.
 
 Migration record:
 
