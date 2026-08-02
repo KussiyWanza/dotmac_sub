@@ -1019,6 +1019,102 @@ class OutageNotificationDispatch(Base):
     )
 
 
+class OutageScopeRevision(Base):
+    """One immutable incident scope/audience revision (OUTAGE_SLA_SPINE §3).
+
+    ``OutageIncident.root_node_id`` stays the mutable latest projection;
+    these rows preserve the history a downtime ledger needs: which scope the
+    incident pointed at, exactly which subscriptions were in its audience
+    (via the member rows), and when that changed. Appended atomically with
+    the transition that changed it; never updated or deleted. ``sequence``
+    is monotonic per incident and unique-constrained so concurrent writers
+    cannot fork history.
+    """
+
+    __tablename__ = "outage_scope_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "sequence",
+            name="uq_outage_scope_revisions_incident_sequence",
+        ),
+        Index("ix_outage_scope_revisions_incident", "incident_id", "sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # declared | suspected | confirmed | rerooted | reopened | audience_drift
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(120))
+    old_scope_type: Mapped[str | None] = mapped_column(String(20))
+    old_scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    new_scope_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    new_scope_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Order-independent SHA-256 of the exact subscription audience
+    # (bulk_actions.membership_scope_token) — the immutable membership token.
+    membership_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    left_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    members: Mapped[list["OutageScopeRevisionMember"]] = relationship(
+        back_populates="revision",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class OutageScopeRevisionMember(Base):
+    """Exact audience membership for one scope revision.
+
+    ``membership`` records how the subscription relates to the previous
+    revision: ``entered`` (new this revision), ``retained`` (carried over),
+    or ``left`` (dropped this revision — no longer in the audience). The
+    current audience is entered + retained. No FK to subscriptions: history
+    must outlive a deleted subscription (same rationale as
+    OutageNotificationDispatch and AvailabilitySnapshot).
+    """
+
+    __tablename__ = "outage_scope_revision_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "revision_id",
+            "subscription_id",
+            name="uq_outage_scope_revision_members_row",
+        ),
+        Index("ix_outage_scope_revision_members_subscription", "subscription_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_scope_revisions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    # entered | retained | left
+    membership: Mapped[str] = mapped_column(String(10), nullable=False)
+
+    revision: Mapped[OutageScopeRevision] = relationship(back_populates="members")
+
+
 class AvailabilitySnapshot(Base):
     """Daily rolled-up availability for an infrastructure element.
 

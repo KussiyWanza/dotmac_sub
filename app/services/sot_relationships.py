@@ -16817,6 +16817,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "persisted outage incident status vocabulary",
                     "outage incident lifecycle",
+                    "immutable incident scope and audience revision history",
                     "typed outage lifecycle output emission",
                     "committed outage output consumption",
                 ),
@@ -16834,7 +16835,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "commands, which attach operational owners/watchers and "
                     "plan or cancel SLA escalations through the escalation "
                     "participants. Outage resolution emits recovery evidence "
-                    "only and never closes support Tickets or WorkOrders."
+                    "only and never closes support Tickets or WorkOrders. "
+                    "Declare, suspect, reroot, and audience-drift transitions "
+                    "append immutable scope revisions with order-independent "
+                    "membership tokens and exact entered/retained/left member "
+                    "deltas (OUTAGE_SLA_SPINE §3); the incident root stays the "
+                    "mutable latest projection while revisions preserve the "
+                    "history the downtime ledger consumes."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -16845,6 +16852,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         ConcernContract(
                             name="outage incident lifecycle",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded outage incidents",
+                                "resolved outage impact",
+                            ),
+                            canonical_writer="network.outage_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "immutable incident scope and audience revision history"
+                            ),
                             role=OwnerRole.AUTHORITATIVE_RECORD,
                             input_names=(
                                 "recorded outage incidents",
@@ -17002,12 +17020,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     steward="network operations",
                     design_refs=(
                         "docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md",
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     test_refs=(
                         "tests/services/topology/test_outage_lifecycle_chain.py",
                         "tests/architecture/test_outage_lifecycle_chain_boundary.py",
                         "tests/services/topology/test_outage_reconcile.py",
+                        "tests/services/topology/test_outage_scope_revisions.py",
                     ),
                 ),
             ),
