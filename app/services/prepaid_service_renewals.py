@@ -73,7 +73,11 @@ from app.services.billing.adjustments import (
 )
 from app.services.common import coerce_uuid, round_money
 from app.services.domain_errors import DomainError
-from app.services.owner_commands import CommandContext
+from app.services.owner_commands import (
+    CommandContext,
+    OwnerCommandDefinition,
+    execute_owner_command,
+)
 from app.services.service_entitlements import (
     ensure_prepaid_entitlement_for_wallet_debit,
     prepaid_entitlement_coverage_end,
@@ -82,6 +86,18 @@ from app.services.service_entitlements import (
 logger = logging.getLogger(__name__)
 
 _ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
+_OWNER = "financial.prepaid_service_renewals"
+_EXECUTION_CONCERN = "prepaid service renewal execution"
+_EVALUATE_SETTLEMENT_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_EXECUTION_CONCERN,
+    name="execute_prepaid_service_after_settlement",
+)
+_RUN_DUE_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern=_EXECUTION_CONCERN,
+    name="execute_due_prepaid_service_renewals",
+)
 PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES = frozenset(
     {
         SubscriptionStatus.active,
@@ -94,6 +110,25 @@ _MAX_AUTOMATIC_LAG = timedelta(days=2)
 
 class PrepaidServiceRenewalError(DomainError):
     """Transport-neutral renewal failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluatePrepaidServiceAfterSettlementCommand:
+    """Typed public command for one durable funding-change event."""
+
+    context: CommandContext
+    account_id: UUID
+    payment_id: UUID
+    evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunDuePrepaidServiceRenewalsCommand:
+    """Typed public command for one bounded scheduled renewal pass."""
+
+    context: CommandContext
+    run_at: datetime
+    dry_run: bool = False
 
 
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
@@ -610,6 +645,30 @@ def evaluate_prepaid_service_after_settlement(
     )
 
 
+def execute_prepaid_service_after_settlement(
+    db: Session,
+    command: EvaluatePrepaidServiceAfterSettlementCommand,
+) -> FundingChangeEvaluation:
+    """Execute one settlement-triggered consequence under this owner's root.
+
+    Durable event handlers call this public boundary from a fresh session.
+    Settlement validation, draft reconciliation, renewal debit, entitlement,
+    anchor, posting group, and outcome therefore commit or roll back together.
+    """
+
+    return execute_owner_command(
+        db,
+        definition=_EVALUATE_SETTLEMENT_COMMAND,
+        context=command.context,
+        operation=lambda: evaluate_prepaid_service_after_settlement(
+            db,
+            account_id=command.account_id,
+            payment_id=command.payment_id,
+            evidence_ref=command.evidence_ref,
+        ),
+    )
+
+
 def _subscription_for_request(
     db: Session,
     subscription_id: object,
@@ -796,6 +855,13 @@ def confirm_prepaid_service_renewal(
                 "idempotency_conflict",
                 "Prepaid renewal idempotency evidence does not match the request.",
             )
+        _stage_prepaid_consumption_posting(
+            db,
+            renewal=preview,
+            adjustment=existing_adjustment,
+            entitlement=entitlement,
+            require_existing=True,
+        )
         return PrepaidServiceRenewalResult(
             preview=preview,
             adjustment=existing_adjustment,
@@ -881,12 +947,103 @@ def confirm_prepaid_service_renewal(
     ):
         subscription.next_billing_at = current.ends_at
     db.flush()
+    _stage_prepaid_consumption_posting(
+        db,
+        renewal=current,
+        adjustment=adjustment_result.adjustment,
+        entitlement=entitlement,
+    )
     return PrepaidServiceRenewalResult(
         preview=current,
         adjustment=adjustment_result.adjustment,
         ledger_entry=adjustment_result.ledger_entry,
         entitlement=entitlement,
         replayed=adjustment_result.replayed,
+    )
+
+
+def _stage_prepaid_consumption_posting(
+    db: Session,
+    *,
+    renewal: PrepaidServiceRenewalPreview,
+    adjustment: AccountAdjustment,
+    entitlement: ServiceEntitlement,
+    require_existing: bool = False,
+) -> None:
+    """Stage the exact renewal consumption at this owner's command root."""
+
+    from app.services.owner_commands import (
+        current_command_context,
+        owner_command_active,
+    )
+
+    if not owner_command_active(db, owner=_OWNER):
+        return
+
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        PositionEffectKind,
+        PostingCommandKind,
+        PostingProducer,
+        PostingSourceKind,
+    )
+    from app.services.billing.customer_subledger import (
+        EffectInput,
+        StagePostingGroupCommand,
+        stage_posting_group,
+    )
+
+    if require_existing:
+        existing_group_id = db.scalar(
+            select(CustomerPostingGroup.id).where(
+                CustomerPostingGroup.producer_owner
+                == PostingProducer.prepaid_service_renewals.value,
+                CustomerPostingGroup.source_kind
+                == PostingSourceKind.account_adjustment.value,
+                CustomerPostingGroup.source_id == adjustment.id,
+            )
+        )
+        if existing_group_id is None:
+            # A replay of a pre-forward-shadow renewal is evidence debt, not
+            # permission to manufacture a historical posting after the fact.
+            return
+
+    # Direct invoice-less renewal consumes pooled customer credit without a
+    # separately persisted reservation decision. Express the instantaneous
+    # transfer and consumption in one immutable group: credit is consumed,
+    # the same amount is reserved, then that reservation funds the exact
+    # entitlement. The reserved lane nets to zero while consumption evidence
+    # remains explicit.
+    stage_posting_group(
+        db,
+        StagePostingGroupCommand(
+            account_id=renewal.account_id,
+            currency=renewal.currency,
+            command_kind=PostingCommandKind.prepaid_consumption,
+            producer_owner=PostingProducer.prepaid_service_renewals,
+            source_kind=PostingSourceKind.account_adjustment,
+            source_id=adjustment.id,
+            occurred_at=renewal.starts_at,
+            effects=(
+                EffectInput(
+                    effect=PositionEffectKind.customer_credit_consumed,
+                    amount=renewal.amount,
+                    entitlement_id=entitlement.id,
+                ),
+                EffectInput(
+                    effect=PositionEffectKind.prepaid_funding_reserved,
+                    amount=renewal.amount,
+                    entitlement_id=entitlement.id,
+                ),
+                EffectInput(
+                    effect=PositionEffectKind.prepaid_funding_consumed,
+                    amount=renewal.amount,
+                    entitlement_id=entitlement.id,
+                ),
+            ),
+            idempotency_key=f"posting:prepaid_service_renewal:{adjustment.id}",
+        ),
+        context=current_command_context(db),
     )
 
 
@@ -2056,10 +2213,29 @@ def run_due_prepaid_service_renewals(
     return summary
 
 
+def execute_due_prepaid_service_renewals(
+    db: Session,
+    command: RunDuePrepaidServiceRenewalsCommand,
+) -> dict[str, int | str]:
+    """Execute the scheduled renewal pass under its named owner command."""
+
+    return execute_owner_command(
+        db,
+        definition=_RUN_DUE_COMMAND,
+        context=command.context,
+        operation=lambda: run_due_prepaid_service_renewals(
+            db,
+            run_at=command.run_at,
+            dry_run=command.dry_run,
+        ),
+    )
+
+
 __all__ = [
     "STALE_BILLING_ANCHOR_REPAIR_SCOPE",
     "BillingAnchorAuthority",
     "BillingAnchorProjection",
+    "EvaluatePrepaidServiceAfterSettlementCommand",
     "FundingChangeEvaluation",
     "FundingChangeEvaluationDisposition",
     "FundingChangeRenewalDisposition",
@@ -2071,6 +2247,7 @@ __all__ = [
     "PrepaidServiceRenewalResult",
     "PrepaidServiceRenewalSource",
     "PrepaidServiceRenewedOutcome",
+    "RunDuePrepaidServiceRenewalsCommand",
     "StaleBillingAnchorCandidate",
     "StaleBillingAnchorRepairPreview",
     "StaleBillingAnchorRepairResult",
@@ -2078,6 +2255,8 @@ __all__ = [
     "apply_stale_prepaid_billing_anchor_repair",
     "confirm_prepaid_service_renewal",
     "evaluate_prepaid_service_after_settlement",
+    "execute_due_prepaid_service_renewals",
+    "execute_prepaid_service_after_settlement",
     "preview_prepaid_service_renewal",
     "preview_prepaid_recurring_charge",
     "preview_stale_prepaid_billing_anchor_repair",

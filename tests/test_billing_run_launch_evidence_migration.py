@@ -14,8 +14,8 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    # Single linear head: the ONT WAN service intent owner (456) sits on CPE RF
-    # signal columns (455), which sits on
+    # Single linear head: reviewed subledger openings (457) sit on the ONT WAN
+    # service intent owner (456), which sits on CPE RF signal columns (455), which sits on
     # non-identifying ONT MAC cleanup (454), which sits on the IPv4
     # primary assignment marker (453), which chains through fiber segment color
     # construction (448), payment proof corrections (447), ONT commissioning
@@ -34,7 +34,11 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["456_ont_wan_service_intent_owner"]
+    assert script.get_heads() == ["457_customer_subledger_opening_positions"]
+    assert (
+        script.get_revision("457_customer_subledger_opening_positions").down_revision
+        == "456_ont_wan_service_intent_owner"
+    )
     assert (
         script.get_revision("446_ont_commissioning_intents").down_revision
         == "445_social_comment_channels"

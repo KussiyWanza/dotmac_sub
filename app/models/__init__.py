@@ -220,6 +220,8 @@ from app.models.customer_identity import CustomerIdentityIndex  # noqa: F401
 from app.models.customer_subledger import (  # noqa: F401
     CustomerPositionEffect,
     CustomerPostingGroup,
+    CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningPosition,
     PositionEffectKind,
     PostingCommandKind,
 )

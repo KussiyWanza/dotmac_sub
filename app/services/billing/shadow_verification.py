@@ -44,6 +44,7 @@ from app.models.catalog import (
 )
 from app.models.event_store import EventStore
 from app.services.billing.contracts import BillingContracts
+from app.services.common import round_money
 from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.owner_outputs import consume_owner_output
@@ -54,6 +55,21 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    """Narrow a JSON object without trusting its persisted runtime shape."""
+
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _object_dict_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [_object_dict(item) for item in value if isinstance(item, dict)]
+
 
 OWNER = "billing.shadow_verification"
 
@@ -76,6 +92,16 @@ _PHASE3_FORWARD_RUN_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="phase cutover verification evidence",
     name="record_phase3_forward_verification_run",
+)
+_PHASE3_OPENING_PREVIEW_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="phase cutover verification evidence",
+    name="record_phase3_opening_preview",
+)
+_PHASE3_PARITY_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="phase cutover verification evidence",
+    name="record_phase3_subledger_parity",
 )
 _APPROVAL_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
@@ -1773,3 +1799,721 @@ def _record_phase3_forward_run(
         actor=context.actor,
     )
     return _phase3_result(run, replayed=False)
+
+
+@dataclass(frozen=True)
+class RecordPhase3OpeningPreviewCommand:
+    """Exact cohort/currency snapshot proposed for reviewed opening capture."""
+
+    cutoff_at: datetime
+    code_version: str
+    database_schema_version: str
+    currency: str = "NGN"
+    cohort_name: str = "prepaid_funding_candidates"
+    policy_version: str = "adr-0007-phase-3-opening-v1"
+    evidence_schema_version: int = 4
+
+
+@dataclass(frozen=True)
+class Phase3OpeningPreviewResult:
+    """Durable finance-review surface for exact opening residuals."""
+
+    run_id: UUID
+    cohort_count: int
+    capture_eligible_count: int
+    quarantined_count: int
+    nonzero_opening_count: int
+    source_fingerprint: str
+    result_fingerprint: str
+    replayed: bool
+
+
+def _phase3_opening_result(
+    run: BillingCutoverVerificationRun, *, replayed: bool
+) -> Phase3OpeningPreviewResult:
+    details = _object_dict((run.cohort_classification or {}).get("_details"))
+    opening_rows = _object_dict_rows(details.get("opening_rows"))
+    quarantined_accounts = details.get("quarantined_accounts")
+    return Phase3OpeningPreviewResult(
+        run_id=run.id,
+        cohort_count=run.cohort_count,
+        capture_eligible_count=len(opening_rows),
+        quarantined_count=(
+            len(quarantined_accounts) if isinstance(quarantined_accounts, list) else 0
+        ),
+        nonzero_opening_count=sum(
+            Decimal(str(row["opening_delta"])) != Decimal("0") for row in opening_rows
+        ),
+        source_fingerprint=run.source_fingerprint,
+        result_fingerprint=run.result_fingerprint,
+        replayed=replayed,
+    )
+
+
+def record_phase3_opening_preview(
+    db: Session,
+    command: RecordPhase3OpeningPreviewCommand,
+    *,
+    context: CommandContext,
+) -> Phase3OpeningPreviewResult:
+    """Persist an immutable reviewed-opening proposal without writing money."""
+
+    return execute_owner_command(
+        db,
+        definition=_PHASE3_OPENING_PREVIEW_COMMAND,
+        context=context,
+        operation=lambda: _record_phase3_opening_preview(
+            db, command=command, context=context
+        ),
+    )
+
+
+def _record_phase3_opening_preview(
+    db: Session,
+    *,
+    command: RecordPhase3OpeningPreviewCommand,
+    context: CommandContext,
+) -> Phase3OpeningPreviewResult:
+    from app.models.customer_subledger import CustomerSubledgerOpeningPosition
+    from app.models.prepaid_funding import PrepaidFundingBaseline
+    from app.services.billing.customer_subledger import resolve_positions
+    from app.services.prepaid_enforcement_planner import (
+        candidate_prepaid_funding_account_ids,
+    )
+    from app.services.prepaid_funding_reconstruction import (
+        prepaid_funding_quarantined_account_ids,
+        verified_prepaid_funding_balances,
+    )
+
+    if not context.idempotency_key:
+        raise _error(
+            "missing_idempotency_key",
+            "An opening-position preview requires an idempotency key.",
+        )
+    if command.cutoff_at.tzinfo is None:
+        raise _error(
+            "invalid_observation_window",
+            "Opening-position cutoff must be timezone-aware.",
+        )
+    currency = command.currency.strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise _error(
+            "invalid_run_identity",
+            "Opening-position currency must be a three-letter code.",
+        )
+    for field, value in (
+        ("code_version", command.code_version),
+        ("database_schema_version", command.database_schema_version),
+        ("cohort_name", command.cohort_name),
+        ("policy_version", command.policy_version),
+    ):
+        if not value.strip():
+            raise _error(
+                "invalid_run_identity",
+                "Opening-position run identity fields cannot be empty.",
+                field=field,
+            )
+    existing = db.scalar(
+        select(BillingCutoverVerificationRun).where(
+            BillingCutoverVerificationRun.idempotency_key == context.idempotency_key
+        )
+    )
+    if existing is not None:
+        if (
+            existing.phase != "phase_3_opening_preview"
+            or _utc(existing.cutoff_at) != _utc(command.cutoff_at)
+            or existing.code_version != command.code_version
+            or existing.database_schema_version != command.database_schema_version
+            or existing.policy_version != command.policy_version
+            or existing.cohort_name != command.cohort_name
+            or str((existing.currency_totals or {}).get("currency")) != currency
+        ):
+            raise _error(
+                "idempotency_conflict",
+                "Opening preview idempotency key belongs to different evidence.",
+                run_id=str(existing.id),
+            )
+        return _phase3_opening_result(existing, replayed=True)
+
+    cohort = tuple(sorted(candidate_prepaid_funding_account_ids(db), key=str))
+    quarantined = tuple(
+        sorted(
+            prepaid_funding_quarantined_account_ids(db, cohort, currency=currency),
+            key=str,
+        )
+    )
+    eligible = tuple(account for account in cohort if account not in quarantined)
+    already_opened = set(
+        db.scalars(
+            select(CustomerSubledgerOpeningPosition.account_id).where(
+                CustomerSubledgerOpeningPosition.account_id.in_(eligible),
+                CustomerSubledgerOpeningPosition.currency == currency,
+            )
+        ).all()
+    )
+    if already_opened:
+        raise _error(
+            "opening_position_already_captured",
+            "Opening preview cannot replace an existing immutable opening position.",
+            account_count=len(already_opened),
+        )
+
+    legacy = verified_prepaid_funding_balances(db, eligible, currency=currency)
+    shadow = resolve_positions(
+        db,
+        account_ids=eligible,
+        currency=currency,
+        authority=BillingRecordAuthority.shadow,
+    )
+    baselines = {
+        row.account_id: row
+        for row in db.scalars(
+            select(PrepaidFundingBaseline).where(
+                PrepaidFundingBaseline.account_id.in_(eligible),
+                PrepaidFundingBaseline.currency == currency,
+                PrepaidFundingBaseline.is_active.is_(True),
+            )
+        ).all()
+    }
+
+    source_rows: list[dict[str, object]] = []
+    result_rows: list[dict[str, object]] = []
+    legacy_total = Decimal("0")
+    shadow_total = Decimal("0")
+    opening_total = Decimal("0")
+    opening_positive = Decimal("0")
+    opening_negative = Decimal("0")
+    for account_id in eligible:
+        baseline = baselines.get(account_id)
+        position = shadow[account_id]
+        shadow_value = round_money(
+            position.unapplied_customer_credit + position.prepaid_funding_reserved
+        )
+        legacy_value = round_money(legacy[account_id])
+        delta = round_money(legacy_value - shadow_value)
+        source: dict[str, object] = {
+            "account_id": str(account_id),
+            "currency": currency,
+            "baseline_id": str(baseline.id) if baseline is not None else None,
+            "baseline_amount": (
+                str(baseline.amount) if baseline is not None else "0.00"
+            ),
+            "baseline_position_at": (
+                _utc(baseline.position_at).isoformat() if baseline is not None else None
+            ),
+            "legacy_position": str(legacy_value),
+            "shadow_lanes": {
+                "unapplied_customer_credit": str(position.unapplied_customer_credit),
+                "prepaid_funding_reserved": str(position.prepaid_funding_reserved),
+                "prepaid_funding_consumed": str(position.prepaid_funding_consumed),
+                "refunded_total": str(position.refunded_total),
+                "adjustment_total": str(position.adjustment_total),
+            },
+        }
+        row: dict[str, object] = {
+            **source,
+            "shadow_position_before": str(shadow_value),
+            "opening_delta": str(delta),
+            "evidence_fingerprint": _digest(source),
+        }
+        source_rows.append(source)
+        result_rows.append(row)
+        legacy_total += legacy_value
+        shadow_total += shadow_value
+        opening_total += delta
+        if delta > 0:
+            opening_positive += delta
+        elif delta < 0:
+            opening_negative += abs(delta)
+
+    expected_differences = [str(account_id) for account_id in quarantined] + [
+        str(row["account_id"])
+        for row in result_rows
+        if Decimal(str(row["opening_delta"])) != Decimal("0")
+    ]
+    classification = {
+        "covered": [str(account_id) for account_id in eligible],
+        "unresolved": [],
+        "ambiguous": [],
+        "unexpected_unlinked": [],
+        "duplicate": [],
+        "shadow_variance": [],
+        "expected_difference": expected_differences,
+        "gap": [],
+        "overlap": [],
+        "_details": {
+            "opening_rows": result_rows,
+            "quarantined_accounts": [str(account_id) for account_id in quarantined],
+            "postings_manufactured": False,
+            "authority_moved": False,
+        },
+    }
+    run = BillingCutoverVerificationRun(
+        phase="phase_3_opening_preview",
+        cohort_name=command.cohort_name,
+        evidence_schema_version=command.evidence_schema_version,
+        policy_version=command.policy_version,
+        cutoff_at=_utc(command.cutoff_at),
+        observation_started_at=_utc(command.cutoff_at),
+        observation_ended_at=_utc(command.cutoff_at),
+        cohort_count=len(cohort),
+        covered_count=len(eligible),
+        unresolved_count=0,
+        ambiguous_count=0,
+        unexpected_unlinked_count=0,
+        duplicate_count=0,
+        shadow_variance_count=0,
+        expected_difference_count=len(expected_differences),
+        gap_count=0,
+        overlap_count=0,
+        source_fingerprint=_digest(source_rows),
+        result_fingerprint=_digest(result_rows),
+        currency_totals={
+            "currency": currency,
+            "legacy_position": str(round_money(legacy_total)),
+            "shadow_position_before": str(round_money(shadow_total)),
+            "opening_delta": str(round_money(opening_total)),
+            "opening_positive": str(round_money(opening_positive)),
+            "opening_negative": str(round_money(opening_negative)),
+        },
+        cohort_classification=classification,
+        event_outcomes={
+            "migration_evidence_only": True,
+            "authority_moved": False,
+            "repair_requested": False,
+            "postings_manufactured": False,
+        },
+        code_version=command.code_version,
+        database_schema_version=command.database_schema_version,
+        idempotency_key=context.idempotency_key,
+        command_id=context.command_id,
+        correlation_id=context.correlation_id,
+        actor=context.actor,
+        reason=context.reason,
+    )
+    db.add(run)
+    db.flush()
+    emit_event(
+        db,
+        EventType.billing_cutover_verification_recorded,
+        {
+            "run_id": str(run.id),
+            "phase": run.phase,
+            "cohort_count": run.cohort_count,
+            "capture_eligible_count": len(eligible),
+            "quarantined_count": len(quarantined),
+            "source_fingerprint": run.source_fingerprint,
+            "result_fingerprint": run.result_fingerprint,
+            "authority_moved": False,
+            "postings_manufactured": False,
+        },
+        actor=context.actor,
+    )
+    return _phase3_opening_result(run, replayed=False)
+
+
+__all__ += [
+    "Phase3ForwardVerificationResult",
+    "Phase3OpeningPreviewResult",
+    "RecordPhase3ForwardVerificationCommand",
+    "RecordPhase3OpeningPreviewCommand",
+    "record_phase3_forward_run",
+    "record_phase3_opening_preview",
+]
+
+
+@dataclass(frozen=True)
+class RecordPhase3SubledgerParityCommand:
+    """Post-opening position parity and forward-coverage observation window."""
+
+    cutoff_at: datetime
+    observation_started_at: datetime
+    observation_ended_at: datetime
+    code_version: str
+    database_schema_version: str
+    currency: str = "NGN"
+    cohort_name: str = "prepaid_funding_candidates"
+    policy_version: str = "adr-0007-phase-3-parity-v1"
+    evidence_schema_version: int = 5
+
+
+@dataclass(frozen=True)
+class Phase3SubledgerParityResult:
+    run_id: UUID
+    cohort_count: int
+    parity_count: int
+    quarantined_count: int
+    variance_count: int
+    unwrapped_fact_count: int
+    blocker_count: int
+    source_fingerprint: str
+    result_fingerprint: str
+    replayed: bool
+
+
+def _phase3_parity_result(
+    run: BillingCutoverVerificationRun, *, replayed: bool
+) -> Phase3SubledgerParityResult:
+    details = _object_dict((run.cohort_classification or {}).get("_details"))
+    quarantined_accounts = details.get("quarantined_accounts")
+    return Phase3SubledgerParityResult(
+        run_id=run.id,
+        cohort_count=run.cohort_count,
+        parity_count=run.covered_count,
+        quarantined_count=(
+            len(quarantined_accounts) if isinstance(quarantined_accounts, list) else 0
+        ),
+        variance_count=run.shadow_variance_count,
+        unwrapped_fact_count=run.unresolved_count,
+        blocker_count=sum(
+            (
+                run.unresolved_count,
+                run.ambiguous_count,
+                run.unexpected_unlinked_count,
+                run.duplicate_count,
+                run.shadow_variance_count,
+                run.gap_count,
+                run.overlap_count,
+            )
+        ),
+        source_fingerprint=run.source_fingerprint,
+        result_fingerprint=run.result_fingerprint,
+        replayed=replayed,
+    )
+
+
+def record_phase3_subledger_parity(
+    db: Session,
+    command: RecordPhase3SubledgerParityCommand,
+    *,
+    context: CommandContext,
+) -> Phase3SubledgerParityResult:
+    """Record the exact post-opening cutover gate; never repair or cut over."""
+
+    return execute_owner_command(
+        db,
+        definition=_PHASE3_PARITY_COMMAND,
+        context=context,
+        operation=lambda: _record_phase3_subledger_parity(
+            db, command=command, context=context
+        ),
+    )
+
+
+def _record_phase3_subledger_parity(
+    db: Session,
+    *,
+    command: RecordPhase3SubledgerParityCommand,
+    context: CommandContext,
+) -> Phase3SubledgerParityResult:
+    from collections import Counter
+
+    from app.models.billing import (
+        AccountAdjustment,
+        Payment,
+        PaymentAllocation,
+        PaymentRefund,
+        PaymentReversal,
+        PaymentSettlement,
+    )
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        CustomerSubledgerOpeningPosition,
+    )
+    from app.models.prepaid_funding import PrepaidOpeningFundingConsumption
+    from app.services.billing.customer_subledger import resolve_positions
+    from app.services.prepaid_enforcement_planner import (
+        candidate_prepaid_funding_account_ids,
+    )
+    from app.services.prepaid_funding_reconstruction import (
+        prepaid_funding_quarantined_account_ids,
+        verified_prepaid_funding_balances,
+    )
+
+    if not context.idempotency_key:
+        raise _error(
+            "missing_idempotency_key",
+            "A subledger parity run requires an idempotency key.",
+        )
+    for field, value in (
+        ("cutoff_at", command.cutoff_at),
+        ("observation_started_at", command.observation_started_at),
+        ("observation_ended_at", command.observation_ended_at),
+    ):
+        if value.tzinfo is None:
+            raise _error(
+                "invalid_observation_window",
+                "Subledger parity timestamps must be timezone-aware.",
+                field=field,
+            )
+    if not (
+        command.observation_started_at
+        <= command.observation_ended_at
+        <= command.cutoff_at
+    ):
+        raise _error(
+            "invalid_observation_window",
+            "Parity observation window must end at or before cutoff.",
+        )
+    currency = command.currency.strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise _error(
+            "invalid_run_identity",
+            "Subledger parity currency must be a three-letter code.",
+        )
+    existing = db.scalar(
+        select(BillingCutoverVerificationRun).where(
+            BillingCutoverVerificationRun.idempotency_key == context.idempotency_key
+        )
+    )
+    if existing is not None:
+        if (
+            existing.phase != "phase_3_subledger_parity"
+            or _utc(existing.cutoff_at) != _utc(command.cutoff_at)
+            or _utc(existing.observation_started_at)
+            != _utc(command.observation_started_at)
+            or _utc(existing.observation_ended_at) != _utc(command.observation_ended_at)
+            or existing.code_version != command.code_version
+            or existing.database_schema_version != command.database_schema_version
+            or str((existing.currency_totals or {}).get("currency")) != currency
+        ):
+            raise _error(
+                "idempotency_conflict",
+                "Parity idempotency key belongs to different evidence.",
+                run_id=str(existing.id),
+            )
+        return _phase3_parity_result(existing, replayed=True)
+
+    cohort = tuple(sorted(candidate_prepaid_funding_account_ids(db), key=str))
+    quarantined = tuple(
+        sorted(
+            prepaid_funding_quarantined_account_ids(db, cohort, currency=currency),
+            key=str,
+        )
+    )
+    eligible = tuple(
+        account_id for account_id in cohort if account_id not in quarantined
+    )
+    openings = list(
+        db.scalars(
+            select(CustomerSubledgerOpeningPosition).where(
+                CustomerSubledgerOpeningPosition.account_id.in_(eligible),
+                CustomerSubledgerOpeningPosition.currency == currency,
+            )
+        ).all()
+    )
+    opening_counts = Counter(row.account_id for row in openings)
+    missing_opening = sorted(
+        [account_id for account_id in eligible if opening_counts[account_id] == 0],
+        key=str,
+    )
+    duplicate_opening = sorted(
+        [account_id for account_id, count in opening_counts.items() if count > 1],
+        key=str,
+    )
+    legacy = verified_prepaid_funding_balances(db, eligible, currency=currency)
+    shadow = resolve_positions(
+        db,
+        account_ids=eligible,
+        currency=currency,
+        authority=BillingRecordAuthority.shadow,
+    )
+    position_rows: list[dict[str, object]] = []
+    parity: list[str] = []
+    variances: list[str] = []
+    legacy_total = Decimal("0")
+    shadow_total = Decimal("0")
+    for account_id in eligible:
+        position = shadow[account_id]
+        target_total = round_money(
+            position.unapplied_customer_credit + position.prepaid_funding_reserved
+        )
+        legacy_total_value = round_money(legacy[account_id])
+        variance = round_money(target_total - legacy_total_value)
+        row: dict[str, object] = {
+            "account_id": str(account_id),
+            "currency": currency,
+            "legacy_customer_funding": str(legacy_total_value),
+            "shadow_customer_funding": str(target_total),
+            "variance": str(variance),
+            "lanes": {
+                "unapplied_customer_credit": str(position.unapplied_customer_credit),
+                "prepaid_funding_reserved": str(position.prepaid_funding_reserved),
+                "prepaid_funding_consumed": str(position.prepaid_funding_consumed),
+                "refunded_total": str(position.refunded_total),
+                "adjustment_total": str(position.adjustment_total),
+            },
+        }
+        position_rows.append(row)
+        if variance == Decimal("0"):
+            parity.append(str(account_id))
+        else:
+            variances.append(str(account_id))
+        legacy_total += legacy_total_value
+        shadow_total += target_total
+
+    window_start = _utc(command.observation_started_at)
+    window_end = _utc(command.observation_ended_at)
+
+    def _facts(model, kind: str, created_col):
+        return [
+            (kind, row)
+            for row in db.scalars(
+                select(model.id).where(
+                    created_col >= window_start, created_col < window_end
+                )
+            ).all()
+        ]
+
+    facts: list[tuple[str, UUID]] = [
+        ("payment", row)
+        for row in db.scalars(
+            select(PaymentSettlement.payment_id)
+            .join(Payment, Payment.id == PaymentSettlement.payment_id)
+            .where(
+                PaymentSettlement.created_at >= window_start,
+                PaymentSettlement.created_at < window_end,
+                Payment.account_id.is_not(None),
+            )
+        ).all()
+    ]
+    facts += _facts(
+        PaymentAllocation, "payment_allocation", PaymentAllocation.created_at
+    )
+    facts += _facts(
+        PrepaidOpeningFundingConsumption,
+        "prepaid_opening_funding_consumption",
+        PrepaidOpeningFundingConsumption.consumed_at,
+    )
+    facts += _facts(PaymentRefund, "payment_refund", PaymentRefund.created_at)
+    facts += _facts(PaymentReversal, "payment_reversal", PaymentReversal.created_at)
+    facts += _facts(
+        AccountAdjustment, "account_adjustment", AccountAdjustment.created_at
+    )
+    fact_ids = [fact_id for _, fact_id in facts]
+    group_rows = (
+        list(
+            db.execute(
+                select(
+                    CustomerPostingGroup.source_kind,
+                    CustomerPostingGroup.source_id,
+                ).where(CustomerPostingGroup.source_id.in_(fact_ids))
+            ).all()
+        )
+        if fact_ids
+        else []
+    )
+    group_counts = Counter((str(kind), source_id) for kind, source_id in group_rows)
+    covered_facts = sorted(
+        f"{kind}:{fact_id}"
+        for kind, fact_id in facts
+        if group_counts[(kind, fact_id)] == 1
+    )
+    unwrapped_facts = sorted(
+        f"{kind}:{fact_id}"
+        for kind, fact_id in facts
+        if group_counts[(kind, fact_id)] == 0
+    )
+    duplicate_facts = sorted(
+        f"{kind}:{fact_id}"
+        for kind, fact_id in facts
+        if group_counts[(kind, fact_id)] > 1
+    )
+
+    classification = {
+        "covered": parity,
+        "unresolved": unwrapped_facts,
+        "ambiguous": [],
+        "unexpected_unlinked": [str(value) for value in missing_opening],
+        "duplicate": [str(value) for value in duplicate_opening] + duplicate_facts,
+        "shadow_variance": variances,
+        "expected_difference": [str(value) for value in quarantined],
+        "gap": [],
+        "overlap": [],
+        "_details": {
+            "position_rows": position_rows,
+            "quarantined_accounts": [str(value) for value in quarantined],
+            "covered_facts": covered_facts,
+            "producer_not_owner_wrapped": unwrapped_facts,
+            "duplicate_fact_postings": duplicate_facts,
+            "authority_moved": False,
+            "repair_requested": False,
+        },
+    }
+    source_rows = {
+        "cohort": [str(value) for value in cohort],
+        "opening_ids": sorted(str(row.id) for row in openings),
+        "facts": sorted(f"{kind}:{fact_id}" for kind, fact_id in facts),
+        "window": [window_start.isoformat(), window_end.isoformat()],
+        "currency": currency,
+    }
+    run = BillingCutoverVerificationRun(
+        phase="phase_3_subledger_parity",
+        cohort_name=command.cohort_name,
+        evidence_schema_version=command.evidence_schema_version,
+        policy_version=command.policy_version,
+        cutoff_at=_utc(command.cutoff_at),
+        observation_started_at=window_start,
+        observation_ended_at=window_end,
+        cohort_count=len(cohort),
+        covered_count=len(parity),
+        unresolved_count=len(unwrapped_facts),
+        ambiguous_count=0,
+        unexpected_unlinked_count=len(missing_opening),
+        duplicate_count=len(duplicate_opening) + len(duplicate_facts),
+        shadow_variance_count=len(variances),
+        expected_difference_count=len(quarantined),
+        gap_count=0,
+        overlap_count=0,
+        source_fingerprint=_digest(source_rows),
+        result_fingerprint=_digest(classification),
+        currency_totals={
+            "currency": currency,
+            "legacy_customer_funding": str(round_money(legacy_total)),
+            "shadow_customer_funding": str(round_money(shadow_total)),
+            "variance": str(round_money(shadow_total - legacy_total)),
+        },
+        cohort_classification=classification,
+        event_outcomes={
+            "migration_evidence_only": True,
+            "authority_moved": False,
+            "repair_requested": False,
+            "postings_manufactured": False,
+            "facts_covered": len(covered_facts),
+            "facts_unwrapped": len(unwrapped_facts),
+        },
+        code_version=command.code_version,
+        database_schema_version=command.database_schema_version,
+        idempotency_key=context.idempotency_key,
+        command_id=context.command_id,
+        correlation_id=context.correlation_id,
+        actor=context.actor,
+        reason=context.reason,
+    )
+    db.add(run)
+    db.flush()
+    emit_event(
+        db,
+        EventType.billing_cutover_verification_recorded,
+        {
+            "run_id": str(run.id),
+            "phase": run.phase,
+            "cohort_count": run.cohort_count,
+            "parity_count": len(parity),
+            "quarantined_count": len(quarantined),
+            "variance_count": len(variances),
+            "unwrapped_fact_count": len(unwrapped_facts),
+            "source_fingerprint": run.source_fingerprint,
+            "result_fingerprint": run.result_fingerprint,
+            "authority_moved": False,
+        },
+        actor=context.actor,
+    )
+    return _phase3_parity_result(run, replayed=False)
+
+
+__all__ += [
+    "Phase3SubledgerParityResult",
+    "RecordPhase3SubledgerParityCommand",
+    "record_phase3_subledger_parity",
+]

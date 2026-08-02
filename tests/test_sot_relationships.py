@@ -517,7 +517,10 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "observability.audit_log",
     )
     assert sot_relationships.dependencies_for("financial.prepaid_service_renewals") == (
+        "billing.contracts",
+        "customer.accounts",
         "financial.account_adjustments",
+        "financial.customer_subledger",
         "financial.invoices",
         "financial.payments",
         "financial.prepaid_funding_reconstruction",

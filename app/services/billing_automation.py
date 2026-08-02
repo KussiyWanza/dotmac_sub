@@ -1434,6 +1434,39 @@ def run_invoice_cycle(
     """
     run_at = _as_utc(run_at) or datetime.now(UTC)
 
+    from app.services.events.handlers.owner_session import owner_session
+    from app.services.owner_commands import CommandContext
+    from app.services.prepaid_service_renewals import (
+        RunDuePrepaidServiceRenewalsCommand,
+        execute_due_prepaid_service_renewals,
+    )
+
+    prepaid_renewal_summary: dict[str, int | str] = {}
+    if run_prepaid_renewals:
+        # This legacy billing coordinator owns a separate postpaid transaction
+        # lifecycle.  The prepaid owner must therefore enter on a fresh clean
+        # session; it cannot inherit a caller read transaction or be nested in
+        # the postpaid run. The helper preserves the same bind in the external-
+        # transaction test harness while production receives an independent
+        # owner transaction.
+        with owner_session(db) as renewal_db:
+            prepaid_renewal_summary = execute_due_prepaid_service_renewals(
+                renewal_db,
+                RunDuePrepaidServiceRenewalsCommand(
+                    context=CommandContext.system(
+                        actor="system:billing_automation",
+                        scope="prepaid_service_renewals",
+                        reason=f"{launch_kind} billing-cycle renewal pass",
+                        idempotency_key=(
+                            "prepaid-renewal-pass:"
+                            f"{run_at.isoformat()}:{'dry' if dry_run else 'apply'}"
+                        ),
+                    ),
+                    run_at=run_at,
+                    dry_run=dry_run,
+                ),
+            )
+
     global_due_days = resolve_payment_due_days(db)
 
     run = BillingRun(
@@ -1464,18 +1497,6 @@ def run_invoice_cycle(
             auto_activate_pending=auto_activate_pending,
         ),
     )
-
-    from app.services.prepaid_service_renewals import (
-        run_due_prepaid_service_renewals,
-    )
-
-    prepaid_renewal_summary: dict[str, int | str] = {}
-    if run_prepaid_renewals:
-        prepaid_renewal_summary = run_due_prepaid_service_renewals(
-            db,
-            run_at=run_at,
-            dry_run=dry_run,
-        )
 
     # Query billable active subscriptions. Network/account enforcement states
     # like blocked/suspended must not suppress invoicing: those accounts still
