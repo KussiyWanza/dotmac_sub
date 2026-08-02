@@ -10237,6 +10237,23 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "financial.prepaid_renewal_terms_backfill."
                                 "subscription_not_found"
                             ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "not_in_backfill_cohort"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "stale_current_amount"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_audit_fingerprint"
+                            ),
+                            ("financial.prepaid_renewal_terms_backfill.audit_mismatch"),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "invalid_audit_action"
+                            ),
                         ),
                         mapping_owner="billing migration adapters",
                         fail_closed_on=(
@@ -10280,6 +10297,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         event_types=(
                             "prepaid_renewal_terms.backfilled",
                             "prepaid_renewal_terms.corrected",
+                            "prepaid_renewal_terms.audited",
                         ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
