@@ -31,6 +31,7 @@ from app.models.network import (
     OntProvisioningStatus,
     OntUnit,
     OntWanServiceInstance,
+    OntWanServiceLifecycle,
     OnuOnlineStatus,
     WanServiceType,
 )
@@ -189,26 +190,32 @@ class TestResetOntServiceState:
         assert sample_ont.olt_status == OnuOnlineStatus.offline
         assert sample_ont.last_seen_at is None
 
-    def test_deletes_wan_service_instances(
+    def test_retires_wan_service_instances_without_destroying_them(
         self, db_session, sample_ont, sample_wan_service
     ):
-        """Test that WAN service instances are deleted."""
-        assert (
-            db_session.query(OntWanServiceInstance)
-            .filter(OntWanServiceInstance.ont_id == sample_ont.id)
-            .count()
-            == 1
+        """The reset closes WAN service intents; it no longer deletes them.
+
+        This test previously asserted the row count fell to zero. Deletion threw
+        away the only record of what a service had been declared to be, which is
+        exactly the evidence a later "did this ONT ever legitimately terminate
+        PPP for this subscription?" adjudication needs. The row now survives in
+        ``retired``, carrying the reason the reset was performed.
+        """
+        rows = db_session.query(OntWanServiceInstance).filter(
+            OntWanServiceInstance.ont_id == sample_ont.id
         )
+        assert rows.count() == 1
 
         reset_ont_service_state(db_session, sample_ont, reason="test")
         db_session.flush()
 
-        assert (
-            db_session.query(OntWanServiceInstance)
-            .filter(OntWanServiceInstance.ont_id == sample_ont.id)
-            .count()
-            == 0
-        )
+        assert rows.count() == 1, "history must survive the reset"
+        instance = rows.one()
+        assert instance.lifecycle_state is OntWanServiceLifecycle.retired
+        assert instance.retired_at is not None
+        assert instance.retired_reason == "test"
+        # is_active is derived from lifecycle_state, never a second authority.
+        assert instance.is_active is False
 
 
 def test_return_to_inventory_releases_management_ip_for_reauthorization(

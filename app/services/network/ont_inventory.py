@@ -15,7 +15,6 @@ from app.models.network import (
     OLTDevice,
     OntAssignment,
     OntProvisioningStatus,
-    OntWanServiceInstance,
 )
 from app.services import network as network_service
 from app.services.events import emit_event
@@ -690,17 +689,30 @@ def reset_ont_service_state(db: Session, ont, *, reason: str = "service_reset") 
     Args:
         db: Database session
         ont: ONT unit to reset
-        reason: Reason for the reset, retained for caller clarity.
+        reason: Reason for the reset. Recorded as the retirement reason on every
+            WAN service intent this reset closes, so the history says why.
     """
-    del reason
+    from app.services.network.ont_wan_service_intent import (
+        retire_ont_intents_in_transaction,
+    )
+    from app.services.owner_commands import CommandContext
 
     clear_desired_config(ont)
 
-    wan_service_instances = db.scalars(
-        select(OntWanServiceInstance).where(OntWanServiceInstance.ont_id == ont.id)
-    ).all()
-    for instance in wan_service_instances:
-        db.delete(instance)
+    # Retired, not deleted. These rows are the record of what a service was
+    # declared to be; a later adjudication of "did this ONT ever legitimately
+    # terminate PPP for this subscription?" has nothing to read if the reset
+    # erased them. The owner also keeps lifecycle_state and is_active in step,
+    # which the previous bulk delete had no way to express.
+    retire_ont_intents_in_transaction(
+        db,
+        ont_id=ont.id,
+        context=CommandContext.system(
+            actor="system:ont_inventory.reset_ont_service_state",
+            reason=reason,
+            scope=f"ont:{ont.id}",
+        ),
+    )
 
     set_provisioning_status(ont, OntProvisioningStatus.unprovisioned, strict=False)
     ont.last_provisioned_at = None
