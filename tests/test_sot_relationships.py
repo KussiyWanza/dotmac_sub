@@ -405,6 +405,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "events.dispatcher",
         "events.owner_outputs",
         "operations.sla_escalation",
+        "support.ticket_lifecycle",
     )
     assert sot_relationships.dependencies_for("network.device_groups") == (
         "network.identity",
@@ -646,6 +647,13 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "ui.support_ticket_list_projection",
         "support.ticket_bulk_commands",
     )
+    assert sot_relationships.dependencies_for(
+        "ui.customer_network_path_projection"
+    ) == (
+        "network.access_path",
+        "network.fiber_topology",
+        "ui.status_presentation",
+    )
     assert sot_relationships.dependencies_for("ui.status_presentation") == (
         "customer.service_status",
         "financial.invoices",
@@ -653,6 +661,8 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "network.device_state",
         "network.connection_health",
         "network.outage_lifecycle",
+        "network.access_path",
+        "network.radio_signal",
         "support.ticket_lifecycle",
         "operations.work_order_status",
         "operations.vendor_project_lifecycle",

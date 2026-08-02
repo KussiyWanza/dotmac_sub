@@ -1,0 +1,20 @@
+{% from "admin/customers/_network_path.html" import network_path_graph %}
+{# Passive fibre plant fragment. Identity and continuity from
+   network.fiber_topology via ui.customer_network_path_projection —
+   passive equipment renders "Passive", never a fabricated up/down. #}
+{% if fiber_path and fiber_path.nodes %}
+{{ network_path_graph(fiber_path, request, testid="fiber-plant-path") }}
+{% elif fiber_path %}
+<p class="text-xs text-slate-500 dark:text-slate-400" data-testid="fiber-plant-path-empty">
+    The fibre owner recorded no validated plant hops for this subscription.
+</p>
+{% for gap in fiber_path.gaps %}
+<p class="mt-1 text-xs status-tone-{{ gap.presentation.tone }} status-foreground">
+    <span class="font-medium">{{ gap.presentation.label }}</span> &mdash; {{ gap.message }}
+</p>
+{% endfor %}
+{% else %}
+<p class="text-xs text-slate-500 dark:text-slate-400" data-testid="fiber-plant-path-empty">
+    No validated fibre plant path is recorded for this subscription.
+</p>
+{% endif %}

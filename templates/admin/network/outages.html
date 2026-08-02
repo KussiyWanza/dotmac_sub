@@ -86,7 +86,19 @@
                 <tr class="border-t border-slate-100 dark:border-slate-700">
                     <td class="py-2 text-slate-700 dark:text-slate-200">{{ row.target }}{% if row.stale %} <span class="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="Open longer than 36h — review and resolve if the outage is over">stale</span>{% endif %}</td>
                     <td>{{ status_presentation_badge(row.status_presentation, size="sm") }}</td>
-                    <td class="font-semibold text-slate-900 dark:text-white">{{ row.incident.affected_count }}</td>
+                    <td class="text-xs">
+                        <span class="font-semibold text-slate-900 dark:text-white">{{ row.impact.audience_count }}</span>
+                        <span class="text-slate-500 dark:text-slate-400">exposed</span>
+                        {% if row.impact.confirmed_unavailable %}
+                        <span class="ml-1 rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">{{ row.impact.confirmed_unavailable }} confirmed unavailable</span>
+                        {% endif %}
+                        {% if row.impact.potentially_affected %}
+                        <span class="ml-1 text-slate-500 dark:text-slate-400">{{ row.impact.potentially_affected }} potentially affected</span>
+                        {% endif %}
+                        {% if row.infrastructure_link %}
+                        <a href="/admin/support/tickets/{{ row.infrastructure_link.ticket_id }}" class="ml-1 text-blue-600 underline hover:text-blue-700 dark:text-blue-400">infra ticket</a>
+                        {% endif %}
+                    </td>
                     <td class="min-w-[14rem] text-xs text-slate-500">
                         {% set counts = row.delivery_audit.counts %}
                         {% if row.delivery_audit.total %}
