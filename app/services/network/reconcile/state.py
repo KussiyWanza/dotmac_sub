@@ -425,8 +425,21 @@ class ReconcileResult:
     """Outcome of a single reconcile pass.
 
     On success: ``actions_applied`` describes what was written, ``observed_after``
-    is the fresh ``OntObservedState`` the caller persists, ``sync_status`` is
-    ``synced``, ``failure`` is None.
+    is the fresh ``OntObservedState`` the caller persists, ``failure`` is None,
+    and ``sync_status`` is ``synced`` -- UNLESS the pass withheld work by
+    policy.
+
+    Success with residual drift. PPP actions refused by delivery authorization
+    are residual drift, so such a pass succeeds (nothing was rejected, and
+    everything unrelated converged) while reporting ``sync_status ==
+    "out_of_sync"`` with ``failure`` None and ``drift_after`` naming what was
+    withheld. ``sync_status`` mirrors the persisted ``OntUnit.sync_status``
+    rather than being re-derived from ``success``; the two must not disagree.
+
+    Distinguishing this from a hard failure is ``OntUnit.last_error``: real
+    failures record one, policy-withheld drift does not. The ``mode="sync"``
+    guard keys off that, so a device whose PPP is deliberately blocked still
+    accepts ordinary management, Wi-Fi and LAN convergence on later passes.
 
     On failure: ``actions_applied`` may be non-empty (partial — the reconciler
     completed some writes before the failing one). ``observed_after`` may be

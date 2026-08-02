@@ -61,7 +61,9 @@ import hmac
 import json
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlalchemy import and_, select
 
@@ -260,17 +262,20 @@ def termination_intent(db: Session, ont_id: Any) -> tuple[bool, str]:
     producer cannot stage what delivery would refuse to send.
     """
     from app.services.network.ppp_delivery_authorization import (
-        authorize_ppp_delivery,
+        authorize_ppp_termination_intent,
     )
 
-    ruling = authorize_ppp_delivery(db, ont_id)
+    # Intent only: this gate runs BEFORE anything is staged, so it must not
+    # require a staged projection to already exist. Delivery adds the
+    # credential and projection checks.
+    ruling = authorize_ppp_termination_intent(db, ont_id)
     return ruling.authorized, (
         ruling.refusal.value if ruling.refusal else "managed_ont_pppoe"
     )
 
 
 def _authoritative_credentials(
-    db: Session, subscription_ids: list[Any]
+    db: Session, subscription_ids: list[Any], *, for_update: bool = False
 ) -> tuple[dict[Any, AccessCredential], frozenset[Any]]:
     """Exactly one active credential per EXACT subscription, or none.
 
@@ -286,11 +291,41 @@ def _authoritative_credentials(
     """
     if not subscription_ids:
         return {}, frozenset()
-    rows = db.scalars(
-        select(AccessCredential)
-        .where(AccessCredential.subscription_id.in_(subscription_ids))
-        .where(AccessCredential.is_active.is_(True))
-    ).all()
+    if for_update:
+        # Phantom-read guard. Filtering `is_active` BEFORE `FOR UPDATE` locks
+        # only the rows that are already active, so it cannot block an inactive
+        # credential being activated concurrently, nor a second active
+        # credential being inserted. There is no one-active-per-subscription
+        # constraint in the schema -- only username uniqueness -- so the
+        # "exactly one" ruling would not be transaction-stable.
+        #
+        # Instead: lock the owning Subscription rows (the parent lock blocks
+        # new FK inserts and rebinding), then lock EVERY credential row for
+        # them with no active filter (blocking activation and secret changes),
+        # and decide the active set in memory.
+        from app.models.catalog import Subscription
+
+        db.scalars(
+            select(Subscription)
+            .where(Subscription.id.in_(subscription_ids))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        locked = db.scalars(
+            select(AccessCredential)
+            .where(AccessCredential.subscription_id.in_(subscription_ids))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        rows = [row for row in locked if row.is_active]
+    else:
+        rows = list(
+            db.scalars(
+                select(AccessCredential)
+                .where(AccessCredential.subscription_id.in_(subscription_ids))
+                .where(AccessCredential.is_active.is_(True))
+            ).all()
+        )
 
     by_subscription: dict[Any, list[AccessCredential]] = {}
     for row in rows:
@@ -307,6 +342,111 @@ def _authoritative_credentials(
             if len(found) > 1
         ),
     )
+
+
+class DialerCredentialRefusal(StrEnum):
+    """Why a service has no usable dialer credential. One code per cause."""
+
+    missing = "dialer_credential_missing"
+    ambiguous = "dialer_credential_ambiguous"
+    unreadable = "dialer_credential_unreadable"
+    key_unavailable = "dialer_credential_key_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class DialerCredentialAuthority:
+    """The keyed fingerprint of the one credential a service may dial with.
+
+    Carries no username and no secret: this object is compared, logged and
+    embedded in delivery rulings.
+    """
+
+    subscription_id: str
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class DialerCredentialAuthorityResult:
+    """Typed outcome of resolving a service's dialer credential authority."""
+
+    authority: DialerCredentialAuthority | None = None
+    refusal: DialerCredentialRefusal | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.authority is not None and self.refusal is None
+
+
+def authoritative_dialer_fingerprint(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    for_update: bool = False,
+) -> DialerCredentialAuthorityResult:
+    """The authoritative dialer fingerprint for one exact service.
+
+    Public, typed, and owned here because this module owns the credential
+    projection: delivery authorization must not re-derive credential ownership
+    from a staged payload, which would let an already-projected foreign
+    credential authorise itself.
+
+    ``for_update`` is for DELIVERY, which binds this fingerprint into a ruling
+    and must not race a credential rotation. It also forces a refresh: two ORM
+    reads in one session would otherwise both be served from the identity map
+    and reproduce a stale secret. The producer passes ``False`` -- see the lock
+    policy in this module's docstring.
+
+    Every failure is a refusal, never a fallback: a credential that cannot be
+    read or keyed is indistinguishable from one that does not authorise a
+    delivery.
+    """
+    if subscription_id is None:
+        return DialerCredentialAuthorityResult(refusal=DialerCredentialRefusal.missing)
+    credentials, ambiguous = _authoritative_credentials(
+        db, [subscription_id], for_update=for_update
+    )
+    if subscription_id in ambiguous:
+        return DialerCredentialAuthorityResult(
+            refusal=DialerCredentialRefusal.ambiguous
+        )
+    credential = credentials.get(subscription_id)
+    if credential is None:
+        return DialerCredentialAuthorityResult(refusal=DialerCredentialRefusal.missing)
+
+    username = (credential.username or "").strip() or None
+    secret = _safe_decrypt(credential.secret_hash)
+    if secret is None:
+        # Undecryptable or absent. Repairing it belongs to the credential
+        # owner; here it simply cannot authorise a device write.
+        return DialerCredentialAuthorityResult(
+            refusal=DialerCredentialRefusal.unreadable
+        )
+    try:
+        fingerprint = dialer_fingerprint(username, secret)
+    except DialerFingerprintUnavailable:
+        # No encryption key: refuse rather than degrade to an unkeyed digest.
+        return DialerCredentialAuthorityResult(
+            refusal=DialerCredentialRefusal.key_unavailable
+        )
+    if fingerprint is None:
+        return DialerCredentialAuthorityResult(
+            refusal=DialerCredentialRefusal.unreadable
+        )
+    return DialerCredentialAuthorityResult(
+        authority=DialerCredentialAuthority(
+            subscription_id=str(subscription_id), fingerprint=fingerprint
+        )
+    )
+
+
+def projected_dialer_fingerprint(ont: Any) -> str | None:
+    """The fingerprint recorded on the ONT's staged projection, if any."""
+    config = desired_config(ont) if ont is not None else {}
+    value = get_desired_config_value(
+        config, "delivery", "dialer_credential_fingerprint"
+    )
+    text = str(value or "").strip()
+    return text or None
 
 
 def reconcile_cpe_dialer_credentials(

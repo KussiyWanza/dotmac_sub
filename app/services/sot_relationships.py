@@ -15809,18 +15809,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "no_pppoe_service_intent",
-                            "ambiguous_pppoe_service_intent",
+                            "no_active_service_intent",
                             "bridged_service_intent",
+                            "no_active_assignment",
+                            "ambiguous_assignment",
                             "unresolvable_ont",
+                            "scope_mismatch",
                         ),
                         mapping_owner="app.services.network.reconcile.applier",
                         fail_closed_on=(
-                            "no active PPPoE service instance",
-                            "more than one active PPPoE service instance",
+                            "no ACTIVE owner-managed intent for the exact "
+                            "ont+subscription pair, which includes every "
+                            "pre-owner row quarantined as unverified",
                             "an active bridged service instance",
+                            "no active subscriber assignment on the ONT",
+                            "more than one active assignment, so no exact "
+                            "service can be resolved",
                             "an ONT identity that cannot be resolved",
+                            "a ruling presented for a different ONT, service "
+                            "or credential scope than the one being delivered",
                             "an absent ruling at apply time",
+                            "an action whose PPP purpose is indeterminate",
                         ),
                     ),
                     migration=MigrationContract(
@@ -15829,15 +15838,20 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         old_owner="implicit: staged desired state",
                         verification=(
                             "tests/test_ppp_delivery_authorization.py pins that "
-                            "the whole PPP bundle is gated, that unrelated "
-                            "reconciliation is not, and that an absent ruling "
-                            "refuses rather than passes."
+                            "PPP-bearing actions are gated while management work "
+                            "is not, that an absent or wrong-scope ruling refuses "
+                            "rather than passes, and that an unverified legacy row "
+                            "does not authorise even when legacy is_active is true."
                         ),
                         cutover_gate=(
-                            "OntWanServiceInstance gaining exact subscription_id "
-                            "ownership and a one-active-primary constraint is the "
-                            "open architecture decision; until then intent is read "
-                            "at ONT grain."
+                            "Authority is network.ont_wan_service_intent."
+                            "active_primary_internet_intent at exact "
+                            "ont+subscription grain. Legacy is_active is NOT read: "
+                            "migration 456 leaves it untouched, so reading it "
+                            "would authorise exactly the unverified rows the owner "
+                            "slice quarantined. Remaining gate: the read-only "
+                            "legacy worklist, adjudication through owner commands, "
+                            "then the partial unique indexes."
                         ),
                         fallback_retirement=(
                             "The 1,318-row staged backlog is removed by a "
@@ -15846,7 +15860,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     steward="network",
-                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    design_refs=(
+                        "docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
                     test_refs=(
                         "tests/test_ppp_delivery_authorization.py",
                         "tests/test_cpe_dialer_credential_intent_gate.py",

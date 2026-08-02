@@ -49,6 +49,8 @@ from sqlalchemy.orm import Session
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
 from app.services.network.ppp_delivery_authorization import (
     authorize_ppp_delivery,
+    derive_delivery_scope,
+    is_ppp_attributable_drift,
 )
 
 from .adapters import (
@@ -73,6 +75,7 @@ from .readers.reachability import PingFunction, is_pingable
 from .secrets import default_secret_resolver_from_env
 from .state import (
     AcsObservedFields,
+    Drift,
     OltObservedFields,
     OntDesiredState,
     OntObservedState,
@@ -140,7 +143,18 @@ def reconcile_ont(
     try:
         with acquire_reconcile_lock(db, ont_unit_id) as ont:
             # ── Mode guard ──────────────────────────────────────────────────
-            if mode == "sync" and ont.sync_status == OntSyncStatus.out_of_sync:
+            if (
+                mode == "sync"
+                and ont.sync_status == OntSyncStatus.out_of_sync
+                # Only HARD out-of-sync blocks. A failed write, a crashed pass
+                # or an unreachable surface records `last_error`; PPP work
+                # withheld by delivery policy records none. Blocking on the
+                # latter would freeze the device permanently, because the
+                # refusal recurs every pass by design -- so unrelated
+                # management, Wi-Fi and LAN changes could never converge again
+                # even though nothing is broken.
+                and ont.last_error is not None
+            ):
                 # Including just-recovered crashes (lock module sets out_of_sync
                 # then yields). Per Hole 7 design: operator must explicitly use
                 # sweep/force-reconcile to clear.
@@ -292,7 +306,13 @@ def reconcile_ont(
             # model. This is deliberately not derived from the plan: the plan
             # says what desired state wants, and this says whether the service
             # is allowed to terminate PPP on this ONT at all.
-            ppp_ruling = authorize_ppp_delivery(db, ont.id)
+            # The ruling is issued against the PPP content of THIS plan, and
+            # the scope is derived independently from live state plus the same
+            # plan. Comparing them at apply time is a real check; echoing the
+            # ruling's own fields back at it -- which an earlier version did --
+            # compared the ruling against itself and enforced nothing.
+            ppp_ruling = authorize_ppp_delivery(db, ont, actions=plan.actions)
+            ppp_scope = derive_delivery_scope(db, ont, plan.actions)
             if not ppp_ruling.authorized:
                 logger.info(
                     "reconcile_ppp_delivery_not_authorized",
@@ -303,6 +323,7 @@ def reconcile_ont(
                 acs_client=acs_client,
                 resolve_secret=secret_resolver,
                 ppp_authorization=ppp_ruling,
+                ppp_scope=ppp_scope,
             )
             apply_outcome = apply_plan(plan, ctx, deadline=deadline)
 
@@ -332,6 +353,25 @@ def reconcile_ont(
                     before=prior_unreachable,
                 )
 
+            # PPP work withheld by delivery authorization is residual drift,
+            # not convergence. `synced` is defined as "zero residual drift", so
+            # reporting it would state that a device matches desired state
+            # while its dialer actions were deliberately never sent -- the
+            # containment would vanish from every surface that reads
+            # sync_status. It is still not a failure: everything unrelated
+            # converged and no write was rejected, so no `last_error` is
+            # recorded and the sweeper must not retry-storm against it.
+            residual_ppp_drift = tuple(
+                Drift(
+                    field=f"ppp_delivery[{refused.action_name}]",
+                    surface="acs" if refused.action_name.startswith("Acs") else "olt",
+                    desired=refused.refusal,
+                    observed=None,
+                    repairable=False,
+                )
+                for refused in apply_outcome.refused_ppp
+            )
+
             # ── Verification re-read ────────────────────────────────────────
             # No-drift-tolerance: refuse to acknowledge convergence unless we
             # can re-read and confirm the planner produces an empty plan
@@ -339,7 +379,11 @@ def reconcile_ont(
             # (drift was zero from the start), there is nothing to verify.
             acs_wait = _acs_wait_failure(plan)
 
-            if not apply_outcome.actions_applied:
+            # A plan whose every action was refused also applies nothing, and
+            # must not take the "nothing to verify" shortcut: that path reports
+            # zero drift, which is exactly the false convergence this gate
+            # exists to prevent.
+            if not apply_outcome.actions_applied and not residual_ppp_drift:
                 if acs_wait is not None:
                     return _finalise(
                         db,
@@ -367,7 +411,7 @@ def reconcile_ont(
                     observed_after=observed_before,
                     actions_applied=apply_outcome.actions_applied,
                     drift_before=plan.drifts,
-                    drift_after=(),
+                    drift_after=residual_ppp_drift,
                 )
 
             verify_olt_result, verify_acs_result = _read_observed_parallel(
@@ -437,6 +481,34 @@ def reconcile_ont(
                 proposed_fields=proposed_fields,
                 force_proposed_writes=False,
             )
+            # Drift that only exists because delivery authorization withheld
+            # the repair is not a verification failure -- the reconciler did
+            # not fail to converge it, it was forbidden from trying. Left
+            # unfiltered this would hard-fail every pass on a contained ONT
+            # forever, which is indistinguishable from a broken device.
+            # Attribution is per DRIFT, not per action: a non-repairable
+            # drift carries no action at all, so an "every action is PPP"
+            # verdict would exempt unrelated residual drift that happens to
+            # have no repair. Every drift not attributable to the withheld PPP
+            # work is preserved and still fails verification.
+            unattributed = tuple(
+                drift
+                for drift in verify_plan.drifts
+                if not is_ppp_attributable_drift(drift)
+            )
+            if verify_plan.drifts and residual_ppp_drift and not unattributed:
+                return _finalise(
+                    db,
+                    ont,
+                    success=True,
+                    failure=None,
+                    started_monotonic=started_monotonic,
+                    observed_after=observed_after,
+                    actions_applied=apply_outcome.actions_applied,
+                    drift_before=plan.drifts,
+                    drift_after=residual_ppp_drift,
+                )
+
             if verify_plan.drifts:
                 # AUDIT-ONLY (dry-run for the future ACS verify-read grace):
                 # classify the residual drift and record whether this mismatch
@@ -513,7 +585,7 @@ def reconcile_ont(
                 observed_after=observed_after,
                 actions_applied=apply_outcome.actions_applied,
                 drift_before=plan.drifts,
-                drift_after=(),
+                drift_after=residual_ppp_drift,
             )
 
     except OntNotFound as exc:
@@ -723,7 +795,14 @@ def _finalise(
     now = datetime.now(UTC)
     duration_ms = int((time.monotonic() - started_monotonic) * 1000)
 
-    if success:
+    if success and drift_after:
+        # Converged everything it was allowed to, but something was withheld.
+        # Not `synced` (which asserts zero residual drift) and not a failure
+        # either -- no write was rejected. The drift stays visible so the
+        # withheld PPP work is discoverable rather than silently absent.
+        ont.sync_status = OntSyncStatus.out_of_sync
+        ont.last_error = None
+    elif success:
         ont.sync_status = OntSyncStatus.synced
         ont.last_error = None
         cleared = clear_acs_delivery_fault(ont)
@@ -744,7 +823,11 @@ def _finalise(
 
     return ReconcileResult(
         success=success,
-        sync_status=("synced" if success else "out_of_sync"),
+        # The status actually persisted above, not a re-derivation of it. A
+        # pass that withheld PPP work persists `out_of_sync` while still
+        # succeeding, so re-deriving from `success` alone made the public
+        # result contradict the database row it had just written.
+        sync_status=ont.sync_status.value,
         actions_applied=tuple(actions_applied),
         drift_before=tuple(drift_before),
         drift_after=tuple(drift_after),
