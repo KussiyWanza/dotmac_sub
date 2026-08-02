@@ -134,16 +134,16 @@ def reconcile_incident_accrual(
         recovery_at = (
             _utc(incident.cleared_at) or _utc(incident.resolved_at) or evaluated_at
         )
-        for interval in open_intervals.values():
-            if interval.ended_at is None:
-                interval.ended_at = recovery_at
-                interval.recovery_evidence_ref = (
+        for open_interval in open_intervals.values():
+            if open_interval.ended_at is None:
+                open_interval.ended_at = recovery_at
+                open_interval.recovery_evidence_ref = (
                     f"incident:{incident.id}:{incident.status}"
                 )
                 provisionally_ended += 1
-            if discarded and interval.exclusion_candidate is None:
-                interval.exclusion_candidate = _DISCARD_EXCLUSION
-            interval.finalized_at = evaluated_at
+            if discarded and open_interval.exclusion_candidate is None:
+                open_interval.exclusion_candidate = _DISCARD_EXCLUSION
+            open_interval.finalized_at = evaluated_at
             finalized += 1
         db.flush()
         return AccrualReconcileResult(
