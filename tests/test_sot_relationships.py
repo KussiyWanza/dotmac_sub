@@ -405,6 +405,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "events.dispatcher",
         "events.owner_outputs",
         "operations.sla_escalation",
+        "support.ticket_lifecycle",
     )
     assert sot_relationships.dependencies_for("network.device_groups") == (
         "network.identity",

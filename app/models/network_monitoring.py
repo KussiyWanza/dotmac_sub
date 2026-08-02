@@ -1186,6 +1186,63 @@ class CustomerOutageInterval(Base):
     )
 
 
+class OutageIncidentTicketLink(Base):
+    """Typed incident↔ticket relationship (OUTAGE_SLA_SPINE §S6).
+
+    Supersedes the ``OutageIncident.crm_ticket_id`` placeholder: exactly one
+    canonical ``infrastructure`` ticket per incident (partial unique index),
+    any number of linked ``complaint`` tickets (deduplicated per pair). The
+    link records provenance, external CRM identity, reconciliation state,
+    and the scope-revision context it was made under. Network recovery emits
+    evidence only — nothing here ever transitions a Ticket or WorkOrder.
+    """
+
+    __tablename__ = "outage_incident_ticket_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "incident_id",
+            "ticket_id",
+            name="uq_outage_incident_ticket_links_pair",
+        ),
+        Index(
+            "uq_outage_incident_ticket_links_infrastructure",
+            "incident_id",
+            unique=True,
+            postgresql_where=text("role = 'infrastructure'"),
+            sqlite_where=text("role = 'infrastructure'"),
+        ),
+        Index("ix_outage_incident_ticket_links_ticket", "ticket_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("support_tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # infrastructure | complaint
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    linked_by: Mapped[str | None] = mapped_column(String(120))
+    # operator | system | crm_sync
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(String(120))
+    # native | pending | synced | drift
+    reconciliation_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="native"
+    )
+    scope_revision_sequence: Mapped[int | None] = mapped_column(Integer)
+
+
 class MaintenanceWindow(Base):
     """One planned maintenance window (OUTAGE_SLA_SPINE §5).
 

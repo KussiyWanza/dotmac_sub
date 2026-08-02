@@ -95,6 +95,9 @@
                         {% if row.impact.potentially_affected %}
                         <span class="ml-1 text-slate-500 dark:text-slate-400">{{ row.impact.potentially_affected }} potentially affected</span>
                         {% endif %}
+                        {% if row.infrastructure_link %}
+                        <a href="/admin/support/tickets/{{ row.infrastructure_link.ticket_id }}" class="ml-1 text-blue-600 underline hover:text-blue-700 dark:text-blue-400">infra ticket</a>
+                        {% endif %}
                     </td>
                     <td class="min-w-[14rem] text-xs text-slate-500">
                         {% set counts = row.delivery_audit.counts %}

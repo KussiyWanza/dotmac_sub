@@ -16818,6 +16818,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "persisted outage incident status vocabulary",
                     "outage incident lifecycle",
                     "immutable incident scope and audience revision history",
+                    "incident ticket link composition",
                     "typed outage lifecycle output emission",
                     "committed outage output consumption",
                 ),
@@ -16826,6 +16827,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "events.dispatcher",
                     "events.owner_outputs",
                     "operations.sla_escalation",
+                    "support.ticket_lifecycle",
                 ),
                 notes=(
                     "Every incident transition stages its typed outage output "
@@ -16867,6 +16869,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "recorded outage incidents",
                                 "resolved outage impact",
+                            ),
+                            canonical_writer="network.outage_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="incident ticket link composition",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "recorded outage incidents",
+                                "support ticket identities",
                             ),
                             canonical_writer="network.outage_lifecycle",
                         ),
@@ -16913,6 +16924,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "operational owners, watchers, room links, "
                                 "escalation events, and deliveries"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="support ticket identities",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "support_tickets row identities for the one "
+                                "canonical infrastructure link and the "
+                                "deduplicated complaint links; ticket "
+                                "transitions stay with the Support owner"
                             ),
                         ),
                         AuthorityInput(
