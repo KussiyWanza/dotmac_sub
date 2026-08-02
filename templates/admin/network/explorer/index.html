@@ -51,7 +51,13 @@
                 <span class="ml-2 text-xs font-normal text-slate-500 dark:text-slate-400">{{ graph.nodes | length }} nodes · evaluated {{ graph.evaluated_at }}</span>
             </p>
         </div>
-        <div id="explorerCanvas" class="h-[560px] w-full" data-testid="explorer-canvas"></div>
+        <div class="relative">
+            <div id="explorerCanvas" class="h-[560px] w-full" data-testid="explorer-canvas"></div>
+            <div id="explorerInspector" class="absolute right-3 top-3 hidden w-80 max-w-[90%] rounded-xl border border-slate-200 bg-white p-4 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                <button type="button" id="explorerInspectorClose" class="absolute right-2 top-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close inspector">&times;</button>
+                <div id="explorerInspectorBody"><p class="text-xs text-slate-500 dark:text-slate-400">Loading...</p></div>
+            </div>
+        </div>
 
         {# Accessible fallback: the same owner facts as a list, always rendered. #}
         <details class="border-t border-slate-100 px-5 py-3 dark:border-slate-700" data-testid="explorer-list-fallback">
@@ -160,9 +166,43 @@
         layout: { name: (typeof cytoscapeDagre !== 'undefined') ? 'dagre' : 'breadthfirst', rankDir: 'TB', nodeSep: 30, rankSep: 70 },
         wheelSensitivity: 0.2
     });
+    // Node kind -> inspector subject kind. Cohort nodes navigate to their
+    // canonical list instead of inspecting.
+    var SUBJECT_KIND = {
+        network_device: 'device', ont: 'ont', radio: 'radio', olt: 'olt',
+        pon_port: 'pon_port', nas: 'nas', fdh: 'fdh', pop: 'pop_site',
+        subscription: 'subscription', subscriber: 'subscriber', ap: 'device'
+    };
+    var panel = document.getElementById('explorerInspector');
+    var panelBody = document.getElementById('explorerInspectorBody');
+    var closeButton = document.getElementById('explorerInspectorClose');
+    if (closeButton) {
+        closeButton.addEventListener('click', function () { panel.classList.add('hidden'); });
+    }
+    graphData.nodes.forEach(function (node) {
+        var el = cy.getElementById(node.id);
+        if (el) { el.data('assetId', node.asset_id || null); }
+    });
     cy.on('tap', 'node', function (evt) {
-        var href = evt.target.data('href');
-        if (href) { window.location.href = href; }
+        var kind = evt.target.data('kind');
+        var assetId = evt.target.data('assetId');
+        var subjectKind = SUBJECT_KIND[kind];
+        if (!subjectKind || !assetId) {
+            var href = evt.target.data('href');
+            if (href) { window.location.href = href; }
+            return;
+        }
+        panel.classList.remove('hidden');
+        panelBody.innerHTML = '<p class="text-xs text-slate-500 dark:text-slate-400">Loading...</p>';
+        fetch('/admin/network/explorer/inspect?subject=' + encodeURIComponent(subjectKind + ':' + assetId))
+            .then(function (response) { return response.text(); })
+            .then(function (html) { panelBody.innerHTML = html; })
+            .catch(function () {
+                panelBody.innerHTML = '<p class="text-xs text-slate-500 dark:text-slate-400">Inspector unavailable.</p>';
+            });
+    });
+    cy.on('tap', function (evt) {
+        if (evt.target === cy) { panel.classList.add('hidden'); }
     });
 })();
 </script>

@@ -1,7 +1,8 @@
 # Unified Network Explorer
 
-Status: adopted (programme slice PR 3 — explorer shell, typed search, and
-subject-centred bounded graphs). Presentation and information rules follow
+Status: adopted (programme slices PR 3 — explorer shell, typed search, and
+subject-centred bounded graphs — and PR 4 — the on-demand operational
+inspector). Presentation and information rules follow
 `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`. The Customer 360 companion
 contract is `docs/designs/CUSTOMER_NETWORK_PATH.md`.
 
@@ -66,6 +67,26 @@ counts remain aggregates.
 - `GET /admin/network/explorer/api/graph?subject=...` returns the same
   `NetworkGraphView.to_dict()` JSON for on-demand recentring.
 - Routes authorize and render only; no SQL in `app/web`.
+
+## Operational inspector
+
+Selecting a graph node opens the archetype-C on-demand inspector — an
+overlay fetched from `GET /admin/network/explorer/inspect?subject=...`
+(`build_inspector`, rendered by
+`templates/admin/network/explorer/_inspector.html`). It composes, per
+subject: identity and the asset deep link; the owner verdict with its
+machine reason and observation time (`network.device_state` for devices,
+`network.olt_observed_state` words for ONTs, `network.radio_signal` for
+radios); owner-composed measurements (ONT optical power and temperature, RF
+signal with freshness); bounded neighbourhood facts; the reverse
+affected-customer cohort from `network.outage_impact` (count plus
+online-now); live incidents from `network.outage_lifecycle` scoped to the
+node, basestation, or cabinet, rendered through
+`outage_status_presentation`; and a Customer 360 deep link
+(`customer:read`-gated) where a subscription or subscriber is bound. The
+customer detail Active Path reciprocates with an "Open in Explorer" link.
+Customer-identity subjects refuse to inspect without `customer:read`.
+Alarm-stream context beyond live incidents is a later slice.
 
 ## Performance and safety
 

@@ -66,6 +66,31 @@ def network_explorer(
 
 
 @router.get(
+    "/explorer/inspect",
+    response_class=HTMLResponse,
+    dependencies=[
+        Depends(require_permission(network_explorer_service.EXPLORER_PAGE_PERMISSION))
+    ],
+)
+def network_explorer_inspect(
+    request: Request,
+    subject: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """On-demand inspector fragment for a selected subject."""
+
+    inspector = network_explorer_service.build_inspector(
+        db,
+        subject,
+        include_customer_identity=_include_customer_identity(request, db),
+    )
+    return templates.TemplateResponse(
+        "admin/network/explorer/_inspector.html",
+        {"request": request, "inspector": inspector},
+    )
+
+
+@router.get(
     "/explorer/api/graph",
     dependencies=[
         Depends(require_permission(network_explorer_service.EXPLORER_PAGE_PERMISSION))

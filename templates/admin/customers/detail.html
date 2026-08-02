@@ -2063,7 +2063,12 @@
                             {% endif %}
                             {% if card.network_path and (card.network_path.nodes or card.network_path.gaps) %}
                             <div class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
-                                <p class="mb-2 text-xs text-slate-500 dark:text-slate-400">Active Path</p>
+                                <p class="mb-2 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                                    <span>Active Path</span>
+                                    {% if can(request, 'network:device:read') %}
+                                    <a href="/admin/network/explorer?subject=subscription:{{ card.subscription_id }}" class="font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open in Explorer</a>
+                                    {% endif %}
+                                </p>
                                 {{ network_path_graph(card.network_path, request) }}
                                 {% if card.access_endpoint and card.access_endpoint.access_kind == 'olt' and can(request, 'network:fiber:read') %}
                                 <details class="mt-2">

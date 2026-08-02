@@ -247,3 +247,99 @@ def test_view_json_safety(db_session):
 
     payload = json.dumps(view.to_dict())
     assert "schema_version" in payload
+
+
+# --- inspector -------------------------------------------------------------
+
+
+def test_device_inspector_composes_verdict_impact_and_incidents(db_session):
+    from app.models.network_monitoring import OutageIncident
+
+    device = _device(db_session, "Inspect-1", role="access")
+    incident = OutageIncident(
+        root_node_id=device.id,
+        status="confirmed",
+        declared_by="classifier",
+    )
+    db_session.add(incident)
+    db_session.commit()
+
+    inspector = explorer.build_inspector(
+        db_session, f"device:{device.id}", include_customer_identity=True
+    )
+
+    assert inspector.kind == "device"
+    assert inspector.label == "Inspect-1"
+    # The binary owner vocabulary, never a template-derived word.
+    assert inspector.state_presentation.value in ("working", "not_working")
+    assert inspector.state_reason
+    assert inspector.affected_count == 0
+    assert len(inspector.incidents) == 1
+    assert inspector.incidents[0].status == "confirmed"
+    assert inspector.incidents[0].presentation.tone.value in (
+        "negative",
+        "warning",
+    )
+    assert inspector.href == f"/admin/network/core-devices/{device.id}"
+    assert inspector.href_permission == "network:device:read"
+
+
+def test_ont_inspector_carries_optical_measurements_and_customer_link(db_session):
+    olt = _olt(db_session)
+    pon = _pon(db_session, olt)
+    ont = _ont(db_session, "INSP-ONT", pon_port_id=pon.id, olt_status="online")
+    ont.onu_rx_signal_dbm = -21.5
+    ont.onu_tx_signal_dbm = 2.4
+    db_session.commit()
+
+    inspector = explorer.build_inspector(
+        db_session, f"ont:{ont.id}", include_customer_identity=True
+    )
+
+    assert inspector.state_presentation.value == "up"
+    displays = {m.label: m.display for m in inspector.measurements}
+    assert displays["ONT receive power"] == "-21.5 dBm"
+    assert displays["ONT transmit power"] == "2.4 dBm"
+    # No assignment: no customer link is invented.
+    assert inspector.customer360_href is None
+
+
+def test_inspector_refuses_customer_subjects_without_identity(db_session):
+    assert (
+        explorer.build_inspector(
+            db_session,
+            f"subscription:{uuid.uuid4()}",
+            include_customer_identity=False,
+        )
+        is None
+    )
+
+
+def test_inspector_handles_unknown_subjects(db_session):
+    assert (
+        explorer.build_inspector(
+            db_session, "device:not-a-uuid", include_customer_identity=True
+        )
+        is None
+    )
+    assert (
+        explorer.build_inspector(
+            db_session, f"device:{uuid.uuid4()}", include_customer_identity=True
+        )
+        is None
+    )
+
+
+def test_pon_inspector_counts_are_bounded_queries(db_session):
+    olt = _olt(db_session)
+    pon = _pon(db_session, olt)
+    _ont(db_session, "CNT-1", pon_port_id=pon.id, olt_status="online")
+    _ont(db_session, "CNT-2", pon_port_id=pon.id)
+
+    inspector = explorer.build_inspector(
+        db_session, f"pon_port:{pon.id}", include_customer_identity=True
+    )
+
+    facts = {fact.label: fact.display for fact in inspector.facts}
+    assert facts["ONTs"] == "2"
+    assert facts["ONTs online"] == "1"

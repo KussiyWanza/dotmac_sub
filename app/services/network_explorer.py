@@ -36,6 +36,7 @@ from app.models.network import (
 )
 from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.subscriber import Subscriber
+from app.schemas.status_presentation import StatusPresentation
 from app.services.customer_network_path import (
     asset_link,
     project_subscription_network_path,
@@ -45,11 +46,13 @@ from app.services.network.ont_status import resolve_effective_ont_status
 from app.services.network_graph import (
     NetworkGraphEdge,
     NetworkGraphEvidence,
+    NetworkGraphMeasurement,
     NetworkGraphNode,
     NetworkGraphView,
 )
 from app.services.status_presentation import (
     device_operational_status_presentation,
+    outage_status_presentation,
     topology_hop_status_presentation,
 )
 from app.services.topology import affected
@@ -108,6 +111,53 @@ class ExplorerContext:
     @property
     def view_dict(self) -> dict[str, object] | None:
         return self.view.to_dict() if self.view else None
+
+
+@dataclass(frozen=True, slots=True)
+class InspectorIncident:
+    """One live incident covering the inspected subject."""
+
+    incident_id: str
+    status: str
+    presentation: StatusPresentation
+    detection_source: str | None
+    started_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class InspectorFact:
+    """One owner-provided identity or neighbourhood fact, ready to render."""
+
+    label: str
+    display: str
+    href: str | None = None
+    href_permission: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExplorerInspector:
+    """On-demand inspector projection for one subject.
+
+    Composes the owner verdict, its machine reason, owner-composed
+    measurements, live incidents, and the reverse affected-customer cohort.
+    Every list is bounded and every tone/label is owner-provided.
+    """
+
+    subject: str
+    kind: str
+    kind_label: str
+    label: str
+    href: str | None = None
+    href_permission: str | None = None
+    state_presentation: StatusPresentation | None = None
+    state_reason: str | None = None
+    observed_at: str | None = None
+    measurements: tuple[NetworkGraphMeasurement, ...] = ()
+    facts: tuple[InspectorFact, ...] = ()
+    affected_count: int | None = None
+    affected_online: int | None = None
+    incidents: tuple[InspectorIncident, ...] = ()
+    customer360_href: str | None = None
 
 
 def build_explorer_context(
@@ -1055,3 +1105,485 @@ def _pop_site_view(db, pop_site_id) -> NetworkGraphView | None:
             )
         )
     return _view("pop_site", pop_site_id, nodes, edges)
+
+
+# --- inspector -------------------------------------------------------------
+
+
+def build_inspector(
+    db: Session,
+    subject: str,
+    *,
+    include_customer_identity: bool,
+) -> ExplorerInspector | None:
+    """On-demand inspector for one subject; None when it cannot be proven."""
+
+    kind, _, raw_id = subject.partition(":")
+    if kind in _CUSTOMER_SUBJECT_KINDS and not include_customer_identity:
+        return None
+    builder = {
+        "subscription": _subscription_inspector,
+        "subscriber": _subscriber_inspector,
+        "ont": _ont_inspector,
+        "radio": _radio_inspector,
+        "device": _device_inspector,
+        "nas": _nas_inspector,
+        "olt": _olt_inspector,
+        "pon_port": _pon_inspector,
+        "fdh": _fdh_inspector,
+        "pop_site": _pop_site_inspector,
+    }.get(kind)
+    if builder is None or not raw_id:
+        return None
+    try:
+        subject_id = uuid_module.UUID(raw_id)
+    except ValueError:
+        return None
+    try:
+        return builder(db, subject_id, include_customer_identity)
+    except Exception:
+        logger.warning(
+            "Explorer inspector failed for subject %s", subject, exc_info=True
+        )
+        return None
+
+
+def _live_incidents(
+    db: Session,
+    *,
+    node_id=None,
+    basestation_id=None,
+    fdh_id=None,
+) -> tuple[InspectorIncident, ...]:
+    from app.services.topology.outage import detection_source, list_open_incidents
+
+    picked = []
+    for incident in list_open_incidents(db):
+        if (
+            (node_id is not None and incident.root_node_id == node_id)
+            or (
+                basestation_id is not None and incident.basestation_id == basestation_id
+            )
+            or (fdh_id is not None and incident.fdh_cabinet_id == fdh_id)
+        ):
+            picked.append(incident)
+    return tuple(
+        InspectorIncident(
+            incident_id=str(incident.id),
+            status=str(incident.status),
+            presentation=outage_status_presentation(incident.status),
+            detection_source=detection_source(incident),
+            started_at=(
+                incident.started_at.isoformat() if incident.started_at else None
+            ),
+        )
+        for incident in picked[:5]
+    )
+
+
+def _inspector(
+    subject_kind: str,
+    subject_id,
+    label: str,
+    **kwargs,
+) -> ExplorerInspector:
+    href = kwargs.pop("href", None)
+    href_permission = kwargs.pop("href_permission", None)
+    if href is None:
+        href, href_permission = asset_link(
+            {"device": "network_device", "pop_site": "pop"}.get(
+                subject_kind, subject_kind
+            ),
+            subject_id,
+        )
+    return ExplorerInspector(
+        subject=f"{subject_kind}:{subject_id}",
+        kind=subject_kind,
+        kind_label=_SUBJECT_KIND_LABELS.get(subject_kind, subject_kind),
+        label=label,
+        href=href,
+        href_permission=href_permission,
+        **kwargs,
+    )
+
+
+def _device_inspector(db, device_id, _identity) -> ExplorerInspector | None:
+    device = db.get(NetworkDevice, device_id)
+    if device is None:
+        return None
+    annotate_operational_status([device])
+    operational = getattr(device, "operational", None)
+    impact = affected.affected_customers(db, node=device)
+    facts = [InspectorFact(label="Role", display=device.role or "—")]
+    if device.pop_site_id:
+        site = db.get(PopSite, device.pop_site_id)
+        if site is not None:
+            facts.append(
+                InspectorFact(
+                    label="Site",
+                    display=site.name or "Site",
+                    href=f"{EXPLORER_PATH}?subject=pop_site:{site.id}",
+                    href_permission=EXPLORER_PAGE_PERMISSION,
+                )
+            )
+    return _inspector(
+        "device",
+        device_id,
+        device.name or device.hostname or str(device_id),
+        state_presentation=(
+            device_operational_status_presentation(operational)
+            if operational
+            else topology_hop_status_presentation("unknown")
+        ),
+        state_reason=getattr(operational, "reason", None),
+        observed_at=(
+            device.live_status_at.isoformat()
+            if getattr(device, "live_status_at", None)
+            else None
+        ),
+        facts=tuple(facts),
+        affected_count=impact["count"],
+        affected_online=impact["online_count"],
+        incidents=_live_incidents(db, node_id=device.id),
+    )
+
+
+def _ont_inspector(db, ont_id, identity) -> ExplorerInspector | None:
+    from app.services.network.ont_status import get_optical_metrics
+
+    ont = db.get(OntUnit, ont_id)
+    if ont is None:
+        return None
+    effective = resolve_effective_ont_status(ont)
+    status_word = str(getattr(effective.status, "value", effective.status))
+    state = {"online": "up", "offline": "down"}.get(status_word, "unknown")
+    optical = get_optical_metrics(db, ont)
+    measurements = []
+    for name, label, value, unit in (
+        ("onu_rx_dbm", "ONT receive power", optical.onu_rx_dbm, "dBm"),
+        ("onu_tx_dbm", "ONT transmit power", optical.onu_tx_dbm, "dBm"),
+        ("olt_rx_dbm", "OLT receive power", optical.olt_rx_dbm, "dBm"),
+        ("temperature_c", "Temperature", optical.temperature_c, "°C"),
+    ):
+        if value is None:
+            continue
+        measurements.append(
+            NetworkGraphMeasurement(
+                name=name,
+                label=label,
+                display=f"{value} {unit}",
+                value=float(value),
+                unit=unit,
+                observed_at=optical.fetched_at,
+            )
+        )
+    customer360 = None
+    assignment = (
+        db.query(OntAssignment)
+        .filter(
+            OntAssignment.ont_unit_id == ont_id,
+            OntAssignment.active.is_(True),
+        )
+        .first()
+    )
+    if identity and assignment is not None and assignment.subscriber_id:
+        customer360 = f"/admin/customers/person/{assignment.subscriber_id}"
+    return _inspector(
+        "ont",
+        ont_id,
+        ont.serial_number or ont.vendor_serial_number or str(ont_id),
+        state_presentation=topology_hop_status_presentation(state),
+        state_reason=effective.reason,
+        observed_at=(
+            ont.olt_status_seen_at.isoformat()
+            if getattr(ont, "olt_status_seen_at", None)
+            else None
+        ),
+        measurements=tuple(measurements),
+        customer360_href=customer360,
+    )
+
+
+def _radio_inspector(db, radio_id, identity) -> ExplorerInspector | None:
+    from app.services.network.radio_signal import resolve_effective_radio_signal
+
+    radio = db.get(CPEDevice, radio_id)
+    if radio is None:
+        return None
+    signal = resolve_effective_radio_signal(radio)
+    status = (radio.last_uisp_status or "").lower()
+    state = {"active": "up"}.get(
+        status,
+        "down" if status in ("disconnected", "missing", "vanished") else "unknown",
+    )
+    measurements: tuple[NetworkGraphMeasurement, ...] = ()
+    if signal.signal_dbm is not None:
+        suffix = " (stale)" if signal.freshness.value == "stale" else ""
+        measurements = (
+            NetworkGraphMeasurement(
+                name="rf_signal_dbm",
+                label="RF signal",
+                display=f"{signal.signal_dbm:.0f} dBm{suffix}",
+                value=signal.signal_dbm,
+                unit="dBm",
+                freshness=signal.freshness.value,
+                observed_at=signal.observed_at,
+            ),
+        )
+    facts = []
+    if radio.parent_network_device_id:
+        facts.append(
+            InspectorFact(
+                label="Serving AP",
+                display="Open AP neighbourhood",
+                href=f"{EXPLORER_PATH}?subject=device:{radio.parent_network_device_id}",
+                href_permission=EXPLORER_PAGE_PERMISSION,
+            )
+        )
+    customer360 = None
+    if identity and radio.subscriber_id:
+        customer360 = f"/admin/customers/person/{radio.subscriber_id}"
+    return _inspector(
+        "radio",
+        radio_id,
+        radio.serial_number or radio.mac_address or str(radio_id),
+        state_presentation=topology_hop_status_presentation(state),
+        state_reason=signal.reason,
+        observed_at=(signal.observed_at.isoformat() if signal.observed_at else None),
+        measurements=measurements,
+        facts=tuple(facts),
+        customer360_href=customer360,
+    )
+
+
+def _matched_network_device(db, matched_type: str, matched_id) -> NetworkDevice | None:
+    return (
+        db.query(NetworkDevice)
+        .filter(
+            NetworkDevice.matched_device_type == matched_type,
+            NetworkDevice.matched_device_id == matched_id,
+        )
+        .first()
+    )
+
+
+def _olt_inspector(db, olt_id, _identity) -> ExplorerInspector | None:
+    olt = db.get(OLTDevice, olt_id)
+    if olt is None:
+        return None
+    pon_count = (
+        db.query(func.count(PonPort.id)).filter(PonPort.olt_id == olt.id).scalar() or 0
+    )
+    matched = _matched_network_device(db, "olt", olt.id)
+    state_presentation = topology_hop_status_presentation("not_applicable")
+    state_reason = None
+    incidents: tuple[InspectorIncident, ...] = ()
+    affected_count = affected_online = None
+    if matched is not None:
+        annotate_operational_status([matched])
+        operational = getattr(matched, "operational", None)
+        if operational is not None:
+            state_presentation = device_operational_status_presentation(operational)
+            state_reason = operational.reason
+        impact = affected.affected_customers(db, node=matched)
+        affected_count = impact["count"]
+        affected_online = impact["online_count"]
+        incidents = _live_incidents(db, node_id=matched.id)
+    return _inspector(
+        "olt",
+        olt_id,
+        olt.name or olt.hostname or str(olt_id),
+        state_presentation=state_presentation,
+        state_reason=state_reason,
+        facts=(InspectorFact(label="PON ports", display=str(pon_count)),),
+        affected_count=affected_count,
+        affected_online=affected_online,
+        incidents=incidents,
+    )
+
+
+def _nas_inspector(db, nas_id, _identity) -> ExplorerInspector | None:
+    nas = db.get(NasDevice, nas_id)
+    if nas is None:
+        return None
+    provisioned = (
+        db.query(func.count(Subscription.id))
+        .filter(Subscription.provisioning_nas_device_id == nas.id)
+        .scalar()
+        or 0
+    )
+    matched = _matched_network_device(db, "nas", nas.id)
+    state_presentation = topology_hop_status_presentation("not_applicable")
+    state_reason = None
+    incidents: tuple[InspectorIncident, ...] = ()
+    affected_count = affected_online = None
+    if matched is not None:
+        annotate_operational_status([matched])
+        operational = getattr(matched, "operational", None)
+        if operational is not None:
+            state_presentation = device_operational_status_presentation(operational)
+            state_reason = operational.reason
+        impact = affected.affected_customers(db, node=matched)
+        affected_count = impact["count"]
+        affected_online = impact["online_count"]
+        incidents = _live_incidents(db, node_id=matched.id)
+    return _inspector(
+        "nas",
+        nas_id,
+        nas.name or str(nas_id),
+        state_presentation=state_presentation,
+        state_reason=state_reason,
+        facts=(
+            InspectorFact(label="Provisioned subscriptions", display=str(provisioned)),
+        ),
+        affected_count=affected_count,
+        affected_online=affected_online,
+        incidents=incidents,
+    )
+
+
+def _pon_inspector(db, pon_port_id, _identity) -> ExplorerInspector | None:
+    from app.services.network.ont_status import effective_ont_online_clause
+
+    pon = db.get(PonPort, pon_port_id)
+    if pon is None:
+        return None
+    assigned_ids = select(OntAssignment.ont_unit_id).where(
+        OntAssignment.pon_port_id == pon.id,
+        OntAssignment.active.is_(True),
+    )
+    membership = or_(OntUnit.pon_port_id == pon.id, OntUnit.id.in_(assigned_ids))
+    total = db.query(func.count(OntUnit.id)).filter(membership).scalar() or 0
+    online = (
+        db.query(func.count(OntUnit.id))
+        .filter(membership, effective_ont_online_clause())
+        .scalar()
+        or 0
+    )
+    facts = [
+        InspectorFact(label="ONTs", display=str(total)),
+        InspectorFact(label="ONTs online", display=str(online)),
+    ]
+    if pon.olt_id:
+        facts.append(
+            InspectorFact(
+                label="OLT",
+                display="Open OLT neighbourhood",
+                href=f"{EXPLORER_PATH}?subject=olt:{pon.olt_id}",
+                href_permission=EXPLORER_PAGE_PERMISSION,
+            )
+        )
+    return _inspector(
+        "pon_port",
+        pon_port_id,
+        pon.name or f"PON {pon.port_number}",
+        state_presentation=topology_hop_status_presentation("unknown"),
+        facts=tuple(facts),
+    )
+
+
+def _fdh_inspector(db, fdh_id, _identity) -> ExplorerInspector | None:
+    from app.services.network.outage_impact import resolve_fdh_audience
+
+    fdh = db.get(FdhCabinet, fdh_id)
+    if fdh is None:
+        return None
+    audience = resolve_fdh_audience(db, fdh)
+    splitters = (
+        db.query(func.count(Splitter.id))
+        .filter(Splitter.fdh_id == fdh.id, Splitter.is_active.is_(True))
+        .scalar()
+        or 0
+    )
+    return _inspector(
+        "fdh",
+        fdh_id,
+        fdh.name or fdh.code or str(fdh_id),
+        state_presentation=topology_hop_status_presentation("not_applicable"),
+        facts=(InspectorFact(label="Active splitters", display=str(splitters)),),
+        affected_count=len(audience.subscription_ids),
+        incidents=_live_incidents(db, fdh_id=fdh.id),
+    )
+
+
+def _pop_site_inspector(db, pop_site_id, _identity) -> ExplorerInspector | None:
+    site = db.get(PopSite, pop_site_id)
+    if site is None:
+        return None
+    device_count = (
+        db.query(func.count(NetworkDevice.id))
+        .filter(
+            NetworkDevice.pop_site_id == site.id,
+            NetworkDevice.is_active.is_(True),
+        )
+        .scalar()
+        or 0
+    )
+    return _inspector(
+        "pop_site",
+        pop_site_id,
+        site.name or str(pop_site_id),
+        state_presentation=topology_hop_status_presentation("not_applicable"),
+        facts=(
+            InspectorFact(label="Contained devices", display=str(device_count)),
+            InspectorFact(label="Note", display="Containment is not connectivity"),
+        ),
+        incidents=_live_incidents(db, basestation_id=site.id),
+    )
+
+
+def _subscription_inspector(db, subscription_id, _identity) -> ExplorerInspector | None:
+    subscription = db.get(Subscription, subscription_id)
+    if subscription is None:
+        return None
+    projection = project_subscription_network_path(db, subscription)
+    endpoint = projection.endpoint
+    facts = []
+    if endpoint.endpoint_display:
+        facts.append(
+            InspectorFact(label="Serving endpoint", display=endpoint.endpoint_display)
+        )
+    if projection.view is not None:
+        facts.append(
+            InspectorFact(
+                label="Path",
+                display=(
+                    "complete"
+                    if projection.view.complete
+                    else f"{len(projection.view.gaps)} gap(s)"
+                ),
+            )
+        )
+    return _inspector(
+        "subscription",
+        subscription_id,
+        subscription.login or subscription.ipv4_address or "Subscription",
+        href=None,
+        state_presentation=endpoint.source_presentation,
+        state_reason=endpoint.gap,
+        facts=tuple(facts),
+        customer360_href=(
+            f"/admin/customers/person/{subscription.subscriber_id}"
+            if subscription.subscriber_id
+            else None
+        ),
+    )
+
+
+def _subscriber_inspector(db, subscriber_id, _identity) -> ExplorerInspector | None:
+    subscriber = db.get(Subscriber, subscriber_id)
+    if subscriber is None:
+        return None
+    subscription_count = (
+        db.query(func.count(Subscription.id))
+        .filter(Subscription.subscriber_id == subscriber_id)
+        .scalar()
+        or 0
+    )
+    return _inspector(
+        "subscriber",
+        subscriber_id,
+        _subscriber_label(subscriber) or "Customer",
+        facts=(InspectorFact(label="Subscriptions", display=str(subscription_count)),),
+        customer360_href=f"/admin/customers/person/{subscriber_id}",
+    )

@@ -34639,12 +34639,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "network explorer typed subject search",
                     "network explorer subject-centred graph projection",
+                    "network explorer subject inspector projection",
                 ),
                 depends_on=(
                     "network.identity",
                     "network.forwarding_topology",
                     "network.device_state",
+                    "network.radio_signal",
                     "network.outage_impact",
+                    "network.outage_lifecycle",
                     "ui.customer_network_path_projection",
                     "ui.status_presentation",
                 ),
@@ -34680,6 +34683,19 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authoritative forwarding adjacency",
                                 "binary device operation verdict",
                                 "topological audience cohorts",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network explorer subject inspector projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "network inventory identity",
+                                "customer network path view",
+                                "binary device operation verdict",
+                                "effective RF signal",
+                                "topological audience cohorts",
+                                "live incident scope state",
                                 "semantic status presentation vocabulary",
                             ),
                         ),
@@ -34733,13 +34749,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="effective RF signal",
+                            owner="network.radio_signal",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "value + source + explicit freshness + "
+                                "reason for a radio's RF observation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="live incident scope state",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "live OutageIncident rows scoped to a node, "
+                                "basestation, or FDH cabinet with status and "
+                                "lifecycle stamps"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="semantic status presentation vocabulary",
                             owner="ui.status_presentation",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
                                 "StatusPresentation label/tone/icon "
-                                "projections for hop states and device "
-                                "verdicts"
+                                "projections for hop states, device "
+                                "verdicts, and incident statuses"
                             ),
                         ),
                     ),
