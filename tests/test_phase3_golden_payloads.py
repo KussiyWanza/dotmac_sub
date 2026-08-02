@@ -82,6 +82,9 @@ def _subscriber(db, reseller_id=None) -> Subscriber:
         email=f"c-{uuid.uuid4().hex[:8]}@example.com",
         reseller_id=reseller_id,
         party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Golden payload fixture Party binding",
     )
     db.add(sub)
     db.commit()

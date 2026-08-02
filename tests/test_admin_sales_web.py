@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 
+from app.models.party import Party
 from app.models.rbac import Role, SystemUserRole
 from app.models.sales import SalesOrder
 from app.models.subscriber import Subscriber
@@ -73,6 +74,19 @@ def _make_subscriber(db, **overrides) -> Subscriber:
         "email": f"ada-{uuid.uuid4().hex}@example.com",
     }
     data.update(overrides)
+    party = Party(
+        display_name=f"{data['first_name']} {data['last_name']}",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
+    data.update(
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Admin sales fixture Party binding",
+    )
     subscriber = Subscriber(**data)
     db.add(subscriber)
     db.commit()
@@ -340,7 +354,7 @@ def test_create_quote_context_preselects_lead_and_subscriber(db_session):
     context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
 
     assert context["quote_form"]["lead_id"] == str(lead.id)
-    assert context["quote_form"]["subscriber_id"] == str(subscriber.id)
+    assert context["quote_form"]["subscriber_id"] == ""
 
 
 def test_lead_form_creates_through_native_sales_owner(db_session):
@@ -352,7 +366,7 @@ def test_lead_form_creates_through_native_sales_owner(db_session):
         db_session,
         title="Enterprise fibre opportunity",
         status="qualified",
-        subscriber_id=str(subscriber.id),
+        party_id=str(subscriber.party_id),
         owner_agent_id=None,
         pipeline_id=str(pipeline.id),
         stage_id=str(stage.id),
@@ -370,7 +384,8 @@ def test_lead_form_creates_through_native_sales_owner(db_session):
 
     lead = sales_service.leads.get(db_session, lead_id)
     assert existing is False
-    assert lead.subscriber_id == subscriber.id
+    assert lead.party_id == subscriber.party_id
+    assert lead.subscriber_id is None
     assert lead.pipeline_id == pipeline.id
     assert lead.stage_id == stage.id
     assert lead.probability == 65
@@ -388,7 +403,7 @@ def test_pipeline_stage_pair_is_enforced_by_sales_owner(db_session):
             db_session,
             title="Mismatched pipeline",
             status="new",
-            subscriber_id=str(subscriber.id),
+            party_id=str(subscriber.party_id),
             owner_agent_id=None,
             pipeline_id=str(first.id),
             stage_id=str(second_stage.id),

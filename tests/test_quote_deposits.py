@@ -7,6 +7,7 @@ ON native accept via ``sales.selfserve``. Both paths are covered here."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -36,6 +37,9 @@ def _subscriber(db) -> Subscriber:
         last_name="R",
         email=f"c-{uuid.uuid4().hex[:8]}@example.com",
         party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Quote deposit fixture Party binding",
     )
     db.add(sub)
     db.commit()

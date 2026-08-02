@@ -594,6 +594,10 @@ class SelfServeQuotes:
         order — never a second payment (risk #2).
         """
         quote = SelfServeQuotes.get_for_subscriber(db, subscriber_id, quote_id)
+        # Preserve the scalar command identity before releasing the implicit
+        # read transaction. Accessing an expired ORM row after that release
+        # can autobegin a fresh transaction before the owner command enters.
+        quote_uuid = quote.id
 
         amount = _money(deposit_amount)
         already_accepted = _quote_status(quote) == QuoteStatus.accepted.value
@@ -607,9 +611,9 @@ class SelfServeQuotes:
                         actor=f"subscriber:{subscriber_id}",
                         scope="sales:quote-acceptance",
                         reason="Verified self-serve Quote deposit",
-                        idempotency_key=f"quote-acceptance:{quote.id}",
+                        idempotency_key=f"quote-acceptance:{quote_uuid}",
                     ),
-                    quote_id=quote.id,
+                    quote_id=quote_uuid,
                     deposit=quote_acceptance.QuoteAcceptanceDeposit(
                         reference=deposit_reference,
                         amount=amount,

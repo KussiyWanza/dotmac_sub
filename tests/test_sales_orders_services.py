@@ -51,6 +51,9 @@ def _make_subscriber(db) -> Subscriber:
         last_name="Ade",
         email=f"bola-{uuid.uuid4().hex}@example.com",
         party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Sales order fixture Party binding",
     )
     db.add(subscriber)
     db.commit()

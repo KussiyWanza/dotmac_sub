@@ -13,6 +13,7 @@ test, same isolation the CRM source used).
 """
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -67,6 +68,9 @@ def _subscriber(db) -> Subscriber:
         last_name="Obi",
         email=f"ada-{uuid.uuid4().hex[:10]}@example.com",
         party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Self-serve sales fixture Party binding",
     )
     db.add(sub)
     db.commit()

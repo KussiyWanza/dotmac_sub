@@ -12,6 +12,8 @@ all mutate quotes through it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from app.models.party import Party
@@ -31,6 +33,9 @@ def _lead(db_session, subscriber) -> Lead:
         db_session.add(party)
         db_session.flush()
         subscriber.party_id = party.id
+        subscriber.party_bound_at = datetime.now(UTC)
+        subscriber.party_binding_source = "pytest"
+        subscriber.party_binding_reason = "Quote financial fixture Party binding"
         db_session.commit()
     return sales_service.leads.create(
         db_session, LeadCreate(subscriber_id=subscriber.id)

@@ -1,6 +1,7 @@
 """Leads / pipeline / quotes service tests (Phase 3 sales-vertical port)."""
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -47,6 +48,9 @@ def _make_subscriber(db, **overrides) -> Subscriber:
         db.add(party)
         db.flush()
         data["party_id"] = party.id
+        data["party_bound_at"] = datetime.now(UTC)
+        data["party_binding_source"] = "pytest"
+        data["party_binding_reason"] = "Sales service fixture Party binding"
     subscriber = Subscriber(**data)
     db.add(subscriber)
     db.commit()

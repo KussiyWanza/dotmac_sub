@@ -33764,7 +33764,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.OWNER_MANAGED,
+                        mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
                             "author_quote enters execute_owner_command once on a clean "
                             "adapter session; Quote, lines, quote.created event, and audit "
@@ -34107,7 +34107,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.OWNER_MANAGED,
+                        mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
                             "The public accept_quote command enters execute_owner_command "
                             "once on a transaction-free adapter session. Every participant "
