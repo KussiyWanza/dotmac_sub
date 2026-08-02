@@ -1,332 +1,82 @@
 {% extends "layouts/admin.html" %}
-{% from "components/ui/macros.html" import
-    ambient_background, page_header, stats_card, card,
-    table_row, status_badge, empty_state, animation_styles,
-    status_presentation_badge
-%}
-
+{% from "components/ui/macros.html" import ambient_background, page_header, stats_card, table_row, status_badge, empty_state, animation_styles, status_presentation_badge %}
 {% block title %}Dispatch Work Orders - Admin{% endblock %}
-
 {% set work_icon = '<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 6h6M9 12h6m-6 6h6M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>' %}
-
-{# Status semantics from the work-order presentation owner. #}
 {% macro wo_status(value) %}{{ status_presentation_badge(work_order_status_presentation(value), size="sm") }}{% endmacro %}
-
-{% macro dt_value(value) %}{% if value %}{{ value.strftime('%Y-%m-%dT%H:%M') }}{% endif %}{% endmacro %}
-
 {% block content %}
 {{ ambient_background("cyan", "emerald") }}
-
 <div class="relative space-y-6">
-    {% call page_header(
-        title="Dispatch Work Orders",
-        subtitle="Native field-service work orders and technician assignment queue",
-        icon=work_icon,
-        color="cyan",
-        color2="emerald",
-        breadcrumbs=[
-            {"label": "Operations"},
-            {"label": "Dispatch Work Orders"}
-        ]
-    ) %}
+    {% call page_header(title="Dispatch Work Orders", subtitle="Plan field work, open its full context, then assign it through dispatch", icon=work_icon, color="cyan", color2="emerald", breadcrumbs=[{"label": "Operations"}, {"label": "Dispatch Work Orders"}]) %}
+        {% if action_permitted(request, create_work_order_action) %}
+        <a href="#create-work-order" class="inline-flex items-center rounded-xl bg-gradient-to-r from-cyan-600 to-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20">Create Work Order</a>
+        {% endif %}
     {% endcall %}
 
-    {% if notice %}
-    <div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
-        {{ notice }}
-    </div>
-    {% endif %}
-    {% if error %}
-    <div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
-        {{ error }}
-    </div>
-    {% endif %}
+    {% if notice %}<div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800">{{ error }}</div>{% endif %}
 
     <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        {{ stats_card(kpis.total.label, kpis.total.value.value, icon=work_icon, color="slate", color2="cyan",
-            href=kpis.total.cohort_url, tone=kpis.total.tone) }}
-        {{ stats_card(kpis.active.label, kpis.active.value.value, icon=work_icon, color="cyan", color2="blue",
-            href=kpis.active.cohort_url, tone=kpis.active.tone) }}
-        {{ stats_card(kpis.scheduled.label, kpis.scheduled.value.value, icon=work_icon, color="amber", color2="orange",
-            href=kpis.scheduled.cohort_url, tone=kpis.scheduled.tone) }}
-        {{ stats_card(kpis.in_progress.label, kpis.in_progress.value.value, icon=work_icon, color="blue", color2="cyan",
-            href=kpis.in_progress.cohort_url, tone=kpis.in_progress.tone) }}
-        {{ stats_card(kpis.completed.label, kpis.completed.value.value, icon=work_icon, color="emerald", color2="green",
-            href=kpis.completed.cohort_url, tone=kpis.completed.tone) }}
+        {{ stats_card(kpis.total.label, kpis.total.value.value, icon=work_icon, color="slate", color2="cyan", href=kpis.total.cohort_url, tone=kpis.total.tone) }}
+        {{ stats_card(kpis.active.label, kpis.active.value.value, icon=work_icon, color="cyan", color2="blue", href=kpis.active.cohort_url, tone=kpis.active.tone) }}
+        {{ stats_card(kpis.scheduled.label, kpis.scheduled.value.value, icon=work_icon, color="amber", color2="orange", href=kpis.scheduled.cohort_url, tone=kpis.scheduled.tone) }}
+        {{ stats_card(kpis.in_progress.label, kpis.in_progress.value.value, icon=work_icon, color="blue", color2="cyan", href=kpis.in_progress.cohort_url, tone=kpis.in_progress.tone) }}
+        {{ stats_card(kpis.completed.label, kpis.completed.value.value, icon=work_icon, color="emerald", color2="green", href=kpis.completed.cohort_url, tone=kpis.completed.tone) }}
     </div>
 
     {% if can(request, create_work_order_action.permission) %}
-    {% call card("Create Work Order", color="cyan") %}
-    {% if not create_work_order_action.allowed %}
-    <div class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-        {{ create_work_order_action.reason }}
-    </div>
-    {% else %}
-    <form method="post" action="/admin/dispatch/work-orders" class="grid gap-4 lg:grid-cols-12">
-        {% include "components/forms/csrf_input.html" %}
-        {% if create_prefill %}
-        <input type="hidden" name="subscriber_id" value="{{ create_prefill.subscriber_id }}">
-        <input type="hidden" name="project_id" value="{{ create_prefill.project_id }}">
-        <input type="hidden" name="project_task_id" value="{{ create_prefill.project_task_id }}">
-        <div class="lg:col-span-6">
-            <p class="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Execution scope</p>
-            <div class="rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm text-slate-700 dark:border-cyan-800 dark:bg-cyan-950/30 dark:text-slate-200">
-                <p class="font-semibold">{{ create_prefill.project_task_label }}</p>
-                <p class="mt-1 text-xs text-slate-600 dark:text-slate-300">{{ create_prefill.project_label }} · {{ create_prefill.subscriber_label }}</p>
-            </div>
-        </div>
+    <details id="create-work-order" class="group rounded-2xl border border-cyan-200 bg-white shadow-sm dark:border-cyan-800 dark:bg-slate-800" {% if project_task_filter %}open{% endif %}>
+        <summary class="flex cursor-pointer list-none items-center justify-between px-5 py-4 font-semibold text-slate-900 dark:text-white">
+            <span>Create Work Order</span><span class="text-xs text-cyan-700 group-open:hidden">Open form</span><span class="hidden text-xs text-cyan-700 group-open:inline">Close form</span>
+        </summary>
+        <div class="border-t border-slate-200 p-5 dark:border-slate-700">
+        {% if not create_work_order_action.allowed %}
+            <p class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{{ create_work_order_action.reason }}</p>
         {% else %}
-        <div class="lg:col-span-3">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Subscriber</label>
-            <select name="subscriber_id" required class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                <option value="">Select subscriber</option>
-                {% for option in subscriber_options %}
-                <option value="{{ option.id }}">{{ option.label }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="lg:col-span-3">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Project (optional)</label>
-            <select name="project_id" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                <option value="">No project</option>
-                {% for option in project_options %}
-                <option value="{{ option.id }}">{{ option.label }}</option>
-                {% endfor %}
-            </select>
-        </div>
+            <form method="post" action="/admin/dispatch/work-orders" class="grid gap-4 lg:grid-cols-12">
+                {% include "components/forms/csrf_input.html" %}
+                {% if create_prefill %}
+                <input type="hidden" name="subscriber_id" value="{{ create_prefill.subscriber_id }}"><input type="hidden" name="project_id" value="{{ create_prefill.project_id }}"><input type="hidden" name="project_task_id" value="{{ create_prefill.project_task_id }}">
+                <div class="lg:col-span-12 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm"><strong>{{ create_prefill.project_task_label }}</strong><span class="ml-2 text-slate-600">{{ create_prefill.project_label }} · {{ create_prefill.subscriber_label }}</span></div>
+                {% else %}
+                <label class="lg:col-span-4 text-sm font-semibold">Subscriber<select name="subscriber_id" required class="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 dark:bg-slate-900"><option value="">Select subscriber</option>{% for option in subscriber_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}</select></label>
+                <label class="lg:col-span-4 text-sm font-semibold">Project (optional)<select name="project_id" class="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 dark:bg-slate-900"><option value="">No project</option>{% for option in project_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}</select></label>
+                {% endif %}
+                <label class="lg:col-span-4 text-sm font-semibold">Title<input name="title" value="{{ create_prefill.title if create_prefill else '' }}" required maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+                <label class="lg:col-span-3 text-sm font-semibold">Type<select name="work_type" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% for option in work_types %}<option value="{{ option }}" {% if option == (create_prefill.work_type if create_prefill else 'install') %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+                <label class="lg:col-span-3 text-sm font-semibold">Priority<select name="priority" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% for option in priorities %}<option value="{{ option }}" {% if option == (create_prefill.priority if create_prefill else 'normal') %}selected{% endif %}>{{ option|title }}</option>{% endfor %}</select></label>
+                <label class="lg:col-span-3 text-sm font-semibold">Scheduled start<input type="datetime-local" name="scheduled_start" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+                <label class="lg:col-span-3 text-sm font-semibold">Scheduled end<input type="datetime-local" name="scheduled_end" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+                <label class="lg:col-span-6 text-sm font-semibold">Site<input name="address" maxlength="255" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+                <label class="lg:col-span-6 text-sm font-semibold">Description<textarea name="description" rows="3" maxlength="5000" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{{ create_prefill.description if create_prefill and create_prefill.description else '' }}</textarea></label>
+                <input type="hidden" name="status" value="scheduled"><input type="hidden" name="requires_as_built_evidence" value="1">
+                <div class="lg:col-span-12 flex items-center justify-between"><p class="text-xs text-slate-500">Technician assignment follows creation through the dispatch queue.</p><button class="rounded-xl bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white">Create Work Order</button></div>
+            </form>
         {% endif %}
-        <div class="lg:col-span-3">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Title</label>
-            <input name="title" value="{{ create_prefill.title if create_prefill else '' }}" required maxlength="200" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="Fibre install">
         </div>
-        <div class="lg:col-span-2">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Type</label>
-            <select name="work_type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                {% for option in work_types %}
-                <option value="{{ option }}" {% if option == (create_prefill.work_type if create_prefill else 'install') %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="lg:col-span-2">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Status</label>
-            <select name="status" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                {% for option in statuses %}
-                <option value="{{ option }}" {% if option == 'scheduled' %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="lg:col-span-2">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Priority</label>
-            <select name="priority" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                {% for option in priorities %}
-                <option value="{{ option }}" {% if option == (create_prefill.priority if create_prefill else 'normal') %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="lg:col-span-3">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Scheduled start</label>
-            <input type="datetime-local" name="scheduled_start" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-        </div>
-        <div class="lg:col-span-3">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Scheduled end</label>
-            <input type="datetime-local" name="scheduled_end" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-        </div>
-        <div class="lg:col-span-2">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Minutes</label>
-            <input type="number" min="0" name="estimated_duration_minutes" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="90">
-        </div>
-        <div class="lg:col-span-4">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Site</label>
-            <input name="address" maxlength="255" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="Plot 14, Jabi">
-        </div>
-        <div class="lg:col-span-4">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Skills</label>
-            <input name="required_skills" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="fiber, splicing">
-        </div>
-        <div class="lg:col-span-4">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Tags</label>
-            <input name="tags" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="native, install">
-        </div>
-        <div class="lg:col-span-4">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Public ID</label>
-            <input name="public_id" maxlength="64" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="auto">
-        </div>
-        <div class="lg:col-span-4 flex items-end">
-            <input type="hidden" name="requires_as_built_evidence" value="0">
-            <label class="flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 dark:border-slate-600 dark:text-slate-200">
-                <input type="checkbox" name="requires_as_built_evidence" value="1" checked class="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500">
-                Require accepted as-built evidence
-            </label>
-        </div>
-        <div class="lg:col-span-12">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Description</label>
-            <textarea name="description" rows="3" maxlength="5000" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">{{ create_prefill.description if create_prefill and create_prefill.description else '' }}</textarea>
-        </div>
-        <div class="lg:col-span-12">
-            <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Access notes</label>
-            <textarea name="access_notes" rows="2" maxlength="2000" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white"></textarea>
-        </div>
-        <div class="lg:col-span-12 flex justify-end">
-            <button class="inline-flex items-center rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 dark:ring-offset-slate-900">
-                Create work order
-            </button>
-        </div>
-    </form>
-    {% endif %}
-    {% endcall %}
+    </details>
     {% endif %}
 
-    <div class="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-sm dark:border-slate-700/70 dark:bg-slate-800">
+    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
         <form method="get" action="/admin/dispatch/work-orders" class="flex flex-col gap-3 md:flex-row md:items-end">
-            {% if project_task_filter %}
-            <input type="hidden" name="project_task_id" value="{{ project_task_filter }}">
-            {% endif %}
-            <div class="md:w-52">
-                <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Status</label>
-                <select name="status" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                    <option value="">All statuses</option>
-                    {% for option in statuses %}
-                    <option value="{{ option }}" {% if status_filter == option %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="flex-1">
-                <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Search</label>
-                <input name="q" value="{{ q }}" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-white" placeholder="Work order, customer, site">
-            </div>
-            <button class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700">Filter</button>
-            {% if status_filter or q or active_filter or project_task_filter %}
-            <a href="/admin/dispatch/work-orders" class="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white">Clear</a>
-            {% endif %}
+            {% if project_task_filter %}<input type="hidden" name="project_task_id" value="{{ project_task_filter }}">{% endif %}
+            <label class="md:w-52 text-sm font-semibold">Status<select name="status" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">All statuses</option>{% for option in statuses %}<option value="{{ option }}" {% if status_filter == option %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+            <label class="flex-1 text-sm font-semibold">Search<input name="q" value="{{ q }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900" placeholder="Work order, customer, site"></label>
+            <button class="rounded-xl border border-slate-300 px-4 py-2 font-semibold">Filter</button>
         </form>
     </div>
 
-    <div class="overflow-hidden rounded-2xl border border-slate-200/70 bg-white shadow-sm dark:border-slate-700/70 dark:bg-slate-800">
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-                <thead class="bg-slate-50 dark:bg-slate-900/40">
-                    <tr>
-                        <th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Work order</th>
-                        <th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Customer / site</th>
-                        <th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Schedule</th>
-                        <th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Edit</th>
-                        <th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Queue</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-                    {% if items %}
-                    {% for item in items %}
-                    {% set wo = item.work_order %}
-                    {% call table_row(color="cyan") %}
-                    <td class="px-5 py-4 align-top">
-                        <div class="font-semibold text-slate-900 dark:text-white">{{ wo.title }}</div>
-                        <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ wo.public_id }}</div>
-                        {% if item.origin_ticket %}
-                        <a href="/admin/support/tickets/{{ item.origin_ticket.id }}" class="mt-1 inline-block text-xs font-semibold text-amber-700 hover:underline dark:text-amber-300">From ticket {{ item.origin_ticket.number or item.origin_ticket.id }}</a>
-                        {% endif %}
-                        <div class="mt-2 flex flex-wrap gap-2">
-                            {{ wo_status(wo.status) }}
-                            {% if item.queue_status %}{{ status_badge(item.queue_status|replace('_', ' ')|title, variant="info") }}{% endif %}
-                        </div>
-                    </td>
-                    <td class="px-5 py-4 align-top">
-                        <div class="font-medium text-slate-800 dark:text-slate-100">{{ item.subscriber_label }}</div>
-                        <div class="mt-1 max-w-72 text-sm text-slate-500 dark:text-slate-400">{{ wo.address or '—' }}</div>
-                    </td>
-                    <td class="px-5 py-4 align-top text-sm text-slate-600 dark:text-slate-300">
-                        <div>{{ wo.scheduled_start | app_datetime('%Y-%m-%d %H:%M', 'Unscheduled') }}</div>
-                        <div class="text-xs text-slate-500 dark:text-slate-400">{{ wo.estimated_duration_minutes or '—' }} min · {{ wo.work_type or 'work' }}</div>
-                    </td>
-                    <td class="min-w-[28rem] px-5 py-4 align-top">
-                        <form method="post" action="/admin/dispatch/work-orders/{{ wo.public_id }}" class="grid grid-cols-2 gap-2">
-                            {% include "components/forms/csrf_input.html" %}
-                            <input name="title" value="{{ wo.title }}" required maxlength="200" class="col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                            <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                                Status: {{ wo.status|replace('_', ' ')|title }}
-                            </div>
-                            <select name="priority" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                                {% for option in priorities %}
-                                <option value="{{ option }}" {% if wo.priority == option %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                                {% endfor %}
-                            </select>
-                            <input type="datetime-local" name="scheduled_start" value="{{ dt_value(wo.scheduled_start) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                            <input type="datetime-local" name="scheduled_end" value="{{ dt_value(wo.scheduled_end) }}" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                            <input name="address" value="{{ wo.address or '' }}" maxlength="255" class="col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white" placeholder="Site">
-                            {% if wo.project_id %}
-                            <input type="hidden" name="project_id" value="{{ wo.project_id }}">
-                            <div class="col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">Project: {{ item.project_label or wo.project_id }}</div>
-                            {% else %}
-                            <select name="project_id" class="col-span-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                                <option value="">No project</option>
-                                {% for option in project_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}
-                            </select>
-                            {% endif %}
-                            <div class="col-span-2">
-                                <input type="hidden" name="requires_as_built_evidence" value="0">
-                                <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
-                                    <input type="checkbox" name="requires_as_built_evidence" value="1" {% if wo.requires_as_built_evidence %}checked{% endif %} class="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500">
-                                    Require accepted as-built evidence
-                                </label>
-                            </div>
-                            <input type="hidden" name="work_type" value="{{ wo.work_type or 'install' }}">
-                            <button class="col-span-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-cyan-600 dark:hover:bg-cyan-700">Save</button>
-                        </form>
-                    </td>
-                    <td class="min-w-64 px-5 py-4 align-top">
-                        {% set queue_action = item.actions.queue %}
-                        {% if action_permitted(request, queue_action) %}
-                        <form method="post" action="/admin/dispatch/work-orders/{{ wo.public_id }}/queue" class="space-y-2">
-                            {% include "components/forms/csrf_input.html" %}
-                            <select name="assigned_technician_id" required class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                                <option value="">Technician</option>
-                                {% for option in technician_options %}
-                                <option value="{{ option.id }}">{{ option.label }}</option>
-                                {% endfor %}
-                            </select>
-                            <select name="status" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">
-                                {% for option in queue_statuses %}
-                                <option value="{{ option }}" {% if option == 'assigned' %}selected{% endif %}>{{ option|replace('_', ' ')|title }}</option>
-                                {% endfor %}
-                            </select>
-                            <input name="reason" maxlength="2000" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white" placeholder="Reason">
-                            <button class="w-full rounded-lg border border-cyan-300 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-200 dark:hover:bg-cyan-950/40">{{ queue_action.label }}</button>
-                        </form>
-                        {% elif can(request, queue_action.permission) %}
-                        <p class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">{{ queue_action.reason }}</p>
-                        {% endif %}
-                    </td>
-                    {% endcall %}
-                    {% endfor %}
-                    {% else %}
-                    {{ empty_state(
-                        title="No work orders found",
-                        message="Native dispatch work orders will appear here",
-                        icon=work_icon,
-                        color="cyan",
-                        colspan=5
-                    ) }}
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
-        {% if total_pages > 1 %}
-        <div class="border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-700 dark:bg-slate-900/40">
-            <div class="flex items-center justify-between text-sm">
-                <span class="text-slate-500 dark:text-slate-400">Page {{ page }} of {{ total_pages }} · {{ total }} total</span>
-                <div class="flex gap-2">
-                    {% set query_suffix = '&per_page=' ~ per_page ~ (status_filter and '&status=' ~ status_filter or '') ~ (q and '&q=' ~ (q | urlencode) or '') ~ (active_filter and '&active=1' or '') ~ (project_task_filter and '&project_task_id=' ~ project_task_filter or '') %}
-                    {% if page > 1 %}
-                    <a href="/admin/dispatch/work-orders?page={{ page - 1 }}{{ query_suffix }}" class="rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-600 hover:bg-white dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800">Previous</a>
-                    {% endif %}
-                    {% if page < total_pages %}
-                    <a href="/admin/dispatch/work-orders?page={{ page + 1 }}{{ query_suffix }}" class="rounded-lg border border-slate-300 px-3 py-1.5 font-semibold text-slate-600 hover:bg-white dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800">Next</a>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-        {% endif %}
+    <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800"><div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700"><thead class="bg-slate-50 dark:bg-slate-900/40"><tr>{% for heading in ['Work order', 'Customer / site', 'Origin', 'Schedule', 'Status', ''] %}<th class="px-5 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">{{ heading }}</th>{% endfor %}</tr></thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">{% for item in items %}{% set wo = item.work_order %}{% call table_row(color="cyan") %}
+            <td class="px-5 py-4"><a href="/admin/dispatch/work-orders/{{ wo.public_id }}" class="font-semibold text-cyan-700 hover:underline dark:text-cyan-300">{{ wo.title }}</a><div class="font-mono text-xs text-slate-500">{{ wo.public_id }}</div></td>
+            <td class="px-5 py-4"><div class="font-medium">{{ item.subscriber_label }}</div><div class="max-w-64 text-sm text-slate-500">{{ wo.address or '—' }}</div></td>
+            <td class="px-5 py-4 text-sm">{% if item.origin_ticket %}<a href="/admin/support/tickets/{{ item.origin_ticket.id }}" class="text-amber-700 hover:underline">Ticket {{ item.origin_ticket.number or item.origin_ticket.id }}</a>{% elif item.project_label %}{{ item.project_label }}{% else %}<span class="text-slate-400">Direct dispatch</span>{% endif %}</td>
+            <td class="px-5 py-4 text-sm">{{ wo.scheduled_start | app_datetime('%d %b %Y %H:%M', 'Unscheduled') }}</td>
+            <td class="px-5 py-4">{{ wo_status(wo.status) }}{% if item.queue_status %}<div class="mt-1">{{ status_badge(item.queue_status|replace('_', ' ')|title, variant="info") }}</div>{% endif %}</td>
+            <td class="px-5 py-4 text-right"><a href="/admin/dispatch/work-orders/{{ wo.public_id }}" class="rounded-lg border border-cyan-300 px-3 py-2 text-sm font-semibold text-cyan-700">View</a></td>
+        {% endcall %}{% else %}{{ empty_state(title="No work orders found", message="Create a work order or adjust the filters", icon=work_icon, color="cyan", colspan=6) }}{% endfor %}</tbody></table>
     </div>
+    {% if total_pages > 1 %}<div class="border-t border-slate-200 px-5 py-3 text-sm text-slate-500">Page {{ page }} of {{ total_pages }} · {{ total }} total</div>{% endif %}</div>
 </div>
-
 {{ animation_styles() }}
 {% endblock %}

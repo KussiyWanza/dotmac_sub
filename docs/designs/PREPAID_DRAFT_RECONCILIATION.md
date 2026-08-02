@@ -76,7 +76,8 @@ The owner locks the customer account, invoice, eligible payment/settlement
 records, and opening baseline in that order. Inside one owner transaction it:
 
 1. issues the eligible draft at the reviewed effective time;
-2. allocates settlement-backed Payments first;
+2. allocates settlement-backed Payments first and receives the exact
+   post-allocation receivable from that participant outcome;
 3. records the exact remainder in
    `PrepaidOpeningFundingConsumption`, linked to the baseline, invoice,
    structural ledger entry, approval evidence, preview fingerprint, and
@@ -91,6 +92,15 @@ records, and opening baseline in that order. Inside one owner transaction it:
 
 Any stale preview, consumed baseline, reversal, post-boundary ambiguous ledger
 credit, multiple draft, or partial result rolls the whole transaction back.
+The participant remainder must equal the previewed typed-source requirement by
+exact Decimal equality. A disagreement with the invoice owner's receivable is
+an incomplete participant outcome and also rolls back; the coordinator does not
+re-read a mutable displayed balance as an alternative funding domain.
+
+For fee-inclusive provider receipts, `Payment.amount` remains the gross charge
+and `Payment.provider_fee` remains separate receipt evidence. Classification and
+allocation use only `PaymentSettlement.amount` and its canonical unallocated
+capacity. Gross amount can never increase fundable credit.
 
 Generic subscription Restore is not a financial repair path. An active prepaid
 financial lock makes Restore ineligible and the admin UI sends the operator to

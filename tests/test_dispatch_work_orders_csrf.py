@@ -92,13 +92,20 @@ def test_dispatch_form_post_with_rendered_token_is_accepted(path):
 
 
 def test_create_update_and_queue_forms_enclose_the_csrf_component():
-    source = (TEMPLATES / "admin/dispatch/work_orders.html").read_text()
-    forms = re.findall(r"<form\b[^>]*>.*?</form\s*>", source, re.S | re.I)
+    list_source = (TEMPLATES / "admin/dispatch/work_orders.html").read_text()
+    detail_source = (TEMPLATES / "admin/dispatch/work_order_detail.html").read_text()
 
-    for action_fragment in (
-        'action="/admin/dispatch/work-orders"',
-        'action="/admin/dispatch/work-orders/{{ wo.public_id }}"',
-        'action="/admin/dispatch/work-orders/{{ wo.public_id }}/queue"',
+    for source, action_fragment in (
+        (list_source, 'action="/admin/dispatch/work-orders"'),
+        (
+            detail_source,
+            'action="/admin/dispatch/work-orders/{{ work_order.public_id }}"',
+        ),
+        (
+            detail_source,
+            'action="/admin/dispatch/work-orders/{{ work_order.public_id }}/queue"',
+        ),
     ):
+        forms = re.findall(r"<form\b[^>]*>.*?</form\s*>", source, re.S | re.I)
         form = next(form for form in forms if action_fragment in form)
         assert "components/forms/csrf_input.html" in form

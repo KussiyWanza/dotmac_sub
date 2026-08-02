@@ -325,11 +325,19 @@ def list_work_orders(db: Session, filters: WorkOrderListFilters | None = None) -
 
 
 def get_work_order(db: Session, public_id: str) -> dict | None:
-    pair = _base_query(db).filter(WorkOrder.public_id == public_id).first()
+    pair = get_work_order_row(db, public_id)
     if pair is None:
         return None
     row, subscriber = pair
     return row_to_item(row, subscriber=subscriber, include_internal=True)
+
+
+def get_work_order_row(
+    db: Session, public_id: str
+) -> tuple[WorkOrder, Subscriber | None] | None:
+    """Return the canonical work-order row and subscriber for owner projections."""
+
+    return _base_query(db).filter(WorkOrder.public_id == public_id).first()
 
 
 def summary(db: Session, filters: WorkOrderListFilters | None = None) -> dict:

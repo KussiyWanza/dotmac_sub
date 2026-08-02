@@ -151,6 +151,13 @@ then projects `next_billing_at` from the entitlement end. Automatic discovery
 creates a durable operator exception; it does not silently leave a generic
 `draft_invoice_pending` outcome.
 
+Bill Now performs the same service-document guard before creating a recovery
+draft. Every unresolved ordinary or recovery invoice with an active positive
+line for the exact subscription blocks replacement and routes the operator to
+the existing invoice. Financial activity or ambiguous coverage selects manual
+review. The guard is subscription-scoped, so another service's invoice does not
+become an account-wide block.
+
 That classifier scopes payment-backed and unbacked account credit to native
 facts whose economic timestamp or Sub creation time crosses the active reviewed
 opening-position boundary. Pre-boundary mirror rows are already represented by

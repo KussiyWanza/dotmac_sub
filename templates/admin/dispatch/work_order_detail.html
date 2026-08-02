@@ -1,0 +1,48 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import ambient_background, detail_header, card, status_badge, status_presentation_badge %}
+{% block title %}{{ work_order.public_id }} - Work Order{% endblock %}
+{% macro dt_value(value) %}{% if value %}{{ value.strftime('%Y-%m-%dT%H:%M') }}{% endif %}{% endmacro %}
+{% block content %}
+{{ ambient_background('cyan', 'emerald') }}
+<div class="relative z-10 space-y-6">
+{% call detail_header(title=work_order.title, subtitle=work_order.public_id, back_href='/admin/dispatch/work-orders', status=status_presentation_badge(work_order_status_presentation(work_order.status), size='sm'), color='cyan', color2='emerald') %}{% endcall %}
+{% if notice %}<div class="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">{{ notice }}</div>{% endif %}
+{% if error %}<div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-800">{{ error }}</div>{% endif %}
+<div class="grid gap-6 xl:grid-cols-12"><div class="space-y-6 xl:col-span-8">
+{% call card('Work order details', color='cyan') %}
+<dl class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Subscriber</dt><dd class="mt-1 font-medium">{{ subscriber_label }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Type</dt><dd class="mt-1">{{ (work_order.work_type or 'work')|replace('_', ' ')|title }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Priority</dt><dd class="mt-1">{{ (work_order.priority or 'normal')|title }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Schedule</dt><dd class="mt-1">{{ work_order.scheduled_start | app_datetime('%d %b %Y %H:%M', 'Unscheduled') }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Technician</dt><dd class="mt-1">{{ work_order.assigned_to_name or 'Unassigned' }}</dd></div>
+<div><dt class="text-xs font-semibold uppercase text-slate-500">Queue</dt><dd class="mt-1">{% if queue_status %}{{ status_badge(queue_status|replace('_', ' ')|title, variant='info') }}{% else %}Not queued{% endif %}</dd></div>
+</dl>
+{% if work_order.address %}<div class="mt-5 border-t pt-4"><p class="text-xs font-semibold uppercase text-slate-500">Site</p><p class="mt-1">{{ work_order.address }}</p></div>{% endif %}
+{% if work_order.description %}<div class="mt-5 border-t pt-4"><p class="text-xs font-semibold uppercase text-slate-500">Description</p><p class="mt-1 whitespace-pre-wrap text-sm">{{ work_order.description }}</p></div>{% endif %}
+{% endcall %}
+{% call card('Linked context', color='emerald') %}<div class="grid gap-3 sm:grid-cols-2">
+{% if origin_ticket %}<a href="/admin/support/tickets/{{ origin_ticket.id }}" class="rounded-xl border border-amber-200 p-4 hover:bg-amber-50"><span class="block text-xs font-semibold uppercase text-amber-700">Ticket</span><strong>{{ origin_ticket.number or origin_ticket.id }}</strong><span class="mt-1 block text-sm text-slate-500">{{ origin_ticket.title }}</span></a>{% endif %}
+{% if project %}<a href="/admin/projects/{{ project.id }}" class="rounded-xl border border-emerald-200 p-4 hover:bg-emerald-50"><span class="block text-xs font-semibold uppercase text-emerald-700">Project</span><strong>{{ project_label }}</strong></a>{% endif %}
+{% if project_task %}<a href="/admin/projects/tasks/{{ project_task.number or project_task.id }}" class="rounded-xl border border-blue-200 p-4 hover:bg-blue-50"><span class="block text-xs font-semibold uppercase text-blue-700">Project task</span><strong>{{ project_task.number or project_task.title }}</strong><span class="mt-1 block text-sm text-slate-500">{{ project_task.title }}</span></a>{% endif %}
+{% if not origin_ticket and not project and not project_task %}<p class="text-sm text-slate-500">This work order was created directly from dispatch.</p>{% endif %}
+</div>{% endcall %}
+{% if can(request, 'operations:dispatch:write') %}{% call card('Edit planning details', color='slate') %}
+<form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}" class="grid gap-4 sm:grid-cols-2">{% include "components/forms/csrf_input.html" %}
+<label class="sm:col-span-2 text-sm font-semibold">Title<input name="title" value="{{ work_order.title }}" required maxlength="200" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+<label class="text-sm font-semibold">Priority<select name="priority" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900">{% for option in priorities %}<option value="{{ option }}" {% if work_order.priority == option %}selected{% endif %}>{{ option|title }}</option>{% endfor %}</select></label>
+<label class="text-sm font-semibold">Site<input name="address" value="{{ work_order.address or '' }}" maxlength="255" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+<label class="text-sm font-semibold">Scheduled start<input type="datetime-local" name="scheduled_start" value="{{ dt_value(work_order.scheduled_start) }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+<label class="text-sm font-semibold">Scheduled end<input type="datetime-local" name="scheduled_end" value="{{ dt_value(work_order.scheduled_end) }}" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+{% if work_order.project_id %}<input type="hidden" name="project_id" value="{{ work_order.project_id }}">{% endif %}<input type="hidden" name="work_type" value="{{ work_order.work_type or 'install' }}"><input type="hidden" name="requires_as_built_evidence" value="{{ 1 if work_order.requires_as_built_evidence else 0 }}">
+<div class="sm:col-span-2 flex justify-end"><button class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white">Save planning details</button></div></form>
+{% endcall %}{% endif %}
+</div><aside class="space-y-6 xl:col-span-4">{% call card('Dispatch technician', color='cyan') %}
+<p class="mb-4 text-sm text-slate-500">Creation defines the work scope. Assignment is the next dispatch decision.</p>
+{% if action_permitted(request, queue_action) %}<form method="post" action="/admin/dispatch/work-orders/{{ work_order.public_id }}/queue" class="space-y-3">{% include "components/forms/csrf_input.html" %}
+<label class="block text-sm font-semibold">Technician<select name="assigned_technician_id" required class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"><option value="">Select technician</option>{% for option in technician_options %}<option value="{{ option.id }}">{{ option.label }}</option>{% endfor %}</select></label>
+<input type="hidden" name="status" value="assigned"><label class="block text-sm font-semibold">Reason<input name="reason" maxlength="2000" placeholder="Dispatch context" class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 dark:bg-slate-900"></label>
+<button class="w-full rounded-xl bg-cyan-600 px-4 py-2.5 text-sm font-semibold text-white">Assign technician</button></form>
+{% elif can(request, queue_action.permission) %}<p class="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{{ queue_action.reason }}</p>{% endif %}
+{% endcall %}</aside></div></div>
+{% endblock %}

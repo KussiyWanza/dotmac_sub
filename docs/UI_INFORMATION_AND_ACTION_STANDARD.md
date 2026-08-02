@@ -150,6 +150,10 @@ A detail page establishes the decision context before exposing exhaustive data.
   depth.
 - Keep customer, subscription, financial, access, network, device, outage, and
   support states distinct when more than one matters.
+- For work orders, linked ticket, project, and project-task surfaces route to
+  the canonical work-order detail view. Creation and technician assignment are
+  displayed as consecutive actions because their command owners remain
+  separate; creation must not imply that a technician was assigned.
 
 ### Editor Or Form
 
@@ -225,6 +229,12 @@ domain rules; they must not silently become zero.
 - Return an operation or event identifier for asynchronous actions and show
   progress without claiming an optimistic final state.
 - Audit administrative mutations through the canonical audit/event owner.
+
+For prepaid recovery, the service page consumes the recovery eligibility
+owner's typed next action. An unresolved service invoice disables Bill Now,
+explains the block, and links to that exact invoice. The invoice page keeps
+settlement-backed payment credit, reviewed opening funding, and exact shortfall
+separate; generic displayed account balance is not settlement evidence.
 
 Familiar icon-only controls are appropriate for compact tools when they have an
 accessible label and tooltip. Business commands use clear text or icon-and-text

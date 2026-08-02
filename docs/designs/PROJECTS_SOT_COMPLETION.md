@@ -92,6 +92,15 @@ editable. Work-order creation and technician assignment are separate decisions:
 creation never derives a technician from task assignees, and the existing
 assignment/queue owner remains the next visible dispatch action.
 
+The dispatch work-order list exposes an explicit primary create action and keeps
+the creation form collapsed until requested. Each list row and each ticket,
+project, or project-task work-order projection links to the canonical work-order
+detail route by `public_id`. The detail projection composes the subscriber,
+ticket, project, project task, schedule, and current assignment evidence through
+read owners. It places technician selection in a distinct dispatch panel after
+creation; neither the route nor template merges assignment into the create
+command or writes relationship fields directly.
+
 Page contract: service-delivery and field-operations staff use the project/task
 detail screens to determine whether field work has been issued and to open or
 issue the next visit. `app.services.web_projects` owns the detail projection;

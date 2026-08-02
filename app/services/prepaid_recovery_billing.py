@@ -12,13 +12,24 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import NoReturn
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus, TaxApplication
+from app.models.billing import (
+    CreditNoteApplication,
+    Invoice,
+    InvoiceLine,
+    InvoiceStatus,
+    LedgerEntry,
+    PaymentAllocation,
+    ServiceEntitlement,
+    ServiceEntitlementStatus,
+    TaxApplication,
+)
 from app.models.catalog import (
     BillingMode,
     Subscription,
@@ -56,6 +67,26 @@ _OPEN_INVOICE_STATUSES = frozenset(
 
 class PrepaidRecoveryBillingError(DomainError):
     """Transport-neutral rejection for recovery billing."""
+
+
+class PrepaidRecoveryNextAction(StrEnum):
+    """Closed operator routing vocabulary for Bill Now eligibility."""
+
+    create_recovery_draft = "create_recovery_draft"
+    reconcile_existing_invoice = "reconcile_existing_invoice"
+    review_existing_invoice = "review_existing_invoice"
+    review_multiple_invoices = "review_multiple_invoices"
+    resolve_service_eligibility = "resolve_service_eligibility"
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidRecoveryDraftEligibility:
+    subscription_id: UUID
+    eligible: bool
+    next_action: PrepaidRecoveryNextAction
+    reason: str
+    existing_invoice_id: UUID | None = None
+    existing_invoice_ids: tuple[UUID, ...] = ()
 
 
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
@@ -139,19 +170,151 @@ def _validate_recovery_subscription(db: Session, subscription: Subscription) -> 
         )
 
 
-def _open_recovery_invoice(db: Session, subscription_id: UUID) -> Invoice | None:
-    return db.scalar(
+def _unresolved_service_invoices(
+    db: Session, subscription_id: UUID, *, lock: bool = False
+) -> tuple[Invoice, ...]:
+    """Return every unresolved invoice document claiming this prepaid service."""
+
+    statement = (
         select(Invoice)
         .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
         .where(
             InvoiceLine.subscription_id == subscription_id,
             InvoiceLine.is_active.is_(True),
+            InvoiceLine.amount > Decimal("0.00"),
             Invoice.is_active.is_(True),
             Invoice.status.in_(_OPEN_INVOICE_STATUSES),
-            InvoiceLine.metadata_["kind"].astext == "prepaid_recovery_cycle",
         )
-        .order_by(Invoice.created_at.desc())
+        .order_by(Invoice.created_at, Invoice.id)
     )
+    if lock:
+        statement = statement.with_for_update(of=Invoice)
+    return tuple(db.scalars(statement).unique().all())
+
+
+def _invoice_has_ambiguous_evidence(db: Session, invoice: Invoice) -> bool:
+    if invoice.status is not InvoiceStatus.draft:
+        return True
+    if (
+        db.scalar(
+            select(PaymentAllocation.id)
+            .where(
+                PaymentAllocation.invoice_id == invoice.id,
+                PaymentAllocation.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        is not None
+    ):
+        return True
+    if (
+        db.scalar(
+            select(LedgerEntry.id).where(LedgerEntry.invoice_id == invoice.id).limit(1)
+        )
+        is not None
+    ):
+        return True
+    if (
+        db.scalar(
+            select(CreditNoteApplication.id)
+            .where(CreditNoteApplication.invoice_id == invoice.id)
+            .limit(1)
+        )
+        is not None
+    ):
+        return True
+    return (
+        db.scalar(
+            select(ServiceEntitlement.id)
+            .join(
+                InvoiceLine,
+                InvoiceLine.subscription_id == ServiceEntitlement.subscription_id,
+            )
+            .where(
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.is_active.is_(True),
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+                ServiceEntitlement.starts_at < invoice.billing_period_end,
+                ServiceEntitlement.ends_at > invoice.billing_period_start,
+            )
+            .limit(1)
+        )
+        is not None
+        if invoice.billing_period_start is not None
+        and invoice.billing_period_end is not None
+        else True
+    )
+
+
+def resolve_prepaid_recovery_draft_eligibility(
+    db: Session, *, subscription_id: UUID
+) -> PrepaidRecoveryDraftEligibility:
+    """Read the canonical Bill Now eligibility and authoritative next action."""
+
+    subscription = db.get(Subscription, subscription_id)
+    if subscription is None:
+        _error("subscription_not_found", "Subscription was not found.")
+    try:
+        _validate_recovery_subscription(db, subscription)
+    except PrepaidRecoveryBillingError as exc:
+        return PrepaidRecoveryDraftEligibility(
+            subscription_id=subscription_id,
+            eligible=False,
+            next_action=PrepaidRecoveryNextAction.resolve_service_eligibility,
+            reason=exc.message,
+        )
+    invoices = _unresolved_service_invoices(db, subscription_id)
+    if not invoices:
+        return PrepaidRecoveryDraftEligibility(
+            subscription_id=subscription_id,
+            eligible=True,
+            next_action=PrepaidRecoveryNextAction.create_recovery_draft,
+            reason="No unresolved invoice claims this prepaid service.",
+        )
+    invoice_ids = tuple(invoice.id for invoice in invoices)
+    if len(invoices) > 1:
+        return PrepaidRecoveryDraftEligibility(
+            subscription_id=subscription_id,
+            eligible=False,
+            next_action=PrepaidRecoveryNextAction.review_multiple_invoices,
+            reason="Multiple unresolved invoices claim this prepaid service.",
+            existing_invoice_id=invoices[0].id,
+            existing_invoice_ids=invoice_ids,
+        )
+    invoice = invoices[0]
+    ambiguous = _invoice_has_ambiguous_evidence(db, invoice)
+    return PrepaidRecoveryDraftEligibility(
+        subscription_id=subscription_id,
+        eligible=False,
+        next_action=(
+            PrepaidRecoveryNextAction.review_existing_invoice
+            if ambiguous
+            else PrepaidRecoveryNextAction.reconcile_existing_invoice
+        ),
+        reason=(
+            "The existing service invoice has financial or coverage evidence and requires review."
+            if ambiguous
+            else "Reconcile or explicitly close the existing prepaid draft before Bill Now."
+        ),
+        existing_invoice_id=invoice.id,
+        existing_invoice_ids=invoice_ids,
+    )
+
+
+def _reject_ineligible_recovery(eligibility: PrepaidRecoveryDraftEligibility) -> None:
+    if eligibility.eligible:
+        return
+    details: dict[str, object] = {
+        "subscription_id": str(eligibility.subscription_id),
+        "next_action": eligibility.next_action.value,
+    }
+    if eligibility.existing_invoice_id is not None:
+        details["invoice_id"] = str(eligibility.existing_invoice_id)
+    if eligibility.existing_invoice_ids:
+        details["invoice_ids"] = tuple(
+            str(invoice_id) for invoice_id in eligibility.existing_invoice_ids
+        )
+    _error("unresolved_service_invoice", eligibility.reason, **details)
 
 
 def preview_prepaid_recovery_draft(
@@ -161,13 +324,20 @@ def preview_prepaid_recovery_draft(
     if subscription is None:
         _error("subscription_not_found", "Subscription was not found.")
     _validate_recovery_subscription(db, subscription)
-    existing = _open_recovery_invoice(db, subscription.id)
-    if existing is not None:
-        _error(
-            "open_recovery_invoice",
-            "This service already has an open recovery invoice; settle or void it first.",
-            invoice_id=str(existing.id),
-        )
+    _reject_ineligible_recovery(
+        resolve_prepaid_recovery_draft_eligibility(db, subscription_id=subscription.id)
+    )
+    return _build_prepaid_recovery_draft_preview(
+        db, subscription=subscription, effective_at=effective_at
+    )
+
+
+def _build_prepaid_recovery_draft_preview(
+    db: Session,
+    *,
+    subscription: Subscription,
+    effective_at: datetime | None,
+) -> PrepaidRecoveryDraftPreview:
     starts_at = _utc(effective_at or datetime.now(UTC))
     charge = resolve_prepaid_monthly_charge(db, subscription, starts_at)
     if charge is None:
@@ -208,6 +378,33 @@ def preview_prepaid_recovery_draft(
     )
 
 
+def _replayed_prepaid_recovery_draft_preview(
+    *,
+    invoice: Invoice,
+    subscription: Subscription,
+    fingerprint: str,
+) -> PrepaidRecoveryDraftPreview:
+    if invoice.billing_period_start is None or invoice.billing_period_end is None:
+        _error(
+            "unresolved_service_invoice",
+            "The matching recovery invoice has incomplete period evidence.",
+            subscription_id=str(subscription.id),
+            invoice_id=str(invoice.id),
+            next_action=PrepaidRecoveryNextAction.review_existing_invoice.value,
+        )
+    return PrepaidRecoveryDraftPreview(
+        subscription_id=subscription.id,
+        account_id=invoice.account_id,
+        starts_at=_utc(invoice.billing_period_start),
+        ends_at=_utc(invoice.billing_period_end),
+        subtotal=round_money(Decimal(str(invoice.subtotal))),
+        tax_total=round_money(Decimal(str(invoice.tax_total))),
+        total=round_money(Decimal(str(invoice.total))),
+        currency=(invoice.currency or "NGN").upper(),
+        fingerprint=fingerprint,
+    )
+
+
 def create_prepaid_recovery_draft(
     db: Session,
     *,
@@ -223,27 +420,39 @@ def create_prepaid_recovery_draft(
         lock_account(db, str(candidate.subscriber_id))
         subscription = _locked_subscription(db, confirmation.subscription_id)
         _validate_recovery_subscription(db, subscription)
-        current = preview_prepaid_recovery_draft(
-            db, subscription_id=subscription.id, effective_at=confirmation.starts_at
+        invoices = _unresolved_service_invoices(db, subscription.id, lock=True)
+        matching_recovery = next(
+            (
+                invoice
+                for invoice in invoices
+                if dict(invoice.metadata_ or {}).get("prepaid_recovery_fingerprint")
+                == confirmation.fingerprint
+            ),
+            None,
+        )
+        if invoices and matching_recovery is None:
+            eligibility = resolve_prepaid_recovery_draft_eligibility(
+                db, subscription_id=subscription.id
+            )
+            _reject_ineligible_recovery(eligibility)
+        if matching_recovery is not None:
+            return PrepaidRecoveryDraftResult(
+                matching_recovery.id,
+                matching_recovery.invoice_number,
+                _replayed_prepaid_recovery_draft_preview(
+                    invoice=matching_recovery,
+                    subscription=subscription,
+                    fingerprint=confirmation.fingerprint,
+                ),
+                True,
+            )
+        current = _build_prepaid_recovery_draft_preview(
+            db, subscription=subscription, effective_at=confirmation.starts_at
         )
         if current.fingerprint != confirmation.fingerprint:
             _error(
                 "stale_preview",
                 "The service or price changed after preview; preview again.",
-            )
-        existing = _open_recovery_invoice(db, subscription.id)
-        if existing is not None:
-            metadata = dict(existing.metadata_ or {})
-            if metadata.get("prepaid_recovery_fingerprint") == confirmation.fingerprint:
-                return PrepaidRecoveryDraftResult(
-                    existing.id,
-                    existing.invoice_number,
-                    current,
-                    True,
-                )
-            _error(
-                "open_recovery_invoice",
-                "This service already has an open recovery invoice; settle or void it first.",
             )
         invoice = Invoices.stage_system_invoice(
             db,
