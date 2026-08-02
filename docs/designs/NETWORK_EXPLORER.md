@@ -1,8 +1,9 @@
 # Unified Network Explorer
 
 Status: adopted (programme slices PR 3 — explorer shell, typed search, and
-subject-centred bounded graphs — and PR 4 — the on-demand operational
-inspector). Presentation and information rules follow
+subject-centred bounded graphs; PR 4 — the on-demand operational inspector;
+PR 5 — fibre/geographic/utilization layers; PR 6 — the coverage and drift
+view). Presentation and information rules follow
 `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`. The Customer 360 companion
 contract is `docs/designs/CUSTOMER_NETWORK_PATH.md`.
 
@@ -103,6 +104,25 @@ Alarm-stream context beyond live incidents is a later slice.
   utilization ("62% of 1000 Mbps") from the declared topology links; the
   projection composes display strings only and loads them on demand inside
   the inspector, never during initial page render.
+
+## Coverage and drift
+
+`build_network_coverage` (rendered at `/admin/network/explorer/coverage`,
+`monitoring:read`) is the topology-quality view. Coverage is calculated per
+subscription — never from aggregate device counts — by composing the batched
+gap classification that `network.access_path` keeps contractually in sync
+with `resolve_customer_path`: active subscriptions, complete end-to-end
+paths, coverage percentage, and completeness by access medium
+(fibre/wireless/NAS-only/unknown), plus per-gap-code counts. Drift worklists
+each carry their count, a `coverage_metric_presentation` word
+(Clear/Needs review), and the canonical repair destination: subscriptions
+without a complete path (topology-gaps), forwarding declarations without
+current agreement (idempotent reconcile state counts: drift / missing
+observation / invalid), monitored devices with no provisioning match,
+the unmatched-radio review queue with ageing (oldest open days), ONTs with
+no PON association (unconfigured-ONTs queue), and connected ONTs with no
+splitter/FDH association (fibre trace). The projection counts and links; it
+repairs nothing and never turns a worklist size into a service-down claim.
 
 ## Performance and safety
 

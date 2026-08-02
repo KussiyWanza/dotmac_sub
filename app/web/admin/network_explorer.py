@@ -66,6 +66,22 @@ def network_explorer(
 
 
 @router.get(
+    "/explorer/coverage",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("monitoring:read"))],
+)
+def network_explorer_coverage(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """Topology-quality view: per-subscription coverage and drift worklists."""
+
+    context = _base_context(request, db, active_page="explorer")
+    context["coverage"] = network_explorer_service.build_network_coverage(db)
+    return templates.TemplateResponse("admin/network/explorer/coverage.html", context)
+
+
+@router.get(
     "/explorer/inspect",
     response_class=HTMLResponse,
     dependencies=[

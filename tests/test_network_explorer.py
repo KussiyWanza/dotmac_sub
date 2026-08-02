@@ -421,3 +421,80 @@ def test_pop_site_inspector_links_existing_map(db_session):
     map_fact = next(fact for fact in inspector.facts if fact.label == "Map")
     assert map_fact.href == "/admin/network/map"
     assert map_fact.href_permission == "network:map:read"
+
+
+# --- coverage and drift ----------------------------------------------------
+
+
+def test_coverage_is_calculated_per_subscription(db_session, subscriber, catalog_offer):
+    from app.models.catalog import BillingMode, SubscriptionStatus
+    from app.schemas.catalog import SubscriptionCreate
+    from app.services import catalog as catalog_service
+
+    subscription = catalog_service.subscriptions.create(
+        db_session,
+        SubscriptionCreate(account_id=subscriber.id, offer_id=catalog_offer.id),
+    )
+    subscription.billing_mode = BillingMode.postpaid
+    subscription.status = SubscriptionStatus.active
+    db_session.commit()
+
+    coverage = explorer.build_network_coverage(db_session)
+
+    assert coverage.active_subscriptions == 1
+    # No ONT/NAS/basestation resolution exists, so the path is honestly
+    # incomplete and lands in a gap bucket rather than being invented.
+    assert coverage.complete_paths == 0
+    assert coverage.coverage_percent == 0.0
+    assert sum(count for _, count in coverage.gap_counts) == 1
+    assert sum(m.total for m in coverage.by_medium) == 1
+
+    gaps_metric = next(
+        metric for metric in coverage.metrics if metric.key == "subscription_gaps"
+    )
+    assert gaps_metric.count == 1
+    assert gaps_metric.presentation.value == "needs_review"
+    assert gaps_metric.presentation.tone.value == "warning"
+    assert gaps_metric.href == "/admin/network/topology-gaps"
+
+
+def test_coverage_with_no_subscriptions_is_unknown_not_perfect(db_session):
+    coverage = explorer.build_network_coverage(db_session)
+
+    assert coverage.active_subscriptions == 0
+    assert coverage.coverage_percent is None
+
+
+def test_orphan_device_and_radio_queue_worklists(db_session):
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.support import Ticket
+
+    _device(db_session, "Orphan-1")
+    ticket = Ticket(
+        title="Unmatched radio",
+        ticket_type="unmatched_radio",
+        status="open",
+    )
+    db_session.add(ticket)
+    db_session.commit()
+    ticket.created_at = datetime.now(UTC) - timedelta(days=3)
+    db_session.commit()
+
+    coverage = explorer.build_network_coverage(db_session)
+    metrics = {metric.key: metric for metric in coverage.metrics}
+
+    assert metrics["orphan_devices"].count == 1
+    radio_queue = metrics["unmatched_radio_queue"]
+    assert radio_queue.count == 1
+    assert "day(s)" in radio_queue.detail
+    assert radio_queue.href == explorer.UNMATCHED_RADIO_QUEUE_HREF
+
+
+def test_zero_worklists_present_as_clear(db_session):
+    coverage = explorer.build_network_coverage(db_session)
+
+    clear = [m for m in coverage.metrics if m.count == 0]
+    assert clear, "expected at least one empty worklist in an empty database"
+    assert all(m.presentation.value == "clear" for m in clear)
+    assert all(m.presentation.tone.value == "positive" for m in clear)

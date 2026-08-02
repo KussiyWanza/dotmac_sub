@@ -34640,14 +34640,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "network explorer typed subject search",
                     "network explorer subject-centred graph projection",
                     "network explorer subject inspector projection",
+                    "network path coverage and drift projection",
                 ),
                 depends_on=(
                     "network.identity",
+                    "network.access_path",
                     "network.forwarding_topology",
                     "network.device_state",
                     "network.radio_signal",
                     "network.outage_impact",
                     "network.outage_lifecycle",
+                    "support.ticket_lifecycle",
                     "ui.customer_network_path_projection",
                     "ui.status_presentation",
                 ),
@@ -34696,6 +34699,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "effective RF signal",
                                 "topological audience cohorts",
                                 "live incident scope state",
+                                "semantic status presentation vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=("network path coverage and drift projection"),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "per-subscription path gap classification",
+                                "forwarding declaration evidence states",
+                                "network inventory identity",
+                                "unmatched-radio review queue state",
                                 "semantic status presentation vocabulary",
                             ),
                         ),
@@ -34757,6 +34771,35 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "value + source + explicit freshness + "
                                 "reason for a radio's RF observation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="per-subscription path gap classification",
+                            owner="network.access_path",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "batched per-subscription medium and gap "
+                                "classification contractually kept in sync "
+                                "with resolve_customer_path"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="forwarding declaration evidence states",
+                            owner="network.forwarding_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "idempotent reconcile report state counts: "
+                                "agreement, drift, missing observation, and "
+                                "invalid declaration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="unmatched-radio review queue state",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "open unmatched_radio tickets with creation "
+                                "times for queue size and ageing"
                             ),
                         ),
                         AuthorityInput(

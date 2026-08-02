@@ -68,8 +68,8 @@ _NODE_LINKS: dict[str, tuple[str, str]] = {
 UNMATCHED_RADIO_QUEUE_HREF = "/admin/support/tickets?ticket_type=unmatched_radio"
 UNMATCHED_RADIO_QUEUE_PERMISSION = "support:ticket:read"
 
-_TOPOLOGY_GAPS_HREF = "/admin/network/topology-gaps"
-_TOPOLOGY_GAPS_PERMISSION = "monitoring:read"
+TOPOLOGY_GAPS_HREF = "/admin/network/topology-gaps"
+TOPOLOGY_GAPS_PERMISSION = "monitoring:read"
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +355,7 @@ def _gap_repair(code: str, subscriber_id) -> tuple[str | None, str | None]:
             f"/admin/network/onts?assign_subscriber={subscriber_id}",
             "network:ont:read",
         )
-    return _TOPOLOGY_GAPS_HREF, _TOPOLOGY_GAPS_PERMISSION
+    return TOPOLOGY_GAPS_HREF, TOPOLOGY_GAPS_PERMISSION
 
 
 def _node_tooltip(node) -> str:

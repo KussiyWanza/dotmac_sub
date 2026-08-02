@@ -768,6 +768,27 @@ def path_gap_presentation(code: str | None) -> StatusPresentation:
     )
 
 
+def coverage_metric_presentation(open_count: int) -> StatusPresentation:
+    """Project a coverage/drift worklist size without re-deriving the facts.
+
+    Zero open items is the healthy word; anything else needs review. The
+    metric owner supplies the count; this mapping owns only its meaning.
+    """
+    if open_count <= 0:
+        return StatusPresentation(
+            value="clear",
+            label="Clear",
+            tone=StatusTone.positive,
+            icon=StatusIcon.check,
+        )
+    return StatusPresentation(
+        value="needs_review",
+        label="Needs review",
+        tone=StatusTone.warning,
+        icon=StatusIcon.alert,
+    )
+
+
 def access_endpoint_source_presentation(source: str | None) -> StatusPresentation:
     """Project which record proved the serving endpoint, named not implied."""
     return _presentation(_status_value(source), _ACCESS_ENDPOINT_SOURCE_PRESENTATIONS)

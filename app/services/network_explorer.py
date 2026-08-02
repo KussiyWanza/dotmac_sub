@@ -38,6 +38,10 @@ from app.models.network_monitoring import NetworkDevice, PopSite
 from app.models.subscriber import Subscriber
 from app.schemas.status_presentation import StatusPresentation
 from app.services.customer_network_path import (
+    TOPOLOGY_GAPS_HREF,
+    TOPOLOGY_GAPS_PERMISSION,
+    UNMATCHED_RADIO_QUEUE_HREF,
+    UNMATCHED_RADIO_QUEUE_PERMISSION,
     asset_link,
     project_subscription_network_path,
 )
@@ -1733,4 +1737,263 @@ def _subscriber_inspector(db, subscriber_id, _identity) -> ExplorerInspector | N
         _subscriber_label(subscriber) or "Customer",
         facts=(InspectorFact(label="Subscriptions", display=str(subscription_count)),),
         customer360_href=f"/admin/customers/person/{subscriber_id}",
+    )
+
+
+# --- coverage and drift ----------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MediumCoverage:
+    """Per-access-medium path completeness, calculated per subscription."""
+
+    medium: str
+    label: str
+    total: int
+    complete: int
+
+    @property
+    def percent(self) -> float | None:
+        if not self.total:
+            return None
+        return round(100.0 * self.complete / self.total, 1)
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageMetric:
+    """One drift/coverage worklist with its canonical repair destination."""
+
+    key: str
+    label: str
+    count: int
+    presentation: StatusPresentation
+    detail: str | None = None
+    href: str | None = None
+    href_permission: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkCoverage:
+    """Topology-quality projection: per-subscription coverage plus drift.
+
+    Aggregate device counts cannot prove a continuous customer path, so
+    coverage is derived from the per-subscription gap classification that is
+    contractually kept in sync with resolve_customer_path.
+    """
+
+    evaluated_at: datetime
+    active_subscriptions: int
+    complete_paths: int
+    gap_counts: tuple[tuple[str, int], ...]
+    by_medium: tuple[MediumCoverage, ...]
+    metrics: tuple[CoverageMetric, ...]
+
+    @property
+    def coverage_percent(self) -> float | None:
+        if not self.active_subscriptions:
+            return None
+        return round(100.0 * self.complete_paths / self.active_subscriptions, 1)
+
+
+_MEDIUM_LABELS = {
+    "fiber": "Fibre",
+    "wireless": "Wireless",
+    "nas": "NAS-only",
+    "unknown": "Unknown medium",
+}
+
+
+def build_network_coverage(db: Session) -> NetworkCoverage:
+    """Compose per-subscription coverage and the open drift worklists."""
+
+    from collections import Counter
+
+    from app.services.status_presentation import coverage_metric_presentation
+    from app.services.topology.gaps import classify_active_subscriptions
+
+    classified = classify_active_subscriptions(db)
+    total = len(classified)
+    complete = sum(1 for row in classified if not row["gap"])
+    gap_counter = Counter(row["gap"] for row in classified if row["gap"])
+    medium_totals: Counter = Counter(row["medium"] for row in classified)
+    medium_complete: Counter = Counter(
+        row["medium"] for row in classified if not row["gap"]
+    )
+    by_medium = tuple(
+        MediumCoverage(
+            medium=medium,
+            label=_MEDIUM_LABELS.get(medium, medium.title()),
+            total=medium_totals[medium],
+            complete=medium_complete.get(medium, 0),
+        )
+        for medium in sorted(medium_totals)
+    )
+
+    metrics: list[CoverageMetric] = []
+
+    subscription_gaps = total - complete
+    metrics.append(
+        CoverageMetric(
+            key="subscription_gaps",
+            label="Subscriptions without a complete path",
+            count=subscription_gaps,
+            presentation=coverage_metric_presentation(subscription_gaps),
+            detail=(
+                ", ".join(
+                    f"{code}: {count}" for code, count in sorted(gap_counter.items())
+                )
+                or None
+            ),
+            href=TOPOLOGY_GAPS_HREF,
+            href_permission=TOPOLOGY_GAPS_PERMISSION,
+        )
+    )
+
+    unproven = _forwarding_unproven_count(db)
+    metrics.append(
+        CoverageMetric(
+            key="forwarding_unproven",
+            label="Forwarding declarations without current agreement",
+            count=unproven.count,
+            presentation=coverage_metric_presentation(unproven.count),
+            detail=unproven.detail,
+        )
+    )
+
+    orphan_devices = (
+        db.query(func.count(NetworkDevice.id))
+        .filter(
+            NetworkDevice.matched_device_id.is_(None),
+            NetworkDevice.is_active.is_(True),
+        )
+        .scalar()
+        or 0
+    )
+    metrics.append(
+        CoverageMetric(
+            key="orphan_devices",
+            label="Monitored devices with no provisioning match",
+            count=orphan_devices,
+            presentation=coverage_metric_presentation(orphan_devices),
+            href=TOPOLOGY_GAPS_HREF,
+            href_permission=TOPOLOGY_GAPS_PERMISSION,
+        )
+    )
+
+    radio_queue = _unmatched_radio_queue_metric(db)
+    metrics.append(radio_queue)
+
+    onts_without_pon = (
+        db.query(func.count(OntUnit.id))
+        .filter(
+            OntUnit.pon_port_id.is_(None),
+            ~OntUnit.id.in_(
+                select(OntAssignment.ont_unit_id).where(
+                    OntAssignment.active.is_(True),
+                    OntAssignment.pon_port_id.isnot(None),
+                )
+            ),
+        )
+        .scalar()
+        or 0
+    )
+    metrics.append(
+        CoverageMetric(
+            key="onts_without_pon",
+            label="ONTs with no PON association",
+            count=onts_without_pon,
+            presentation=coverage_metric_presentation(onts_without_pon),
+            href="/admin/network/unconfigured-onts",
+            href_permission="network:olt:read",
+        )
+    )
+
+    onts_without_plant = (
+        db.query(func.count(OntUnit.id))
+        .filter(
+            OntUnit.splitter_port_id.is_(None),
+            OntUnit.pon_port_id.isnot(None),
+        )
+        .scalar()
+        or 0
+    )
+    metrics.append(
+        CoverageMetric(
+            key="onts_without_plant",
+            label="Connected ONTs with no splitter/FDH association",
+            count=onts_without_plant,
+            presentation=coverage_metric_presentation(onts_without_plant),
+            href="/admin/network/fiber-trace",
+            href_permission="network:fiber:read",
+        )
+    )
+
+    return NetworkCoverage(
+        evaluated_at=datetime.now(UTC),
+        active_subscriptions=total,
+        complete_paths=complete,
+        gap_counts=tuple(sorted(gap_counter.items())),
+        by_medium=by_medium,
+        metrics=tuple(metrics),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnprovenForwarding:
+    count: int
+    detail: str | None
+
+
+def _forwarding_unproven_count(db: Session) -> _UnprovenForwarding:
+    from app.services.network.forwarding_topology import (
+        reconcile_forwarding_topology,
+    )
+
+    try:
+        report = reconcile_forwarding_topology(db)
+    except Exception:
+        logger.warning("Forwarding coverage read failed", exc_info=True)
+        return _UnprovenForwarding(count=0, detail="forwarding report unavailable")
+    open_states = {
+        state: count
+        for state, count in report.state_counts.items()
+        if state != "agreement" and count
+    }
+    return _UnprovenForwarding(
+        count=sum(open_states.values()),
+        detail=(
+            ", ".join(
+                f"{state}: {count}" for state, count in sorted(open_states.items())
+            )
+            or None
+        ),
+    )
+
+
+def _unmatched_radio_queue_metric(db: Session) -> CoverageMetric:
+    from app.models.support import Ticket
+    from app.services.status_presentation import coverage_metric_presentation
+
+    resolved = ("resolved", "closed", "canceled", "merged")
+    open_query = db.query(Ticket).filter(
+        Ticket.ticket_type == "unmatched_radio",
+        ~Ticket.status.in_(resolved),
+    )
+    count = open_query.count()
+    oldest = open_query.order_by(Ticket.created_at).limit(1).first() if count else None
+    detail = None
+    if oldest is not None and oldest.created_at is not None:
+        created_at = oldest.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        age_days = max((datetime.now(UTC) - created_at).days, 0)
+        detail = f"oldest open {age_days} day(s)"
+    return CoverageMetric(
+        key="unmatched_radio_queue",
+        label="Unmatched-radio review queue",
+        count=count,
+        presentation=coverage_metric_presentation(count),
+        detail=detail,
+        href=UNMATCHED_RADIO_QUEUE_HREF,
+        href_permission=UNMATCHED_RADIO_QUEUE_PERMISSION,
     )
