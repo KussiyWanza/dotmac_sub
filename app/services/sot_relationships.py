@@ -30968,6 +30968,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin work-order list pagination normalization",
                     "admin work-order global KPI and exact-cohort link projection",
                     "admin task-originated work-order creation prefill",
+                    "admin work-order detail and linked-origin projection",
                 ),
                 depends_on=(
                     "ui.list_contracts",
@@ -31046,6 +31047,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "work-order creation protocol",
                             ),
                         ),
+                        ConcernContract(
+                            name="admin work-order detail and linked-origin projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical work-order list facts",
+                                "canonical project-task scope",
+                                "canonical subscriber scope",
+                                "work-order creation protocol",
+                            ),
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -31102,7 +31113,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.READ_ONLY,
                         boundary=(
-                            "List, KPI, and creation-prefill projection execute "
+                            "List, detail, KPI, and creation-prefill projection execute "
                             "without ORM mutation or transaction completion."
                         ),
                         locking=(

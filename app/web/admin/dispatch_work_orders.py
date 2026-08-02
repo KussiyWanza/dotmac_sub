@@ -62,6 +62,25 @@ def dispatch_work_orders(
     return templates.TemplateResponse("admin/dispatch/work_orders.html", context)
 
 
+@router.get(
+    "/work-orders/{work_order_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("operations:dispatch:read"))],
+)
+def dispatch_work_order_detail(
+    request: Request,
+    work_order_id: str,
+    notice: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+):
+    state = work_orders_service.detail_page(db, work_order_id)
+    context = _ctx(request, db)
+    context.update(state)
+    context.update({"notice": notice, "error": error})
+    return templates.TemplateResponse("admin/dispatch/work_order_detail.html", context)
+
+
 @router.post(
     "/work-orders",
     response_class=HTMLResponse,
@@ -82,10 +101,7 @@ def create_dispatch_work_order(
     except (HTTPException, ValidationError, ValueError) as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         return _redirect(error=detail)
-    return _redirect(
-        notice=f"Work order {row.public_id} created",
-        q=row.public_id,
-    )
+    return _detail_redirect(row.public_id, notice=f"Work order {row.public_id} created")
 
 
 @router.post(
@@ -110,7 +126,7 @@ def update_dispatch_work_order(
     except (HTTPException, ValidationError, ValueError) as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         return _redirect(error=detail)
-    return _redirect(notice=f"Work order {work_order_id} updated")
+    return _detail_redirect(work_order_id, notice=f"Work order {work_order_id} updated")
 
 
 @router.post(
@@ -141,7 +157,21 @@ def queue_dispatch_work_order(
     except (HTTPException, ValidationError, ValueError) as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         return _redirect(error=detail)
-    return _redirect(notice=f"Work order {work_order_id} queued")
+    return _detail_redirect(work_order_id, notice=f"Work order {work_order_id} queued")
+
+
+def _detail_redirect(
+    work_order_id: str, *, notice: str | None = None, error: str | None = None
+) -> RedirectResponse:
+    params = {
+        key: str(value)
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(params)}" if params else ""
+    return RedirectResponse(
+        url=f"/admin/dispatch/work-orders/{work_order_id}{suffix}", status_code=303
+    )
 
 
 def _redirect(

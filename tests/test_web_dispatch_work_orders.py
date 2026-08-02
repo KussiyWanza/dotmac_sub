@@ -382,6 +382,53 @@ def test_update_and_queue_from_form(db_session):
     assert updated.assigned_to_name == "Ade Tech"
 
 
+def test_detail_page_exposes_authoritative_context_and_assignment_action(db_session):
+    sub = _subscriber(db_session)
+    project = Project(name="Lekki rollout", subscriber_id=sub.id)
+    db_session.add(project)
+    db_session.flush()
+    task = ProjectTask(project_id=project.id, number="TASK-LEKKI-1", title="Survey")
+    ticket = Ticket(
+        number="TKT-WO-DETAIL",
+        title="Access fault",
+        subscriber_id=sub.id,
+        customer_account_id=sub.id,
+        status="open",
+        priority="normal",
+    )
+    db_session.add_all([task, ticket])
+    db_session.flush()
+    work_order = web_dispatch.create_from_form(
+        db_session,
+        {
+            "public_id": "sub-detail-context",
+            "subscriber_id": str(sub.id),
+            "project_id": str(project.id),
+            "project_task_id": str(task.id),
+            "title": "Inspect access fibre",
+            "status": "scheduled",
+        },
+    )
+    work_order.origin_ticket_id = ticket.id
+    db_session.commit()
+
+    detail = web_dispatch.detail_page(db_session, work_order.public_id)
+
+    assert detail["work_order"].id == work_order.id
+    assert detail["subscriber"].id == sub.id
+    assert detail["project"].id == project.id
+    assert detail["project_task"].id == task.id
+    assert detail["origin_ticket"].id == ticket.id
+    assert detail["queue_action"].allowed is True
+
+
+def test_detail_page_rejects_unknown_public_id(db_session):
+    with pytest.raises(HTTPException) as exc:
+        web_dispatch.detail_page(db_session, "sub-missing")
+
+    assert exc.value.status_code == 404
+
+
 def test_queue_assignment_requires_technician(db_session):
     sub = _subscriber(db_session)
     web_dispatch.create_from_form(

@@ -150,6 +150,10 @@ A detail page establishes the decision context before exposing exhaustive data.
   depth.
 - Keep customer, subscription, financial, access, network, device, outage, and
   support states distinct when more than one matters.
+- For work orders, linked ticket, project, and project-task surfaces route to
+  the canonical work-order detail view. Creation and technician assignment are
+  displayed as consecutive actions because their command owners remain
+  separate; creation must not imply that a technician was assigned.
 
 ### Editor Or Form
 

@@ -464,6 +464,36 @@ def list_page(
     }
 
 
+def detail_page(db: Session, public_id: str) -> dict[str, Any]:
+    """Compose one work order from canonical read owners for the admin UI."""
+
+    pair = work_order_views.get_work_order_row(db, public_id)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    row, subscriber = pair
+    project = db.get(Project, row.project_id) if row.project_id else None
+    task = db.get(ProjectTask, row.project_task_id) if row.project_task_id else None
+    ticket = db.get(Ticket, row.origin_ticket_id) if row.origin_ticket_id else None
+    queue_status = _queue_status_by_work_order(db, [row]).get(str(row.id))
+    return {
+        "work_order": row,
+        "subscriber": subscriber,
+        "subscriber_label": _subscriber_label(subscriber),
+        "project": project,
+        "project_label": (
+            project.name or project.code or project.number or str(project.id)
+            if project
+            else None
+        ),
+        "project_task": task,
+        "origin_ticket": ticket,
+        "queue_status": queue_status,
+        "queue_action": _queue_action(row),
+        "priorities": PRIORITY_OPTIONS,
+        "technician_options": _technician_options(db),
+    }
+
+
 def create_from_form(
     db: Session,
     form: dict[str, Any],
