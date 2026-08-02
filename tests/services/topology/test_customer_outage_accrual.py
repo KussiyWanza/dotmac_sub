@@ -200,6 +200,11 @@ def test_mid_incident_audience_entry_starts_at_entry_not_incident_start(
 ):
     nas, node, subscriptions = _nas_node_with_subs(db_session, catalog_offer.id, 1)
     incident = declare_outage(db_session, node=node)
+    # Pin the incident's clock to the fixed test NOW: entry clamping compares
+    # against the incident start, and mixing wall-clock with fixed times made
+    # this assertion depend on the time of day the suite ran.
+    incident.started_at = NOW
+    db_session.flush()
     reconcile_incident_accrual(db_session, incident, now=NOW)
 
     joiner = Subscriber(
