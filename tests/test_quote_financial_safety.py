@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import Lead, Quote, QuoteStatus, SalesOrder
 from app.schemas.sales import LeadCreate, QuoteCreate, QuoteLineItemCreate, QuoteUpdate
 from app.services import sales as sales_service
@@ -36,13 +37,32 @@ def _lead(db_session, subscriber) -> Lead:
     )
 
 
+def _ensure_sales_template(db_session) -> None:
+    if (
+        db_session.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db_session.add(
+            ProjectTemplate(
+                name="Financial safety installation",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
+        db_session.commit()
+
+
 def _draft(db_session, subscriber) -> Quote:
+    _ensure_sales_template(db_session)
     lead = _lead(db_session, subscriber)
     return sales_service.quotes.create(
         db_session,
         QuoteCreate(
             subscriber_id=subscriber.id,
             lead_id=lead.id,
+            project_type="fiber_optics_installation",
             status=QuoteStatus.draft,
         ),
     )
@@ -70,6 +90,7 @@ def test_cannot_create_a_quote_that_is_already_accepted(db_session, subscriber):
             QuoteCreate(
                 subscriber_id=subscriber.id,
                 lead_id=lead.id,
+                project_type="fiber_optics_installation",
                 status=QuoteStatus.accepted,
             ),
         )
@@ -87,6 +108,7 @@ def test_cannot_create_a_quote_that_is_already_sent(db_session, subscriber):
             QuoteCreate(
                 subscriber_id=subscriber.id,
                 lead_id=lead.id,
+                project_type="fiber_optics_installation",
                 status=QuoteStatus.sent,
             ),
         )

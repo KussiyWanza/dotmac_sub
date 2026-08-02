@@ -317,7 +317,12 @@ def test_lead_detail_context_includes_quotes(db_session):
     subscriber = _make_subscriber(db_session)
     lead = _make_lead(db_session, subscriber)
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     context = web_sales.build_lead_detail_context(db_session, lead_id=str(lead.id))
@@ -659,7 +664,12 @@ def test_quotes_list_context(db_session):
     subscriber = _make_subscriber(db_session)
     lead = _make_lead(db_session, subscriber)
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     context = web_sales.build_quotes_list_context(
@@ -697,6 +707,7 @@ def test_quote_detail_context_line_items_deposit_and_accept_state(db_session):
         QuoteCreate(
             subscriber_id=subscriber.id,
             lead_id=lead.id,
+            project_type="fiber_optics_installation",
             metadata_={
                 "source": "portal_self_serve",
                 "deposit_percent": 50,

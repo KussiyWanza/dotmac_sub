@@ -112,17 +112,24 @@ def test_quote_acceptance_is_the_only_atomic_sales_conversion_boundary():
     assert "sales.quote_acceptance.required" in api
 
 
-def test_quote_authoring_delegates_initial_conversion_to_acceptance_owner():
+def test_quote_authoring_cannot_perform_sales_conversion():
     authoring = _source("app/services/sales/quote_authoring.py")
+    quote_model = _source("app/models/sales.py")
+    fulfillment = _source("app/services/sales_fulfillment.py")
+    projects = _source("app/services/projects.py")
 
     assert 'owner="sales.quote_authoring"' in authoring
     assert "execute_owner_command(" in authoring
-    assert "QuoteStatus.accepted" in authoring
-    assert "quote_acceptance.stage_accept_quote(" in authoring
+    assert "QuoteStatus.draft, QuoteStatus.sent" in authoring
+    assert "quote_acceptance" not in authoring
     assert "stage_lead_account_conversion" not in authoring
     assert "_stage_from_quote_acceptance" not in authoring
     assert "db.commit(" not in authoring
     assert "db.rollback(" not in authoring
+    assert "project_type: Mapped[str | None]" in quote_model
+    assert "order.quote.project_type" in fulfillment
+    assert 'order.quote.metadata_.get("project_type")' not in fulfillment
+    assert '"project_template_unconfigured"' in projects
 
 
 def test_released_output_carries_sales_linkage():

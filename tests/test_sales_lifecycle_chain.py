@@ -33,7 +33,7 @@ from app.models.customer_experience import (
 from app.models.event_store import EventStatus, EventStore
 from app.models.owner_output import OwnerOutputReceipt
 from app.models.party import Party
-from app.models.project import Project, ProjectStatus
+from app.models.project import Project, ProjectStatus, ProjectTemplate
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus, ServiceOrderType
 from app.models.sales import (
     QuoteStatus,
@@ -332,12 +332,24 @@ def test_selfserve_full_deposit_stages_funding_without_order_payment(
     db_session, catalog_offer, chain_billing
 ):
     subscriber = _make_subscriber(db_session)
+    db_session.add(
+        ProjectTemplate(
+            name="Lifecycle chain installation",
+            project_type="fiber_optics_installation",
+            is_active=True,
+        )
+    )
+    db_session.commit()
     lead = sales_service.leads.create(
         db_session, LeadCreate(subscriber_id=subscriber.id)
     )
     quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     sales_service.quote_line_items.create(
         db_session,

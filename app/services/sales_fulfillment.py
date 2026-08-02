@@ -50,19 +50,24 @@ class FulfillmentScope:
 
 
 def _project_type(db: Session, order: SalesOrder) -> str:
+    allowed = {item.value for item in ProjectType}
+    if order.quote is not None:
+        selected = str(order.quote.project_type or "").strip()
+        if selected not in allowed:
+            raise SalesFulfillmentError(
+                "quote_project_type_required",
+                "The accepted Quote does not contain a valid selected Project Type",
+                kind="invalid",
+            )
+        return selected
+
     candidates = []
-    if order.quote is not None and isinstance(order.quote.metadata_, dict):
-        candidates.append(order.quote.metadata_.get("project_type"))
-        install = order.quote.metadata_.get("install")
-        if isinstance(install, dict):
-            candidates.append(install.get("project_type"))
     if isinstance(order.metadata_, dict):
         candidates.append(order.metadata_.get("project_type"))
     configured = settings_spec.resolve_value(
         db, SettingDomain.projects, "default_sales_project_type"
     )
     candidates.append(configured)
-    allowed = {item.value for item in ProjectType}
     resolved = next(
         (str(value) for value in candidates if str(value or "") in allowed), None
     )
@@ -134,6 +139,7 @@ def ensure_implementation_scope(
             customer_address=_customer_address(order, subscriber),
             region=service_address_service.address_parts(subscriber).region,
             actor_id=actor,
+            require_project_template=order.quote is not None,
         )
         installation = installation_projects.ensure_for_project(
             db,

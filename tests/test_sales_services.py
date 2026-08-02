@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import (
     LeadStatus,
     QuoteStatus,
@@ -71,6 +72,7 @@ def _make_stage(db, pipeline, name="New", order_index=0, default_probability=25)
 
 def _make_quote(db, subscriber: Subscriber, **overrides):
     lead = sales_service.leads.create(db, LeadCreate(subscriber_id=subscriber.id))
+    overrides.setdefault("project_type", "fiber_optics_installation")
     return sales_service.quotes.create(
         db,
         QuoteCreate(
@@ -417,7 +419,11 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
     )
     quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     sales_service.quote_line_items.create(
         db_session,
@@ -429,6 +435,14 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
             metadata_={"note": "one-off"},
         ),
     )
+    db_session.add(
+        ProjectTemplate(
+            name="Sales service installation",
+            project_type="fiber_optics_installation",
+            is_active=True,
+        )
+    )
+    db_session.commit()
 
     quote = sales_service.quotes.update(
         db_session, str(quote.id), QuoteUpdate(status=QuoteStatus.accepted)
@@ -465,7 +479,12 @@ def test_quote_rejection_does_not_close_the_lead(db_session):
         db_session, LeadCreate(subscriber_id=subscriber.id)
     )
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     sales_service.quotes.update(
         db_session, str(quote.id), QuoteUpdate(status=QuoteStatus.rejected)

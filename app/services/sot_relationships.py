@@ -33659,7 +33659,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="sales.quote_authoring",
                 module="app.services.sales.quote_authoring",
-                owns=("atomic Lead-backed Quote authoring",),
+                owns=("atomic Lead-backed Draft/Sent Quote authoring",),
                 depends_on=(
                     "auth.staff_provisioning",
                     "events.dispatcher",
@@ -33667,20 +33667,19 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "observability.audit_log",
                     "party.registry",
                     "sales.lead_lifecycle",
-                    "sales.quote_acceptance",
                     "sales.service",
                     "service_intent.catalog_policy",
                 ),
                 notes=(
-                    "Staff author one Lead-backed Quote and all of its initial status "
-                    "consequences under one transaction. Accepted authoring invokes the "
-                    "existing sales.quote_acceptance implementation as a flush-only "
-                    "participant; no downstream owner is duplicated."
+                    "Staff author one Lead-backed Draft or Sent Quote and all of its "
+                    "lines under one transaction. Initial Accepted authoring and every "
+                    "Subscriber, order, Project, Task, or WorkOrder consequence are "
+                    "forbidden; acceptance is a separate sales.quote_acceptance command."
                 ),
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
-                            name="atomic Lead-backed Quote authoring",
+                            name="atomic Lead-backed Draft/Sent Quote authoring",
                             role=OwnerRole.APPLICATION_COORDINATOR,
                             input_names=(
                                 "Quote authoring command evidence",
@@ -33688,7 +33687,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical Lead and Party state",
                                 "canonical commercial reference state",
                                 "canonical Quote lifecycle state",
-                                "canonical accepted-Quote conversion",
                             ),
                         ),
                     ),
@@ -33698,8 +33696,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="sales.quote_authoring",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "typed submission id, Lead, operational status, currency, "
-                                "tax choice, install location, Project type, line values, "
+                                "typed submission id, Lead, Draft/Sent status, currency, "
+                                "tax choice, install location, required Project Type, line values, "
                                 "actor, and CommandContext provenance"
                             ),
                         ),
@@ -33728,24 +33726,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             name="canonical Quote lifecycle state",
                             owner="sales.service",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="Quote and QuoteLineItem records keyed by submission UUID",
-                        ),
-                        AuthorityInput(
-                            name="canonical accepted-Quote conversion",
-                            owner="sales.quote_acceptance",
-                            kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "flush-only accepted conversion participant covering Lead, "
-                                "account, SalesOrder, Project, Tasks, WorkOrders, events, and audit"
+                                "Quote with first-class Project Type and QuoteLineItem "
+                                "records keyed by submission UUID"
                             ),
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
                             "author_quote enters execute_owner_command once on a clean "
-                            "adapter session; Quote, lines, Lead outcome, accepted conversion, "
-                            "events, and audit evidence commit or roll back together"
+                            "adapter session; Quote, lines, quote.created event, and audit "
+                            "evidence commit or roll back together"
                         ),
                         locking=(
                             "The actor and Lead lock FOR UPDATE; the supplied Quote UUID "
@@ -33767,6 +33759,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             "sales.quote_authoring.actor_not_eligible",
                             "sales.quote_authoring.currency_invalid",
+                            "sales.quote_authoring.initial_status_invalid",
                             "sales.quote_authoring.install_pin_incomplete",
                             "sales.quote_authoring.inventory_description_mismatch",
                             "sales.quote_authoring.inventory_item_not_active",
@@ -33792,12 +33785,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "inactive or closed Lead/Party state",
                             "inactive actor or commercial reference",
-                            "failed initial lifecycle or accepted-conversion consequence",
+                            "initial Accepted/Rejected/Expired status",
                             "ambiguous or stale line references",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("quote.created", "quote.accepted"),
+                        event_types=("quote.created",),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -33814,16 +33807,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         old_owner="admin web form plus per-row sales.service commits",
                         new_owner="sales.quote_authoring",
                         verification=(
-                            "Lead requirement, all initial statuses, atomic lines and accepted "
-                            "conversion, install metadata, exact replay, and boundary tests."
+                            "Lead and Project Type requirements, Draft/Sent restriction, "
+                            "atomic lines, install metadata, exact replay, manifest, and "
+                            "boundary tests."
                         ),
                         cutover_gate=(
                             "The admin form submits one typed owner command on a clean "
-                            "session and exposes the exact operational Quote statuses."
+                            "session and exposes only Draft/Sent initial states."
                         ),
                         fallback_retirement=(
-                            "No adapter creates Quote lines or initial lifecycle consequences "
-                            "through separate commits."
+                            "The form cannot create an Accepted Quote or Subscriber and no "
+                            "adapter creates initial Quote lines through separate commits."
                         ),
                     ),
                     steward="sales operations",
@@ -34015,9 +34009,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 notes=(
                     "Quote acceptance is the sole sales conversion event. It locks the "
                     "Quote and Lead, creates or replays the exact account, copies the "
-                    "order and lines, prepares the structural Project and configured "
-                    "template Tasks, creates configured WorkOrders, and stages event and "
-                    "audit evidence under one owner transaction."
+                    "order and lines, copies the Quote-selected Project Type, assigns its "
+                    "configured active template and Tasks, creates only policy-enabled "
+                    "WorkOrders, and stages event and audit evidence under one owner "
+                    "transaction."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -34057,8 +34052,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="sales.service",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked active Lead-backed Draft, Sent, or Accepted Quote "
-                                "and its priced line items"
+                                "locked active Lead-backed Draft, Sent, or Accepted Quote, "
+                                "its required first-class Project Type, and priced line items"
                             ),
                         ),
                         AuthorityInput(
@@ -34075,7 +34070,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.project_lifecycle",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "active ProjectTemplate selected by project type, ordered "
+                                "active ProjectTemplate mapped by Quote Project Type, ordered "
                                 "template tasks, and explicit WorkOrder automation flags"
                             ),
                         ),
@@ -34111,6 +34106,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "sales.quote_acceptance.account_profile_invalid",
                             "sales.quote_acceptance.active_caller_transaction",
                             "sales.quote_acceptance.command_contract_violation",
+                            "sales.quote_acceptance.deposit_evidence_conflict",
+                            "sales.quote_acceptance.deposit_evidence_invalid",
                             "sales.quote_acceptance.invalid_command_context",
                             "sales.quote_acceptance.invalid_transition",
                             "sales.quote_acceptance.lead_party_required",
@@ -34120,6 +34117,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "sales.quote_acceptance.nested_transaction_completion",
                             "sales.quote_acceptance.party_not_found",
                             "sales.quote_acceptance.participant_rejected",
+                            "sales.quote_acceptance.project_template_required",
                             "sales.quote_acceptance.quote_account_conflict",
                             "sales.quote_acceptance.quote_not_found",
                         ),
@@ -34127,7 +34125,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "missing or ambiguous Lead/Party/account evidence",
                             "non-Draft/Sent transition",
-                            "empty commercial lines",
+                            "empty commercial lines or missing Quote Project Type/template",
                             "any account, order, project, task, work-order, event, or audit failure",
                         ),
                     ),
@@ -34142,7 +34140,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         delivery_owner="events.dispatcher",
                         compatibility=(
                             "Version 1 carries exact Quote, Lead, Subscriber, SalesOrder, "
-                            "Project, actor, and currency/value identifiers."
+                            "Project, ProjectTemplate, actor, and currency/value identifiers."
                         ),
                         replay=(
                             "Structural unique keys and deterministic WorkOrder ids rebuild "
@@ -34157,9 +34155,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="sales.quote_acceptance",
                         verification=(
-                            "Success, failure rollback, exact replay, template Task and "
-                            "configured WorkOrder end-to-end, API delegation, manifest, "
-                            "and architecture-boundary tests."
+                            "Success, failure rollback, exact replay, Project Type template "
+                            "assignment, template Tasks, configured WorkOrders, API "
+                            "delegation, manifest, and architecture-boundary tests."
                         ),
                         cutover_gate=(
                             "Every Accepted transition delegates to this coordinator and "
@@ -34258,8 +34256,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="sales.orders",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked active SalesOrder, Quote metadata, exact Lead, "
-                                "Subscriber, line, and funding state"
+                                "locked active SalesOrder, first-class Quote Project Type, "
+                                "exact Lead, Subscriber, line, and funding state"
                             ),
                         ),
                         AuthorityInput(
@@ -34267,8 +34265,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="control.settings_spec",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "projects-domain default sales type, status, priority, "
-                                "numbering, and duration settings"
+                                "projects-domain status, priority, numbering, duration, "
+                                "and non-Quote sales type defaults"
                             ),
                         ),
                         AuthorityInput(
@@ -34348,6 +34346,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "sales_order_not_found",
                             "sales_order_canceled",
                             "subscriber_not_found",
+                            "quote_project_type_required",
                             "project_type_unconfigured",
                             "fulfillment_rejected",
                             "installation_not_found",
@@ -34355,7 +34354,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         mapping_owner="sales order and lifecycle event adapters",
                         fail_closed_on=(
-                            "missing configured project type",
+                            "missing Quote Project Type or configured Project Template",
                             "structural root mismatch",
                             "unverified implementation",
                             "conflicting verification evidence",

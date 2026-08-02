@@ -155,10 +155,9 @@ depend on HTTP request/response or exception types.
   one eligible Lead while retaining the existing optional Install Location.
 - Decision owners: `sales.quote_authoring` owns typed validation, Lead/Party
   recipient resolution, line-reference validation, Decimal calculations,
-  metadata enrichment, initial status orchestration, idempotency, audit, and
-  transactional event staging. `sales.quote_acceptance` exclusively owns every
-  Accepted transition and conversion, including initial Accepted authoring. Tax
-  configuration, Lead lifecycle, account,
+  metadata enrichment, Draft/Sent initial status, idempotency, audit, and
+  transactional event staging. `sales.quote_acceptance` exclusively owns the
+  later Accepted transition and conversion. Tax configuration, Lead lifecycle, account,
   order, Project, Task, WorkOrder, and fulfillment owners retain their named
   decisions.
 - Identity contract: Lead is the only recipient or opportunity selector. The
@@ -167,7 +166,7 @@ depend on HTTP request/response or exception types.
   for Person, customer, Subscriber, account, or owner never establish identity;
   the authenticated SystemUser supplies Quote ownership server-side.
 - First viewport: Quotes breadcrumb, New Quote title and purpose, required Lead,
-  Draft-default status, NGN-default currency, optional Project Type, and the
+  Draft-default status, NGN-default currency, required Project Type, and the
   start of the responsive Line Items editor.
 - Authoring contract: one empty row remains visible; completely empty rows are
   ignored; custom descriptions are allowed; active Selfcare offers and native
@@ -175,11 +174,11 @@ depend on HTTP request/response or exception types.
   batch-resolved and must match their descriptions. Amount, Subtotal, configured
   Tax Total, and Total are server-derived with Decimal money rounding. Manual
   Tax Total is accepted only without a configured Tax Rate.
-- Lifecycle contract: Draft has no downstream consequences; Sent sets
-  `sent_at`; Accepted invokes the atomic acceptance coordinator in the same
-  authoring transaction; Rejected stages Lead Lost through the Lead lifecycle
-  owner; Expired changes only the Quote. Exact submission replay returns the
-  same Quote, while conflicting reuse fails closed.
+- Lifecycle contract: new Quotes may be Draft or Sent only. Draft has no
+  downstream consequences and Sent sets `sent_at`; Accepted is a separate
+  action invoking the atomic acceptance coordinator. Rejecting or expiring one
+  of several Quotes does not close the Lead. Exact submission replay returns
+  the same Quote, while conflicting reuse fails closed.
 - States and recovery: ordinary validation failures render an accessible error
   banner and preserve all scalar, location, line, and suggestion-identifier
   values. Native browser constraints cover required Lead, currency, and numeric
@@ -192,11 +191,12 @@ depend on HTTP request/response or exception types.
 
 ## Configuration versus code contracts
 
-Operational values are not embedded in orchestration code. The default sales
-implementation type, project status, project priority, provisioning workflow,
-and connector header names come from domain settings or version-pinned
-connector configuration. Provider-specific payload mapping belongs to the
-installed connector/edge adapter.
+Operational values are not embedded in orchestration code. Staff select the
+Quote's Project Type; the active `ProjectTemplate.project_type` mapping assigns
+the template without a hard-coded template identifier. Project status, project
+priority, provisioning workflow, and connector header names come from domain
+settings or version-pinned connector configuration. Provider-specific payload
+mapping belongs to the installed connector/edge adapter.
 
 Stable protocol vocabulary remains checked-in code: enum states, legal
 state-machine edges, typed event names, capability IDs, idempotency-key formats,
@@ -208,25 +208,29 @@ configuration. Changing one requires a migration/versioned contract and tests.
 1. Capture never creates a Subscriber implicitly and never deduplicates a
    person by email, phone, name, or social handle. Exact provider-event replay
    is idempotent; different content under the same event identity is rejected.
-2. A Quote is authored manually from an exact Lead. The Lead may have multiple
-   Quotes, and Draft/Sent Quote authoring creates no Subscriber, SalesOrder,
-   Project, ProjectTask, InstallationProject, or WorkOrder. Initial Accepted
-   authoring enters the same atomic acceptance coordinator before the authoring
-   transaction may commit.
+2. A Quote is authored manually from an exact Lead and requires a selected
+   Project Type. The typed `Quote.project_type` column is the authoritative
+   downstream input; the metadata key is a compatibility projection only. The Lead
+   may have multiple Quotes, and Draft/Sent Quote authoring creates no
+   Subscriber, SalesOrder, Project, ProjectTask, InstallationProject, or
+   WorkOrder. Accepted is a separate transition.
 3. `sales.quote_acceptance` is the only sales conversion event. It locks the
    Quote and Lead and, in one owner transaction, marks the Lead Won, creates or
    attaches the exact Subscriber, copies the Quote and lines into one
-   SalesOrder, creates one Project and InstallationProject, instantiates the
-   active ProjectTemplate tasks, creates configured WorkOrders, and stages the
-   audit and outbox events. Any participant or event-staging failure rolls the
-   complete change back. Durable event delivery occurs only after commit.
+   SalesOrder, copies the Quote Project Type to one Project, assigns the active
+   ProjectTemplate configured for that type, creates its Tasks and one
+   InstallationProject, creates WorkOrders only for template tasks whose
+   automation policy is enabled, and stages audit and outbox events. A missing
+   template or any participant/event failure rolls the complete change back.
+   Durable event delivery occurs only after commit.
 4. Acceptance replay is idempotent by Quote identity. Structural unique keys
    and deterministic ProjectTask WorkOrder keys return the canonical account,
    SalesOrder, Project, Tasks, and WorkOrders without duplicates. A conflicting
    Lead, Party, account, or lifecycle state fails closed.
 5. Every non-cancelled SalesOrder receives at most one structurally linked
-   Project and InstallationProject. ProjectTask may own several WorkOrders;
-   WorkOrder owns the foreign key.
+   Project and InstallationProject. Users may create a WorkOrder against the
+   Project or an individual ProjectTask. ProjectTask may own several
+   WorkOrders; WorkOrder owns the foreign key.
 6. A partially paid SalesOrder records the receipt but creates no Subscription
    or ServiceOrder. Full funding stages `sales_order.funding_satisfied`
    atomically with the paid transition; the lifecycle projection handler

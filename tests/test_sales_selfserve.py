@@ -250,7 +250,8 @@ def test_request_quote_captures_map_pin_on_lead_and_quote(db_session):
     meta = quote.metadata_
     assert meta["install"] == install
     assert meta["source"] == "portal_self_serve"
-    assert meta["project_type"] == "fiber_optics_installation"
+    assert quote.project_type == "fiber_optics_installation"
+    assert "project_type" not in meta
     assert meta["feasibility"]["coverage"] == "covered"
     assert meta["feasibility"]["nearest_fap_name"] == "NAP-041"
     assert meta["deposit_percent"] == 50

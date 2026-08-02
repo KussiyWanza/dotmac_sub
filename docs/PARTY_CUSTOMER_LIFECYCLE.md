@@ -30,7 +30,7 @@ reviewed Party identity --> Lead + immutable origin
                      + Lead Won + Sales Order
                          /         \
                         v           v
-          Project / implementation  pending Subscription
+       Project / template / tasks   pending Subscription
                         \           /
                          v         v
                     Service Order / provision
@@ -60,7 +60,7 @@ person or organization is; each named domain owner keeps its own lifecycle.
 | Referral program | `referrals.program` | Capture policy, canonical program and account-attachment records, qualification/reward policy, and atomic transitions |
 | Referral account orchestration | `referrals.account_conversion` | Exact Referral/Party/Lead context into atomic account creation or reviewed attachment |
 | Pipeline and Quote | `sales.service` | Opportunity progress and Lead-backed commercial offer |
-| Quote authoring | `sales.quote_authoring` | Atomic Lead-backed Quote, lines, initial status consequences, audit, and outbox staging |
+| Quote authoring | `sales.quote_authoring` | Atomic Lead-backed Draft/Sent Quote, lines, audit, and outbox staging |
 | Accepted-Quote conversion | `sales.quote_acceptance` | Sole sales conversion event; atomic account, order, Project, Tasks, WorkOrders, audit, and outbox staging |
 | Sales Order | `sales.orders` | Accepted/manual order and fulfilment handoff |
 | Sales implementation coordination | `sales.fulfillment` | Structural Project/InstallationProject creation and verified release coordination |
@@ -187,8 +187,8 @@ and Ticket links.
 Revision 457 completes the Lead-first commercial boundary without duplicating
 Party onto every downstream table:
 
-- Every new Quote requires a Lead and may exist without a Subscriber until it
-  is accepted. A Lead may have multiple Quotes.
+- Every new Quote requires a Lead and selected Project Type and may exist
+  without a Subscriber until it is accepted. A Lead may have multiple Quotes.
 - A Quote carrying legacy Subscriber context must match the Lead Party. A
   legacy unbound Lead must use its exact legacy Subscriber.
 - A Sales Order linked to a Quote must use the Quote's exact Subscriber.
@@ -199,11 +199,14 @@ Party onto every downstream table:
   with their current owners and are measured for convergence by the audit.
 
 Draft/Sent Quote authoring creates no Subscriber or downstream fulfillment
-records. Creating or transitioning a Lead-backed Quote as Accepted is the only sales event
+records. Transitioning a Lead-backed Quote to Accepted is the only sales event
 that creates or attaches the reviewed account, marks the Lead Won, creates the
-SalesOrder and copied lines, and establishes the configured Project, Tasks, and
-WorkOrders. Those state changes plus audit and durable event records commit in
-one transaction and replay by Quote identity without duplicates.
+SalesOrder and copied lines, copies the Quote Project Type to the Project,
+assigns the active template configured for that type, and creates its Tasks.
+WorkOrders are automatic only where a template-task automation policy enables
+them; users may otherwise create them from the Project or a Project Task. Those
+state changes plus audit and durable event records commit in one transaction
+and replay by Quote identity without duplicates.
 
 ## Subscription and billing block independence
 

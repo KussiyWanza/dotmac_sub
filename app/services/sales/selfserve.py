@@ -64,7 +64,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.catalog import CatalogOffer, OfferPrice, PriceType
 from app.models.domain_settings import SettingDomain
 from app.models.network import FiberAccessPoint
-from app.models.project import Project
+from app.models.project import Project, ProjectType
 from app.models.sales import (
     Quote,
     QuoteStatus,
@@ -77,17 +77,18 @@ from app.schemas.sales import (
     LeadCreate,
     QuoteCreate,
     QuoteLineItemCreate,
-    QuoteUpdate,
 )
 from app.services import control_registry, settings_spec
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
+from app.services.owner_commands import CommandContext
+from app.services.sales import quote_acceptance
 from app.services.sales.service import leads, quote_line_items, quotes
 
 logger = logging.getLogger(__name__)
 
 _TWOPLACES = Decimal("0.01")
-# §1.7 ProjectType.fiber_optics_installation — the enum itself arrives with
-# the native projects migration; the metadata contract carries the string value.
+# The self-serve installation product stores this as a typed Quote field.
 _PROJECT_TYPE = "fiber_optics_installation"
 
 
@@ -542,10 +543,10 @@ class SelfServeQuotes:
                 subscriber_id=subscriber.id,
                 lead_id=lead.id,
                 status=QuoteStatus.draft,
+                project_type=ProjectType(_PROJECT_TYPE),
                 currency=currency,
                 metadata_={
                     "source": "portal_self_serve",
-                    "project_type": _PROJECT_TYPE,
                     "install": install,
                     "feasibility": feasibility,
                     "deposit_percent": estimate["deposit_percent"],
@@ -598,17 +599,23 @@ class SelfServeQuotes:
         already_accepted = _quote_status(quote) == QuoteStatus.accepted.value
 
         if not already_accepted:
-            meta = dict(quote.metadata_ or {})
-            meta["deposit"] = {
-                "reference": deposit_reference,
-                "amount": str(amount),
-                "provider": provider,
-                "paid": True,
-            }
-            quotes.update(
+            db_session_adapter.release_read_transaction(db)
+            quote_acceptance.accept_quote(
                 db,
-                str(quote.id),
-                QuoteUpdate(status=QuoteStatus.accepted, metadata_=meta),
+                quote_acceptance.AcceptQuoteCommand(
+                    context=CommandContext.system(
+                        actor=f"subscriber:{subscriber_id}",
+                        scope="sales:quote-acceptance",
+                        reason="Verified self-serve Quote deposit",
+                        idempotency_key=f"quote-acceptance:{quote.id}",
+                    ),
+                    quote_id=quote.id,
+                    deposit=quote_acceptance.QuoteAcceptanceDeposit(
+                        reference=deposit_reference,
+                        amount=amount,
+                        provider=provider,
+                    ),
+                ),
             )
             db.refresh(quote)
 
@@ -711,7 +718,7 @@ def build_portal_quote_payload(
         "subtotal": str(_money(quote.subtotal)),
         "tax_total": str(_money(quote.tax_total)),
         "total": str(total),
-        "project_type": meta.get("project_type"),
+        "project_type": quote.project_type,
         # Post-import this is the row's own column (§1.4); the legacy
         # metadata key remains only on imported rows as provenance.
         "subscriber_id": str(quote.subscriber_id),

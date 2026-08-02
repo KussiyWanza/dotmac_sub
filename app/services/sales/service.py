@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
 from app.models.party import Party, PartyContactPoint
+from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
     LeadStatus,
@@ -1320,6 +1321,11 @@ class Quotes(ListResponseMixin):
         data = payload.model_dump()
         if data.get("status"):
             data["status"] = _enum_str(data["status"], QuoteStatus, "status")
+        if data.get("project_type") is None:
+            raise HTTPException(status_code=400, detail="project_type is required")
+        data["project_type"] = _enum_str(
+            data["project_type"], ProjectType, "project_type"
+        )
 
         lead_id = data.get("lead_id")
         if lead_id is None:
@@ -1473,6 +1479,14 @@ class Quotes(ListResponseMixin):
 
         quote_uuid = coerce_uuid(quote_id)
         requested = payload.model_dump(exclude_unset=True)
+        if "project_type" in requested:
+            if requested["project_type"] is None:
+                raise HTTPException(
+                    status_code=400, detail="project_type cannot be cleared"
+                )
+            requested["project_type"] = _enum_str(
+                requested["project_type"], ProjectType, "project_type"
+            )
         requested_status = (
             _enum_str(requested.get("status"), QuoteStatus, "status")
             if "status" in requested

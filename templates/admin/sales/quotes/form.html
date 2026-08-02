@@ -76,8 +76,8 @@
 
                 {% if not is_editing %}
                 <div>
-                    <label for="quote-project-type" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Project Type <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
-                    <select id="quote-project-type" name="project_type"
+                    <label for="quote-project-type" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Project Type</label>
+                    <select id="quote-project-type" name="project_type" required aria-required="true"
                             class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
                         <option value="">Select a Project Type</option>
                         {% for item in project_types %}

@@ -1410,9 +1410,13 @@ def prepare_sales_project(
     customer_address: str | None,
     region: str | None,
     actor_id: str,
+    require_project_template: bool = False,
 ) -> Project:
     """Create the native project root for one exact SalesOrder, without commit."""
 
+    normalized_type = _sales_project_enum(
+        project_type, ProjectType, "project_type"
+    ).value
     existing = (
         db.query(Project).filter(Project.sales_order_id == sales_order_id).one_or_none()
     )
@@ -1421,15 +1425,30 @@ def prepare_sales_project(
             existing.subscriber_id != subscriber_id
             or existing.quote_id != quote_id
             or existing.lead_id != lead_id
+            or existing.project_type != normalized_type
+            or (require_project_template and existing.project_template_id is None)
         ):
             raise SalesProjectLifecycleError(
                 "project_binding_conflict",
                 "SalesOrder project binding conflicts with canonical state",
             )
         return existing
-    normalized_type = _sales_project_enum(
-        project_type, ProjectType, "project_type"
-    ).value
+    project_template = (
+        db.query(ProjectTemplate)
+        .filter(
+            ProjectTemplate.project_type == normalized_type,
+            ProjectTemplate.is_active.is_(True),
+        )
+        .one_or_none()
+    )
+    if project_template is None and require_project_template:
+        raise SalesProjectLifecycleError(
+            "project_template_unconfigured",
+            (
+                "No active Project Template is configured for the selected "
+                f"Project Type '{normalized_type}'"
+            ),
+        )
     configured_status = _read_text_setting(
         db, SettingDomain.projects, "default_project_status"
     )
@@ -1446,14 +1465,6 @@ def prepare_sales_project(
         ProjectPriority,
         "default_project_priority",
     ).value
-    project_template = (
-        db.query(ProjectTemplate)
-        .filter(
-            ProjectTemplate.project_type == normalized_type,
-            ProjectTemplate.is_active.is_(True),
-        )
-        .one_or_none()
-    )
     number = generate_number(
         db=db,
         domain=SettingDomain.projects,
@@ -1503,6 +1514,9 @@ def prepare_sales_project(
             "quote_id": str(quote_id) if quote_id else None,
             "subscriber_id": str(subscriber_id),
             "project_type": normalized_type,
+            "project_template_id": (
+                str(project_template.id) if project_template else None
+            ),
         },
         actor=actor_id,
         subscriber_id=subscriber_id,

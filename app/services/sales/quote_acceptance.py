@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from app.models.party import Party, PartyContactPoint, PartyContactPointType, Pa
 from app.models.project import ProjectTask, ProjectTemplateTask
 from app.models.sales import Quote, QuoteStatus
 from app.models.subscriber import SubscriberCategory
+from app.models.work_order import WorkOrder
 from app.schemas.subscriber import SubscriberCreate
 from app.services import sales_fulfillment, sales_orders
 from app.services.audit_adapter import stage_audit_event
@@ -46,6 +48,14 @@ class QuoteAcceptanceError(DomainError):
 class AcceptQuoteCommand:
     context: CommandContext
     quote_id: UUID
+    deposit: QuoteAcceptanceDeposit | None = None
+
+
+@dataclass(frozen=True)
+class QuoteAcceptanceDeposit:
+    reference: str
+    amount: Decimal
+    provider: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,7 @@ class QuoteAcceptanceOutcome:
     subscriber_id: UUID
     sales_order_id: UUID
     project_id: UUID
+    project_template_id: UUID
     project_task_ids: tuple[UUID, ...]
     work_order_ids: tuple[UUID, ...]
     replayed: bool
@@ -178,6 +189,35 @@ def _convert_account(db: Session, quote: Quote, actor: str) -> UUID:
     return result.subscriber_id
 
 
+def _stage_deposit_evidence(
+    quote: Quote, deposit: QuoteAcceptanceDeposit | None
+) -> None:
+    if deposit is None:
+        return
+    reference = deposit.reference.strip()
+    provider = (deposit.provider or "").strip() or None
+    if not reference or not deposit.amount.is_finite() or deposit.amount < 0:
+        raise _error(
+            "deposit_evidence_invalid",
+            "Quote acceptance deposit evidence is incomplete or invalid",
+        )
+    evidence = {
+        "reference": reference,
+        "amount": str(deposit.amount),
+        "provider": provider,
+        "paid": True,
+    }
+    metadata = dict(quote.metadata_ or {})
+    existing = metadata.get("deposit")
+    if existing is not None and existing != evidence:
+        raise _error(
+            "deposit_evidence_conflict",
+            "Quote already carries different deposit evidence",
+        )
+    metadata["deposit"] = evidence
+    quote.metadata_ = metadata
+
+
 def _automated_work_orders(
     db: Session,
     *,
@@ -221,14 +261,13 @@ def _automated_work_orders(
     return tuple(ids)
 
 
-def stage_accept_quote(
+def _stage_accept_quote(
     db: Session, command: AcceptQuoteCommand
 ) -> QuoteAcceptanceOutcome:
     """Stage one accepted-Quote conversion in the caller's transaction.
 
-    ``accept_quote`` invokes this inside its own owner transaction; initial
-    Quote authoring may invoke it as a flush-only participant in the enclosing
-    ``sales.quote_authoring`` transaction.
+    ``accept_quote`` invokes this private participant inside its sole owner
+    transaction. Quote authoring cannot invoke the conversion pipeline.
     """
 
     quote = _locked_quote(db, command.quote_id)
@@ -247,6 +286,8 @@ def stage_accept_quote(
             "line_items_required",
             "Add at least one line item before accepting this Quote",
         )
+    if not was_accepted:
+        _stage_deposit_evidence(quote, command.deposit)
 
     subscriber_id = _convert_account(db, quote, command.context.actor)
     lead = quote.lead
@@ -272,12 +313,30 @@ def stage_accept_quote(
             .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
         ).all()
     )
-    work_order_ids = _automated_work_orders(
-        db,
-        project_id=scope.project.id,
-        subscriber_id=subscriber_id,
-        address=scope.project.customer_address,
-    )
+    if was_accepted:
+        work_order_ids = tuple(
+            db.scalars(
+                select(WorkOrder.id)
+                .where(
+                    WorkOrder.project_id == scope.project.id,
+                    WorkOrder.is_active.is_(True),
+                )
+                .order_by(WorkOrder.created_at.asc(), WorkOrder.id.asc())
+            ).all()
+        )
+    else:
+        work_order_ids = _automated_work_orders(
+            db,
+            project_id=scope.project.id,
+            subscriber_id=subscriber_id,
+            address=scope.project.customer_address,
+        )
+    project_template_id = scope.project.project_template_id
+    if project_template_id is None:
+        raise _error(
+            "project_template_required",
+            "Accepted Quote Project is missing its configured Project Template",
+        )
 
     if not was_accepted:
         quote.status = QuoteStatus.accepted.value
@@ -290,6 +349,7 @@ def stage_accept_quote(
                 "subscriber_id": str(subscriber_id),
                 "sales_order_id": str(order.id),
                 "project_id": str(scope.project.id),
+                "project_template_id": str(project_template_id),
                 "total": str(quote.total or 0),
                 "currency": quote.currency,
             },
@@ -309,6 +369,7 @@ def stage_accept_quote(
                 "subscriber_id": str(subscriber_id),
                 "sales_order_id": str(order.id),
                 "project_id": str(scope.project.id),
+                "project_template_id": str(project_template_id),
                 "project_task_count": len(project_tasks),
                 "work_order_count": len(work_order_ids),
             },
@@ -320,6 +381,7 @@ def stage_accept_quote(
         subscriber_id=subscriber_id,
         sales_order_id=order.id,
         project_id=scope.project.id,
+        project_template_id=project_template_id,
         project_task_ids=project_tasks,
         work_order_ids=work_order_ids,
         replayed=was_accepted,
@@ -331,7 +393,7 @@ def accept_quote(db: Session, command: AcceptQuoteCommand) -> QuoteAcceptanceOut
 
     def operation() -> QuoteAcceptanceOutcome:
         try:
-            return stage_accept_quote(db, command)
+            return _stage_accept_quote(db, command)
         except QuoteAcceptanceError:
             raise
         except account_conversion.LeadAccountConversionError as exc:

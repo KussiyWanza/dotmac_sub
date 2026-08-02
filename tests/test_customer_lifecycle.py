@@ -280,13 +280,21 @@ def test_quote_order_and_ticket_guards_reject_cross_party_links(db_session):
     with pytest.raises(HTTPException) as quote_error:
         sales_service.quotes.create(
             db_session,
-            QuoteCreate(subscriber_id=other_subscriber.id, lead_id=lead.id),
+            QuoteCreate(
+                subscriber_id=other_subscriber.id,
+                lead_id=lead.id,
+                project_type="fiber_optics_installation",
+            ),
         )
     assert quote_error.value.status_code == 409
 
     quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     with pytest.raises(HTTPException) as order_error:
         sales_orders.sales_orders.create(
@@ -334,12 +342,20 @@ def test_quote_authoring_does_not_attach_an_account_before_acceptance(
 
     first_quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     sibling_quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=sibling_account.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=sibling_account.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     db_session.refresh(lead)

@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.party import Party
-from app.models.project import Project, ProjectTask
+from app.models.project import Project, ProjectTask, ProjectTemplate
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
 from app.models.sales import (
     QuoteStatus,
@@ -59,10 +59,28 @@ def _make_subscriber(db) -> Subscriber:
 
 
 def _make_quote(db, subscriber: Subscriber):
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name="Sales-order service installation",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
+        db.commit()
     lead = sales_service.leads.create(db, LeadCreate(subscriber_id=subscriber.id))
     return sales_service.quotes.create(
         db,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
 

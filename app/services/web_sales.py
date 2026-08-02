@@ -1575,8 +1575,8 @@ def _merge_install_metadata(
 ) -> dict[str, Any] | None:
     """Fold a new pin into a quote's existing metadata without clobbering it.
 
-    ``metadata_`` carries the whole portal contract (source, project_type,
-    deposit, pricing_mode...), so an admin edit must merge into it, never
+    ``metadata_`` carries the remaining portal contract (source, deposit,
+    pricing_mode...), so an admin edit must merge into it, never
     replace it. Clearing the pin removes only the keys the pin owns.
     """
     meta: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
@@ -1820,7 +1820,7 @@ def build_quote_edit_context(db: Session, *, quote_id: str) -> dict[str, Any]:
             tax_rate=str(quote.tax_rate) if quote.tax_rate is not None else None,
             tax_rate_id=str(meta.get("tax_rate_id") or ""),
             manual_tax_total=(str(quote.tax_total)),
-            project_type=str(meta.get("project_type") or ""),
+            project_type=str(quote.project_type or ""),
             expires_at=(
                 quote.expires_at.strftime("%Y-%m-%dT%H:%M")
                 if quote.expires_at
@@ -1963,12 +1963,10 @@ def create_quote_from_form(
     if (status or "").strip() and selected_status is None:
         raise ValueError("Select a valid Quote status.") from None
     requested_status = QuoteStatus(selected_status or QuoteStatus.draft.value)
-    requested_project_type = None
-    if (project_type or "").strip():
-        try:
-            requested_project_type = ProjectType((project_type or "").strip())
-        except ValueError:
-            raise ValueError("Select a valid Project Type.") from None
+    try:
+        requested_project_type = ProjectType((project_type or "").strip())
+    except ValueError:
+        raise ValueError("A valid Project Type is required.") from None
 
     row_count = max(
         len(descriptions),
@@ -2301,7 +2299,7 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         "status_val": quote.status or QuoteStatus.draft.value,
         "is_accepted": (quote.status or "") == QuoteStatus.accepted.value,
         "quote_source": meta.get("source"),
-        "quote_project_type": meta.get("project_type"),
+        "quote_project_type": quote.project_type,
         "deposit": deposit,
         "deposit_percent": meta.get("deposit_percent"),
         "estimate_provisional": meta.get("estimate_provisional"),

@@ -14,6 +14,7 @@ from app.models.project import (
     ProjectTask,
     ProjectTemplate,
     ProjectTemplateTask,
+    ProjectType,
 )
 from app.models.sales import (
     Lead,
@@ -76,10 +77,12 @@ def _lead(db, marker: str) -> Lead:
     return result.lead
 
 
-def _template(db) -> None:
+def _template(
+    db, project_type: ProjectType = ProjectType.fiber_optics_installation
+) -> ProjectTemplate:
     template = ProjectTemplate(
         name=f"Accepted quote {uuid4().hex[:8]}",
-        project_type="fiber_optics_installation",
+        project_type=project_type.value,
         is_active=True,
     )
     db.add(template)
@@ -101,12 +104,19 @@ def _template(db) -> None:
         ]
     )
     db.commit()
+    return template
 
 
-def _quote(db, lead: Lead) -> Quote:
+def _quote(
+    db, lead: Lead, project_type: ProjectType = ProjectType.fiber_optics_installation
+) -> Quote:
     quote = sales_service.quotes.create(
         db,
-        QuoteCreate(lead_id=lead.id, currency="NGN"),
+        QuoteCreate(
+            lead_id=lead.id,
+            project_type=project_type,
+            currency="NGN",
+        ),
     )
     sales_service.quote_line_items.create(
         db,
@@ -156,7 +166,7 @@ def test_lead_and_draft_quote_create_no_downstream_records(db_session):
 
 
 def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
-    _template(db_session)
+    template = _template(db_session)
     lead = _lead(db_session, "success")
     quote = _quote(db_session, lead)
     outcome = _accept(db_session, quote.id)
@@ -181,6 +191,10 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
         db_session.query(SalesOrderLine).filter_by(sales_order_id=order.id).count() == 1
     )
     assert project.sales_order_id == order.id
+    assert accepted.project_type == ProjectType.fiber_optics_installation.value
+    assert project.project_type == accepted.project_type
+    assert project.project_template_id == template.id
+    assert outcome.project_template_id == template.id
     assert len(tasks) == 2
     assert len(work_orders) == 1
     assert work_orders[0].project_task_id in {task.id for task in tasks}
@@ -198,6 +212,45 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
         .count()
         == 1
     )
+
+
+def test_missing_project_template_rolls_back_quote_acceptance(db_session):
+    lead = _lead(db_session, "template-missing")
+    quote = _quote(db_session, lead)
+
+    with pytest.raises(
+        quote_acceptance.QuoteAcceptanceError,
+        match="participant rejected Quote acceptance",
+    ):
+        _accept(db_session, quote.id)
+
+    db_session.expire_all()
+    assert db_session.get(Quote, quote.id).status == QuoteStatus.draft.value
+    assert db_session.get(Lead, lead.id).status == LeadStatus.new.value
+    assert db_session.query(Subscriber).count() == 0
+    assert db_session.query(SalesOrder).count() == 0
+    assert db_session.query(Project).count() == 0
+    assert db_session.query(ProjectTask).count() == 0
+
+
+def test_selected_project_type_assigns_matching_template_and_tasks(db_session):
+    selected_type = ProjectType.air_fiber_installation
+    template = _template(db_session, selected_type)
+    lead = _lead(db_session, "configured-template")
+    quote = _quote(db_session, lead, selected_type)
+
+    outcome = _accept(db_session, quote.id)
+    project = db_session.get(Project, outcome.project_id)
+    tasks = db_session.query(ProjectTask).filter_by(project_id=project.id).all()
+
+    assert project.project_type == selected_type.value
+    assert project.project_template_id == template.id
+    assert outcome.project_template_id == template.id
+    assert {task.title for task in tasks} == {
+        "Survey site",
+        "Install customer fiber",
+    }
+    assert db_session.query(WorkOrder).filter_by(project_id=project.id).count() == 1
 
 
 def test_quote_acceptance_rolls_back_everything_when_event_staging_fails(
@@ -233,12 +286,20 @@ def test_duplicate_quote_acceptance_returns_existing_records(db_session):
     lead = _lead(db_session, "replay")
     quote = _quote(db_session, lead)
     first = _accept(db_session, quote.id)
+    # A later policy change must not cause an acceptance retry to generate new
+    # operational work for an already accepted Quote.
+    survey_policy = (
+        db_session.query(ProjectTemplateTask).filter_by(title="Survey site").one()
+    )
+    survey_policy.auto_create_work_order = True
+    db_session.commit()
     second = _accept(db_session, quote.id)
 
     assert second.replayed is True
     assert second.subscriber_id == first.subscriber_id
     assert second.sales_order_id == first.sales_order_id
     assert second.project_id == first.project_id
+    assert second.project_template_id == first.project_template_id
     assert second.project_task_ids == first.project_task_ids
     assert second.work_order_ids == first.work_order_ids
     assert db_session.query(Subscriber).count() == 1

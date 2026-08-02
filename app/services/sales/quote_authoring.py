@@ -1,4 +1,4 @@
-"""Atomic Lead-backed Quote authoring and initial lifecycle orchestration."""
+"""Atomic Lead-backed Draft/Sent Quote authoring."""
 
 from __future__ import annotations
 
@@ -28,8 +28,6 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
-from app.services.sales import lifecycle as lead_lifecycle
-from app.services.sales import quote_acceptance
 from app.services.sales.selfserve import compute_feasibility
 
 _AUTHOR_QUOTE = OwnerCommandDefinition(
@@ -81,7 +79,7 @@ class AuthorQuoteCommand:
     lead_id: UUID
     status: QuoteStatus
     currency: str
-    project_type: ProjectType | None
+    project_type: ProjectType
     tax_rate_id: UUID | None
     manual_tax_total: Decimal
     expires_at: datetime | None
@@ -114,7 +112,7 @@ def _fingerprint(command: AuthorQuoteCommand) -> str:
         "lead_id": str(command.lead_id),
         "status": command.status.value,
         "currency": command.currency,
-        "project_type": command.project_type.value if command.project_type else None,
+        "project_type": command.project_type.value,
         "tax_rate_id": str(command.tax_rate_id) if command.tax_rate_id else None,
         "manual_tax_total": str(command.manual_tax_total),
         "expires_at": command.expires_at.isoformat() if command.expires_at else None,
@@ -349,6 +347,12 @@ def _install_metadata(db: Session, install: QuoteInstallLocation) -> dict[str, o
 
 
 def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
+    if command.status not in {QuoteStatus.draft, QuoteStatus.sent}:
+        raise _error(
+            "initial_status_invalid",
+            "A new Quote must be created as Draft or Sent; accept it separately.",
+            field="status",
+        )
     actor = _actor(db, command)
     fingerprint = _fingerprint(command)
     replay = db.get(Quote, command.quote_id)
@@ -374,10 +378,10 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
             field="currency",
         )
     lines = _validated_lines(db, command.lines)
-    if command.status in {QuoteStatus.sent, QuoteStatus.accepted} and not lines:
+    if command.status == QuoteStatus.sent and not lines:
         raise _error(
             "line_items_required",
-            "Add at least one Line Item before sending or accepting this Quote.",
+            "Add at least one Line Item before sending this Quote.",
             field="line_items",
         )
     if not command.manual_tax_total.is_finite() or command.manual_tax_total < 0:
@@ -417,8 +421,9 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         "authoring_fingerprint": fingerprint,
         "authoring_actor_system_user_id": str(actor.id),
     }
-    if command.project_type is not None:
-        metadata["project_type"] = command.project_type.value
+    # Compatibility projection for readers that predate the typed Quote
+    # column. Fulfillment reads ``Quote.project_type`` as the authority.
+    metadata["project_type"] = command.project_type.value
     if tax_rate is not None:
         metadata["tax_rate_id"] = str(tax_rate.id)
     metadata.update(_install_metadata(db, command.install))
@@ -434,11 +439,8 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         lead_id=lead.id,
         subscriber_id=None,
         owner_person_id=actor.id,
-        status=(
-            QuoteStatus.draft.value
-            if command.status == QuoteStatus.accepted
-            else command.status.value
-        ),
+        status=command.status.value,
+        project_type=command.project_type.value,
         currency=currency,
         subtotal=subtotal,
         tax_rate=Decimal(tax_rate.rate) if tax_rate is not None else None,
@@ -470,8 +472,6 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
                 metadata_=line_metadata,
             )
         )
-    if command.status == QuoteStatus.rejected:
-        lead_lifecycle.stage_quote_outcome(db, lead=lead, quote_status=command.status)
     emit_event(
         db,
         EventType.quote_created,
@@ -500,19 +500,11 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         },
     )
     db.flush()
-    if command.status == QuoteStatus.accepted:
-        quote_acceptance.stage_accept_quote(
-            db,
-            quote_acceptance.AcceptQuoteCommand(
-                context=command.context,
-                quote_id=quote.id,
-            ),
-        )
     return AuthorQuoteOutcome(quote_id=quote.id, replayed=False)
 
 
 def author_quote(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
-    """Create a Quote and all requested initial consequences atomically."""
+    """Create one Lead-backed Draft/Sent Quote and its lines atomically."""
 
     return execute_owner_command(
         db,

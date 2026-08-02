@@ -68,7 +68,7 @@ def _create(db_session, actor: SystemUser, lead: Lead, **overrides: object) -> U
         "lead_id": str(lead.id),
         "status": QuoteStatus.draft.value,
         "currency": "NGN",
-        "project_type": None,
+        "project_type": ProjectType.fiber_optics_installation.value,
         "tax_rate_id": None,
         "manual_tax_total": "0.00",
         "expires_at": None,
@@ -101,6 +101,7 @@ def test_new_quote_template_has_required_lead_as_its_only_identity_selector():
     assert 'name="customer_id"' not in template
     assert 'name="account_id"' not in template
     assert 'name="owner_person_id"' not in template
+    assert 'name="project_type" required' in template
 
 
 def test_new_quote_template_retains_responsive_dark_install_and_line_contracts():
@@ -173,14 +174,24 @@ def test_lead_resolves_authoritative_person_and_authenticated_owner(db_session):
 
 
 @pytest.mark.parametrize("project_type", list(ProjectType))
-def test_project_type_is_stored_only_in_merged_metadata(db_session, project_type):
+def test_project_type_is_stored_on_quote_and_projected_in_metadata(
+    db_session, project_type
+):
     actor, lead, _party = _identity(db_session)
     quote_id = _create(db_session, actor, lead, project_type=project_type.value)
 
-    metadata = db_session.get(Quote, quote_id).metadata_
+    quote = db_session.get(Quote, quote_id)
+    metadata = quote.metadata_
+    assert quote.project_type == project_type.value
     assert metadata["project_type"] == project_type.value
     assert metadata["source"] == "admin"
-    assert not hasattr(Quote, "project_type")
+
+
+def test_project_type_is_required_server_side(db_session):
+    actor, lead, _party = _identity(db_session)
+
+    with pytest.raises(ValueError, match="Project Type is required"):
+        _create(db_session, actor, lead, project_type=None)
 
 
 def test_currency_is_normalized_and_exactly_three_letters(db_session):
