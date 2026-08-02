@@ -15,7 +15,7 @@ import pytest
 
 from app.models.admin_alert import AdminAlert
 from app.models.billing import Invoice, InvoiceLine, InvoiceStatus
-from app.models.catalog import BillingMode, SubscriptionStatus
+from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_renewal_terms_backfill import (
     _FINDING_PREFIX,
@@ -29,32 +29,87 @@ from app.services.prepaid_renewal_terms_backfill import (
 _NOON = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
 
 
+def _ensure_charge_inputs(db, subscription) -> None:
+    from app.models.catalog import BillingCycle, OfferPrice, PriceType
+
+    existing = (
+        db.query(OfferPrice)
+        .filter(
+            OfferPrice.offer_id == subscription.offer_id,
+            OfferPrice.price_type == PriceType.recurring,
+            OfferPrice.is_active.is_(True),
+        )
+        .first()
+    )
+    if existing is None:
+        db.add(
+            OfferPrice(
+                offer_id=subscription.offer_id,
+                price_type=PriceType.recurring,
+                amount=Decimal("35000.00"),
+                currency="NGN",
+                billing_cycle=BillingCycle.monthly,
+                is_active=True,
+            )
+        )
+        db.flush()
+
+
 def _block(db, subscription) -> None:
     subscription.billing_mode = BillingMode.prepaid
     subscription.status = SubscriptionStatus.active
     subscription.unit_price = None
+    _ensure_charge_inputs(db, subscription)
     db.commit()
 
 
-def _paid_line(db, subscriber, subscription, amount: str) -> None:
+def _paid_line(
+    db,
+    subscriber,
+    subscription,
+    amount: str,
+    *,
+    full_cycle: bool = True,
+    currency: str = "NGN",
+    quantity: str = "1.000",
+    line_amount: str | None = None,
+    metadata: dict | None = None,
+    line_active: bool = True,
+    period_days: int = 30,
+):
+    from datetime import timedelta
+
     invoice = Invoice(
         account_id=subscriber.id,
         status=InvoiceStatus.paid,
+        currency=currency,
         total=Decimal(amount),
     )
+    if full_cycle:
+        from app.services.billing_automation import _add_months
+
+        start = datetime(2026, 6, 1, tzinfo=UTC)
+        invoice.billing_period_start = start
+        invoice.billing_period_end = (
+            _add_months(start, 1)
+            if period_days == 30
+            else start + timedelta(days=period_days)
+        )
     db.add(invoice)
     db.flush()
-    db.add(
-        InvoiceLine(
-            invoice_id=invoice.id,
-            subscription_id=subscription.id,
-            description="Monthly service",
-            unit_price=Decimal(amount),
-            amount=Decimal(amount),
-            metadata_={"kind": "base_subscription"},
-        )
+    line = InvoiceLine(
+        invoice_id=invoice.id,
+        subscription_id=subscription.id,
+        description="Monthly service",
+        quantity=Decimal(quantity),
+        unit_price=Decimal(amount),
+        amount=Decimal(line_amount if line_amount is not None else amount),
+        metadata_=metadata if metadata is not None else {"kind": "base_subscription"},
+        is_active=line_active,
     )
+    db.add(line)
     db.commit()
+    return line
 
 
 def _context(key: str) -> CommandContext:
@@ -189,3 +244,429 @@ def test_work_item_summary_fits_admin_alert_schema():
         "inferred from the catalog."
     )
     assert len(summary) <= 255
+
+
+def test_suspended_subscription_is_repaired_from_paid_evidence(
+    db_session, subscriber, subscription
+):
+    # Slice-1 gap found in production: 20 suspended prepaid subscriptions
+    # lacked unit_price and stayed blocked (and unrestorable) because the
+    # preview only looked at active status while the threshold owner
+    # evaluates every collectible status.
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.suspended
+    subscription.unit_price = None
+    _ensure_charge_inputs(db_session, subscription)
+    db_session.commit()
+    _paid_line(db_session, subscriber, subscription, "35000.00")
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items and items[0].decision is RenewalTermsDecision.repairable
+
+    _capture(db_session, preview.fingerprint, "renewal-terms-suspended")
+
+    db_session.refresh(subscription)
+    assert subscription.unit_price == Decimal("35000.00")
+
+
+def test_lone_unproven_line_is_insufficient_cycle_evidence(
+    db_session, subscriber, subscription
+):
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00", full_cycle=False)
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "no_canonical_full_cycle_proof" in items[0].insufficiency_reasons
+
+    _capture(db_session, preview.fingerprint, "renewal-lone")
+    db_session.refresh(subscription)
+    assert subscription.unit_price is None
+
+
+def test_repeated_unproven_lines_are_not_proof(db_session, subscriber, subscription):
+    # Repetition of unproven lines is not proof: they may all be prorated
+    # or partial in the same way (review blocker on the v2.0 draft).
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00", full_cycle=False)
+    _paid_line(db_session, subscriber, subscription, "15000.00", full_cycle=False)
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "no_canonical_full_cycle_proof" in items[0].insufficiency_reasons
+
+
+def test_end_of_month_canonical_cycle_is_proof(db_session, subscriber, subscription):
+    from datetime import timedelta as _td
+
+    from app.models.billing import Invoice as _Inv
+    from app.models.billing import InvoiceLine as _Line
+    from app.models.billing import InvoiceStatus as _St
+
+    _block(db_session, subscription)
+    inv = _Inv(
+        account_id=subscriber.id,
+        status=_St.paid,
+        currency="NGN",
+        total=Decimal("35000.00"),
+        billing_period_start=datetime(2026, 1, 31, tzinfo=UTC),
+        billing_period_end=datetime(2026, 2, 28, tzinfo=UTC),
+    )
+    db_session.add(inv)
+    db_session.flush()
+    db_session.add(
+        _Line(
+            invoice_id=inv.id,
+            subscription_id=subscription.id,
+            description="Monthly service",
+            unit_price=Decimal("35000.00"),
+            amount=Decimal("35000.00"),
+            metadata_={"kind": "base_subscription"},
+        )
+    )
+    db_session.commit()
+    _ = _td
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items and items[0].decision is RenewalTermsDecision.repairable
+
+
+def test_inactive_invoice_is_ignored_even_with_active_line(
+    db_session, subscriber, subscription
+):
+    _block(db_session, subscription)
+    line = _paid_line(db_session, subscriber, subscription, "15000.00")
+    invoice = db_session.get(Invoice, line.invoice_id)
+    invoice.is_active = False
+    db_session.commit()
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items and items[0].decision is RenewalTermsDecision.no_evidence
+
+
+def test_description_proration_is_not_proof(db_session, subscriber, subscription):
+    # The repository's own proration path can mark a line only in its
+    # description while the period still looks month-shaped.
+    _block(db_session, subscription)
+    _paid_line(
+        db_session,
+        subscriber,
+        subscription,
+        "2687.50",
+        metadata={"kind": "base_subscription"},
+    )
+    line = (
+        db_session.query(InvoiceLine)
+        .filter(InvoiceLine.subscription_id == subscription.id)
+        .one()
+    )
+    line.description = "Prorated plan change adjustment"
+    db_session.commit()
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "prorated" in items[0].insufficiency_reasons
+
+
+def test_missing_catalog_price_row_is_owned_not_repaired(
+    db_session, subscriber, subscription
+):
+    from app.models.catalog import OfferPrice as _OP
+
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "35000.00")
+    for row in (
+        db_session.query(_OP).filter(_OP.offer_id == subscription.offer_id).all()
+    ):
+        row.is_active = False
+    db_session.commit()
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.missing_charge_inputs
+    assert "no_active_recurring_price" in items[0].insufficiency_reasons
+
+    _capture(db_session, preview.fingerprint, "renewal-inputs")
+    db_session.refresh(subscription)
+    assert subscription.unit_price is None
+
+
+def test_inactive_invoice_lines_are_ignored(db_session, subscriber, subscription):
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00", line_active=False)
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items and items[0].decision is RenewalTermsDecision.no_evidence
+
+
+def test_same_amount_evidence_mutation_changes_the_fingerprint(
+    db_session, subscriber, subscription
+):
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00")
+    first = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+
+    # New paid line with the SAME amount: classification values are
+    # unchanged, but the evidence set is not — the v1 fingerprint missed
+    # this (production proof gap).
+    _paid_line(db_session, subscriber, subscription, "15000.00")
+    second = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+
+    assert first.fingerprint != second.fingerprint
+
+
+def test_currency_mismatch_is_not_proof(db_session, subscriber, subscription):
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00", currency="USD")
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "currency_mismatch" in items[0].insufficiency_reasons
+
+
+def test_prorated_line_is_not_proof(db_session, subscriber, subscription):
+    _block(db_session, subscription)
+    _paid_line(
+        db_session,
+        subscriber,
+        subscription,
+        "2687.50",
+        metadata={"kind": "base_subscription", "prorated": True},
+    )
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "prorated" in items[0].insufficiency_reasons
+
+
+def test_quantity_amount_mismatch_is_not_proof(db_session, subscriber, subscription):
+    _block(db_session, subscription)
+    _paid_line(db_session, subscriber, subscription, "15000.00", line_amount="7500.00")
+
+    preview = preview_prepaid_renewal_terms_backfill(db_session, now=_NOON)
+    items = [i for i in preview.items if i.subscription_id == subscription.id]
+    assert items
+    assert items[0].decision is RenewalTermsDecision.insufficient_cycle_evidence
+    assert "amount_mismatch" in items[0].insufficiency_reasons
+
+
+def _backfill_one(db, subscriber, subscription, amount: str, key: str) -> None:
+    _block(db, subscription)
+    _paid_line(db, subscriber, subscription, amount)
+    preview = preview_prepaid_renewal_terms_backfill(db, now=_NOON)
+    _capture(db, preview.fingerprint, key)
+    db.refresh(subscription)
+    assert subscription.unit_price == Decimal(amount)
+
+
+def test_correction_requires_backfill_cohort_membership(
+    db_session, subscriber, subscription
+):
+    from app.services.prepaid_renewal_terms_backfill import (
+        CorrectRenewalTermsCommand,
+        RenewalTermsCorrectionAction,
+        RenewalTermsCorrectionSource,
+        correct_prepaid_renewal_terms,
+    )
+
+    _block(db_session, subscription)
+    sub_id = subscription.id
+    db_session.commit()
+
+    with pytest.raises(PrepaidRenewalTermsBackfillError) as captured:
+        correct_prepaid_renewal_terms(
+            db_session,
+            CorrectRenewalTermsCommand(
+                subscription_id=sub_id,
+                action=RenewalTermsCorrectionAction.apply_reviewed_term,
+                source=RenewalTermsCorrectionSource.finance_review,
+                expected_current_amount=None,
+                review_reference="FIN-2026-080",
+                reviewed_amount=Decimal("43000.00"),
+            ),
+            context=_context("correction-cohort"),
+        )
+    assert captured.value.code.endswith("not_in_backfill_cohort")
+
+
+def test_correction_supersedes_with_optimistic_lock(
+    db_session, subscriber, subscription
+):
+    from app.services.prepaid_renewal_terms_backfill import (
+        CorrectRenewalTermsCommand,
+        RenewalTermsCorrectionAction,
+        RenewalTermsCorrectionSource,
+        correct_prepaid_renewal_terms,
+    )
+
+    _backfill_one(db_session, subscriber, subscription, "35000.00", "corr-seed")
+    sub_id = subscription.id
+    db_session.commit()
+
+    # Stale expectation is rejected.
+    with pytest.raises(PrepaidRenewalTermsBackfillError) as captured:
+        correct_prepaid_renewal_terms(
+            db_session,
+            CorrectRenewalTermsCommand(
+                subscription_id=sub_id,
+                action=RenewalTermsCorrectionAction.apply_reviewed_term,
+                source=RenewalTermsCorrectionSource.finance_review,
+                expected_current_amount=Decimal("17500.00"),
+                review_reference="FIN-2026-081",
+                reviewed_amount=Decimal("43000.00"),
+            ),
+            context=_context("correction-stale"),
+        )
+    assert captured.value.code.endswith("stale_current_amount")
+
+    result = correct_prepaid_renewal_terms(
+        db_session,
+        CorrectRenewalTermsCommand(
+            subscription_id=sub_id,
+            action=RenewalTermsCorrectionAction.apply_reviewed_term,
+            source=RenewalTermsCorrectionSource.finance_review,
+            expected_current_amount=Decimal("35000.00"),
+            review_reference="FIN-2026-081",
+            reviewed_amount=Decimal("43000.00"),
+        ),
+        context=_context("correction-apply"),
+    )
+    assert result.previous_amount == Decimal("35000.00")
+    assert result.new_amount == Decimal("43000.00")
+    assert result.replayed is False
+
+    # Replay: expectation no longer matches but the reviewed amount is
+    # already in place — idempotent no-op.
+    db_session.commit()
+    replay = correct_prepaid_renewal_terms(
+        db_session,
+        CorrectRenewalTermsCommand(
+            subscription_id=sub_id,
+            action=RenewalTermsCorrectionAction.apply_reviewed_term,
+            source=RenewalTermsCorrectionSource.finance_review,
+            expected_current_amount=Decimal("35000.00"),
+            review_reference="FIN-2026-081",
+            reviewed_amount=Decimal("43000.00"),
+        ),
+        context=_context("correction-replay"),
+    )
+    assert replay.replayed is True
+
+
+def test_audit_bound_fail_closed_restoration(db_session, subscriber, subscription):
+    from app.services.prepaid_renewal_terms_backfill import (
+        CorrectRenewalTermsCommand,
+        RenewalTermsCorrectionAction,
+        RenewalTermsCorrectionSource,
+        audit_restored_renewal_terms,
+        correct_prepaid_renewal_terms,
+    )
+
+    _backfill_one(db_session, subscriber, subscription, "2687.50", "audit-seed")
+    sub_id = subscription.id
+    # The proving evidence disappears after the restore (invoice voided):
+    # the v2 audit can no longer confirm the amount.
+    line = (
+        db_session.query(InvoiceLine)
+        .filter(InvoiceLine.subscription_id == sub_id)
+        .one()
+    )
+    invoice = db_session.get(Invoice, line.invoice_id)
+    invoice.is_active = False
+    db_session.commit()
+
+    run = audit_restored_renewal_terms(
+        db_session, context=_context("audit-run"), now=_NOON
+    )
+    ours = [i for i in run.items if i.subscription_id == sub_id]
+    assert ours and ours[0].amount_confirmed is False
+
+    # Audit source cannot invent an amount.
+    db_session.commit()
+    with pytest.raises(PrepaidRenewalTermsBackfillError) as captured:
+        correct_prepaid_renewal_terms(
+            db_session,
+            CorrectRenewalTermsCommand(
+                subscription_id=sub_id,
+                action=RenewalTermsCorrectionAction.apply_reviewed_term,
+                source=RenewalTermsCorrectionSource.audit,
+                expected_current_amount=Decimal("2687.50"),
+                audit_fingerprint=run.audit_fingerprint,
+                reviewed_amount=Decimal("2687.50"),
+            ),
+            context=_context("audit-bad-action"),
+        )
+    assert captured.value.code.endswith("invalid_audit_action")
+
+    # A wrong fingerprint is rejected.
+    db_session.commit()
+    with pytest.raises(PrepaidRenewalTermsBackfillError) as captured:
+        correct_prepaid_renewal_terms(
+            db_session,
+            CorrectRenewalTermsCommand(
+                subscription_id=sub_id,
+                action=RenewalTermsCorrectionAction.restore_fail_closed,
+                source=RenewalTermsCorrectionSource.audit,
+                expected_current_amount=Decimal("2687.50"),
+                audit_fingerprint="0" * 64,
+            ),
+            context=_context("audit-bad-fp"),
+        )
+    assert captured.value.code.endswith("audit_mismatch")
+
+    db_session.commit()
+    result = correct_prepaid_renewal_terms(
+        db_session,
+        CorrectRenewalTermsCommand(
+            subscription_id=sub_id,
+            action=RenewalTermsCorrectionAction.restore_fail_closed,
+            source=RenewalTermsCorrectionSource.audit,
+            expected_current_amount=Decimal("2687.50"),
+            audit_fingerprint=run.audit_fingerprint,
+        ),
+        context=_context("audit-restore"),
+    )
+    assert result.new_amount is None
+    subscription = db_session.get(Subscription, sub_id)
+    assert subscription.unit_price is None
+    alert = (
+        db_session.query(AdminAlert)
+        .filter(AdminAlert.fingerprint == f"{_FINDING_PREFIX}{sub_id}")
+        .one()
+    )
+    assert alert.status.value == "open"
+    assert alert.details["decision"] == "correction_fail_closed"
+    assert alert.details["provenance"] == f"audit:{run.audit_fingerprint}"
+
+
+def test_audit_reclassifies_restored_subscriptions(
+    db_session, subscriber, subscription
+):
+    from app.services.prepaid_renewal_terms_backfill import (
+        audit_restored_renewal_terms,
+    )
+
+    _backfill_one(db_session, subscriber, subscription, "35000.00", "audit-ok")
+    db_session.commit()
+
+    run = audit_restored_renewal_terms(
+        db_session, context=_context("audit-confirm"), now=_NOON
+    )
+    ours = [i for i in run.items if i.subscription_id == subscription.id]
+    assert ours and ours[0].amount_confirmed is True
+    assert len(run.audit_fingerprint) == 64

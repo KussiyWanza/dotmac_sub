@@ -9,6 +9,7 @@ MIGRATED_MODULES = (
     "app/services/support_automation.py",
     "app/services/support_automation_rules.py",
     "app/services/support_ticket_settings.py",
+    "app/services/support_ticket_region_projection.py",
     "app/services/ticket_assignment/admin.py",
     "app/services/ticket_assignment/engine.py",
     "app/services/ticket_assignment/selectors.py",
@@ -20,7 +21,9 @@ MIGRATED_MODULES = (
 
 CONTRACTED_OWNERS = {
     "support.ticket_lifecycle",
+    "support.ticket_vocabulary",
     "support.ticket_configuration",
+    "support.ticket_region_projection",
     "support.ticket_sla_clock",
     "support.ticket_work_order_handoff",
     "support.ticket_bulk_commands",
@@ -101,6 +104,58 @@ def test_portal_ticket_routing_stays_in_configuration_and_lifecycle_owners() -> 
     assert "TicketCreationRoutingMode.preserve_requested_team" in _source(
         "app/services/crm_portal.py"
     )
+
+
+def test_ticket_region_projection_has_one_typed_owner() -> None:
+    configuration = _source("app/services/support_ticket_settings.py")
+    projection = _source("app/services/support_ticket_region_projection.py")
+
+    assert (
+        "support_ticket_region_projection.list_canonical_region_options"
+        in configuration
+    )
+    assert "configured_regions: tuple[str, ...]" in projection
+    assert "db.query(Ticket.region)" in projection
+    assert "db.query(Ticket.region)" not in configuration
+
+
+def test_customer_reply_staff_email_stays_in_ticket_lifecycle_owner() -> None:
+    lifecycle = _source("app/services/support.py")
+    assert "class CustomerReplyStaffNotificationOutcome" in lifecycle
+    assert "def _notify_staff_of_customer_comment" in lifecycle
+    assert "CustomerReplyStaffNotificationSource.helpdesk_fallback" in lifecycle
+    assert "Tickets._notify_staff_of_customer_comment(db, ticket, comment)" in lifecycle
+    for adapter in (
+        "app/api/me.py",
+        "app/api/support.py",
+        "app/services/crm_portal.py",
+        "app/services/web_support_tickets.py",
+    ):
+        assert "queue_staff_email" not in _source(adapter)
+
+
+def test_admin_ticket_creation_customer_email_stays_in_lifecycle_owner() -> None:
+    lifecycle = _source("app/services/support.py")
+    admin_adapter = _source("app/services/web_support_tickets.py")
+    contract = SERVICES_BY_NAME["support.ticket_lifecycle"].contract
+
+    assert contract is not None
+    acknowledgement = next(
+        concern
+        for concern in contract.concerns
+        if concern.name == "admin-created ticket customer email acknowledgement"
+    )
+    assert acknowledgement.input_names == (
+        "typed ticket command",
+        "canonical ticket state",
+        "customer identity evidence",
+        "customer communication delivery intent",
+    )
+    assert "class TicketCreationAcknowledgementMode" in lifecycle
+    assert "_stage_admin_creation_customer_email(" in lifecycle
+    assert 'event_type="support_ticket_created_admin"' in lifecycle
+    assert "TicketCreationAcknowledgementMode.customer_email" in admin_adapter
+    assert "default_channels=(NotificationChannel.email,)" in lifecycle
 
 
 def test_ticket_work_order_field_results_cannot_close_ticket() -> None:

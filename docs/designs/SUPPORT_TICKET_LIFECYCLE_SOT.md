@@ -28,10 +28,17 @@ commit lifecycle changes. Every public mutation enters
 
 ## Configuration and policies
 
+`support.ticket_vocabulary` owns the closed typed `TicketStatus` vocabulary and
+terminal-state semantics consumed by both lifecycle and configuration. It is a
+pure value boundary and owns no Ticket or configuration rows.
+
 `support.ticket_configuration` owns operator-managed status choices,
 priorities, types, routing inputs, service-team membership configuration, and
-priority/type SLA targets. It may only expose statuses from the lifecycle
-vocabulary.
+priority/type SLA targets. It may only expose statuses from the ticket
+vocabulary owner. `support.ticket_region_projection` separately resolves the
+current region choices from configured values and canonical Ticket observations.
+This separation prevents lifecycle and configuration from depending on each
+other while preserving the provenance of both inputs.
 
 Assignment is split deliberately:
 
@@ -77,6 +84,27 @@ notifications, audit evidence, and the `ticket.created` event in its root
 transaction. Audit and event evidence include the creation routing mode and
 final team identifier, including a null identifier for intentional
 unassignment.
+
+The admin create form passes the typed
+`TicketCreationAcknowledgementMode.customer_email` intent to the lifecycle
+owner. After the Ticket, number, routing, audit, and event evidence are staged,
+the owner requests one email-only customer acknowledgement using the linked
+Subscriber identity. Other create adapters use `none` unless they deliberately
+adopt this contract, so API, inbox, integration, and portal behavior does not
+change. Missing customer identity or disabled support notifications produces no
+email. Queue failure is isolated in an owner savepoint and recorded as durable
+Ticket audit evidence without rolling back the Ticket.
+
+Customer-authored public replies have one staff-email consequence owned by the
+lifecycle command. After the comment is staged, the owner resolves active
+individual assignees from current Ticket assignment fields and queues one email
+per distinct staff address in the same transaction. It does not fan out to all
+members of the assigned Service Team. When no active individual assignee has an
+email address, the customer-scoped branding `support_email` is the single
+helpdesk fallback. Internal, staff, system, or customer-identity-mismatched
+comments do not trigger this consequence. The durable notification queue owns
+post-commit SMTP delivery and retry; transport failure never removes the saved
+reply.
 
 ## Related owners
 

@@ -138,3 +138,75 @@ def test_absent_marker_resolves_a_lone_holding():
 
     assert resolved == "172.16.24.9"
     assert ambiguous == ()
+
+
+# ---------------------------------------------------------------------------
+# Owner-managed end to end
+# ---------------------------------------------------------------------------
+
+
+def test_owner_moves_the_marker_and_demotes_the_previous_primary(
+    db_session, catalog_offer
+):
+    from app.services.ip_assignment_lifecycle import mark_primary_ipv4_assignment
+
+    sub = _subscription(db_session, catalog_offer, login="move", tag="move")
+    first = _assign(db_session, sub, "172.16.30.1", primary=True)
+    second = _assign(db_session, sub, "172.16.30.2")
+    db_session.commit()
+
+    moved = mark_primary_ipv4_assignment(
+        db_session,
+        subscription_id=sub.id,
+        ipv4_address_id=second.ipv4_address_id,
+    )
+    db_session.commit()
+
+    assert moved is True
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert first.is_primary is False
+    assert second.is_primary is True
+
+
+def test_owner_reports_when_there_is_nothing_to_mark(db_session, catalog_offer):
+    from app.models.network import IPv4Address
+    from app.services.ip_assignment_lifecycle import mark_primary_ipv4_assignment
+
+    sub = _subscription(db_session, catalog_offer, login="none", tag="none")
+    stranger = IPv4Address(address="172.16.31.9")
+    db_session.add(stranger)
+    db_session.commit()
+
+    assert (
+        mark_primary_ipv4_assignment(
+            db_session, subscription_id=sub.id, ipv4_address_id=stranger.id
+        )
+        is False
+    )
+
+
+def test_generic_crud_does_not_readdress_on_an_additional_holding(
+    db_session, catalog_offer
+):
+    """Adding a second held address must not move the served column.
+
+    This is the live defect the marker closes: the generic CRUD wrote
+    `subscriptions.ipv4_address` for any active assignment, so recording an
+    additional allocation silently re-addressed the customer.
+    """
+    from app.services.network.ip import IPAssignments
+
+    sub = _subscription(db_session, catalog_offer, login="hold", tag="hold")
+    primary = _assign(db_session, sub, "172.16.32.1", primary=True)
+    sub.ipv4_address = "172.16.32.1"
+    db_session.commit()
+
+    extra_holding = _assign(db_session, sub, "172.16.32.2")
+    IPAssignments._sync_subscription_ipv4(db_session, extra_holding)
+    db_session.commit()
+    db_session.refresh(sub)
+
+    assert sub.ipv4_address == "172.16.32.1"
+    assert primary.is_primary is True
+    assert extra_holding.is_primary is False

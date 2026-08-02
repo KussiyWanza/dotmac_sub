@@ -67,14 +67,20 @@ def test_resolve_mentions_expands_groups_and_filters_inactive(db_session):
     assert resolved == [str(active.id)]
 
 
-def test_notify_ticket_comment_mentions_queues_push_and_email(db_session):
+def test_notify_ticket_comment_mentions_queues_absolute_link(db_session, monkeypatch):
     recipient = _system_user(db_session, email="mentioned@example.com")
     actor = _system_user(db_session, email="actor@example.com")
     db_session.commit()
+    ticket_id = uuid4()
+    monkeypatch.setattr(
+        ticket_mentions,
+        "get_brand",
+        lambda: {"app_url": "https://sub.example.test/"},
+    )
 
     ticket_mentions.notify_ticket_comment_mentions(
         db_session,
-        ticket_id=str(uuid4()),
+        ticket_id=str(ticket_id),
         ticket_number="TCK-1",
         ticket_title="Router swap",
         comment_preview="Please check this",
@@ -94,6 +100,28 @@ def test_notify_ticket_comment_mentions_queues_push_and_email(db_session):
         for row in rows
     )
     assert all("TCK-1" in (row.subject or "") for row in rows)
+    assert all(
+        f"Open: https://sub.example.test/admin/support/tickets/{ticket_id}"
+        in (row.body or "")
+        for row in rows
+    )
+
+
+def test_render_ticket_mention_message_omits_unsafe_public_url():
+    ticket_id = uuid4()
+
+    message = ticket_mentions.render_ticket_mention_message(
+        ticket_mentions.TicketMentionMessageInput(
+            ticket_id=ticket_id,
+            ticket_number="TCK-2",
+            ticket_title="Unsafe URL check",
+            comment_preview="Please review",
+            public_base_url="javascript:alert(1)",
+        )
+    )
+
+    assert message.target_url is None
+    assert "Open:" not in message.body
 
 
 def test_parse_mentions_payload_accepts_strings_and_objects():

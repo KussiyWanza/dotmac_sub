@@ -39,6 +39,7 @@ from app.services.projects import (
     projects,
     reconcile_project_projection,
 )
+from tests.staff_identity_fixtures import add_bound_staff_user
 
 
 def _create_fiber_project(db_session, subscriber, **overrides):
@@ -72,6 +73,24 @@ def test_project_owner_command_is_atomic_and_stages_audit(db_session, subscriber
         .one()
     )
     assert audit.request_id
+
+
+def test_project_creation_queues_customer_email(db_session, subscriber):
+    project = _create_fiber_project(db_session, subscriber, name="Office fiber build")
+
+    emails = (
+        db_session.query(Notification)
+        .filter(
+            Notification.channel == NotificationChannel.email,
+            Notification.recipient == subscriber.email,
+            Notification.event_type == "project_created",
+        )
+        .all()
+    )
+
+    assert len(emails) == 1
+    assert emails[0].subject == "Project created: Office fiber build"
+    assert str(project.number or project.id) in (emails[0].body or "")
 
 
 def test_project_mutation_audits_preserve_authenticated_actor(db_session, subscriber):
@@ -296,6 +315,104 @@ class TestTaskStateMachine:
         )
         assert updated.assigned_to_person_id == second
         assert {a.person_id for a in updated.assignees} == {second}
+
+    def test_reassignment_emails_only_new_active_assignee(self, db_session, subscriber):
+        project = _create_fiber_project(db_session, subscriber)
+        task = _tasks_for(db_session, project)[0]
+        first_user, _first_person = add_bound_staff_user(
+            db_session, email="first-assignee@example.test"
+        )
+        second_user, second_person = add_bound_staff_user(
+            db_session, email="second-assignee@example.test"
+        )
+        inactive_user, inactive_person = add_bound_staff_user(
+            db_session,
+            email="inactive-assignee@example.test",
+            is_active=False,
+        )
+        db_session.commit()
+
+        project_tasks.update(
+            db_session,
+            str(task.id),
+            ProjectTaskUpdate(assigned_to_person_id=first_user.id),
+        )
+        first_email_count = (
+            db_session.query(Notification)
+            .filter(
+                Notification.channel == NotificationChannel.email,
+                Notification.recipient == first_user.email,
+            )
+            .count()
+        )
+        assert first_email_count == 1
+
+        project_tasks.update(
+            db_session,
+            str(task.id),
+            ProjectTaskUpdate(
+                assigned_to_person_ids=[
+                    first_user.id,
+                    second_person.id,
+                    inactive_person.id,
+                ]
+            ),
+        )
+
+        assert (
+            db_session.query(Notification)
+            .filter(
+                Notification.channel == NotificationChannel.email,
+                Notification.recipient == first_user.email,
+            )
+            .count()
+            == first_email_count
+        )
+        second_emails = (
+            db_session.query(Notification)
+            .filter(
+                Notification.channel == NotificationChannel.email,
+                Notification.recipient == second_user.email,
+            )
+            .all()
+        )
+        assert len(second_emails) == 1
+        assert second_emails[0].subject.startswith("New project task assigned:")
+        assert (
+            db_session.query(Notification)
+            .filter(Notification.recipient == inactive_user.email)
+            .count()
+            == 0
+        )
+        assert (
+            db_session.query(Notification)
+            .filter(
+                Notification.channel == NotificationChannel.push,
+                Notification.recipient == second_user.email,
+            )
+            .count()
+            == 0
+        )
+
+        project_tasks.update(
+            db_session,
+            str(task.id),
+            ProjectTaskUpdate(assigned_to_person_ids=[second_person.id]),
+        )
+        project_tasks.update(
+            db_session,
+            str(task.id),
+            ProjectTaskUpdate(priority="high"),
+        )
+        assert (
+            db_session.query(Notification)
+            .filter(
+                Notification.channel == NotificationChannel.email,
+                Notification.recipient == second_user.email,
+            )
+            .count()
+            == 1
+        )
 
     def test_ticket_link_requires_existing_support_ticket(self, db_session, subscriber):
         project = _create_fiber_project(db_session, subscriber)

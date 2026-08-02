@@ -10225,11 +10225,42 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "missing_idempotency_key"
                             ),
                             ("financial.prepaid_renewal_terms_backfill.stale_preview"),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "invalid_reviewed_amount"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_review_reference"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "subscription_not_found"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "not_in_backfill_cohort"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "stale_current_amount"
+                            ),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "missing_audit_fingerprint"
+                            ),
+                            ("financial.prepaid_renewal_terms_backfill.audit_mismatch"),
+                            (
+                                "financial.prepaid_renewal_terms_backfill."
+                                "invalid_audit_action"
+                            ),
                         ),
                         mapping_owner="billing migration adapters",
                         fail_closed_on=(
                             "absent paid base-subscription evidence",
                             "contradictory distinct paid amounts",
+                            "a lone line without explicit full-cycle proof",
+                            "currency, cadence, quantity, or proration incompatibility",
                             "stale preview fingerprint",
                         ),
                     ),
@@ -10263,7 +10294,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
                     events=EventContract(
-                        event_types=("prepaid_renewal_terms.backfilled",),
+                        event_types=(
+                            "prepaid_renewal_terms.backfilled",
+                            "prepaid_renewal_terms.corrected",
+                            "prepaid_renewal_terms.audited",
+                        ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -19674,13 +19709,76 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="support.ticket_vocabulary",
+                module="app.models.support",
+                owns=("ticket status vocabulary",),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="ticket status vocabulary",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("typed ticket status values",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed ticket status values",
+                            owner="support.ticket_vocabulary",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "closed TicketStatus enum values and terminal-state semantics"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Pure typed vocabulary resolution performs no database work."
+                        ),
+                        locking="Immutable enum values require no locking.",
+                        idempotency=(
+                            "The same application version returns the same closed value set."
+                        ),
+                        retries="Pure resolution requires no retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="support command and configuration adapters",
+                        fail_closed_on=("unknown ticket status value",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="support.ticket_lifecycle bundled vocabulary concern",
+                        new_owner="support.ticket_vocabulary",
+                        verification=(
+                            "ticket status transition and SOT relationship tests"
+                        ),
+                        cutover_gate=(
+                            "lifecycle and configuration name the shared vocabulary owner"
+                        ),
+                        fallback_retirement=(
+                            "no service claims the vocabulary as lifecycle state"
+                        ),
+                    ),
+                    steward="support operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ticket_status_transition.py",
+                        "tests/test_sot_relationships.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="support.ticket_lifecycle",
                 module="app.services.support",
                 owns=(
                     "ticket lifecycle mutations",
                     "ticket creation and identity",
+                    "admin-created ticket customer email acknowledgement",
                     "support ticket human-readable number allocation",
-                    "ticket status vocabulary",
                     "guarded ticket status transitions",
                     "ticket lifecycle timestamps and consequences",
                     "ticket team and person assignment",
@@ -19690,44 +19788,76 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "ticket CSAT and satisfaction",
                     "ticket audit official timeline and transactional events",
                 ),
+                depends_on=(
+                    "support.ticket_configuration",
+                    "support.ticket_vocabulary",
+                    "support.ticket_assignment_evaluation",
+                    "support.ticket_automation_evaluation",
+                    "customer.identity_scope",
+                    "auth.staff_provisioning",
+                    "customer.branding",
+                    "communications.intents",
+                    "communications.notification_service",
+                ),
                 contract=ServiceContract(
-                    concerns=tuple(
+                    concerns=(
+                        *tuple(
+                            ConcernContract(
+                                name=name,
+                                role=(
+                                    OwnerRole.COMMAND_WRITER
+                                    if name
+                                    in {
+                                        "ticket lifecycle mutations",
+                                        "support ticket human-readable number allocation",
+                                    }
+                                    else OwnerRole.AUTHORITATIVE_RECORD
+                                ),
+                                input_names=(
+                                    "typed ticket command",
+                                    "canonical ticket state",
+                                    "ticket configuration",
+                                    "portal team-routing resolution",
+                                    "customer identity evidence",
+                                    "assignment policy proposal",
+                                    "automation policy proposal",
+                                    *(
+                                        (
+                                            "active assigned staff contact identity",
+                                            "customer-scoped helpdesk contact",
+                                            "staff notification delivery queue",
+                                        )
+                                        if name
+                                        == "ticket lifecycle timestamps and consequences"
+                                        else ()
+                                    ),
+                                ),
+                                canonical_writer="support.ticket_lifecycle",
+                            )
+                            for name in (
+                                "ticket lifecycle mutations",
+                                "ticket creation and identity",
+                                "support ticket human-readable number allocation",
+                                "guarded ticket status transitions",
+                                "ticket lifecycle timestamps and consequences",
+                                "ticket team and person assignment",
+                                "ticket comments mentions and attachments",
+                                "ticket links duplicates and merges",
+                                "signed-link and authenticated resolution confirmation/dispute",
+                                "ticket CSAT and satisfaction",
+                                "ticket audit official timeline and transactional events",
+                            )
+                        ),
                         ConcernContract(
-                            name=name,
-                            role=(
-                                OwnerRole.COMMAND_WRITER
-                                if name
-                                in {
-                                    "ticket lifecycle mutations",
-                                    "support ticket human-readable number allocation",
-                                }
-                                else OwnerRole.AUTHORITATIVE_RECORD
-                            ),
+                            name="admin-created ticket customer email acknowledgement",
+                            role=OwnerRole.EVENT_POLICY,
                             input_names=(
                                 "typed ticket command",
                                 "canonical ticket state",
-                                "ticket configuration",
-                                "portal team-routing resolution",
                                 "customer identity evidence",
-                                "assignment policy proposal",
-                                "automation policy proposal",
+                                "customer communication delivery intent",
                             ),
-                            canonical_writer="support.ticket_lifecycle",
-                        )
-                        for name in (
-                            "ticket lifecycle mutations",
-                            "ticket creation and identity",
-                            "support ticket human-readable number allocation",
-                            "ticket status vocabulary",
-                            "guarded ticket status transitions",
-                            "ticket lifecycle timestamps and consequences",
-                            "ticket team and person assignment",
-                            "ticket comments mentions and attachments",
-                            "ticket links duplicates and merges",
-                            "signed-link and authenticated resolution confirmation/dispute",
-                            "ticket CSAT and satisfaction",
-                            "ticket audit official timeline and transactional events",
-                        )
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -19793,6 +19923,41 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "typed action proposal derived from a matching active rule; "
                                 "never a Ticket mutation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="active assigned staff contact identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser identity and email resolved from current "
+                                "Ticket SystemUser or canonical Person assignment identifiers"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer-scoped helpdesk contact",
+                            owner="customer.branding",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "ResolvedBrand.support_email under organization, reseller, "
+                                "platform, and legacy brand precedence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="staff notification delivery queue",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "durable queued Notification rows and post-commit delivery state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer communication delivery intent",
+                            owner="communications.intents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "deduplicated customer email intent and durable Notification "
+                                "delivery state"
                             ),
                         ),
                     ),
@@ -19917,11 +20082,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "operator-visible ticket status subset",
                     "ticket priority and type options",
                     "ticket routing and priority/type SLA target policy",
-                    "canonical support-ticket region projection",
                     "customer-portal ticket fallback team routing",
                 ),
                 depends_on=(
-                    "support.ticket_lifecycle",
+                    "support.ticket_vocabulary",
                     "operations.service_team_lifecycle",
                 ),
                 notes=(
@@ -19952,14 +20116,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             )
                         ),
                         ConcernContract(
-                            name="canonical support-ticket region projection",
-                            role=OwnerRole.RESOLVER,
-                            input_names=(
-                                "current ticket configuration",
-                                "canonical ticket regions",
-                            ),
-                        ),
-                        ConcernContract(
                             name="customer-portal ticket fallback team routing",
                             role=OwnerRole.RESOLVER,
                             input_names=("active service-team identity",),
@@ -19977,7 +20133,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         AuthorityInput(
                             name="ticket lifecycle vocabulary",
-                            owner="support.ticket_lifecycle",
+                            owner="support.ticket_vocabulary",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="TicketStatus enum and guarded terminal-state semantics",
                         ),
@@ -19988,14 +20144,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "workflow DomainSetting rows plus synchronized ServiceTeam and "
                                 "ServiceTeamMember records"
-                            ),
-                        ),
-                        AuthorityInput(
-                            name="canonical ticket regions",
-                            owner="support.ticket_lifecycle",
-                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source=(
-                                "distinct non-empty Region values on current active Ticket rows"
                             ),
                         ),
                         AuthorityInput(
@@ -20079,6 +20227,87 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_support_ticket_settings.py",
                         "tests/test_sla_assignment.py",
                         "tests/architecture/test_support_ticket_sot_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="support.ticket_region_projection",
+                module="app.services.support_ticket_region_projection",
+                owns=("canonical support-ticket region projection",),
+                depends_on=(
+                    "support.ticket_configuration",
+                    "support.ticket_lifecycle",
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="canonical support-ticket region projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "current ticket configuration",
+                                "canonical ticket regions",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="current ticket configuration",
+                            owner="support.ticket_configuration",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="configured workflow region option values",
+                        ),
+                        AuthorityInput(
+                            name="canonical ticket regions",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "distinct non-empty Region values on current active Ticket rows"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "list_canonical_region_options reads configuration and Ticket "
+                            "rows without writes."
+                        ),
+                        locking="A transaction-current read requires no row lock.",
+                        idempotency=(
+                            "Re-reading the same committed inputs returns the same normalized "
+                            "values."
+                        ),
+                        retries=(
+                            "Adapters may retry the complete read after transient database "
+                            "failure."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="support form and API adapters",
+                        fail_closed_on=("unavailable current region inputs",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "support.ticket_configuration bundled region projection concern"
+                        ),
+                        new_owner="support.ticket_region_projection",
+                        verification="support settings and SOT relationship tests",
+                        cutover_gate=(
+                            "region reads name both configuration and Ticket provenance"
+                        ),
+                        fallback_retirement=(
+                            "configuration no longer claims lifecycle-derived region authority"
+                        ),
+                    ),
+                    steward="support operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/designs/SUPPORT_TICKET_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_support_ticket_settings.py",
+                        "tests/test_sot_relationships.py",
                     ),
                 ),
             ),
@@ -21777,16 +22006,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.projects",
                 owns=(
                     "Project and ProjectTask identity and lifecycle",
+                    "project creation customer email consequence",
                     "project and task allowed status transitions",
                     "project and task assignment and scheduling",
                     "project manager assistant manager service-team and task-assignee changes",
+                    "existing project-task reassignment email consequence",
                     "Project-to-ProjectTask and project/task-to-work-order relationships",
                     "project audit records and transactional domain events",
                     "project derived-state reconciliation",
                 ),
                 depends_on=(
                     "auth.permission_gate",
+                    "auth.staff_provisioning",
+                    "communications.intents",
                     "events.dispatcher",
+                    "communications.notification_service",
                     "communications.staff_notifications",
                     "operations.work_order_commands",
                 ),
@@ -21806,6 +22040,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authorized project command",
                             ),
                             canonical_writer="operations.project_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="project creation customer email consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "customer communication delivery intent",
+                            ),
                         ),
                         ConcernContract(
                             name="project and task allowed status transitions",
@@ -21834,6 +22076,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authorized project command",
                             ),
                             canonical_writer="operations.project_lifecycle",
+                        ),
+                        ConcernContract(
+                            name="existing project-task reassignment email consequence",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=(
+                                "canonical project aggregate",
+                                "active project-task assignee contact identity",
+                                "staff notification delivery queue",
+                            ),
                         ),
                         ConcernContract(
                             name="Project-to-ProjectTask and project/task-to-work-order relationships",
@@ -21890,6 +22141,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.work_order_commands",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="native WorkOrder.project_id and WorkOrder.project_task_id foreign keys",
+                        ),
+                        AuthorityInput(
+                            name="active project-task assignee contact identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser identity and email resolved from a "
+                                "new task-assignee SystemUser or canonical Person identifier"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="staff notification delivery queue",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "durable queued Notification rows and post-commit delivery state"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="customer communication delivery intent",
+                            owner="communications.intents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "deduplicated customer email intent and durable Notification "
+                                "delivery state"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(

@@ -88,18 +88,46 @@ def external_echo_connector(monkeypatch):
     )
 
     real_require = registry.require_connector_definition
+    real_require_pinned = registry.require_pinned_connector_definition
 
     def fake_require(key: str) -> ConnectorManifest:
         if key == CONNECTOR_KEY:
             return manifest
         return real_require(key)
 
+    def fake_require_pinned(
+        key: str,
+        *,
+        version: str,
+        manifest_digest: str,
+    ) -> ConnectorManifest:
+        if (
+            key == CONNECTOR_KEY
+            and version == manifest.version
+            and manifest_digest == manifest.digest
+        ):
+            return manifest
+        return real_require_pinned(
+            key,
+            version=version,
+            manifest_digest=manifest_digest,
+        )
+
     for module in ("registry", "installations", "runtime_execution"):
         target = f"app.services.integrations.{module}.require_connector_definition"
         try:
             monkeypatch.setattr(target, fake_require)
         except AttributeError:
-            continue
+            pass
+
+    for module in ("registry", "installations", "runtime_execution"):
+        pinned_target = (
+            f"app.services.integrations.{module}.require_pinned_connector_definition"
+        )
+        try:
+            monkeypatch.setattr(pinned_target, fake_require_pinned)
+        except AttributeError:
+            pass
     return manifest
 
 

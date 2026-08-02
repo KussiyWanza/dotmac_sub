@@ -81,6 +81,43 @@ def _enable_support_ticket_notifications(db_session) -> None:
     db_session.commit()
 
 
+def test_admin_creation_mode_queues_customer_email_only(db_session, subscriber):
+    _enable_support_ticket_notifications(db_session)
+
+    ticket = support_service.tickets.create(
+        db_session,
+        _ticket_payload(subscriber.id),
+        acknowledgement_mode=(
+            support_service.TicketCreationAcknowledgementMode.customer_email
+        ),
+    )
+
+    notifications = (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "support_ticket_created_admin")
+        .all()
+    )
+    assert len(notifications) == 1
+    assert notifications[0].channel == NotificationChannel.email
+    assert notifications[0].recipient == subscriber.email
+    assert notifications[0].subject == f"Support ticket {ticket.number} created"
+
+
+def test_default_ticket_creation_does_not_queue_admin_acknowledgement(
+    db_session, subscriber
+):
+    _enable_support_ticket_notifications(db_session)
+
+    support_service.tickets.create(db_session, _ticket_payload(subscriber.id))
+
+    assert (
+        db_session.query(Notification)
+        .filter(Notification.event_type == "support_ticket_created_admin")
+        .count()
+        == 0
+    )
+
+
 def test_ticket_customer_any_link_filter_matches_all_customer_link_fields(db_session):
     account = Subscriber(
         first_name="Support",
@@ -998,6 +1035,126 @@ def test_ticket_comment_stores_customer_author_identity(db_session, subscriber):
     assert comment.author_type == TicketCommentAuthorType.customer.value
     assert comment.author_person_id == subscriber.id
     assert comment.author_system_user_id is None
+
+
+def test_customer_reply_emails_each_active_assignee_once(db_session, subscriber):
+    _enable_support_ticket_notifications(db_session)
+    assignee, person = add_bound_staff_user(
+        db_session, email="assigned-replies@example.com"
+    )
+    db_session.commit()
+
+    ticket = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Customer reply target",
+            subscriber_id=subscriber.id,
+            customer_account_id=subscriber.id,
+            assigned_to_person_id=assignee.id,
+            technician_person_id=person.id,
+            assignee_person_ids=[assignee.id],
+        ),
+        actor_id=str(subscriber.id),
+    )
+
+    support_service.tickets.create_comment(
+        db_session,
+        str(ticket.id),
+        TicketCommentCreate(
+            body="The connection is still down.",
+            is_internal=False,
+            author_type=TicketCommentAuthorType.customer,
+            author_person_id=subscriber.id,
+        ),
+        actor_id=str(subscriber.id),
+    )
+
+    emails = (
+        db_session.query(Notification)
+        .filter(Notification.channel == NotificationChannel.email)
+        .filter(Notification.recipient == assignee.email)
+        .all()
+    )
+    assert len(emails) == 1
+    assert emails[0].subject == f"New customer reply on ticket {ticket.number}"
+    assert "The connection is still down." in (emails[0].body or "")
+
+
+def test_customer_reply_uses_support_email_when_no_staff_is_assigned(
+    db_session, subscriber
+):
+    from app.services.brand_profiles import resolve_brand
+
+    _enable_support_ticket_notifications(db_session)
+    ticket = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Unassigned customer reply",
+            subscriber_id=subscriber.id,
+            customer_account_id=subscriber.id,
+        ),
+        actor_id=str(subscriber.id),
+    )
+
+    support_service.tickets.create_comment(
+        db_session,
+        str(ticket.id),
+        TicketCommentCreate(
+            body="Please assign someone.",
+            is_internal=False,
+            author_type=TicketCommentAuthorType.customer,
+            author_person_id=subscriber.id,
+        ),
+        actor_id=str(subscriber.id),
+    )
+
+    support_email = resolve_brand(db_session, subscriber_id=subscriber.id).support_email
+    emails = (
+        db_session.query(Notification)
+        .filter(Notification.channel == NotificationChannel.email)
+        .filter(Notification.recipient == support_email.lower())
+        .all()
+    )
+    assert len(emails) == 1
+    assert emails[0].subject == f"New customer reply on ticket {ticket.number}"
+
+
+def test_staff_comment_does_not_email_ticket_assignees(db_session, subscriber):
+    _enable_support_ticket_notifications(db_session)
+    assignee = _system_user(email="no-reply-loop@example.com")
+    db_session.add(assignee)
+    db_session.commit()
+    ticket = support_service.tickets.create(
+        db_session,
+        TicketCreate(
+            title="Staff reply target",
+            subscriber_id=subscriber.id,
+            customer_account_id=subscriber.id,
+            assigned_to_person_id=assignee.id,
+        ),
+        actor_id=str(subscriber.id),
+    )
+
+    support_service.tickets.create_comment(
+        db_session,
+        str(ticket.id),
+        TicketCommentCreate(
+            body="Engineer dispatched.",
+            is_internal=False,
+            author_type=TicketCommentAuthorType.staff,
+            author_system_user_id=assignee.id,
+        ),
+        actor_id=str(assignee.id),
+    )
+
+    reply_emails = (
+        db_session.query(Notification)
+        .filter(Notification.channel == NotificationChannel.email)
+        .filter(Notification.recipient == assignee.email)
+        .filter(Notification.subject.like("New customer reply%"))
+        .all()
+    )
+    assert reply_emails == []
 
 
 def test_ticket_create_auto_links_inbound_sender_from_subscriber_contact(

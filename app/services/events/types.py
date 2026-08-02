@@ -105,6 +105,8 @@ class EventType(enum.Enum):
     prepaid_enforcement_timer_changed = "prepaid_enforcement.timer_changed"
     prepaid_coverage_reconciled = "prepaid_coverage.reconciled"
     prepaid_renewal_terms_backfilled = "prepaid_renewal_terms.backfilled"
+    prepaid_renewal_terms_corrected = "prepaid_renewal_terms.corrected"
+    prepaid_renewal_terms_audited = "prepaid_renewal_terms.audited"
     prepaid_draft_reconciled = "prepaid_draft.reconciled"
     ip_assignment_service_ownership_reconciled = (
         "ip_assignment.service_ownership_reconciled"
