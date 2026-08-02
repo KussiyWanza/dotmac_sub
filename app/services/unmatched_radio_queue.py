@@ -14,16 +14,16 @@ Semantics:
   the radio becomes matched (a UISP-confirmed ``cpe_devices`` row exists for
   the MAC) or, for conflict items, once the MAC no longer maps to more than
   one subscriber.
-- Sources (honest scope — uisp_sync is untouched by this feature):
+- Sources:
   1. validation-time conflicts from radio registration
-     (app/services/radio_registration.py), and
+     (app/services/radio_registration.py),
   2. radios registered at install that the UISP sync has NOT confirmed after
      a grace period (the radio never appeared in UISP, or the recorded MAC is
-     wrong).
-  Per-station "seen by UISP but unmatched" records do not exist anywhere in
-  the DB today (uisp_sync only returns counters), so sync-side unmatched
-  stations CANNOT be enqueued yet; that requires the sync-side hook described
-  in the PR body (follow-up contract).
+     wrong), and
+  3. the uisp_sync per-station hook (``_enqueue_station_review``): stations
+     UISP reports that resolve to no subscriber (``REASON_UISP_UNMATCHED``),
+     to more than one candidate (``REASON_CONFLICT``), or whose serving AP
+     matches no topology node (``REASON_AP_UNRESOLVED``).
 
 ``evaluate`` also retires manual placeholder rows superseded by a
 UISP-confirmed row for the same MAC + subscriber, so the transient duplicate
@@ -48,6 +48,9 @@ TAG = "unmatched-radio"
 
 REASON_CONFLICT = "mac_conflict"
 REASON_NOT_ADOPTED = "not_adopted_by_uisp"
+# Sync-side detections (uisp_sync._enqueue_station_review):
+REASON_UISP_UNMATCHED = "uisp_station_unmatched"
+REASON_AP_UNRESOLVED = "ap_unresolved"
 
 # A registered radio normally appears in UISP within one 15-minute sync run;
 # give installs a working shift before raising a review item.
@@ -256,6 +259,17 @@ def evaluate(
             if _mac_owner_count(db, mac) <= 1:
                 close_item(db, ticket, "MAC no longer maps to multiple subscribers.")
                 stats["closed_conflict_cleared"] += 1
+        elif meta.get("reason") == REASON_AP_UNRESOLVED:
+            # Matched all along — the gap was the AP edge. Closed only once
+            # the confirmed row is parented to a topology node.
+            row = confirmed.get(mac)
+            if row is not None and row.parent_network_device_id is not None:
+                close_item(
+                    db,
+                    ticket,
+                    f"Radio parented: device {row.id} now has a serving AP node.",
+                )
+                stats["closed_ap_resolved"] += 1
         elif mac in confirmed:
             close_item(
                 db,

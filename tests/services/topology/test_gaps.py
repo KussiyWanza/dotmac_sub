@@ -334,3 +334,61 @@ def test_batched_picker_prefers_own_bound_over_null_bound(
 
     picked = _live_nas_by_subscription(db_session, [sub], {subscriber.id})
     assert picked[sub.id] == own_nas.id  # own beats fresher null-bound
+
+
+def test_wireless_classifier_pins_radio_per_subscription(
+    db_session, subscriber, catalog_offer
+):
+    # Lockstep with customer_path._active_wireless_cpe's exact-first tiers: a
+    # multi-service subscriber with one radio per subscription must have each
+    # subscription judged by ITS OWN radio — not by whichever radio the
+    # subscriber-level ordering happens to rank first.
+    from datetime import UTC, datetime
+
+    from app.models.network import CPEDevice
+
+    sub_complete = _sub(subscriber.id, catalog_offer.id)
+    sub_partial = _sub(subscriber.id, catalog_offer.id)
+    db_session.add_all([sub_complete, sub_partial])
+    db_session.flush()
+
+    pop_site = PopSite(name=f"BTS-{uuid.uuid4().hex[:6]}", zabbix_group_id="41")
+    db_session.add(pop_site)
+    db_session.flush()
+    ap_with_pop = NetworkDevice(
+        name=f"ap-pop-{uuid.uuid4().hex[:6]}", pop_site_id=pop_site.id
+    )
+    ap_without_pop = NetworkDevice(name=f"ap-nopop-{uuid.uuid4().hex[:6]}")
+    db_session.add_all([ap_with_pop, ap_without_pop])
+    db_session.flush()
+
+    # The PARTIAL subscription's radio synced later: subscriber-level ordering
+    # alone would judge BOTH subscriptions by it.
+    db_session.add_all(
+        [
+            CPEDevice(
+                subscriber_id=subscriber.id,
+                subscription_id=sub_complete.id,
+                parent_network_device_id=ap_with_pop.id,
+                last_uisp_status="active",
+                uisp_synced_at=datetime(2026, 6, 1, tzinfo=UTC),
+            ),
+            CPEDevice(
+                subscriber_id=subscriber.id,
+                subscription_id=sub_partial.id,
+                parent_network_device_id=ap_without_pop.id,
+                last_uisp_status="active",
+                uisp_synced_at=datetime(2026, 7, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    gaps = topology_gaps(db_session)
+
+    assert gaps.active_subscriptions == 2
+    # The subscription behind the pop-less AP is the only gap...
+    assert gaps.subscription_gap_count == 1
+    assert {str(row["id"]) for row in gaps.subscription_gaps} == {str(sub_partial.id)}
+    # ...and the complete one resolved through ITS radio despite being older.
+    assert gaps.resolved_complete == 1

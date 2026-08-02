@@ -9,8 +9,12 @@ wireless/UFiber customer layer into sub's own tables:
     network_devices row) so customer paths can walk radio -> AP -> basestation.
     ``cpe_devices.subscriber_id`` is NOT NULL, so creation is MATCH-THEN-CREATE:
     a new radio only gets a row once its MAC resolves to exactly one subscriber
-    over ACTIVE subscriptions (unmatched/ambiguous radios are counted and
-    retried naturally on later runs). Rows pre-registered at install time
+    over ACTIVE subscriptions (unmatched/ambiguous radios are counted, enqueued
+    into the unmatched-radio review queue, and retried naturally on later
+    runs). The AP-side station listing is fetched every run: it is both the
+    association fallback and the only source of the radio's RF signal, stored
+    as a current-value observation (rf_signal_dbm/source/observed_at) next to
+    the edge it describes. Rows pre-registered at install time
     (``uisp_device_id`` NULL, subscriber known — see
     ``app/services/radio_registration.py``) are ADOPTED by normalized MAC
     before any matching/creation, so the install flow and this sync converge
@@ -37,8 +41,10 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
+from enum import Enum
 from uuid import UUID
 
 from sqlalchemy import or_
@@ -59,10 +65,12 @@ from app.models.network_monitoring import (
     TopologyLinkMedium,
 )
 from app.models.subscriber import Subscriber
+from app.services import unmatched_radio_queue
 from app.services.network.ont_status import apply_olt_status_observation
 from app.services.network.ont_topology_observations import (
     observe_ont_electronic_topology,
 )
+from app.services.network.radio_signal import RadioSignalSource
 from app.services.topology.lldp_poller import _canonical, build_device_index
 from app.services.topology.lldp_poller import _norm as _norm_label
 
@@ -89,6 +97,21 @@ _NAME_JUNK = re.compile(r"[^a-z0-9]+")
 # stale recorded mgmt IP can collide with a *different* live customer); the
 # UISP station name must also resemble the matched subscriber's name.
 _IP_NAME_SIM_THRESHOLD = 0.60
+
+
+class StationMatchDisposition(str, Enum):
+    """How ``_upsert_station`` resolved one UISP station this run.
+
+    Replaces the old bare ``(cpe, created)`` tuple so the caller can act on
+    WHY a station produced no row (``ambiguous`` vs ``unmatched`` feed the
+    unmatched-radio review queue) without re-deriving it from counters.
+    """
+
+    existing = "existing"  # row already keyed by uisp_device_id
+    adopted = "adopted"  # install-time placeholder adopted by MAC
+    created = "created"  # created via the MAC or IP+name arm
+    ambiguous = "ambiguous"  # >1 candidate (adoption or MAC): nothing written
+    unmatched = "unmatched"  # no subscriber resolvable: nothing written
 
 
 def _now() -> datetime:
@@ -203,6 +226,24 @@ def _onu_signal(device: dict) -> float | None:
         val = overview.get(key)
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             return float(val)
+    return None
+
+
+def _station_rx_signal(entry: dict) -> float | None:
+    """RSSI (dBm) from one AP-side station-list entry; None when unusable.
+
+    Only plausible dBm values are accepted: airMax reports negative dBm, so a
+    non-negative number is some other unit (percent-style quality) and must not
+    be stored as a signal. Bounded at -100 — anything below is noise floor or a
+    sentinel.
+    """
+    for key in ("rxSignal", "signal", "rssi"):
+        val = entry.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            if -100.0 <= float(val) < 0.0:
+                return float(val)
+            # Out-of-range under this key (e.g. a percent-style quality
+            # number); another key may still carry the real dBm value.
     return None
 
 
@@ -499,6 +540,11 @@ def _blank_stats() -> Counter:
             "link_prune_guarded": 0,
             "links_skipped": 0,
             "link_fetch_failures": 0,
+            "signals_recorded": 0,
+            "signals_cleared": 0,
+            "queue_opened": 0,
+            "queue_bumped": 0,
+            "queue_failed": 0,
         }
     )
 
@@ -547,6 +593,84 @@ def _note_edge_move(
     stats["edges_moved"] += 1
 
 
+def _clear_rf_signal(cpe: CPEDevice, stats: Counter) -> None:
+    """Null the RF observation columns (counted once per actual clear)."""
+    if cpe.rf_signal_dbm is None and cpe.rf_signal_observed_at is None:
+        return
+    cpe.rf_signal_dbm = None
+    cpe.rf_signal_source = None
+    cpe.rf_signal_observed_at = None
+    stats["signals_cleared"] += 1
+
+
+def _apply_station_signal(
+    cpe: CPEDevice,
+    station: dict,
+    signal: float | None,
+    now: datetime,
+    stats: Counter,
+) -> None:
+    """Write/clear the current-value RF observation for one station.
+
+    Associated (active) with an AP-side RSSI -> record it, stamped with the
+    sync run time (consistent with ``uisp_synced_at``). Not associated
+    (disconnected/unauthorized) -> clear: a retained value would describe a
+    link that no longer exists. Active but no AP-side entry (AP call failed,
+    AP inactive or unmatched) -> retain the previous value and let the
+    read-side TTL degrade it honestly — absence of evidence never clears.
+    """
+    status = (_device_status(station) or "").strip().lower()
+    if status == "active":
+        if signal is not None:
+            cpe.rf_signal_dbm = signal
+            cpe.rf_signal_source = RadioSignalSource.uisp_ap_station.value
+            cpe.rf_signal_observed_at = now
+            stats["signals_recorded"] += 1
+    elif status in ("disconnected", "unauthorized"):
+        _clear_rf_signal(cpe, stats)
+
+
+@dataclass(frozen=True)
+class _StationReview:
+    """Typed payload for one deferred unmatched-radio queue write."""
+
+    reason: str
+    title: str
+    description: str
+    details: dict[str, str | None]
+
+
+def _enqueue_station_review(
+    session: Session,
+    *,
+    mac: str,
+    review: _StationReview,
+    stats: Counter,
+) -> None:
+    """Open (or bump) the unmatched-radio review item for one station.
+
+    Runs in its own SAVEPOINT after the station's upsert savepoint closed: a
+    queue failure must not fail the station, and vice versa. The queue dedupes
+    per MAC, so chronically unmatched stations hold exactly one open item.
+    """
+    try:
+        with session.begin_nested():
+            _, created = unmatched_radio_queue.open_item(
+                session,
+                mac_compact=mac,
+                reason=review.reason,
+                title=review.title,
+                description=review.description,
+                details=review.details,
+            )
+        stats["queue_opened" if created else "queue_bumped"] += 1
+    except Exception:
+        stats["queue_failed"] += 1
+        logger.exception(
+            "uisp_sync_queue_item_failed mac=%s reason=%s", mac, review.reason
+        )
+
+
 def _station_parent_ap_id(station: dict) -> str | None:
     ap_device = _attributes(station).get("apDevice")
     if isinstance(ap_device, dict):
@@ -556,16 +680,47 @@ def _station_parent_ap_id(station: dict) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class ApStationIndex:
+    """AP-side association + RF observation, keyed by station id and MAC.
+
+    ``ap_by_*`` maps a station to its serving AP's UISP id (association
+    fallback for stations whose own payload lacks ``attributes.apDevice``).
+    ``signal_by_*`` carries the AP-observed station RSSI in dBm — the only
+    place UISP reports the customer radio's RF value.
+    """
+
+    ap_by_station_id: dict[str, str] = field(default_factory=dict)
+    ap_by_station_mac: dict[str, str] = field(default_factory=dict)
+    signal_by_station_id: dict[str, float] = field(default_factory=dict)
+    signal_by_station_mac: dict[str, float] = field(default_factory=dict)
+
+    def ap_for(self, station_uisp_id: str, mac: str | None) -> str | None:
+        return self.ap_by_station_id.get(station_uisp_id) or (
+            self.ap_by_station_mac.get(mac) if mac else None
+        )
+
+    def signal_for(self, station_uisp_id: str, mac: str | None) -> float | None:
+        signal = self.signal_by_station_id.get(station_uisp_id)
+        if signal is None and mac:
+            signal = self.signal_by_station_mac.get(mac)
+        return signal
+
+
 def _ap_side_station_index(
     client, aps: list[dict], ap_nodes: dict[str, NetworkDevice]
-) -> tuple[dict[str, str], dict[str, str]]:
-    """AP-side association lists: station uisp id / MAC -> AP uisp id.
+) -> ApStationIndex:
+    """AP-side association + RSSI per station, from active node-matched APs.
 
-    Only queried for ACTIVE, node-matched APs, and only used as a fallback for
-    stations whose payload lacks ``attributes.apDevice``.
+    Queried unconditionally each run: the station list is both the association
+    fallback (stations whose payload lacks ``attributes.apDevice``) and the
+    only source of the radio's RF signal, ingested together so a stored signal
+    always describes the stored edge. One AP failing (or an AP being inactive
+    or unmatched) only leaves its stations absent from the index — the caller
+    then retains prior signal values and lets the read-side TTL age them out,
+    never clearing on missing evidence.
     """
-    by_station_id: dict[str, str] = {}
-    by_station_mac: dict[str, str] = {}
+    index = ApStationIndex()
     for ap in aps:
         ap_id = _device_id(ap)
         if not ap_id or ap_id not in ap_nodes or _device_status(ap) != "active":
@@ -580,12 +735,17 @@ def _ap_side_station_index(
             station_id = (
                 str(ident.get("id") or "").strip() if isinstance(ident, dict) else ""
             )
-            if station_id:
-                by_station_id.setdefault(station_id, ap_id)
             mac = _norm_mac(entry.get("mac"))
+            signal = _station_rx_signal(entry)
+            if station_id:
+                index.ap_by_station_id.setdefault(station_id, ap_id)
+                if signal is not None:
+                    index.signal_by_station_id.setdefault(station_id, signal)
             if mac:
-                by_station_mac.setdefault(mac, ap_id)
-    return by_station_id, by_station_mac
+                index.ap_by_station_mac.setdefault(mac, ap_id)
+                if signal is not None:
+                    index.signal_by_station_mac.setdefault(mac, signal)
+    return index
 
 
 def _adoption_candidates(session: Session, mac: str | None) -> list[CPEDevice]:
@@ -647,7 +807,7 @@ def _upsert_station(
     ip_index: dict[str, tuple[UUID, UUID, list[str]]],
     now: datetime,
     stats: Counter,
-) -> tuple[CPEDevice | None, bool]:
+) -> tuple[CPEDevice | None, StationMatchDisposition]:
     """Upsert one wireless customer radio into cpe_devices by uisp_device_id.
 
     ADOPT-THEN-MATCH-THEN-CREATE: ``cpe_devices.subscriber_id`` is NOT NULL
@@ -701,7 +861,7 @@ def _upsert_station(
                 len(candidates),
             )
             stats["ambiguous"] += 1
-            return None, False
+            return None, StationMatchDisposition.ambiguous
         if candidates:
             cpe = candidates[0]
             cpe.uisp_device_id = uisp_id
@@ -712,7 +872,7 @@ def _upsert_station(
         services = mac_index.get(mac or "", set())
         if len(services) > 1:
             stats["ambiguous"] += 1
-            return None, False
+            return None, StationMatchDisposition.ambiguous
         if len(services) == 1:
             subscriber_id, subscription_id = next(iter(services))
             created = True
@@ -732,7 +892,7 @@ def _upsert_station(
         ip_match = _match_by_ip_name(station, ip_index)
         if ip_match is None:
             stats["unmatched_no_subscriber"] += 1
-            return None, False
+            return None, StationMatchDisposition.unmatched
         subscriber_id, subscription_id, ip, score = ip_match
         created = True
         cpe = CPEDevice(
@@ -777,14 +937,17 @@ def _upsert_station(
     session.flush()
     if created:
         stats["created"] += 1
+        disposition = StationMatchDisposition.created
     elif adopted:
         # Already counted as ``adopted``; not an update of a synced row.
-        pass
+        disposition = StationMatchDisposition.adopted
     elif changed:
         stats["updated"] += 1
+        disposition = StationMatchDisposition.existing
     else:
         stats["unchanged"] += 1
-    return cpe, created
+        disposition = StationMatchDisposition.existing
+    return cpe, disposition
 
 
 def _upsert_olt(
@@ -1198,17 +1361,14 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
     # station whose name matches an existing network_devices row must not
     # create a duplicate CPE (match-don't-create).
     infra_names, _infra_ips = build_device_index(session)
-    need_ap_fallback = any(
-        _station_parent_ap_id(s) is None
-        and _norm_label(_device_name(s)) not in infra_names
-        for s in stations
+    # Unconditional: the AP-side listing is both the association fallback and
+    # the ONLY source of the station RSSI, so it is fetched every run to
+    # ingest the RF signal together with the edge it describes.
+    ap_index = (
+        _ap_side_station_index(client, aps, ap_nodes)
+        if stations
+        else (ApStationIndex())
     )
-    ap_by_station_id: dict[str, str] = {}
-    ap_by_station_mac: dict[str, str] = {}
-    if need_ap_fallback:
-        ap_by_station_id, ap_by_station_mac = _ap_side_station_index(
-            client, aps, ap_nodes
-        )
 
     # Subscriber matching moved BEFORE creation (match-then-create):
     # cpe_devices.subscriber_id is NOT NULL, so the owner must be resolved
@@ -1228,34 +1388,103 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
         if _norm_label(_device_name(station)) in infra_names:
             stats["skipped"] += 1
             continue
+        mac = _norm_mac(_ident(station).get("mac"))
+        # Deferred past the upsert savepoint so a queue write can never fail
+        # (or lock) the station's own upsert.
+        review: _StationReview | None = None
         try:
             # SAVEPOINT per item: a flush failure
             # rolls back only this device, not the surrounding transaction.
             with session.begin_nested():
-                cpe, _created = _upsert_station(
+                cpe, disposition = _upsert_station(
                     session, station, mac_index, ip_index, now, stats
                 )
                 if cpe is None:
-                    # No confirmed subscriber match: nothing was created and
-                    # the counters already say why.
-                    continue
-                parent_ap_id = (
-                    _station_parent_ap_id(station)
-                    or ap_by_station_id.get(uisp_id)
-                    or ap_by_station_mac.get(
-                        _norm_mac(_ident(station).get("mac")) or ""
+                    # No confirmed subscriber match: nothing was created, the
+                    # counters say why — and the disposition feeds the review
+                    # queue below so the miss becomes a repairable work item.
+                    if disposition is StationMatchDisposition.ambiguous:
+                        review = _StationReview(
+                            reason=unmatched_radio_queue.REASON_CONFLICT,
+                            title=(
+                                f"Radio MAC maps to multiple subscribers: "
+                                f"{_device_name(station) or mac}"
+                            ),
+                            description=(
+                                f"UISP station '{_device_name(station)}' "
+                                f"(uisp_device_id {uisp_id}, MAC {mac}) matches "
+                                "more than one candidate (active subscription "
+                                "MACs or install-time placeholders), so the "
+                                "sync cannot pick an owner. Resolve which "
+                                "subscriber owns this radio."
+                            ),
+                            details={"uisp_device_id": uisp_id},
+                        )
+                    elif disposition is StationMatchDisposition.unmatched:
+                        review = _StationReview(
+                            reason=unmatched_radio_queue.REASON_UISP_UNMATCHED,
+                            title=(
+                                f"UISP radio matches no subscriber: "
+                                f"{_device_name(station) or mac}"
+                            ),
+                            description=(
+                                f"UISP station '{_device_name(station)}' "
+                                f"(uisp_device_id {uisp_id}, MAC {mac}) matches "
+                                "no active subscription MAC, no install-time "
+                                "placeholder, and no corroborated IP+name "
+                                "candidate. Link the radio to its customer or "
+                                "retire it in UISP."
+                            ),
+                            details={
+                                "uisp_device_id": uisp_id,
+                                "station_name": _device_name(station) or None,
+                                "ap_uisp_id": _station_parent_ap_id(station)
+                                or ap_index.ap_for(uisp_id, mac),
+                            },
+                        )
+                else:
+                    parent_ap_id = _station_parent_ap_id(station) or ap_index.ap_for(
+                        uisp_id, mac
                     )
-                )
-                node = ap_nodes.get(parent_ap_id) if parent_ap_id else None
-                if node is not None and cpe.parent_network_device_id != node.id:
-                    _note_edge_move(session, cpe, station, node, stats)
-                    cpe.parent_network_device_id = node.id
-                    stats["edges_set"] += 1
-                session.flush()
+                    node = ap_nodes.get(parent_ap_id) if parent_ap_id else None
+                    if node is not None and cpe.parent_network_device_id != node.id:
+                        _note_edge_move(session, cpe, station, node, stats)
+                        cpe.parent_network_device_id = node.id
+                        stats["edges_set"] += 1
+                    if node is None and parent_ap_id:
+                        # UISP knows the serving AP but no network_devices row
+                        # matches it: the customer renders "AP unresolved"
+                        # until someone repairs the AP mapping.
+                        review = _StationReview(
+                            reason=unmatched_radio_queue.REASON_AP_UNRESOLVED,
+                            title=(
+                                f"Radio's serving AP unmatched in topology: "
+                                f"{_device_name(station) or mac}"
+                            ),
+                            description=(
+                                f"UISP reports station '{_device_name(station)}' "
+                                f"(MAC {mac}) served by UISP AP {parent_ap_id}, "
+                                "but no network_devices row matches that AP, so "
+                                "the radio cannot be parented and the customer "
+                                "shows 'AP unresolved'. Match the AP (mgmt IP "
+                                "or hostname) to its topology node."
+                            ),
+                            details={
+                                "uisp_device_id": uisp_id,
+                                "ap_uisp_id": parent_ap_id,
+                                "cpe_device_id": str(cpe.id),
+                            },
+                        )
+                    _apply_station_signal(
+                        cpe, station, ap_index.signal_for(uisp_id, mac), now, stats
+                    )
+                    session.flush()
         except Exception:
             stats["failed"] += 1
             logger.exception("uisp_sync_station_failed uisp_id=%s", uisp_id)
             continue
+        if review is not None and mac:
+            _enqueue_station_review(session, mac=mac, review=review, stats=stats)
 
     # --- UF-OLTs -> olt_devices ---
     olt_ids_by_uisp: dict[str, UUID] = {}
@@ -1320,6 +1549,9 @@ def sync(session: Session, client, now: datetime | None = None) -> dict:
                     stats["pruned"] += 1
                 else:
                     cpe.last_uisp_status = "missing"
+                # A radio gone from UISP has no current RF observation; a
+                # retained value must never render as a live signal.
+                _clear_rf_signal(cpe, stats)
                 cpe.uisp_synced_at = now
     session.flush()
 

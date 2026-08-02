@@ -13569,6 +13569,102 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.radio_signal",
+                module="app.services.network.radio_signal",
+                owns=("wireless radio RF signal freshness projection",),
+                depends_on=(),
+                notes=(
+                    "Read-side owner of how a stored RF observation may be "
+                    "presented: a value renders only alongside its freshness "
+                    "(fresh/stale/unavailable), and a radio UISP reports as "
+                    "disconnected/missing/vanished never renders a signal. "
+                    "The uisp_sync collector is the sole column writer "
+                    "(cpe_devices.rf_signal_*); it remains tracked as "
+                    "undeclared-writer debt in sot_writer_baseline.txt."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="wireless radio RF signal freshness projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "stored radio RF observation",
+                                "radio signal freshness policy",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="stored radio RF observation",
+                            owner="external:uisp",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "AP-side station RSSI observed by UISP NMS, "
+                                "collected by app.services.topology.uisp_sync "
+                                "into cpe_devices.rf_signal_dbm/source/"
+                                "observed_at alongside last_uisp_status"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="radio signal freshness policy",
+                            owner="network.radio_signal",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "thirty-minute freshness TTL (two sync runs) "
+                                "and the disconnected/missing/vanished "
+                                "presentation guard"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Resolves plain attributes of an already-loaded "
+                            "radio row; never queries, mutates, commits, or "
+                            "rolls back."
+                        ),
+                        locking="Pure projection; acquires no locks.",
+                        idempotency=(
+                            "The same stored observation and evaluation time "
+                            "produce the same effective signal and freshness."
+                        ),
+                        retries="Read-only resolution is safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="calling read projection adapters",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "last_mile hardcoded rf_signal=None (wireless "
+                            "link-signal rung unobservable)"
+                        ),
+                        new_owner="network.radio_signal",
+                        verification=(
+                            "Freshness, status-guard, and stale-never-gates "
+                            "tests across the resolver, diagnoser, and "
+                            "Customer 360 projection."
+                        ),
+                        cutover_gate=(
+                            "access_path and last_mile consumers resolve RF "
+                            "exclusively through this owner."
+                        ),
+                        fallback_retirement=(
+                            "No surface renders cpe_devices.rf_signal_dbm "
+                            "without the freshness projection."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/test_radio_signal.py",
+                        "tests/test_access_path_endpoint_projection.py",
+                        "tests/services/topology/test_last_mile.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.radius_sessions",
                 module="app.services.network.radius_sessions",
                 owns=(
