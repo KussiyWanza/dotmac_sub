@@ -47,16 +47,33 @@ dependencies = [
     "google-auth (>=2.30.0,<3.0.0)",
     "dotmac-integration-client",
     "defusedxml==0.7.1",
+    "dotmac-kernel==0.1.0a8",
 ]
 
 [tool.poetry]
 package-mode = false
 
-# Source enrichment for the PEP-621 dependency above: the shared integration
+# Source enrichment for the PEP-621 dependencies above: the shared integration
 # transport engine (retry/jitter/circuit/request-id) consumed by the sub->crm
-# and sub->erp edges. Pinned by tag; bump deliberately.
+# and sub->erp edges (pinned by tag; bump deliberately), and the released
+# platform kernel (exact pin from the private Forgejo index; see
+# docs/PLATFORM_ADOPTION_LEDGER.md — an upgrade is a reviewed ledger change,
+# enforced by tests/architecture/test_kernel_compatibility.py).
 [tool.poetry.dependencies]
 dotmac-integration-client = { git = "https://github.com/michaelayoade/dotmac-integration-client.git", tag = "v0.1.1" }
+dotmac-kernel = { version = "0.1.0a8", source = "forgejo" }
+
+# Same-source enrichment for the dev-group `dotmac-kernel[testing]` entry in
+# [dependency-groups] below.
+[tool.poetry.group.dev.dependencies]
+dotmac-kernel = { version = "0.1.0a8", extras = ["testing"], source = "forgejo" }
+
+# Private Dotmac package index (Forgejo). URL only — credentials live in
+# Poetry's auth store under this source name, never in Git.
+[[tool.poetry.source]]
+name = "forgejo"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/"
+priority = "explicit"
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
@@ -286,7 +303,12 @@ dev = [
     "bandit[toml]>=1.9.0",
     "pre-commit>=3.7.0",
     "import-linter>=2.0",
-    "vulture (>=2.16,<3.0)"
+    "vulture (>=2.16,<3.0)",
+    # Kernel test kit (dotmac_kernel.testing.*): same wheel as the runtime pin
+    # above; the [testing] extra adds only httpx (>=0.27,<0.28), which matches
+    # Sub's own httpx==0.27.0. tests/-only per the adoption ledger — the S1
+    # import guard keeps dotmac_kernel.testing out of app/.
+    "dotmac-kernel[testing]==0.1.0a8",
 ]
 
 # ─── Import boundaries (DCP-1 network / subscription decoupling) ──────────

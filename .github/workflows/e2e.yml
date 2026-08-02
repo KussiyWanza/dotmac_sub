@@ -23,6 +23,10 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
+  # Read auth for the private Forgejo PyPI index (dotmac-kernel); token
+  # source of record is OpenBao (secret/dotmac/forgejo/read-token).
+  POETRY_HTTP_BASIC_FORGEJO_USERNAME: ci-reader
+  POETRY_HTTP_BASIC_FORGEJO_PASSWORD: ${{ secrets.FORGEJO_READ_TOKEN }}
 
 jobs:
   playwright:
