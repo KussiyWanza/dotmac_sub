@@ -116,10 +116,20 @@ def _assigned_ont(db, subscriber, *, serial, desired=None) -> OntUnit:
             ont_unit_id=ont.id,
             subscriber_id=subscriber.id,
             subscription_id=_subscription_for(db, subscriber).id,
-            # Operator-entered PPPoE intent: the only positive signal the
-            # schema carries, and the one thing that authorises a projection.
-            pppoe_username=AUTHORITATIVE_USERNAME,
             active=True,
+        )
+    )
+    # Declared PPPoE service intent. Authorisation comes from
+    # OntWanServiceInstance, not from OntAssignment fields -- migration 084
+    # cleared those, so surviving values there are residue.
+    from app.models.network import OntWanServiceInstance
+
+    db.add(
+        OntWanServiceInstance(
+            ont_id=ont.id,
+            name="internet",
+            connection_type="pppoe",
+            is_active=True,
         )
     )
     db.flush()

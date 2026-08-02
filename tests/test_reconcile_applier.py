@@ -182,11 +182,31 @@ class _StubAcsClient:
         return result
 
 
+#: These tests exercise how PPP actions EXECUTE, so they must be delivered.
+#: Delivery is gated by network.ppp_delivery_authorization, and an absent
+#: ruling is a refusal -- so an authorised ruling is part of the fixture, not
+#: an optional extra. Refusal behaviour is covered in
+#: tests/test_ppp_delivery_authorization.py.
+def _authorized_ppp():
+    from app.services.network.ppp_delivery_authorization import (
+        PppDeliveryDecision,
+        PppDeliveryRuling,
+    )
+
+    return PppDeliveryRuling(
+        decision=PppDeliveryDecision.authorized,
+        refusal=None,
+        ont_id="test-ont",
+        instance_ids=("test-instance",),
+    )
+
+
 def _ctx(**overrides) -> ApplyContext:
     return ApplyContext(
         olt_adapter=overrides.pop("olt_adapter", _StubOltAdapter()),
         acs_client=overrides.pop("acs_client", _StubAcsClient()),
         resolve_secret=overrides.pop("resolve_secret", lambda ref: f"PLAIN({ref})"),
+        ppp_authorization=overrides.pop("ppp_authorization", _authorized_ppp()),
     )
 
 
@@ -1073,7 +1093,11 @@ def test_default_secret_resolver_passes_ref_through_as_plaintext():
 
 def test_apply_uses_passthrough_when_no_resolver_provided():
     olt = _StubOltAdapter()
-    ctx = ApplyContext(olt_adapter=olt, acs_client=_StubAcsClient())
+    ctx = ApplyContext(
+        olt_adapter=olt,
+        acs_client=_StubAcsClient(),
+        ppp_authorization=_authorized_ppp(),
+    )
     plan = _plan(
         OltOmciPppoe(
             fsp="0/1/3",

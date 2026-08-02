@@ -134,6 +134,11 @@ class ApplyContext:
     acs_client: Any
     resolve_secret: SecretResolver = passthrough_secret
     wan_ppp_instances: dict[int, int] = field(default_factory=dict)
+    #: Delivery-time PPP authorization, resolved by
+    #: ``network.ppp_delivery_authorization`` from the service-intent model.
+    #: ``None`` means the caller never asked, which is treated as a refusal:
+    #: a plan may not deliver PPP merely because nobody checked.
+    ppp_authorization: Any = None
 
 
 @dataclass(frozen=True)
@@ -186,9 +191,38 @@ def apply_plan(
     before each call), the apply pass returns TIMEOUT with the actions
     applied so far.
     """
+    from app.services.network.ppp_delivery_authorization import (
+        PppDeliveryRefusal,
+        is_ppp_bundle_action,
+    )
+
     applied: list[AppliedAction] = []
 
+    # Delivery-time authorization, independent of whatever staged the desired
+    # state. pending_apply, stored values and fingerprints are evidence that
+    # something once wrote desired state; none of them authorises sending it to
+    # a device. An absent ruling is a refusal, not a pass: the gate must not be
+    # skippable by a caller that simply forgot to resolve it.
+    ruling = getattr(ctx, "ppp_authorization", None)
+    ppp_allowed = bool(getattr(ruling, "authorized", False))
+    refusal = (
+        getattr(getattr(ruling, "refusal", None), "value", None)
+        if ruling is not None
+        else PppDeliveryRefusal.no_pppoe_service_intent.value
+    )
+
     for action in plan.actions:
+        if not ppp_allowed and is_ppp_bundle_action(action):
+            # Skipped, not failed: unrelated reconciliation must still converge.
+            logger.warning(
+                "reconcile_ppp_delivery_refused",
+                extra={
+                    "action": type(action).__name__,
+                    "ppp_delivery_refusal": refusal,
+                    "ruling_present": ruling is not None,
+                },
+            )
+            continue
         if deadline is not None and datetime.now(UTC) >= deadline:
             return ApplyResult(
                 success=False,
