@@ -1435,6 +1435,69 @@ def _build_known_incident(db: Session, subscription) -> dict[str, object] | None
     }
 
 
+def _build_service_impact(db: Session, subscription) -> dict[str, object] | None:
+    """The live six-state impact word from network.service_impact, or None.
+
+    None means no live incident covers this subscription — the honest
+    steady state, never a manufactured word.
+    """
+
+    from app.services.network.service_impact import resolve_subscription_impact
+    from app.services.status_presentation import service_impact_state_presentation
+
+    try:
+        impact = resolve_subscription_impact(db, subscription.id)
+    except Exception:
+        logger.warning(
+            "Service impact resolution failed for subscription %s",
+            getattr(subscription, "id", None),
+            exc_info=True,
+        )
+        return None
+    if impact is None:
+        return None
+    return {
+        "state": impact.state.value,
+        "presentation": service_impact_state_presentation(impact.state),
+        "reason": impact.reason,
+        "incident_id": impact.incident_id,
+    }
+
+
+def _build_service_level(db: Session, subscription) -> dict[str, object] | None:
+    """This period's SLA context from customer.service_level (shadow phase).
+
+    Admin-facing: verdicts render honestly, including no_contractual_sla
+    with measured availability and the provisional flag.
+    """
+
+    from app.services.customer_service_level import score_subscription_period
+    from app.services.status_presentation import sla_verdict_presentation
+
+    try:
+        score = score_subscription_period(db, subscription)
+    except Exception:
+        logger.warning(
+            "SLA scoring failed for subscription %s",
+            getattr(subscription, "id", None),
+            exc_info=True,
+        )
+        return None
+    return {
+        "verdict": score.verdict.value,
+        "presentation": sla_verdict_presentation(score.verdict),
+        "availability_percent": score.measured_availability_percent,
+        "target_percent": (
+            score.policy.availability_target_percent if score.policy else None
+        ),
+        "unavailable_seconds": score.unavailable_seconds,
+        "excluded_seconds": score.excluded_seconds,
+        "provisional": score.is_provisional,
+        "period_start": score.period_start.isoformat(),
+        "period_end": score.period_end.isoformat(),
+    }
+
+
 def _ticket_prefill_url(subscription, card: dict[str, object]) -> str:
     """Pre-filled ticket URL carrying the observed state as evidence.
 
@@ -1487,6 +1550,8 @@ def _build_network_access_cards(
     access_state_by_subscription: dict[str, dict[str, object] | None] | None = None,
     incident_by_subscription: dict[str, dict[str, object] | None] | None = None,
     service_health_by_subscription: Mapping[str, object] | None = None,
+    service_impact_by_subscription: dict[str, dict[str, object] | None] | None = None,
+    service_level_by_subscription: dict[str, dict[str, object] | None] | None = None,
 ) -> list[dict]:
     """Build network access info cards from subscriptions with live access."""
     cards = []
@@ -1496,6 +1561,8 @@ def _build_network_access_cards(
     access_state_by_subscription = access_state_by_subscription or {}
     incident_by_subscription = incident_by_subscription or {}
     service_health_by_subscription = service_health_by_subscription or {}
+    service_impact_by_subscription = service_impact_by_subscription or {}
+    service_level_by_subscription = service_level_by_subscription or {}
     for sub in subscriptions:
         raw_status = getattr(sub, "status", None)
         status_value = getattr(raw_status, "value", None)
@@ -1534,6 +1601,8 @@ def _build_network_access_cards(
                 "topology_trace": traces_by_subscription.get(sub_id),
                 "access_state": access_state_by_subscription.get(sub_id),
                 "known_incident": incident_by_subscription.get(sub_id),
+                "service_impact": service_impact_by_subscription.get(sub_id),
+                "service_level": service_level_by_subscription.get(sub_id),
                 "service_health": service_health_by_subscription.get(sub_id),
             }
         )
@@ -2030,11 +2099,15 @@ def build_customer_detail_snapshot(
     traces_by_subscription: dict[str, dict[str, object] | None] = {}
     access_state_by_subscription: dict[str, dict[str, object] | None] = {}
     incident_by_subscription: dict[str, dict[str, object] | None] = {}
+    service_impact_by_subscription: dict[str, dict[str, object] | None] = {}
+    service_level_by_subscription: dict[str, dict[str, object] | None] = {}
     for sub in subscriptions:
         if not sub.login and not sub.ipv4_address:
             continue
         access_state_by_subscription[str(sub.id)] = _build_access_state_facts(sub)
         incident_by_subscription[str(sub.id)] = _build_known_incident(db, sub)
+        service_impact_by_subscription[str(sub.id)] = _build_service_impact(db, sub)
+        service_level_by_subscription[str(sub.id)] = _build_service_level(db, sub)
         # One path resolution feeds both the endpoint card and the trace.
         try:
             path = resolve_customer_path(db, sub)
@@ -2059,6 +2132,8 @@ def build_customer_detail_snapshot(
         access_state_by_subscription,
         incident_by_subscription,
         service_health_by_subscription,
+        service_impact_by_subscription,
+        service_level_by_subscription,
     )
     network_access_active_count = sum(
         1

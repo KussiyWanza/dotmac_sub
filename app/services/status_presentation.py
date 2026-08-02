@@ -355,6 +355,33 @@ _CONNECTION_HEALTH_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] 
     ),
 }
 
+_SERVICE_IMPACT_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    # Exposure is never downtime: potentially_affected stays a warning word.
+    "potentially_affected": (
+        "Potentially affected",
+        StatusTone.warning,
+        StatusIcon.alert,
+    ),
+    "confirmed_unavailable": (
+        "Confirmed unavailable",
+        StatusTone.negative,
+        StatusIcon.x,
+    ),
+    "degraded": ("Degraded", StatusTone.warning, StatusIcon.alert),
+    "restored": ("Restored", StatusTone.positive, StatusIcon.check),
+    "unknown": ("Unknown", StatusTone.neutral, StatusIcon.minus),
+    "excluded": ("Excluded", StatusTone.neutral, StatusIcon.minus),
+}
+
+_SLA_VERDICT_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
+    "passing": ("SLA passing", StatusTone.positive, StatusIcon.check),
+    "at_risk": ("SLA at risk", StatusTone.warning, StatusIcon.alert),
+    "breach": ("SLA breach", StatusTone.negative, StatusIcon.alert),
+    "unavailable": ("SLA unavailable", StatusTone.neutral, StatusIcon.minus),
+    # Never an invented target: measured availability renders with this word.
+    "no_contractual_sla": ("No contractual SLA", StatusTone.neutral, StatusIcon.info),
+}
+
 _ACCESS_SESSION_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "connected": ("Connected", StatusTone.positive, StatusIcon.check),
     "stale": ("Last seen", StatusTone.warning, StatusIcon.clock),
@@ -696,6 +723,18 @@ def connection_health_status_presentation(
 ) -> StatusPresentation:
     """Project customer-safe connection health without re-diagnosing it."""
     return _presentation(_status_value(status), _CONNECTION_HEALTH_PRESENTATIONS)
+
+
+def service_impact_state_presentation(state: object | None) -> StatusPresentation:
+    """Project the six-state service-impact word without re-deciding it."""
+    value = _status_value(getattr(state, "value", state))
+    return _presentation(value, _SERVICE_IMPACT_PRESENTATIONS)
+
+
+def sla_verdict_presentation(verdict: object | None) -> StatusPresentation:
+    """Project the per-period SLA verdict without recomputing the score."""
+    value = _status_value(getattr(verdict, "value", verdict))
+    return _presentation(value, _SLA_VERDICT_PRESENTATIONS)
 
 
 def access_session_status_presentation(status: str | None) -> StatusPresentation:

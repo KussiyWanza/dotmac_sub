@@ -1824,6 +1824,114 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="customer.service_level",
+                module="app.services.customer_service_level",
+                owns=("per-subscription SLA policy resolution and period score",),
+                depends_on=(
+                    "network.customer_outage_accrual",
+                    "service_intent.catalog_policy",
+                ),
+                notes=(
+                    "Shadow-phase read-time scorer (OUTAGE_SLA_SPINE §4): "
+                    "resolves the effective policy (offer-version precedence "
+                    "today; subscription/account contracts and persisted "
+                    "immutable policy versions arrive with cutover), merges "
+                    "the accrual ledger's qualifying intervals per "
+                    "Africa/Lagos calendar month, and never invents a "
+                    "contractual SLA — no policy renders measured "
+                    "availability as no_contractual_sla. Overlaps union, "
+                    "exclusions and estimated evidence report in their own "
+                    "bucket, unknown time is provisional never uptime. The "
+                    "legacy topology.customer_availability stays the "
+                    "displayed authority until the shadow-comparison gate "
+                    "cuts over; two displayed scores must never coexist."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "per-subscription SLA policy resolution and "
+                                "period score"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "qualifying downtime intervals",
+                                "offer SLA policy inputs",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="qualifying downtime intervals",
+                            owner="network.customer_outage_accrual",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "customer_outage_intervals with state, "
+                                "quality, exclusion candidates, and "
+                                "provisional/finalized ends"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="offer SLA policy inputs",
+                            owner="service_intent.catalog_policy",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "CatalogOffer.sla_profile_id and SlaProfile "
+                                "uptime/credit fields as display-only policy "
+                                "evidence until effective-dated versions land"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "Scores are computed on read from committed "
+                            "ledger and catalog state; nothing is persisted "
+                            "in the shadow phase."
+                        ),
+                        locking="Read scoring acquires no mutation locks.",
+                        idempotency=(
+                            "The same intervals, policy, and period produce "
+                            "the same score and evidence digest."
+                        ),
+                        retries="Read scoring calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="app.services.web_customer_details",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        old_owner=(
+                            "read-time topology.customer_availability "
+                            "trailing-window calculation"
+                        ),
+                        new_owner="customer.service_level",
+                        verification=(
+                            "shadow_compare discrepancy review across the "
+                            "active base plus the scorer's period, union, "
+                            "exclusion, and verdict tests."
+                        ),
+                        cutover_gate=(
+                            "Displayed availability switches only after the "
+                            "discrepancy review passes and evidence coverage "
+                            "gates customer visibility; two displayed scores "
+                            "never coexist."
+                        ),
+                        fallback_retirement=(
+                            "The legacy trailing-window derivation is "
+                            "retired at cutover with explicit approval."
+                        ),
+                    ),
+                    steward="customer operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_customer_service_level.py",),
+                ),
+            ),
+            SOTService(
                 name="customer.service_status",
                 module="app.services.service_status",
                 owns=(
