@@ -251,6 +251,7 @@ def test_me_quotes_native_matches_mirror_golden_payload(db_session):
     assert item["deposit_paid"] is True
     assert item["deposit_reference"] == "ref_1"
     uuid.UUID(item["sales_order_id"])
+    assert item["project_id"] is not None
     uuid.UUID(item["project_id"])
 
 

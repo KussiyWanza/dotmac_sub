@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from fastapi import HTTPException
 from geoalchemy2.functions import ST_MakePoint, ST_SetSRID
@@ -344,13 +345,12 @@ def _quote_status(quote: Quote) -> str:
     return getattr(quote.status, "value", quote.status)
 
 
-def _find_project_ids_for_quotes(db: Session, quote_ids) -> dict[str, str]:
+def _find_project_ids_for_quotes(db: Session, quote_ids: list[UUID]) -> dict[str, str]:
     """Batch-resolve the install project id for a whole set of quotes.
 
-    One query for the entire quote set (``WHERE metadata->>'quote_id' IN (…)``)
-    instead of the per-quote JSON scan the list read paths used to issue — the
-    N+1 fixed in H1. Keyed by ``str(quote_id)`` → ``str(project.id)``; quotes
-    with no native install project are simply absent from the map.
+    The typed ``Project.quote_id`` relationship is authoritative. Resolve the
+    whole Quote set in one query and key the result by stringified Quote UUID;
+    Quotes without a native Project are absent from the map.
 
     The old ``.first()`` had no ``ORDER BY``, so a quote referenced by more than
     one active project resolved to an arbitrary row. We make the pick
@@ -358,33 +358,31 @@ def _find_project_ids_for_quotes(db: Session, quote_ids) -> dict[str, str]:
     single-quote helper through this same resolver, so both paths agree — the
     common no-project / one-project cases are unaffected.
     """
-    ids = [str(q) for q in quote_ids]
+    ids = list(dict.fromkeys(quote_ids))
     if not ids:
         return {}
-    key = Project.metadata_["quote_id"].as_string()
     rows = (
-        db.query(key.label("quote_id"), Project.id, Project.created_at)
-        .filter(key.in_(ids))
+        db.query(Project.quote_id, Project.id, Project.created_at)
+        .filter(Project.quote_id.in_(ids))
         .filter(Project.is_active.is_(True))
         .order_by(Project.created_at.asc(), Project.id.asc())
         .all()
     )
     mapping: dict[str, str] = {}
-    for quote_id, project_id, _created_at in rows:
+    for resolved_quote_id, project_id, _created_at in rows:
         # Rows arrive earliest-first; keep the first (earliest) per quote.
-        if quote_id is not None and quote_id not in mapping:
-            mapping[quote_id] = str(project_id)
+        quote_key = str(resolved_quote_id) if resolved_quote_id is not None else None
+        if quote_key is not None and quote_key not in mapping:
+            mapping[quote_key] = str(project_id)
     return mapping
 
 
-def _find_project_id_for_quote(db: Session, quote_id) -> str | None:
+def _find_project_id_for_quote(db: Session, quote_id: UUID) -> str | None:
     """Resolve the install project created from this quote.
 
-    The CRM resolved the payload's ``project_id`` via
-    ``_find_existing_project_for_quote``, idempotent on
-    ``Project.metadata_["quote_id"]`` — the same key sub's native project
-    pipeline stamps. Quotes whose install project predates the native wiring
-    carry ``project_id: None`` (the mobile/web schemas treat it as optional).
+    Native acceptance owns the typed ``Project.quote_id`` relationship.
+    Quotes whose install project predates that wiring carry
+    ``project_id: None`` (the mobile/web schemas treat it as optional).
 
     Thin wrapper over the batch resolver (batch of one) so the single-quote and
     list paths share identical selection + tie-break semantics.

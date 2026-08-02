@@ -32,7 +32,7 @@ from app.services.sales.selfserve import compute_feasibility
 
 _AUTHOR_QUOTE = OwnerCommandDefinition(
     owner="sales.quote_authoring",
-    concern="atomic Lead-backed Quote authoring",
+    concern="atomic Lead-backed Draft/Sent Quote authoring",
     name="author_quote",
 )
 
