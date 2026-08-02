@@ -388,6 +388,9 @@ _TOPOLOGY_HOP_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {
     "degraded": ("Degraded", StatusTone.warning, StatusIcon.alert),
     # An unenriched hop is honestly unknown — never dressed up as up or down.
     "unknown": ("Unknown", StatusTone.neutral, StatusIcon.minus),
+    # Passive plant has identity and continuity, not an up/down state. Kept
+    # distinct from unknown: nothing is missing, the question does not apply.
+    "not_applicable": ("Passive", StatusTone.neutral, StatusIcon.minus),
 }
 
 _ACCESS_ENDPOINT_SOURCE_PRESENTATIONS: dict[str, tuple[str, StatusTone, StatusIcon]] = {

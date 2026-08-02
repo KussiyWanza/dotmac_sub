@@ -651,6 +651,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "ui.customer_network_path_projection"
     ) == (
         "network.access_path",
+        "network.fiber_topology",
         "ui.status_presentation",
     )
     assert sot_relationships.dependencies_for("ui.status_presentation") == (

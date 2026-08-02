@@ -34437,10 +34437,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "customer network path graph projection",
                     "customer serving-endpoint presentation projection",
+                    "customer passive-fibre path detail projection",
                     "shared network graph view contract",
                 ),
                 depends_on=(
                     "network.access_path",
+                    "network.fiber_topology",
                     "ui.status_presentation",
                 ),
                 notes=(
@@ -34476,6 +34478,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         ConcernContract(
+                            name="customer passive-fibre path detail projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "validated fibre plant trace",
+                                "semantic status presentation vocabulary",
+                                "shared network graph vocabulary",
+                            ),
+                        ),
+                        ConcernContract(
                             name="shared network graph view contract",
                             role=OwnerRole.POLICY,
                             input_names=("shared network graph vocabulary",),
@@ -34491,6 +34502,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "and SubscriberTopologyTrace identity, "
                                 "ordering, hop states, evidence sources, "
                                 "observation times, and typed breaks"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="validated fibre plant trace",
+                            owner="network.fiber_topology",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "FiberSubscriptionTrace validated hop order, "
+                                "evidence, splitter losses, and typed gap "
+                                "codes; passive hops stay not-applicable, "
+                                "never fabricated up/down"
                             ),
                         ),
                         AuthorityInput(

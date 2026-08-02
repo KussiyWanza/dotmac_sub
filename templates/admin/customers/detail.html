@@ -1,6 +1,7 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import status_badge, status_presentation_badge %}
 {% from "components/ui/record.html" import subscriber_hero %}
+{% from "admin/customers/_network_path.html" import network_path_graph %}
 
 {% block title %}{{ customer_name }} - Customer - Admin{% endblock %}
 
@@ -1930,7 +1931,7 @@
                                 {% if card.nas_name %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">NAS Device</p>
-                                    <a href="/admin/nas/{{ card.nas_id }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ card.nas_name }}</a>
+                                    <a href="/admin/network/nas/devices/{{ card.nas_id }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ card.nas_name }}</a>
                                 </div>
                                 {% endif %}
                                 {% if card.access_endpoint and card.access_endpoint.endpoint_display %}
@@ -1958,7 +1959,11 @@
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving AP</p>
                                     <p class="font-medium status-tone-warning status-foreground">AP unresolved</p>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.ap_unresolved_notice }}</p>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.ap_unresolved_notice }}
+                                        {% if card.access_endpoint.ap_unresolved_repair_href and can(request, card.access_endpoint.ap_unresolved_repair_permission) %}
+                                        <a href="{{ card.access_endpoint.ap_unresolved_repair_href }}" class="underline">Review queue</a>
+                                        {% endif %}
+                                    </p>
                                 </div>
                                 {% endif %}
                                 {% elif card.access_endpoint and card.access_endpoint.source_presentation %}
@@ -1971,7 +1976,11 @@
                                     <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.gap }}</p>
                                     {% endif %}
                                     {% if card.access_endpoint.ap_unresolved_notice %}
-                                    <p class="text-xs status-tone-warning status-foreground">{{ card.access_endpoint.ap_unresolved_notice }}</p>
+                                    <p class="text-xs status-tone-warning status-foreground">{{ card.access_endpoint.ap_unresolved_notice }}
+                                        {% if card.access_endpoint.ap_unresolved_repair_href and can(request, card.access_endpoint.ap_unresolved_repair_permission) %}
+                                        <a href="{{ card.access_endpoint.ap_unresolved_repair_href }}" class="underline">Review queue</a>
+                                        {% endif %}
+                                    </p>
                                     {% endif %}
                                 </div>
                                 {% endif %}
@@ -2020,7 +2029,7 @@
                                         <a href="/admin/support/tickets/{{ card.known_incident.infrastructure_ticket_id }}" class="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">Open the covering ticket</a>
                                         {% endif %}
                                         {% if card.known_incident.incident_id %}
-                                        <a href="/admin/network/outages/{{ card.known_incident.incident_id }}" class="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40">View incident</a>
+                                        <a href="/admin/network/outages" class="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-900/40">View incidents</a>
                                         {% endif %}
                                     </div>
                                     {% endif %}
@@ -2055,25 +2064,18 @@
                             {% if card.network_path and (card.network_path.nodes or card.network_path.gaps) %}
                             <div class="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
                                 <p class="mb-2 text-xs text-slate-500 dark:text-slate-400">Active Path</p>
-                                <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                                    {% for node in card.network_path.nodes %}
-                                    <span class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs status-panel status-panel-{{ node.presentation.tone }} status-foreground"
-                                        title="{{ node.tooltip }}">
-                                        {{ node.label }}
-                                    </span>
-                                    {% if not loop.last %}<span class="text-slate-400 dark:text-slate-500">&rarr;</span>{% endif %}
-                                    {% endfor %}
-                                </div>
-                                {% for gap in card.network_path.gaps %}
-                                <p class="mt-2 text-xs status-tone-{{ gap.presentation.tone }} status-foreground">
-                                    <span class="font-medium">{{ gap.presentation.label }}</span> &mdash; {{ gap.message }}
-                                </p>
-                                {% endfor %}
-                                {% for node in card.network_path.nodes %}
-                                {% for measurement in node.measurements %}
-                                <p class="mt-2 text-xs text-slate-600 dark:text-slate-400">{{ measurement.label }}: <span class="font-mono">{{ measurement.display }}</span></p>
-                                {% endfor %}
-                                {% endfor %}
+                                {{ network_path_graph(card.network_path, request) }}
+                                {% if card.access_endpoint and card.access_endpoint.access_kind == 'olt' and can(request, 'network:fiber:read') %}
+                                <details class="mt-2">
+                                    <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200" data-testid="fiber-plant-toggle">Fibre plant details</summary>
+                                    <div class="mt-2"
+                                         hx-get="/admin/customers/subscriptions/{{ card.subscription_id }}/fiber-path"
+                                         hx-trigger="load"
+                                         hx-swap="innerHTML">
+                                        <div class="text-xs text-slate-500 dark:text-slate-400">Loading fibre plant path...</div>
+                                    </div>
+                                </details>
+                                {% endif %}
                             </div>
                             {% endif %}
                             {% if card.ticket_prefill_url %}

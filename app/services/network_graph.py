@@ -103,9 +103,11 @@ class NetworkGraphNode:
     tooltip: str | None = None
     evidence: NetworkGraphEvidence | None = None
     measurements: tuple[NetworkGraphMeasurement, ...] = ()
-    # Deep link to the asset's own page. None when the viewer's permissions or
-    # the asset kind offer no destination.
+    # Deep link to the asset's own page, plus the permission the viewer needs
+    # for that destination. Renderers show the link only when the viewer holds
+    # the permission; the projection never varies the facts by viewer.
     href: str | None = None
+    href_permission: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -119,6 +121,7 @@ class NetworkGraphNode:
             "evidence": self.evidence.to_dict() if self.evidence else None,
             "measurements": [m.to_dict() for m in self.measurements],
             "href": self.href,
+            "href_permission": self.href_permission,
         }
 
 
@@ -152,8 +155,10 @@ class NetworkGraphGap:
     # The last proven node before the gap; None when nothing resolved at all.
     after_node_id: str | None = None
     # Canonical review-queue destination able to repair this gap, when one
-    # exists. The UI never bridges a gap itself.
+    # exists, plus the permission that destination requires. The UI never
+    # bridges a gap itself.
     repair_href: str | None = None
+    repair_permission: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -162,6 +167,7 @@ class NetworkGraphGap:
             "presentation": _presentation_dict(self.presentation),
             "after_node_id": self.after_node_id,
             "repair_href": self.repair_href,
+            "repair_permission": self.repair_permission,
         }
 
 

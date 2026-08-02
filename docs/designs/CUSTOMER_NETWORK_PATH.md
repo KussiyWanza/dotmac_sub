@@ -1,7 +1,9 @@
 # Customer Network Path
 
-Status: adopted (programme slice PR 1 — shared graph contract and ownership
-cleanup). This document is the checked-in contract for
+Status: adopted (programme slices PR 1 — shared graph contract and ownership
+cleanup — and PR 2 — the Customer 360 Network Path component with deep links,
+repair destinations, and passive-fibre expansion).
+This document is the checked-in contract for
 `ui.customer_network_path_projection` and the shared network graph vocabulary
 in `app/services/network_graph.py`. Presentation and information rules follow
 `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`.
@@ -23,7 +25,12 @@ It composes existing owners and decides nothing of its own:
   of each hop's state word and observation time, already layered into the
   trace by `network.access_path`.
 - `ui.status_presentation` owns the label/tone/icon meaning of hop states,
-  path gaps, serving-endpoint sources, and RF signal freshness.
+  path gaps, serving-endpoint sources, and RF signal freshness. Passive plant
+  carries the distinct `not_applicable` ("Passive") word — identity and
+  continuity, never a fabricated up/down.
+- `network.fiber_topology` owns the validated passive fibre plant trace
+  (hops, evidence, splitter losses, typed gap codes) composed into the
+  optional "Fibre plant details" expansion.
 
 The projection answers exactly:
 
@@ -78,15 +85,38 @@ persists nothing. A failed resolution degrades to an explicit per-subscription
 unresolved projection; an unavailable path must not take the customer record
 with it.
 
+## Links and repair destinations
+
+The projection owns the mapping from hop kind to its canonical admin page
+(`_NODE_LINKS`) and from break code to its canonical review destination
+(`_gap_repair`): radio/AP conflicts go to the unmatched-radio ticket queue
+(`/admin/support/tickets?ticket_type=unmatched_radio`), missing-ONT gaps go
+to the ONT assignment flow scoped to the subscriber, and everything else goes
+to `/admin/network/topology-gaps`. PON ports link to their adjacent proven
+OLT's PON tab — taken from the trace order, never inferred from names. Every
+href carries the permission its destination requires
+(`href_permission` / `repair_permission`); renderers show the link only when
+the viewer holds it via the `can()` template global, and the facts themselves
+never vary by viewer.
+
 ## Surface contracts
 
-- `templates/admin/customers/detail.html` renders `card.network_path`
+- `templates/admin/customers/_network_path.html` holds the single
+  `network_path_graph` renderer for any NetworkGraphView; the customer detail
+  Active Path and the fibre plant fragment both use it.
+  `templates/admin/customers/detail.html` renders `card.network_path`
   (NetworkGraphView dict) and `card.access_endpoint`
   (AccessEndpointProjection dict). Tone reaches the DOM only through the
   semantic `status-tone-*` / `status-panel-*` classes fed by owner-provided
   presentations; the template holds no state-to-colour or source-to-label
   branches. Owner-emitted notices (partial endpoint, AP unresolved) are
   warnings by construction and render with the warning tone token.
+- Fibre plant expansion: a `<details>` block on fibre cards lazy-loads
+  `GET /admin/customers/subscriptions/{subscription_id}/fiber-path`
+  (permission `network:fiber:read`), rendered from
+  `project_subscription_fiber_detail` via
+  `templates/admin/customers/_fiber_path_panel.html`. The route authorizes
+  and renders only.
 - The ticket prefill keeps consuming the legacy
   `SubscriberTopologyTrace.to_dict()` shape (`card.topology_trace`), which
   remains available from the same single resolution.

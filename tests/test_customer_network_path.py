@@ -289,6 +289,158 @@ def test_one_failing_sibling_does_not_take_the_others_down(monkeypatch):
     assert results[str(sub_b.id)].endpoint.endpoint_source == "unresolved"
 
 
+# --- deep links and repair destinations ----------------------------------
+
+
+def test_nodes_carry_owner_deep_links_with_permissions():
+    projection = cnp.project_subscription_network_path(
+        None, _subscription_stub(), path=_fiber_path()
+    )
+    ont, pon, olt, upstream = projection.view.nodes
+
+    assert ont.href == f"/admin/network/onts/{ont.asset_id}"
+    assert ont.href_permission == "network:ont:read"
+    # PON ports have no page; they live on their adjacent proven OLT's tab.
+    assert pon.href == f"/admin/network/olts/{olt.asset_id}?tab=pon-ports"
+    assert pon.href_permission == "network:olt:read"
+    assert olt.href == f"/admin/network/olts/{olt.asset_id}"
+    assert upstream.href == f"/admin/network/core-devices/{upstream.asset_id}"
+    assert upstream.href_permission == "network:device:read"
+
+
+def test_gap_repair_points_at_canonical_queues():
+    path = _fiber_path()
+    path.upstream_chain = []
+    unproven = cnp.project_subscription_network_path(
+        None, _subscription_stub(), path=path
+    ).view.gaps[0]
+    assert unproven.repair_href == "/admin/network/topology-gaps"
+    assert unproven.repair_permission == "monitoring:read"
+
+    sub = _subscription_stub()
+    missing_ont = cnp.project_subscription_network_path(
+        None, sub, path=CustomerPath(gap="no_ont")
+    ).view.gaps
+    ont_gap = next(gap for gap in missing_ont if gap.code == "path.no_ont")
+    assert (
+        ont_gap.repair_href
+        == f"/admin/network/onts?assign_subscriber={sub.subscriber_id}"
+    )
+    assert ont_gap.repair_permission == "network:ont:read"
+
+
+def test_radio_hop_carries_owner_composed_rf_measurement():
+    projection = cnp.project_subscription_network_path(
+        None,
+        _subscription_stub(),
+        path=_wireless_path(observed_at=datetime.now(UTC) - timedelta(hours=3)),
+    )
+    radio = next(n for n in projection.view.nodes if n.kind == "radio")
+    rf = next(m for m in radio.measurements if m.name == "rf_signal_dbm")
+
+    assert rf.display == "-62 dBm (stale)"
+    assert rf.freshness == "stale"
+
+
+# --- passive fibre detail --------------------------------------------------
+
+
+def _fiber_trace_stub(subscription_id):
+    from app.services.fiber_topology import (
+        FiberSubscriptionTrace,
+        FiberTraceGap,
+        FiberTraceHop,
+    )
+
+    olt_id = uuid.uuid4()
+    splitter_id = uuid.uuid4()
+    return FiberSubscriptionTrace(
+        subscription_id=subscription_id,
+        customer_label="Customer Tester",
+        subscription_status="active",
+        hops=(
+            FiberTraceHop(
+                kind="olt",
+                label="Gudu OLT",
+                asset_id=olt_id,
+                evidence="network.fiber_topology",
+                operational_state="up",
+            ),
+            FiberTraceHop(
+                kind="pon_port",
+                label="0/1/3",
+                asset_id=uuid.uuid4(),
+                evidence="network.fiber_topology",
+            ),
+            FiberTraceHop(
+                kind="splitter",
+                label="SPL-12 1:8",
+                asset_id=splitter_id,
+                evidence="reviewed splice record",
+                insertion_loss_db="10.5",
+                cumulative_splitter_loss_db="10.5",
+            ),
+            FiberTraceHop(
+                kind="drop_segment",
+                label="Drop 88m",
+                asset_id=None,
+                evidence="reviewed drop record",
+            ),
+        ),
+        gaps=(
+            FiberTraceGap(
+                code="active_fdh_missing",
+                message="No active FDH links this splitter.",
+            ),
+        ),
+        electronic_complete=True,
+        physical_complete=False,
+        upstream_scope="olt",
+        upstream_message="",
+    )
+
+
+def test_fiber_detail_restates_owner_hops_without_fabricating_state(monkeypatch):
+    from app.services import fiber_topology
+
+    sub_id = uuid.uuid4()
+    monkeypatch.setattr(
+        fiber_topology,
+        "trace_fiber_subscription",
+        lambda _db, _sid: _fiber_trace_stub(sub_id),
+    )
+
+    view = cnp.project_subscription_fiber_detail(None, sub_id)
+
+    olt, pon, splitter, drop = view.nodes
+    assert olt.state == "up"
+    # Passive plant renders identity and continuity: not-applicable stays
+    # distinct from unknown and is never dressed up as up/down.
+    assert splitter.state == "not_applicable"
+    assert splitter.presentation.label == "Passive"
+    assert splitter.href == f"/admin/network/splitters/{splitter.asset_id}"
+    assert splitter.href_permission == "network:fiber:read"
+    losses = [m.display for m in splitter.measurements]
+    assert "10.5 dB" in losses
+    # PON ports link to the adjacent proven OLT even when it precedes them.
+    assert pon.href == f"/admin/network/olts/{olt.asset_id}?tab=pon-ports"
+    gap = view.gaps[0]
+    assert gap.code == "active_fdh_missing"
+    assert gap.repair_href == (f"/admin/network/fiber-trace?subscription_id={sub_id}")
+    assert gap.repair_permission == "network:fiber:read"
+
+
+def test_fiber_detail_is_none_when_the_owner_cannot_trace(monkeypatch):
+    from app.services import fiber_topology
+
+    def _refuse(_db, _sid):
+        raise ValueError("subscription is not a fiber service")
+
+    monkeypatch.setattr(fiber_topology, "trace_fiber_subscription", _refuse)
+
+    assert cnp.project_subscription_fiber_detail(None, uuid.uuid4()) is None
+
+
 # --- template ownership boundary -----------------------------------------
 
 
@@ -304,12 +456,30 @@ def test_template_holds_no_path_status_to_colour_or_label_decisions():
         # The exact retired hop-chip colour maps.
         "border-red-300 bg-red-50 text-red-700",
         "border-emerald-300 bg-emerald-50 text-emerald-700",
+        # The legacy broken NAS deep link.
+        '"/admin/nas/',
     ):
         assert retired not in template, retired
 
-    # The path renders the shared contract through semantic tone tokens.
+    # The path renders the shared contract through the single macro renderer.
     assert "card.network_path" in template
-    assert "status-panel-{{ node.presentation.tone }}" in template
+    assert "network_path_graph(card.network_path, request)" in template
+
+    shared = Path("templates/admin/customers/_network_path.html").read_text()
+    assert 'status-panel-" ~ node.presentation.tone' in shared
+    assert "can(request, node.href_permission)" in shared
+    assert "can(request, gap.repair_permission)" in shared
+
+
+def test_new_partials_compile():
+    from jinja2 import Environment, FileSystemLoader
+
+    env = Environment(loader=FileSystemLoader("templates"), autoescape=True)
+    for name in (
+        "admin/customers/_network_path.html",
+        "admin/customers/_fiber_path_panel.html",
+    ):
+        env.parse(Path("templates", name).read_text())
 
 
 # --- query budget ---------------------------------------------------------

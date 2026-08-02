@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -45,10 +46,30 @@ logger = logging.getLogger(__name__)
 
 _UNRESOLVED_SOURCE = "unresolved"
 
-# Measurement vocabulary rendered inside the path today. RF signal stays on the
-# serving-endpoint block (its owner-composed display lives there); widening the
-# in-path measurement set is a deliberate later slice, not a template decision.
 _ONT_RX_DETAIL_KEY = "onu_rx_signal_dbm"
+
+# Canonical asset destinations per hop kind, with the permission each
+# destination requires. Renderers show a link only when the viewer holds the
+# permission; the projection itself never varies facts by viewer.
+_NODE_LINKS: dict[str, tuple[str, str]] = {
+    "ont": ("/admin/network/onts/{id}", "network:ont:read"),
+    "radio": ("/admin/network/cpes/{id}", "network:cpe:read"),
+    "olt": ("/admin/network/olts/{id}", "network:olt:read"),
+    "ap": ("/admin/network/core-devices/{id}", "network:device:read"),
+    "nas": ("/admin/network/nas/devices/{id}", "network:nas:read"),
+    "network_device": ("/admin/network/core-devices/{id}", "network:device:read"),
+    "fdh": ("/admin/network/fdh-cabinets/{id}", "network:fiber:read"),
+    "splitter": ("/admin/network/splitters/{id}", "network:fiber:read"),
+    "pop": ("/admin/network/pop-sites/{id}", "network:pop:read"),
+}
+
+# Canonical repair destination for the unmatched-radio review queue (plain
+# support tickets typed unmatched_radio — see app.services.unmatched_radio_queue).
+UNMATCHED_RADIO_QUEUE_HREF = "/admin/support/tickets?ticket_type=unmatched_radio"
+UNMATCHED_RADIO_QUEUE_PERMISSION = "support:ticket:read"
+
+_TOPOLOGY_GAPS_HREF = "/admin/network/topology-gaps"
+_TOPOLOGY_GAPS_PERMISSION = "monitoring:read"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +101,8 @@ class AccessEndpointProjection:
     rf_observed_display: str | None = None
     partial_notice: str | None = None
     ap_unresolved_notice: str | None = None
+    ap_unresolved_repair_href: str | None = None
+    ap_unresolved_repair_permission: str | None = None
     radio_ap_unresolved: bool = False
     basestation_name: str | None = None
     gap: str | None = None
@@ -104,6 +127,8 @@ class AccessEndpointProjection:
             "rf_observed_display": self.rf_observed_display,
             "partial_notice": self.partial_notice,
             "ap_unresolved_notice": self.ap_unresolved_notice,
+            "ap_unresolved_repair_href": self.ap_unresolved_repair_href,
+            "ap_unresolved_repair_permission": self.ap_unresolved_repair_permission,
             "radio_ap_unresolved": self.radio_ap_unresolved,
             "basestation_name": self.basestation_name,
             "gap": self.gap,
@@ -200,6 +225,7 @@ def build_network_graph_view(trace: SubscriberTopologyTrace) -> NetworkGraphView
 
     nodes: list[NetworkGraphNode] = []
     for index, node in enumerate(trace.nodes):
+        href, href_permission = _node_link(node.kind, node.asset_id)
         nodes.append(
             NetworkGraphNode(
                 id=_node_id(node, index),
@@ -219,26 +245,33 @@ def build_network_graph_view(trace: SubscriberTopologyTrace) -> NetworkGraphView
                     else None
                 ),
                 measurements=_node_measurements(node),
+                href=href,
+                href_permission=href_permission,
             )
         )
+    nodes = _link_pon_ports_to_their_olt(nodes)
     edges = tuple(
         NetworkGraphEdge(source_id=nodes[i].id, target_id=nodes[i + 1].id)
         for i in range(len(nodes) - 1)
     )
-    gaps = tuple(
-        NetworkGraphGap(
-            code=break_.code,
-            message=break_.message,
-            presentation=path_gap_presentation(break_.code),
-            after_node_id=(
-                nodes[break_.after_index].id
-                if break_.after_index is not None
-                and 0 <= break_.after_index < len(nodes)
-                else None
-            ),
+    gaps: list[NetworkGraphGap] = []
+    for break_ in trace.breaks:
+        repair_href, repair_permission = _gap_repair(break_.code, trace.subscriber_id)
+        gaps.append(
+            NetworkGraphGap(
+                code=break_.code,
+                message=break_.message,
+                presentation=path_gap_presentation(break_.code),
+                after_node_id=(
+                    nodes[break_.after_index].id
+                    if break_.after_index is not None
+                    and 0 <= break_.after_index < len(nodes)
+                    else None
+                ),
+                repair_href=repair_href,
+                repair_permission=repair_permission,
+            )
         )
-        for break_ in trace.breaks
-    )
     return NetworkGraphView(
         subject_kind="subscription",
         subject_id=str(trace.subscription_id),
@@ -246,7 +279,7 @@ def build_network_graph_view(trace: SubscriberTopologyTrace) -> NetworkGraphView
         evaluated_at=trace.evaluated_at,
         nodes=tuple(nodes),
         edges=edges,
-        gaps=gaps,
+        gaps=tuple(gaps),
     )
 
 
@@ -254,6 +287,73 @@ def _node_id(node, index: int) -> str:
     if node.asset_id is not None:
         return f"{node.kind}:{node.asset_id}"
     return f"{node.kind}#{index}"
+
+
+def _node_link(kind: str, asset_id) -> tuple[str | None, str | None]:
+    if asset_id is None:
+        return None, None
+    link = _NODE_LINKS.get(kind)
+    if link is None:
+        return None, None
+    template, permission = link
+    return template.format(id=asset_id), permission
+
+
+def _link_pon_ports_to_their_olt(
+    nodes: list[NetworkGraphNode],
+) -> list[NetworkGraphNode]:
+    """PON ports have no page of their own; they live on their OLT's tab.
+
+    The trace orders the PON port adjacent to its OLT (before it on the
+    customer trace, after it on the fibre trace), so the link is taken from
+    the adjacent proven hop — never inferred from names.
+    """
+
+    linked: list[NetworkGraphNode] = []
+    for index, node in enumerate(nodes):
+        neighbours = [nodes[i] for i in (index + 1, index - 1) if 0 <= i < len(nodes)]
+        olt = next(
+            (
+                neighbour
+                for neighbour in neighbours
+                if neighbour.kind == "olt" and neighbour.asset_id is not None
+            ),
+            None,
+        )
+        if node.kind == "pon_port" and node.href is None and olt is not None:
+            node = NetworkGraphNode(
+                id=node.id,
+                kind=node.kind,
+                label=node.label,
+                state=node.state,
+                presentation=node.presentation,
+                asset_id=node.asset_id,
+                tooltip=node.tooltip,
+                evidence=node.evidence,
+                measurements=node.measurements,
+                href=f"/admin/network/olts/{olt.asset_id}?tab=pon-ports",
+                href_permission="network:olt:read",
+            )
+        linked.append(node)
+    return linked
+
+
+def _gap_repair(code: str, subscriber_id) -> tuple[str | None, str | None]:
+    """Canonical review destination for a path break, keyed on the owner code.
+
+    The mapping names where the gap is repaired; it never repairs or bridges
+    anything itself.
+    """
+
+    normalized = (code or "").lower()
+    if "radio" in normalized or "ap_unresolved" in normalized:
+        return UNMATCHED_RADIO_QUEUE_HREF, UNMATCHED_RADIO_QUEUE_PERMISSION
+    if "ont" in normalized and subscriber_id is not None:
+        return (
+            f"/admin/network/onts?assign_subscriber={subscriber_id}",
+            "network:ont:read",
+        )
+    return _TOPOLOGY_GAPS_HREF, _TOPOLOGY_GAPS_PERMISSION
 
 
 def _node_tooltip(node) -> str:
@@ -271,19 +371,135 @@ def _node_freshness(node) -> str | None:
 
 
 def _node_measurements(node) -> tuple[NetworkGraphMeasurement, ...]:
-    value = node.detail.get(_ONT_RX_DETAIL_KEY)
-    if value is None:
-        return ()
-    return (
-        NetworkGraphMeasurement(
-            name=_ONT_RX_DETAIL_KEY,
-            label="ONT receive power",
-            display=f"{value} dBm",
-            value=float(value),
-            unit="dBm",
-            observed_at=node.observed_at,
-        ),
+    measurements: list[NetworkGraphMeasurement] = []
+    ont_rx = node.detail.get(_ONT_RX_DETAIL_KEY)
+    if ont_rx is not None:
+        measurements.append(
+            NetworkGraphMeasurement(
+                name=_ONT_RX_DETAIL_KEY,
+                label="ONT receive power",
+                display=f"{ont_rx} dBm",
+                value=float(ont_rx),
+                unit="dBm",
+                observed_at=node.observed_at,
+            )
+        )
+    rf_dbm = node.detail.get("rf_signal_dbm")
+    if rf_dbm is not None:
+        freshness = node.detail.get("rf_signal_freshness")
+        suffix = " (stale)" if freshness == "stale" else ""
+        measurements.append(
+            NetworkGraphMeasurement(
+                name="rf_signal_dbm",
+                label="RF signal",
+                display=f"{float(rf_dbm):.0f} dBm{suffix}",
+                value=float(rf_dbm),
+                unit="dBm",
+                freshness=str(freshness) if freshness else None,
+                observed_at=node.observed_at,
+            )
+        )
+    return tuple(measurements)
+
+
+def project_subscription_fiber_detail(
+    db: Session, subscription_id
+) -> NetworkGraphView | None:
+    """Passive fibre plant detail for one fibre subscription.
+
+    network.fiber_topology owns the validated hop order and gap codes; this
+    projection restates them in the shared graph vocabulary. Passive plant
+    renders identity and continuity — its state is honestly not-applicable,
+    never a fabricated up/down. Returns None when the owner cannot trace the
+    subscription (unknown id or non-fibre service).
+    """
+
+    from app.services.fiber_topology import trace_fiber_subscription
+
+    try:
+        trace = trace_fiber_subscription(db, subscription_id)
+    except ValueError:
+        return None
+
+    nodes: list[NetworkGraphNode] = []
+    for index, hop in enumerate(trace.hops):
+        state = hop.operational_state or "not_applicable"
+        href, href_permission = _node_link(hop.kind, hop.asset_id)
+        nodes.append(
+            NetworkGraphNode(
+                id=(
+                    f"{hop.kind}:{hop.asset_id}"
+                    if hop.asset_id is not None
+                    else f"{hop.kind}#{index}"
+                ),
+                kind=hop.kind,
+                label=hop.label,
+                state=state,
+                presentation=topology_hop_status_presentation(state),
+                asset_id=str(hop.asset_id) if hop.asset_id is not None else None,
+                tooltip=f"{hop.kind} · {hop.evidence}" if hop.evidence else hop.kind,
+                evidence=(
+                    NetworkGraphEvidence(owner=hop.evidence) if hop.evidence else None
+                ),
+                measurements=_fiber_hop_measurements(hop),
+                href=href,
+                href_permission=href_permission,
+            )
+        )
+    nodes = _link_pon_ports_to_their_olt(nodes)
+    edges = tuple(
+        NetworkGraphEdge(source_id=nodes[i].id, target_id=nodes[i + 1].id)
+        for i in range(len(nodes) - 1)
     )
+    gaps = tuple(
+        NetworkGraphGap(
+            code=gap.code,
+            message=gap.message,
+            presentation=path_gap_presentation(gap.code),
+            repair_href=(
+                f"/admin/network/fiber-trace?subscription_id={trace.subscription_id}"
+            ),
+            repair_permission="network:fiber:read",
+        )
+        for gap in trace.gaps
+    )
+    return NetworkGraphView(
+        subject_kind="subscription_fiber_plant",
+        subject_id=str(trace.subscription_id),
+        access_kind="fiber",
+        evaluated_at=datetime.now(UTC),
+        nodes=tuple(nodes),
+        edges=edges,
+        gaps=gaps,
+    )
+
+
+def _fiber_hop_measurements(hop) -> tuple[NetworkGraphMeasurement, ...]:
+    measurements: list[NetworkGraphMeasurement] = []
+    for name, label, raw in (
+        ("insertion_loss_db", "Insertion loss", hop.insertion_loss_db),
+        (
+            "cumulative_splitter_loss_db",
+            "Cumulative splitter loss",
+            hop.cumulative_splitter_loss_db,
+        ),
+    ):
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+        measurements.append(
+            NetworkGraphMeasurement(
+                name=name,
+                label=label,
+                display=f"{raw} dB",
+                value=value,
+                unit="dB",
+            )
+        )
+    return tuple(measurements)
 
 
 def _endpoint_projection(summary: AccessPathSummary) -> AccessEndpointProjection:
@@ -325,6 +541,12 @@ def _endpoint_projection(summary: AccessPathSummary) -> AccessEndpointProjection
             else (f"Partial — {summary.gap}" if summary.gap else "Partial")
         ),
         ap_unresolved_notice=_ap_unresolved_notice(summary),
+        ap_unresolved_repair_href=(
+            UNMATCHED_RADIO_QUEUE_HREF if summary.radio_ap_unresolved else None
+        ),
+        ap_unresolved_repair_permission=(
+            UNMATCHED_RADIO_QUEUE_PERMISSION if summary.radio_ap_unresolved else None
+        ),
         radio_ap_unresolved=summary.radio_ap_unresolved,
         basestation_name=summary.basestation_name,
         gap=summary.gap,
