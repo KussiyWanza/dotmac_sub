@@ -1947,12 +1947,38 @@
                                     <p class="text-xs text-amber-600 dark:text-amber-400">Partial{% if card.access_endpoint.gap %} &mdash; {{ card.access_endpoint.gap }}{% endif %}</p>
                                     {% endif %}
                                 </div>
+                                {% if card.access_endpoint.access_kind == 'ap' %}
+                                <div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">Serving AP</p>
+                                    <p class="font-medium text-slate-900 dark:text-white">{{ card.access_endpoint.serving_ap_name or card.access_endpoint.endpoint_display }}</p>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">RF signal</p>
+                                    {% if card.access_endpoint.rf_signal_freshness == 'fresh' %}
+                                    <p class="font-medium text-slate-900 dark:text-white">{{ '%.0f'|format(card.access_endpoint.rf_signal_dbm) }} dBm</p>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">Observed at {{ card.access_endpoint.rf_signal_observed_at }}</p>
+                                    {% elif card.access_endpoint.rf_signal_freshness == 'stale' %}
+                                    <p class="font-medium text-amber-600 dark:text-amber-400">Stale (last {{ '%.0f'|format(card.access_endpoint.rf_signal_dbm) }} dBm at {{ card.access_endpoint.rf_signal_observed_at }})</p>
+                                    {% else %}
+                                    <p class="font-medium text-slate-500 dark:text-slate-400">Signal unavailable</p>
+                                    {% endif %}
+                                </div>
+                                {% elif card.access_endpoint.radio_ap_unresolved %}
+                                <div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">Serving AP</p>
+                                    <p class="font-medium text-amber-600 dark:text-amber-400">AP unresolved</p>
+                                    {% if card.access_endpoint.radio_label %}
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">Radio {{ card.access_endpoint.radio_label }} has no serving-AP mapping &mdash; see the unmatched-radio queue</p>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
                                 {% elif card.access_endpoint and card.access_endpoint.endpoint_source == 'unresolved' %}
                                 <div>
                                     <p class="text-xs text-slate-500 dark:text-slate-400">Serving Endpoint</p>
                                     <p class="font-medium text-amber-600 dark:text-amber-400">Unresolved</p>
                                     {% if card.access_endpoint.gap %}
                                     <p class="text-xs text-slate-500 dark:text-slate-400">{{ card.access_endpoint.gap }}</p>
+                                    {% endif %}
+                                    {% if card.access_endpoint.radio_ap_unresolved %}
+                                    <p class="text-xs text-amber-600 dark:text-amber-400">Radio {{ card.access_endpoint.radio_label or '' }} has no serving-AP mapping &mdash; see the unmatched-radio queue</p>
                                     {% endif %}
                                 </div>
                                 {% endif %}

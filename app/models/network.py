@@ -392,6 +392,18 @@ class CPEDevice(Base):
     # Last UISP overview.status: active/disconnected/unauthorized (or
     # 'vanished' when the device disappeared from UISP).
     last_uisp_status: Mapped[str | None] = mapped_column(String(20))
+    # Current-value RF observation from the AP-side station listing.
+    # uisp_sync is the sole writer: set while the station is associated,
+    # cleared when it disconnects or vanishes. ``rf_signal_observed_at`` is the
+    # sync-run timestamp (consistent with uisp_synced_at), not a UISP payload
+    # time. No history is kept here — ont_signal_observations is the precedent
+    # if a trend table is ever needed. Readers derive freshness via
+    # app.services.network.radio_signal.resolve_effective_radio_signal.
+    rf_signal_dbm: Mapped[float | None] = mapped_column(Float)
+    rf_signal_source: Mapped[str | None] = mapped_column(String(32))
+    rf_signal_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

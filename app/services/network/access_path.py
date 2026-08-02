@@ -26,6 +26,7 @@ from app.services.network.fiber_plant_integrity import cable_capacity
 from app.services.network.forwarding_topology import (
     project_authoritative_forwarding_graph,
 )
+from app.services.network.radio_signal import resolve_effective_radio_signal
 from app.services.topology.customer_path import CustomerPath, resolve_customer_path
 
 
@@ -52,6 +53,21 @@ class AccessPathSummary:
     ont_serial: str | None = None
     radio_id: object | None = None
     radio_label: str | None = None
+    # Wireless RF observation, resolved through radio_signal so a value is
+    # only ever presented alongside its freshness (fresh | stale) — a stale or
+    # cleared observation must not render as a current signal.
+    radio_signal_dbm: float | None = None
+    radio_signal_freshness: str | None = None
+    radio_signal_observed_at: datetime | None = None
+    # Projection of customer_path.RadioResolutionTier ('subscription' exact /
+    # 'subscriber_legacy' pre-binding fallback). None off the wireless arm.
+    # Stringified here like endpoint_source: this summary is the JSON/template
+    # boundary; the typed enum lives on CustomerPath.
+    radio_resolution: str | None = None
+    # True when an active radio exists but has no parent AP edge: the
+    # repairable "AP unresolved" gap, surfaced explicitly instead of letting
+    # the card silently degrade to the coarse NAS endpoint.
+    radio_ap_unresolved: bool = False
     # Composed here, never in a template, so admin/portal/API render one string.
     endpoint_display: str | None = None
     # Which record this endpoint came from, named rather than implied. Using a
@@ -745,6 +761,11 @@ def summarize_customer_path(
     """Project a resolved path. Split out so callers that already hold a
     CustomerPath do not re-resolve it."""
 
+    effective_signal = (
+        resolve_effective_radio_signal(path.radio) if path.radio is not None else None
+    )
+    unparented = getattr(path, "unparented_radio", None)
+    ap_unresolved = path.radio is None and unparented is not None
     return AccessPathSummary(
         subscription_id=subscription.id,
         subscriber_id=subscription.subscriber_id,
@@ -761,8 +782,23 @@ def summarize_customer_path(
         pon_port_label=_pon_port_label(path.pon_port),
         ont_id=getattr(path.ont, "id", None),
         ont_serial=_ont_label(path.ont),
-        radio_id=getattr(path.radio, "id", None),
-        radio_label=_radio_label(path.radio),
+        radio_id=getattr(path.radio, "id", None)
+        if path.radio is not None
+        else getattr(unparented, "id", None),
+        radio_label=_radio_label(path.radio) or _radio_label(unparented),
+        radio_signal_dbm=effective_signal.signal_dbm if effective_signal else None,
+        radio_signal_freshness=(
+            effective_signal.freshness.value if effective_signal else None
+        ),
+        radio_signal_observed_at=(
+            effective_signal.observed_at if effective_signal else None
+        ),
+        radio_resolution=(
+            path.radio_resolution.value
+            if getattr(path, "radio_resolution", None) is not None
+            else None
+        ),
+        radio_ap_unresolved=ap_unresolved,
         endpoint_display=_endpoint_display(path),
         endpoint_source=_endpoint_source(path),
         endpoint_complete=path.gap is None,
@@ -781,6 +817,20 @@ def _ont_observed_state(ont: Any) -> tuple[str, datetime | None]:
         return "down", observed_at
     if "online" in value:
         return "up", observed_at
+    return "unknown", observed_at
+
+
+def _radio_observed_state(radio: Any) -> tuple[str, datetime | None]:
+    """Map stored UISP radio status. Stored telemetry only — never a probe."""
+
+    value = str(getattr(radio, "last_uisp_status", None) or "").lower()
+    observed_at = getattr(radio, "rf_signal_observed_at", None) or getattr(
+        radio, "uisp_synced_at", None
+    )
+    if value == "active":
+        return "up", observed_at
+    if value in ("disconnected", "missing", "vanished"):
+        return "down", observed_at
     return "unknown", observed_at
 
 
@@ -806,12 +856,20 @@ def _trace_nodes_for_path(path: CustomerPath) -> list[TopologyTraceNode]:
         )
 
     if path.radio is not None:
+        state, observed_at = _radio_observed_state(path.radio)
+        effective_signal = resolve_effective_radio_signal(path.radio)
         nodes.append(
             TopologyTraceNode(
                 kind="radio",
                 label=_radio_label(path.radio) or "CPE radio",
                 asset_id=getattr(path.radio, "id", None),
-                source="network.cpe",
+                state=state,
+                observed_at=observed_at,
+                source="network.uisp_ap_station",
+                detail={
+                    "rf_signal_dbm": effective_signal.signal_dbm,
+                    "rf_signal_freshness": effective_signal.freshness.value,
+                },
             )
         )
 

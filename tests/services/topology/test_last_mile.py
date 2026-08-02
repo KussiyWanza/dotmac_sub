@@ -82,13 +82,25 @@ def _ont(
     return ont
 
 
-def _radio(db, subscriber_id, node, *, last_uisp_status="active"):
+def _radio(
+    db,
+    subscriber_id,
+    node,
+    *,
+    last_uisp_status="active",
+    rf_signal_dbm=None,
+    rf_signal_observed_at=None,
+):
     cpe = CPEDevice(
         subscriber_id=subscriber_id,
         parent_network_device_id=node.id,
         status=DeviceStatus.active,
         last_uisp_status=last_uisp_status,
         uisp_synced_at=NOW,
+        rf_signal_dbm=rf_signal_dbm,
+        rf_signal_source="uisp_ap_station" if rf_signal_dbm is not None else None,
+        rf_signal_observed_at=rf_signal_observed_at
+        or (NOW - timedelta(minutes=5) if rf_signal_dbm is not None else None),
     )
     db.add(cpe)
     db.flush()
@@ -279,6 +291,60 @@ def test_wireless_router_offline_when_associated_no_reject(db_session, catalog_o
     out = diagnose_last_mile(db_session, sub, now=NOW)
     assert out["verdict"] == ROUTER_OFFLINE
     assert out["signal_dbm"] is None
+    assert out["evidence"]["rf_signal_freshness"] == "unavailable"
+
+
+def test_wireless_signal_degraded_fresh_rf_below_floor(db_session, catalog_offer):
+    sub = _sub(db_session, catalog_offer.id)
+    node = _ap_node(db_session)
+    _radio(
+        db_session,
+        sub.subscriber_id,
+        node,
+        last_uisp_status="active",
+        rf_signal_dbm=-82.0,
+    )
+    out = diagnose_last_mile(db_session, sub, now=NOW)
+    assert out["verdict"] == SIGNAL_DEGRADED
+    assert out["medium"] == MEDIUM_WIRELESS
+    assert out["signal_dbm"] == -82.0
+    assert out["evidence"]["rf_signal"] == -82.0
+    assert out["evidence"]["rf_signal_freshness"] == "fresh"
+
+
+def test_wireless_fresh_good_rf_does_not_degrade(db_session, catalog_offer):
+    sub = _sub(db_session, catalog_offer.id)
+    node = _ap_node(db_session)
+    _radio(
+        db_session,
+        sub.subscriber_id,
+        node,
+        last_uisp_status="active",
+        rf_signal_dbm=-58.0,
+    )
+    out = diagnose_last_mile(db_session, sub, now=NOW)
+    assert out["verdict"] == ROUTER_OFFLINE  # associated, RF fine, not dialing
+    assert out["signal_dbm"] == -58.0
+
+
+def test_wireless_stale_rf_never_gates_a_verdict(db_session, catalog_offer):
+    # A below-floor value that has EXPIRED must not fabricate signal_degraded;
+    # the ladder falls through to the presence/auth rungs.
+    sub = _sub(db_session, catalog_offer.id)
+    node = _ap_node(db_session)
+    _radio(
+        db_session,
+        sub.subscriber_id,
+        node,
+        last_uisp_status="active",
+        rf_signal_dbm=-82.0,
+        rf_signal_observed_at=NOW - timedelta(hours=3),
+    )
+    out = diagnose_last_mile(db_session, sub, now=NOW)
+    assert out["verdict"] == ROUTER_OFFLINE
+    assert out["signal_dbm"] is None  # stale value is not presented as current
+    assert out["evidence"]["rf_signal"] is None
+    assert out["evidence"]["rf_signal_freshness"] == "stale"
 
 
 # --- unknown when no CPE telemetry below session --------------------------

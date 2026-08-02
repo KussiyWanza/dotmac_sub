@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.network import CPEDevice, DeviceStatus, DeviceType
+from app.models.network_monitoring import NetworkDevice
 from app.models.support import Ticket, TicketStatus
 from app.services import radio_registration, unmatched_radio_queue
 
@@ -150,6 +151,47 @@ class TestEvaluate:
         stats = unmatched_radio_queue.evaluate(db_session)
 
         assert stats.get("closed_conflict_cleared") == 1
+        assert unmatched_radio_queue.find_open_item(db_session, MAC_COMPACT) is None
+
+    def test_ap_unresolved_item_stays_open_until_parented(self, db_session, subscriber):
+        # A confirmed-but-unparented row must NOT close an ap_unresolved item;
+        # only gaining a parent AP node does.
+        unmatched_radio_queue.open_item(
+            db_session,
+            mac_compact=MAC_COMPACT,
+            reason=unmatched_radio_queue.REASON_AP_UNRESOLVED,
+            title="t",
+            description="d",
+        )
+        row = _confirmed_radio(db_session, subscriber)
+
+        stats = unmatched_radio_queue.evaluate(db_session)
+        assert stats.get("closed_ap_resolved") is None
+        assert unmatched_radio_queue.find_open_item(db_session, MAC_COMPACT) is not None
+
+        node = NetworkDevice(name=f"ap-{uuid.uuid4().hex[:6]}")
+        db_session.add(node)
+        db_session.flush()
+        row.parent_network_device_id = node.id
+        db_session.flush()
+
+        stats = unmatched_radio_queue.evaluate(db_session)
+        assert stats.get("closed_ap_resolved") == 1
+        assert unmatched_radio_queue.find_open_item(db_session, MAC_COMPACT) is None
+
+    def test_uisp_unmatched_item_closes_when_confirmed(self, db_session, subscriber):
+        unmatched_radio_queue.open_item(
+            db_session,
+            mac_compact=MAC_COMPACT,
+            reason=unmatched_radio_queue.REASON_UISP_UNMATCHED,
+            title="t",
+            description="d",
+        )
+        _confirmed_radio(db_session, subscriber)
+
+        stats = unmatched_radio_queue.evaluate(db_session)
+
+        assert stats.get("closed_matched") == 1
         assert unmatched_radio_queue.find_open_item(db_session, MAC_COMPACT) is None
 
     def test_opens_item_for_stale_unadopted_registration(self, db_session, subscriber):

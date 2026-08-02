@@ -21,14 +21,16 @@ no truck), ``config`` (present, good signal, no RADIUS attempt — not dialing),
 plus ``healthy`` (session actually up) and ``unknown`` (insufficient linkage /
 signal, or the fault is upstream and P1 owns it).
 
-**Medium asymmetry (design §4 — the real P2 gap).** Fiber ONTs report presence
+**Medium asymmetry (design §4 — closed for RF).** Fiber ONTs report presence
 (``olt_status``), optical Rx (``onu_rx_signal_dbm``) and an offline *reason*
-(power_fail / los / dying_gasp), so the fiber ladder is complete. Wireless radios
-(``CPEDevice``) store only ``last_uisp_status`` (active / disconnected /
-unauthorized / vanished) — **no RF/RSSI value exists on prod** — so the wireless
-link-signal rung is unobservable: ``signal_dbm`` is ``None`` and ``signal_degraded``
-can't be diagnosed for wireless. We report presence + auth honestly and stop
-there rather than fabricate an RF verdict.
+(power_fail / los / dying_gasp), so the fiber ladder is complete. Wireless
+radios (``CPEDevice``) store ``last_uisp_status`` plus the current-value
+AP-side RSSI written by uisp_sync (``rf_signal_dbm`` / ``rf_signal_observed_at``),
+resolved here through ``radio_signal.resolve_effective_radio_signal``: only a
+FRESH observation feeds the link-signal rung (``signal_degraded`` below
+``WIRELESS_RX_SIGNAL_MIN_DBM``); a stale or missing observation degrades the
+rung to unobservable rather than fabricating an RF verdict. The remaining
+asymmetry is the offline *reason* — wireless has no dying-gasp equivalent.
 
 Out of P2 scope (documented TODOs): flapping / degraded-vs-down separation
 (§7.7), maintenance-window suppression (§7.8), splice inference (§6, P3),
@@ -67,6 +69,13 @@ logger = logging.getLogger(__name__)
 # ~-28..-30). TODO(design §7.7): separate marginal-but-up (flapping) from a
 # clean cut once we track Rx history, not a single sample.
 RX_SIGNAL_MIN_DBM = -27.0
+
+# airMax AP-side station RSSI below this is marginal — a link that associates
+# but can't sustain throughput. -75 dBm is a conservative PtMP floor (vendor
+# guidance puts a usable link at -70 or better; the noise floor sits around
+# -90). Only a FRESH observation may gate a verdict: stale/unavailable RF
+# never fabricates a signal_degraded call.
+WIRELESS_RX_SIGNAL_MIN_DBM = -75.0
 
 # TR-069 periodic-inform cadence has headroom at 30 min: if the ONT/router has
 # not informed the ACS within this window it is treated as not-informing
@@ -295,13 +304,23 @@ def _diagnose_wireless(
     plant_cache: dict | None,
     warm_stale: bool | None = None,
 ) -> dict:
+    from app.services.network.radio_signal import resolve_effective_radio_signal
+
     radio = path.radio
     status = (radio.last_uisp_status or "").strip().lower() or None if radio else None
+    effective = (
+        resolve_effective_radio_signal(radio, now=now) if radio is not None else None
+    )
+    # Only a FRESH observation is presented (and may gate a verdict); a stale
+    # value shows up in the freshness field alone, never as a current signal.
+    rf = effective.signal_dbm if effective is not None and effective.is_fresh else None
     ev: dict = {
         "rung": "wireless",
         "last_uisp_status": status,
-        "rf_signal": None,  # design §4 gap: no RF value stored on prod
-        "note": "wireless RF signal is not collected — link-signal rung unobservable",
+        "rf_signal": rf,
+        "rf_signal_freshness": (
+            effective.freshness.value if effective is not None else None
+        ),
     }
 
     if radio is None or status in _WIRELESS_ABSENT:
@@ -310,25 +329,31 @@ def _diagnose_wireless(
         )
         ev["plant_up"] = plant_up
         if plant_up is False:
-            return _result(UNKNOWN, MEDIUM_WIRELESS, None, ev)
+            return _result(UNKNOWN, MEDIUM_WIRELESS, rf, ev)
         # Radio not associated + AP up ⟹ customer-side (radio powered off /
         # knocked out of alignment). Verdict `power` (§5 absent row).
-        return _result(POWER, MEDIUM_WIRELESS, None, ev)
+        return _result(POWER, MEDIUM_WIRELESS, rf, ev)
 
     if status == _WIRELESS_UNAUTH:
         # Associated but the AP refuses it ⟹ auth/provisioning, operator-fix.
-        return _result(AUTH, MEDIUM_WIRELESS, None, ev)
+        return _result(AUTH, MEDIUM_WIRELESS, rf, ev)
 
-    # Associated (active). We can't check RF, so distinguish only reject vs
-    # not-dialing; default to router_offline (radio up, router behind it may be
-    # off) rather than claiming a signal verdict we can't back.
+    # Rung: link healthy? Associated with a FRESH AP-side RSSI below the floor
+    # ⟹ degraded — the wireless twin of the fiber Rx rung. Stale/unavailable
+    # RF never fabricates this verdict.
+    if rf is not None and rf < WIRELESS_RX_SIGNAL_MIN_DBM:
+        return _result(SIGNAL_DEGRADED, MEDIUM_WIRELESS, rf, ev)
+
+    # Associated (active) with RF fine or unobservable: distinguish only
+    # reject vs not-dialing; default to router_offline (radio up, router
+    # behind it may be off) rather than claiming a verdict we can't back.
     reject = _has_recent_auth_reject(session, subscription, now)
     ev["recent_auth_reject"] = reject
     if reject:
-        return _result(AUTH, MEDIUM_WIRELESS, None, ev)
+        return _result(AUTH, MEDIUM_WIRELESS, rf, ev)
     # No RADIUS attempt at all ⟹ not dialing (config); otherwise the radio is
     # up but service isn't ⟹ ask for a router reboot.
-    return _result(ROUTER_OFFLINE, MEDIUM_WIRELESS, None, ev)
+    return _result(ROUTER_OFFLINE, MEDIUM_WIRELESS, rf, ev)
 
 
 def diagnose_last_mile(

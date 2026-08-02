@@ -1340,6 +1340,17 @@ def _build_access_endpoint_projection(
             "pon_port_label": summary.pon_port_label,
             "ont_serial": summary.ont_serial,
             "radio_label": summary.radio_label,
+            "serving_ap_name": (
+                summary.access_device_name if summary.access_kind == "ap" else None
+            ),
+            "rf_signal_dbm": summary.radio_signal_dbm,
+            "rf_signal_freshness": summary.radio_signal_freshness,
+            "rf_signal_observed_at": (
+                summary.radio_signal_observed_at.isoformat()
+                if summary.radio_signal_observed_at
+                else None
+            ),
+            "radio_ap_unresolved": summary.radio_ap_unresolved,
             "basestation_name": summary.basestation_name,
             "gap": summary.gap,
             "endpoint_complete": summary.endpoint_complete,

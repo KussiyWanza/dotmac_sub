@@ -47,6 +47,10 @@ class _Cpe:
     model: str | None = None
     uisp_device_id: str | None = None
     mac_address: str | None = None
+    last_uisp_status: str | None = None
+    rf_signal_dbm: float | None = None
+    rf_signal_source: str | None = None
+    rf_signal_observed_at: datetime | None = None
 
 
 @dataclass
@@ -351,3 +355,104 @@ def test_trace_payload_is_actually_json_serializable(
     encoded = json.loads(json.dumps(payload))
     assert isinstance(encoded["nodes"][0]["asset_id"], str)
     assert encoded["nodes"][0]["observed_at"] == "2026-07-23T09:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Wireless RF signal projection (value only ever alongside freshness)
+# ---------------------------------------------------------------------------
+
+
+def _wireless_path(radio: _Cpe) -> CustomerPath:
+    return CustomerPath(
+        access_device=_Asset(id=uuid.uuid4(), name="D-LUGBE-3"),
+        access_device_kind="ap",
+        node=_Asset(id=uuid.uuid4(), name="D-LUGBE-3"),
+        basestation=_Asset(id=uuid.uuid4(), name="Lugbe BTS"),
+        radio=radio,
+    )
+
+
+def test_fresh_rf_signal_is_projected_with_freshness_and_timestamp():
+    observed = datetime.now(UTC)
+    path = _wireless_path(
+        _Cpe(
+            id=uuid.uuid4(),
+            serial_number="CPE-SN-1",
+            last_uisp_status="active",
+            rf_signal_dbm=-61.0,
+            rf_signal_source="uisp_ap_station",
+            rf_signal_observed_at=observed,
+        )
+    )
+
+    summary = summarize_customer_path(_subscription(), path)
+
+    assert summary.radio_signal_dbm == -61.0
+    assert summary.radio_signal_freshness == "fresh"
+    assert summary.radio_signal_observed_at == observed
+    assert summary.radio_ap_unresolved is False
+
+
+def test_stale_rf_signal_is_flagged_not_presented_as_current():
+    from datetime import timedelta
+
+    path = _wireless_path(
+        _Cpe(
+            id=uuid.uuid4(),
+            last_uisp_status="active",
+            rf_signal_dbm=-61.0,
+            rf_signal_source="uisp_ap_station",
+            rf_signal_observed_at=datetime.now(UTC) - timedelta(hours=2),
+        )
+    )
+
+    summary = summarize_customer_path(_subscription(), path)
+
+    assert summary.radio_signal_freshness == "stale"
+    assert summary.radio_signal_dbm == -61.0  # kept for "last X dBm at ..."
+
+
+def test_radio_without_observation_projects_unavailable():
+    path = _wireless_path(_Cpe(id=uuid.uuid4(), last_uisp_status="active"))
+
+    summary = summarize_customer_path(_subscription(), path)
+
+    assert summary.radio_signal_freshness == "unavailable"
+    assert summary.radio_signal_dbm is None
+
+
+def test_unparented_radio_projects_ap_unresolved():
+    orphan = _Cpe(id=uuid.uuid4(), serial_number="ORPHAN-SN")
+    path = CustomerPath(unparented_radio=orphan)
+
+    summary = summarize_customer_path(_subscription(), path)
+
+    assert summary.radio_ap_unresolved is True
+    assert summary.radio_id == orphan.id
+    assert summary.radio_label == "ORPHAN-SN"
+    assert summary.radio_signal_freshness is None  # no radio on the path
+
+
+def test_trace_radio_node_carries_rf_detail_and_state(
+    monkeypatch, db_session, subscription
+):
+    observed = datetime.now(UTC)
+    radio = _Cpe(
+        id=uuid.uuid4(),
+        serial_number="CPE-SN-9",
+        last_uisp_status="active",
+        rf_signal_dbm=-64.0,
+        rf_signal_source="uisp_ap_station",
+        rf_signal_observed_at=observed,
+    )
+    path = _wireless_path(radio)
+    trace = _trace_for(path, monkeypatch, db_session, subscription)
+
+    radio_nodes = [n for n in trace.nodes if n.kind == "radio"]
+    assert len(radio_nodes) == 1
+    node = radio_nodes[0]
+    assert node.state == "up"
+    assert node.observed_at == observed
+    assert node.source == "network.uisp_ap_station"
+    assert node.detail["rf_signal_dbm"] == -64.0
+    assert node.detail["rf_signal_freshness"] == "fresh"
