@@ -71,6 +71,7 @@ class AccountCreditApplicationResult:
     invoices_touched: list[str] = field(default_factory=list)
     allocation_ids: list[str] = field(default_factory=list)
     unbacked_credit: Decimal = Decimal("0.00")
+    invoice_remaining: Decimal = Decimal("0.00")
 
     @property
     def changed(self) -> bool:
@@ -530,8 +531,23 @@ class AccountCreditApplications:
 
         db.flush()
         db.refresh(invoice)
+        authoritative_remaining = round_money(to_decimal(invoice.balance_due))
+        if authoritative_remaining != remaining:
+            raise AccountCreditApplicationError(
+                code="financial.account_credit_applications.incomplete_application",
+                message=(
+                    "Payment allocation outcome disagrees with the invoice receivable."
+                ),
+                details={
+                    "invoice_id": str(invoice.id),
+                    "allocation_remaining": str(remaining),
+                    "invoice_remaining": str(authoritative_remaining),
+                },
+            )
+        result.invoice_remaining = authoritative_remaining
         if require_full_funding and (
-            remaining != Decimal("0.00") or invoice.status != InvoiceStatus.paid
+            result.invoice_remaining != Decimal("0.00")
+            or invoice.status != InvoiceStatus.paid
         ):
             raise AccountCreditApplicationError(
                 code="financial.account_credit_applications.incomplete_application",

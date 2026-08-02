@@ -226,6 +226,12 @@ domain rules; they must not silently become zero.
   progress without claiming an optimistic final state.
 - Audit administrative mutations through the canonical audit/event owner.
 
+For prepaid recovery, the service page consumes the recovery eligibility
+owner's typed next action. An unresolved service invoice disables Bill Now,
+explains the block, and links to that exact invoice. The invoice page keeps
+settlement-backed payment credit, reviewed opening funding, and exact shortfall
+separate; generic displayed account balance is not settlement evidence.
+
 Familiar icon-only controls are appropriate for compact tools when they have an
 accessible label and tooltip. Business commands use clear text or icon-and-text
 labels.

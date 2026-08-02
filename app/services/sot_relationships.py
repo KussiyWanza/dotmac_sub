@@ -9678,8 +9678,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.invoices",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "flush-only invoice issue/void and exact "
-                                "payment-allocation confirmation protocols"
+                                "flush-only invoice issue/void and exact payment-"
+                                "allocation confirmation protocols, including the "
+                                "authoritative post-allocation invoice remainder"
                             ),
                         ),
                     ),
@@ -9745,8 +9746,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "credit when no active baseline exists",
                             "multiple drafts or positive lines",
                             "partial or ambiguous entitlement overlap",
-                            "stale preview, changed payment capacity, or already "
-                            "consumed opening funding",
+                            "stale preview, changed payment capacity, participant "
+                            "remainder mismatch, or already consumed opening funding",
                         ),
                     ),
                     events=EventContract(
@@ -9802,8 +9803,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="financial.prepaid_draft_reconciliation",
                         verification=(
-                            "Exact mixed funding, partial funding, fifty-kobo "
-                            "shortfall, pre-boundary residue absorption, post-boundary "
+                            "Exact fee-inclusive mixed funding, partial funding, exact "
+                            "nonzero shortfall, pre-boundary residue absorption, post-boundary "
                             "unbacked or reversed payment evidence, "
                             "direct-renewal overlap, multiple drafts, stale preview, "
                             "replay, concurrency, lapsed re-anchoring, opening-funding "
@@ -10319,7 +10320,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.prepaid_recovery_billing",
                 module="app.services.prepaid_recovery_billing",
-                owns=("suspended prepaid replacement-cycle draft creation",),
+                owns=(
+                    "prepaid recovery draft eligibility and operator routing",
+                    "suspended prepaid replacement-cycle draft creation",
+                ),
                 depends_on=(
                     "access.subscription_lifecycle",
                     "events.dispatcher",
@@ -10337,13 +10341,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
+                            name="prepaid recovery draft eligibility and operator routing",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "locked prepaid subscription state",
+                                "active prepaid enforcement lock",
+                                "unresolved service-invoice evidence",
+                            ),
+                        ),
+                        ConcernContract(
                             name="suspended prepaid replacement-cycle draft creation",
                             role=OwnerRole.APPLICATION_COORDINATOR,
                             input_names=(
                                 "locked prepaid subscription state",
                                 "active prepaid enforcement lock",
                                 "contracted prepaid renewal price",
-                                "open recovery-invoice evidence",
+                                "unresolved service-invoice evidence",
                             ),
                         ),
                     ),
@@ -10367,10 +10380,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source="prepaid monthly charge resolver using subscription contract and tax policy",
                         ),
                         AuthorityInput(
-                            name="open recovery-invoice evidence",
-                            owner="financial.prepaid_recovery_billing",
+                            name="unresolved service-invoice evidence",
+                            owner="financial.invoices",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
-                            source="active invoice line metadata for the exact subscription and recovery-cycle intent",
+                            source=(
+                                "every active unresolved invoice with an active positive "
+                                "line for the exact subscription, including ordinary and "
+                                "recovery drafts, plus financial and coverage evidence"
+                            ),
                         ),
                     ),
                     transaction=TransactionContract(
@@ -10382,12 +10399,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         locking=(
                             "Account is locked first, then the exact subscription. Active "
-                            "recovery-invoice lookup is repeated under those locks before "
-                            "the draft is written."
+                            "unresolved service-invoice lookup is repeated under those "
+                            "locks before the draft is written."
                         ),
                         idempotency=(
-                            "Recovery draft fingerprint identifies one period and an open "
-                            "invoice prevents duplicate active recovery cycles."
+                            "Recovery draft fingerprint identifies one period. Exact replay "
+                            "returns the matching recovery draft; any other unresolved "
+                            "service invoice prevents a replacement write."
                         ),
                         retries=(
                             "A stale price, service, or period preview is rejected for a "
@@ -10403,7 +10421,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.prepaid_recovery_billing.ineligible_billing_mode",
                             "financial.prepaid_recovery_billing.ineligible_status",
                             "financial.prepaid_recovery_billing.prepaid_lock_missing",
-                            "financial.prepaid_recovery_billing.open_recovery_invoice",
+                            "financial.prepaid_recovery_billing.unresolved_service_invoice",
                             "financial.prepaid_recovery_billing.unsupported_cycle",
                             "financial.prepaid_recovery_billing.invalid_charge",
                             "financial.prepaid_recovery_billing.stale_preview",
@@ -10411,7 +10429,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         mapping_owner="admin catalog adapter",
                         fail_closed_on=(
                             "missing prepaid lock or suspended service state",
-                            "an existing active recovery invoice",
+                            "any unresolved invoice claiming the exact service",
                             "stale price, service, or period evidence",
                         ),
                     ),
@@ -10433,8 +10451,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         state=AuthorityMigrationState.NATIVE,
                         new_owner="financial.prepaid_recovery_billing",
                         verification=(
-                            "Focused command, UI visibility, stale-preview, duplicate, "
-                            "price, period, and invoice-creation tests."
+                            "Focused command, typed routing, UI visibility, ordinary and "
+                            "recovery draft, activity, service scope, stale-preview, "
+                            "replay, price, period, and invoice-creation tests."
                         ),
                         cutover_gate=(
                             "Admin Bill Now invokes only this coordinator; invoice-page "
@@ -10453,6 +10472,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/test_billing_invoice_templates.py",
+                        "tests/test_prepaid_recovery_billing.py",
                         "tests/architecture/test_prepaid_recovery_billing_sot.py",
                     ),
                 ),

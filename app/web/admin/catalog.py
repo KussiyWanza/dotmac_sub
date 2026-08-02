@@ -775,6 +775,13 @@ def catalog_subscription_bill_now_preview(
             )
         )
     except DomainError as exc:
+        existing_invoice_id = exc.details.get("invoice_id")
+        if existing_invoice_id is not None:
+            return RedirectResponse(
+                f"/admin/billing/invoices/{existing_invoice_id}"
+                f"?error={quote_plus(exc.message)}#prepaid-reconciliation",
+                status_code=303,
+            )
         return RedirectResponse(
             f"/admin/catalog/subscriptions/{subscription_id}?error={quote_plus(exc.message)}",
             status_code=303,
@@ -809,6 +816,13 @@ def catalog_subscription_bill_now_confirm(
             )
         )
     except DomainError as exc:
+        existing_invoice_id = exc.details.get("invoice_id")
+        if existing_invoice_id is not None:
+            return RedirectResponse(
+                f"/admin/billing/invoices/{existing_invoice_id}"
+                f"?error={quote_plus(exc.message)}#prepaid-reconciliation",
+                status_code=303,
+            )
         return RedirectResponse(
             f"/admin/catalog/subscriptions/{subscription_id}?error={quote_plus(exc.message)}",
             status_code=303,
