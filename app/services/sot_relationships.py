@@ -34880,6 +34880,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "access-path gap presentation semantics",
                     "serving-endpoint source labels, semantic tones, and icon keys",
                     "RF signal freshness labels, semantic tones, and icon keys",
+                    "service impact state labels, semantic tones, and icon keys",
+                    "SLA verdict labels, semantic tones, and icon keys",
                     "support-ticket status labels, semantic tones, and icon keys",
                     "field work-order status labels, semantic tones, and icon keys",
                     "vendor installation-project status labels, semantic tones, and icon keys",

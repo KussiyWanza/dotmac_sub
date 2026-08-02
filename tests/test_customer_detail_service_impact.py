@@ -100,6 +100,12 @@ def test_cards_carry_the_panels(db_session, subscription):
 def test_template_includes_the_owner_panel():
     template = Path("templates/admin/customers/detail.html").read_text()
     assert 'include "admin/customers/_service_impact_panel.html"' in template
+    # The new SLA score is the only availability figure on this page: the
+    # legacy read-time derivation must never render beside it (SHADOWING).
+    assert "customer_availability" not in template
+    assert "availability_percent" not in template.replace(
+        "service_level.availability_percent", ""
+    )
 
     panel = Path("templates/admin/customers/_service_impact_panel.html").read_text()
     # The panel renders presentations; it never maps states or verdicts.
