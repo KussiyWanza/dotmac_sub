@@ -81,11 +81,12 @@
   },
   {
     "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerServices::test_services_change_plan_page_loads",
-    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "reason": "Environment-dependent: passes on GitHub runners, fails in container runs",
     "issue": "#1895",
     "category": "tail",
     "owner": "unassigned",
-    "review_by": "2026-09-30"
+    "review_by": "2026-09-30",
+    "action": "flaky"
   },
   {
     "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerSupport::test_create_ticket_flow[mobile]",
@@ -97,19 +98,21 @@
   },
   {
     "spec": "tests/playwright/e2e/test_dashboard.py::TestAdminDashboard::test_navigate_to_tickets",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
+    "reason": "Environment-dependent: passes on GitHub runners, times out clicking the Support sidebar link in container runs",
     "issue": "#1895",
     "category": "retired-routes",
     "owner": "unassigned",
-    "review_by": "2026-09-30"
+    "review_by": "2026-09-30",
+    "action": "flaky"
   },
   {
     "spec": "tests/playwright/e2e/test_e2e_workflows.py::TestSubscriptionActivation::test_subscriber_to_active_service_flow",
-    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "reason": "Environment-dependent: passes on GitHub runners, fails in container runs",
     "issue": "#1895",
     "category": "tail",
     "owner": "unassigned",
-    "review_by": "2026-09-30"
+    "review_by": "2026-09-30",
+    "action": "flaky"
   },
   {
     "spec": "tests/playwright/e2e/test_e2e_workflows.py::TestSubscriptionActivation::test_phase1_customer_activation_shows_pppoe_and_radius_evidence",
@@ -417,5 +420,13 @@
     "owner": "unassigned",
     "review_by": "2026-09-30",
     "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_subscription_correction.py::test_review_and_apply_exact_subscription_correction",
+    "reason": "Strict-mode violation: get_by_text('Subscription correction applied') resolves to 2 elements on GitHub runners; env-skipped in container runs",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
   }
 ]
