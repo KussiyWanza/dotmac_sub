@@ -34,7 +34,7 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-assert script.get_heads() == ["458_outage_scope_revisions"]
+assert script.get_heads() == ["459_customer_outage_intervals"]
     assert (
         script.get_revision("446_ont_commissioning_intents").down_revision
         == "445_social_comment_channels"

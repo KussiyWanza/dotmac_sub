@@ -1115,6 +1115,77 @@ class OutageScopeRevisionMember(Base):
     revision: Mapped[OutageScopeRevision] = relationship(back_populates="members")
 
 
+class CustomerOutageInterval(Base):
+    """One per-subscription service-impact interval (OUTAGE_SLA_SPINE §2, §7).
+
+    Written only by ``network.customer_outage_accrual``. ``ended_at`` is a
+    provisional first-healthy-observation stamp until ``finalized_at`` is set
+    after the sustained-recovery hold; a re-darkening before finalization
+    clears the provisional end so clearing→reopened stays one continuous
+    interval. A finalized row is immutable — corrections are append-only
+    adjustments, never edits. No FKs to incidents or subscriptions: downtime
+    history must outlive deleted rows (same rationale as the dispatch audit).
+    The partial unique index guarantees at most one open interval per
+    (incident, subscription), preventing duplicate or overlapping accrual.
+    """
+
+    __tablename__ = "customer_outage_intervals"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key", name="uq_customer_outage_intervals_idempotency"
+        ),
+        Index(
+            "uq_customer_outage_intervals_open",
+            "incident_id",
+            "subscription_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+            sqlite_where=text("ended_at IS NULL"),
+        ),
+        Index(
+            "ix_customer_outage_intervals_subscription",
+            "subscription_id",
+            "started_at",
+        ),
+        Index("ix_customer_outage_intervals_incident", "incident_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    # confirmed_unavailable | degraded (unknown never accrues; exposure is
+    # not an interval state — see service_impact_contracts.ImpactInterval).
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    # exact | estimated | unavailable evidence quality.
+    quality: Mapped[str] = mapped_column(String(12), nullable=False, default="exact")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    recovery_evidence_ref: Mapped[str | None] = mapped_column(String(200))
+    scope_revision_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1
+    )
+    # e.g. incident_discarded — a reviewed reason this interval is an
+    # exclusion candidate for SLA qualification (never silently dropped).
+    exclusion_candidate: Mapped[str | None] = mapped_column(String(60))
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class AvailabilitySnapshot(Base):
     """Daily rolled-up availability for an infrastructure element.
 

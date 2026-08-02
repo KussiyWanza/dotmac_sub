@@ -28,6 +28,8 @@ HANDLED_EVENT_TYPES = frozenset(
     {
         EventType.outage_created,
         EventType.outage_confirmed,
+        EventType.outage_clearing,
+        EventType.outage_reopened,
         EventType.outage_discarded,
         EventType.outage_resolved,
     }
@@ -55,6 +57,35 @@ class OutageLifecycleProjectionHandler:
             EventType.outage_resolved,
         }:
             self._cancel_escalations(db, event, incident_id)
+        # Every handled transition also reconciles the downtime ledger via
+        # the accrual owner's receipted consumer (clearing/reopened exist
+        # for the recovery-hold continuity rules).
+        self._apply_accrual(db, event, incident_id)
+
+    def _apply_accrual(self, db: Session, event: Event, incident_id: str) -> None:
+        from app.services.common import coerce_uuid
+        from app.services.network import customer_outage_accrual
+        from app.services.owner_commands import CommandContext
+
+        # A distinct idempotency key per consumer: the lifecycle consumer and
+        # the accrual consumer both receipt the same committed event.
+        context = CommandContext.system(
+            actor=str(event.actor or "system:outage_lifecycle_projection"),
+            scope=str(incident_id),
+            reason=event.event_type.value,
+            command_id=event.event_id,
+            correlation_id=event.event_id,
+            causation_id=event.event_id,
+            idempotency_key=f"event:{event.event_id}:accrual",
+        )
+        with _owner_session(db) as owner_db:
+            customer_outage_accrual.consume_accrual_event(
+                owner_db,
+                incident_id=coerce_uuid(incident_id),
+                event_id=event.event_id,
+                event_type=event.event_type.value,
+                context=context,
+            )
 
     @staticmethod
     def _context(event: Event, incident_id: str):

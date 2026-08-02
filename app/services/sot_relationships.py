@@ -17118,6 +17118,158 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.customer_outage_accrual",
+                module="app.services.network.customer_outage_accrual",
+                owns=(
+                    "immutable customer outage interval ledger",
+                    "committed outage output accrual consumption",
+                ),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.service_impact",
+                    "events.owner_outputs",
+                ),
+                notes=(
+                    "Sole writer of customer_outage_intervals "
+                    "(OUTAGE_SLA_SPINE §2/§7). Reconciles the impact "
+                    "resolver's words into per-subscription intervals under "
+                    "the approved clocks: earliest qualifying observation "
+                    "start (audience entry for joiners), provisional "
+                    "first-healthy-observation end, one continuous interval "
+                    "across clearing/reopened, finalization at the proven "
+                    "recovery timestamp on resolve, and reviewed "
+                    "incident_discarded exclusion on discard — resolved_at "
+                    "never determines downtime and unknown never accrues. "
+                    "Delivery is the lifecycle projection handler invoking "
+                    "the receipted consume command per committed output; "
+                    "reruns and redeliveries converge with no duplicate or "
+                    "overlapping rows (partial unique open-interval index)."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="immutable customer outage interval ledger",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "per-subscription impact words",
+                                "incident lifecycle and scope history",
+                            ),
+                            canonical_writer="network.customer_outage_accrual",
+                        ),
+                        ConcernContract(
+                            name=("committed outage output accrual consumption"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("receipted lifecycle output deliveries",),
+                            canonical_writer="network.customer_outage_accrual",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="per-subscription impact words",
+                            owner="network.service_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "six-state impact resolution with typed "
+                                "evidence per audience member"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="incident lifecycle and scope history",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "incident status words, lifecycle stamps, and "
+                                "immutable scope revisions with member entry "
+                                "times"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="receipted lifecycle output deliveries",
+                            owner="events.owner_outputs",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "unique (consumer, event_id) receipts making "
+                                "each redelivery an exact no-op"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each consumed output reconciles the ledger and "
+                            "writes its receipt atomically inside one owner "
+                            "command on a fresh owner session."
+                        ),
+                        locking=(
+                            "The partial unique open-interval index per "
+                            "(incident, subscription) makes concurrent "
+                            "openers conflict at the database instead of "
+                            "double-accruing."
+                        ),
+                        idempotency=(
+                            "Reconciliation converges: reruns open nothing "
+                            "new, provisional ends clear on re-darkening, and "
+                            "(consumer, event_id) receipts short-circuit "
+                            "redeliveries."
+                        ),
+                        retries=(
+                            "A failed consequence leaves the delivery failed "
+                            "and retryable; the receipt only exists when the "
+                            "effect committed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.customer_outage_accrual.active_caller_transaction",
+                            "network.customer_outage_accrual.command_contract_violation",
+                            "network.customer_outage_accrual.invalid_command_context",
+                            "network.customer_outage_accrual.nested_owner_command",
+                            "network.customer_outage_accrual.nested_transaction_completion",
+                        ),
+                        mapping_owner=(
+                            "app.services.events.handlers.outage_lifecycle_projection"
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "outage.created",
+                            "outage.suspected",
+                            "outage.confirmed",
+                            "outage.clearing",
+                            "outage.reopened",
+                            "outage.discarded",
+                            "outage.resolved",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Consumes the version-1 outage lifecycle envelope "
+                            "(incident identity, status, scope, timestamps) "
+                            "additively; the ledger emits no events of its "
+                            "own."
+                        ),
+                        replay=(
+                            "Redeliveries short-circuit on the "
+                            "(consumer, event_id) receipt; replaying the full "
+                            "stream rebuilds identical intervals because "
+                            "reconciliation is content-idempotent."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.customer_outage_accrual",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_customer_outage_accrual.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.outage_auto_notify",
                 module="app.services.topology.outage_auto_notify",
                 owns=(
