@@ -1186,6 +1186,66 @@ class CustomerOutageInterval(Base):
     )
 
 
+class MaintenanceWindow(Base):
+    """One planned maintenance window (OUTAGE_SLA_SPINE §5).
+
+    Owned by ``network.maintenance_lifecycle``: draft → approved → announced
+    → in_progress → completed, plus canceled and overrun. Only an approved
+    window that was announced at least the notice period before its planned
+    start is SLA-excludable, and only inside the planned window — unannounced
+    work, newly affected customers, and overrun time count as unplanned
+    downtime. The audience token is resolved at announce and re-resolved at
+    begin; material drift requires renewed approval.
+    """
+
+    __tablename__ = "network_maintenance_windows"
+    __table_args__ = (
+        Index(
+            "ix_network_maintenance_windows_scope",
+            "scope_type",
+            "scope_id",
+            "planned_start",
+        ),
+        Index("ix_network_maintenance_windows_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    # node | basestation | fdh-cabinet (matches incident scope naming).
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    scope_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    planned_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    planned_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    announced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actual_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner: Mapped[str] = mapped_column(String(120), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(120))
+    expected_impact: Mapped[str | None] = mapped_column(Text)
+    customer_message: Mapped[str | None] = mapped_column(Text)
+    backout_plan: Mapped[str | None] = mapped_column(Text)
+    audience_token: Mapped[str | None] = mapped_column(String(64))
+    audience_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    linked_outage_incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class AvailabilitySnapshot(Base):
     """Daily rolled-up availability for an infrastructure element.
 

@@ -161,6 +161,10 @@ def reconcile_incident_accrual(
         )
         if impact.state is ImpactState.confirmed_unavailable:
             if interval is None:
+                from app.services.network.maintenance_lifecycle import (
+                    exclusion_candidate_for_incident,
+                )
+
                 start = _member_entry_time(db, incident, impact.subscription_id)
                 first_ref = impact.evidence[0].reference if impact.evidence else None
                 db.add(
@@ -172,6 +176,12 @@ def reconcile_incident_accrual(
                         started_at=start,
                         scope_revision_sequence=(impact.scope_revision_sequence or 1),
                         first_evidence_ref=first_ref,
+                        # A properly announced maintenance window covering the
+                        # start makes this a reviewed exclusion candidate —
+                        # recorded, never silently dropped.
+                        exclusion_candidate=exclusion_candidate_for_incident(
+                            db, incident, at=start
+                        ),
                         idempotency_key=(
                             f"{incident.id}:{impact.subscription_id}:"
                             f"{int(start.timestamp())}"

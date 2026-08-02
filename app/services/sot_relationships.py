@@ -17118,6 +17118,149 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.maintenance_lifecycle",
+                module="app.services.network.maintenance_lifecycle",
+                owns=(
+                    "planned maintenance window lifecycle",
+                    "typed maintenance lifecycle output emission",
+                    "planned-maintenance SLA exclusion eligibility",
+                ),
+                depends_on=(
+                    "network.outage_impact",
+                    "network.outage_lifecycle",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "Sole writer of network_maintenance_windows "
+                    "(OUTAGE_SLA_SPINE §5): draft, approved, announced, "
+                    "in_progress, completed, canceled, overrun. Every "
+                    "transition stages its typed maintenance.* output "
+                    "atomically with the status write. Seven calendar days "
+                    "of notice gate SLA exclusion; the audience token is "
+                    "resolved at announce and re-resolved at begin, and "
+                    "material drift refuses a silent start. Only the "
+                    "properly announced planned window is excludable — "
+                    "unannounced or emergency work and overrun time are "
+                    "unplanned downtime, and an overrun escalates to a "
+                    "declared outage through the lifecycle owner so accrual "
+                    "and consequences flow through the normal incident "
+                    "chain."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="planned maintenance window lifecycle",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=(
+                                "resolved maintenance audience",
+                                "declared outage escalation surface",
+                            ),
+                            canonical_writer="network.maintenance_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=("typed maintenance lifecycle output emission"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("resolved maintenance audience",),
+                            canonical_writer="network.maintenance_lifecycle",
+                        ),
+                        ConcernContract(
+                            name=("planned-maintenance SLA exclusion eligibility"),
+                            role=OwnerRole.POLICY,
+                            input_names=("resolved maintenance audience",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="resolved maintenance audience",
+                            owner="network.outage_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "exact subscription cohorts per node, "
+                                "basestation, or cabinet with "
+                                "order-independent membership tokens"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="declared outage escalation surface",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "declare_outage command for the "
+                                "overrun-to-outage handoff with the linked "
+                                "incident identity"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Each transition validates the state machine, "
+                            "writes the window, and stages its typed output "
+                            "atomically in the caller's transaction."
+                        ),
+                        locking=(
+                            "Transitions are guarded by explicit "
+                            "current-state checks; drift refusal requires an "
+                            "explicit approval flag."
+                        ),
+                        idempotency=(
+                            "Overrun escalation returns the already-linked "
+                            "incident; repeated transition calls against the "
+                            "wrong state raise instead of double-writing."
+                        ),
+                        retries=(
+                            "Failed transitions raise before any partial "
+                            "write; event staging shares the transaction."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.maintenance_lifecycle.active_caller_transaction",
+                            "network.maintenance_lifecycle.command_contract_violation",
+                            "network.maintenance_lifecycle.invalid_command_context",
+                            "network.maintenance_lifecycle.nested_owner_command",
+                            "network.maintenance_lifecycle.nested_transaction_completion",
+                        ),
+                        mapping_owner="app.web.admin.network_monitoring",
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "maintenance.announced",
+                            "maintenance.started",
+                            "maintenance.completed",
+                            "maintenance.canceled",
+                            "maintenance.overrun",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries window identity, status, "
+                            "scope, planned bounds, announcement time, "
+                            "audience count, and any linked outage; fields "
+                            "are additive."
+                        ),
+                        replay=(
+                            "No projection handler consumes these outputs "
+                            "yet; replays are safe because window state is "
+                            "the authority and transitions are "
+                            "state-guarded."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="network.maintenance_lifecycle",
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_maintenance_lifecycle.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.customer_outage_accrual",
                 module="app.services.network.customer_outage_accrual",
                 owns=(
@@ -17127,6 +17270,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "network.outage_lifecycle",
                     "network.service_impact",
+                    "network.maintenance_lifecycle",
                     "events.owner_outputs",
                 ),
                 notes=(
@@ -17153,6 +17297,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             input_names=(
                                 "per-subscription impact words",
                                 "incident lifecycle and scope history",
+                                "planned-maintenance exclusion eligibility",
                             ),
                             canonical_writer="network.customer_outage_accrual",
                         ),
@@ -17181,6 +17326,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "incident status words, lifecycle stamps, and "
                                 "immutable scope revisions with member entry "
                                 "times"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="planned-maintenance exclusion eligibility",
+                            owner="network.maintenance_lifecycle",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "the reviewed planned_maintenance word when a "
+                                "properly announced window covers the "
+                                "interval start inside its planned bounds"
                             ),
                         ),
                         AuthorityInput(

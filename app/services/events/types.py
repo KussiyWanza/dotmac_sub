@@ -397,6 +397,15 @@ class EventType(enum.Enum):
     outage_discarded = "outage.discarded"
     outage_resolved = "outage.resolved"
 
+    # Planned maintenance lifecycle outputs (docs/designs/OUTAGE_SLA_SPINE.md
+    # §5). Staged atomically with each window transition by
+    # network.maintenance_lifecycle; no projection handler consumes them yet.
+    maintenance_announced = "maintenance.announced"
+    maintenance_started = "maintenance.started"
+    maintenance_completed = "maintenance.completed"
+    maintenance_canceled = "maintenance.canceled"
+    maintenance_overrun = "maintenance.overrun"
+
     # Custom event type for extensibility
     custom = "custom"
 
