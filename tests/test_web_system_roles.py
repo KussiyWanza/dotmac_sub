@@ -152,9 +152,12 @@ def test_role_form_saves_permissions_for_unchanged_legacy_role_name(db_session):
     )
 
     assert db_session.get(Role, role_id).name == "NOC Team"
-    assert db_session.scalar(
-        select(RolePermission).where(
-            RolePermission.role_id == role_id,
-            RolePermission.permission_id == permission_id,
+    assert (
+        db_session.scalar(
+            select(RolePermission).where(
+                RolePermission.role_id == role_id,
+                RolePermission.permission_id == permission_id,
+            )
         )
-    ) is not None
+        is not None
+    )
