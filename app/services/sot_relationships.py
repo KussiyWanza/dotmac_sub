@@ -17774,6 +17774,195 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.outage_communications",
+                module="app.services.topology.outage_communications",
+                owns=(
+                    "customer outage communication decisions",
+                    "customer outage notice record",
+                    "committed outage output communication consumption",
+                ),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.service_impact",
+                    "network.customer_outage_accrual",
+                ),
+                notes=(
+                    "OUTAGE_SLA_SPINE §3. Decides WHETHER a customer is owed "
+                    "a message, which stage, and when — never the audience, "
+                    "the impact word, the measured downtime, or the delivery. "
+                    "The restoration cohort is derived from queued notice "
+                    "rows with communication-intent lineage, never from the "
+                    "current audience: a mid-incident joiner was promised "
+                    "nothing and a customer who left is still owed the "
+                    "all-clear. Supersedes the classifier-bound "
+                    "network.outage_notifications and "
+                    "network.outage_auto_notify send paths; arming "
+                    "outage_customer_comms_enabled stands both of them down "
+                    "so two customer outage senders are never live at once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer outage communication decisions",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "per-subscription impact words",
+                                "incident lifecycle and scope history",
+                                "measured customer downtime",
+                                "communication gate configuration",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer outage notice record",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=("per-subscription impact words",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                        ConcernContract(
+                            name=("committed outage output communication consumption"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("incident lifecycle and scope history",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="per-subscription impact words",
+                            owner="network.service_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "six-state impact resolution per audience "
+                                "member with typed evidence; only "
+                                "confirmed_unavailable opens a conversation "
+                                "and only restored closes one"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="incident lifecycle and scope history",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "incident status, lifecycle stamps, and the "
+                                "immutable scope revision the message was "
+                                "composed under"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="measured customer downtime",
+                            owner="network.customer_outage_accrual",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "exact-quality customer outage intervals; a "
+                                "restoration message quotes the ledger and "
+                                "never recomputes a duration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="communication gate configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "outage_customer_comms_enabled, dry-run, "
+                                "settling window, minimum affected count, "
+                                "update interval, per-run recipient cap and "
+                                "per-customer cooldown"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Planning is read-only. A send stages notice "
+                            "rows, communication intents and the breadcrumb "
+                            "event in one transaction owned by the receipted "
+                            "consumer or the operator command; a partial "
+                            "write would suppress a message nobody received."
+                        ),
+                        locking=(
+                            "The unique dedupe key is the concurrency guard: "
+                            "two workers deciding the same message converge "
+                            "on one row instead of two emails."
+                        ),
+                        idempotency=(
+                            "Conversation history makes a replay produce no "
+                            "candidates at all; the dedupe key holds when "
+                            "history has not yet committed. Dry-run plans "
+                            "and blocked recipients use separate key "
+                            "namespaces so neither can mute a later genuine "
+                            "message."
+                        ),
+                        retries=(
+                            "A rolled-back pass leaves no notice row, so no "
+                            "customer is silently marked as already told."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=owner_command_boundary_error_codes(
+                            "network.outage_communications"
+                        ),
+                        mapping_owner="app.web.admin.network_monitoring",
+                        fail_closed_on=(
+                            "communications disarmed",
+                            "incident suspected or exposure-only",
+                            "incident still inside the settling window",
+                            "incident below the minimum affected count",
+                            "preview token no longer matches the plan",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("outage_customer_notice.dispatched",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries incident identity and status, "
+                            "per-stage counts, queued and planned totals and "
+                            "the dry-run flag; fields are additive. The "
+                            "customer messages themselves are communication "
+                            "intents, never this event."
+                        ),
+                        replay=(
+                            "Operational breadcrumb only; no projection "
+                            "handler consumes it, and replaying it sends "
+                            "nothing."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.outage_communications",
+                        old_owner="network.outage_notifications",
+                        verification=(
+                            "Dry run is the default and records a notice row "
+                            "per decided message, so the plan is countable "
+                            "against what the NOC saw — ADR 0004's dry run "
+                            "only logged, which is why nobody could evaluate "
+                            "it."
+                        ),
+                        cutover_gate=(
+                            "Dry-run notice rows show no opening message an "
+                            "operator would not have sent, restoration "
+                            "cohorts match the customers actually told, and "
+                            "per-run recipient counts are within "
+                            "expectation."
+                        ),
+                        fallback_retirement=(
+                            "Arming outage_customer_comms_enabled makes both "
+                            "legacy send paths refuse with "
+                            "superseded_by_outage_communications. They are "
+                            "removed once the new owner has run armed "
+                            "through a full incident cycle."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_outage_communications.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.outage_auto_notify",
                 module="app.services.topology.outage_auto_notify",
                 owns=(
