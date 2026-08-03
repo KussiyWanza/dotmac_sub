@@ -90,6 +90,16 @@ def seeded(factory):
             vendor="Huawei",
             is_active=True,
             status=DeviceStatus.active,
+            # `ck_olt_devices_config_pack_required`: an ACTIVE, non-UISP OLT
+            # must carry a usable config pack. That constraint lives in a
+            # migration, so a metadata-built test database does not enforce it
+            # and an incomplete row only fails where the schema came from
+            # migrations -- i.e. CI and production.
+            config_pack={
+                "internet_vlan_id": 203,
+                "management_vlan_id": 201,
+                "tr069_olt_profile_id": 2,
+            },
         )
         setup.add(olt)
         setup.flush()
