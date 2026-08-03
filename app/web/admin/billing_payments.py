@@ -115,10 +115,7 @@ def payments_export_csv(
     unallocated_only: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    state = web_billing_payments_service.build_payments_list_data(
-        db,
-        page=1,
-        per_page=10000,
+    list_query = web_billing_payments_service.build_payments_list_query(
         customer_ref=customer_ref,
         partner_id=partner_id,
         status=status,
@@ -127,11 +124,9 @@ def payments_export_csv(
         date_range=date_range,
         unallocated_only=unallocated_only,
     )
-    content = web_billing_payments_service.render_payments_csv(
-        cast(list[Payment], state["payments"])
-    )
+    rows = web_billing_payments_service.stream_payments_csv(db, list_query=list_query)
     return StreamingResponse(
-        iter([content]),
+        rows,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="payments_export.csv"'},
     )
