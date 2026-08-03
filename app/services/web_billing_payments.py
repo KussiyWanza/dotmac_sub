@@ -768,11 +768,7 @@ def build_payments_list_data(
         date_range=date_range,
         unallocated_only=unallocated_only,
         sort_dir=sort_dir,
-        page=page,
-        per_page=per_page,
     )
-    page = list_query.page
-    per_page = list_query.per_page
     customer_ref = list_query.filter_value("customer_ref")
     partner_id = list_query.filter_value("partner_id")
     status = list_query.filter_value("status")
