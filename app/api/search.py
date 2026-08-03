@@ -138,6 +138,19 @@ def search_business_accounts(
     return typeahead_service.business_accounts_response(db, q, limit)
 
 
+@router.get(
+    "/organizations",
+    response_model=ListResponse[TypeaheadItem],
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def search_organizations(
+    q: str = Query(min_length=2),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    return typeahead_service.organization_profiles_response(db, q, limit)
+
+
 @router.get("/catalog-offers", response_model=ListResponse[TypeaheadItem])
 def search_catalog_offers(
     q: str = Query(min_length=2),

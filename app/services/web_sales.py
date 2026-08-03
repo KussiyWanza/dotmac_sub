@@ -20,7 +20,7 @@ CRM-compatible Selfcare adaptations:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, TypedDict
@@ -64,6 +64,7 @@ from app.services import billing as billing_service
 from app.services import sales as sales_service
 from app.services import sales_orders as sales_orders_service
 from app.services import web_catalog_subscriptions, web_system_users
+from app.services.catalog import region_zones as region_zones_service
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.field.inventory import field_inventory_lookup
@@ -74,7 +75,7 @@ from app.services.list_query import (
     request_needs_canonicalization,
 )
 from app.services.owner_commands import CommandContext
-from app.services.sales import pipeline_configuration, quote_authoring
+from app.services.sales import lead_authoring, pipeline_configuration, quote_authoring
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
@@ -184,6 +185,40 @@ class LeadFormFields:
     estimated_value: str
     currency: str
     address: str
+    probability: str
+    expected_close_date: str
+    lost_reason: str
+    notes: str
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NewLeadFormFields:
+    submission_id: str
+    display_name: str
+    status: str
+    owner_agent_id: str
+    emails: tuple[str, ...]
+    primary_email: str
+    phones: tuple[str, ...]
+    primary_phone: str
+    whatsapp_phone_indices: tuple[str, ...]
+    address_line1: str
+    address_line2: str
+    date_of_birth: str
+    gender: str
+    nin: str
+    city: str
+    postal_code: str
+    country_code: str
+    organization_id: str
+    organization_label: str
+    pipeline_id: str
+    stage_id: str
+    lead_source: str
+    region_zone_id: str
+    estimated_value: str
+    currency: str
     probability: str
     expected_close_date: str
     lost_reason: str
@@ -797,30 +832,182 @@ def _lead_form_context(
     }
 
 
-def build_lead_new_context(db: Session) -> dict[str, Any]:
-    return _lead_form_context(
-        db,
-        lead_form=_lead_form_fields(
-            title=None,
-            status=LeadStatus.new.value,
-            party_id=None,
-            contact_label=None,
-            owner_agent_id=None,
-            pipeline_id=None,
-            stage_id=None,
-            lead_source=None,
-            region=None,
-            estimated_value=None,
-            currency="NGN",
-            address=None,
-            probability="0",
-            expected_close_date=None,
-            lost_reason=None,
-            notes=None,
-            is_active=True,
+def _new_lead_fields(
+    *,
+    submission_id: str | None = None,
+    display_name: str | None = None,
+    status: str | None = None,
+    owner_agent_id: str | None = None,
+    emails: list[str] | tuple[str, ...] | None = None,
+    primary_email: str | None = None,
+    phones: list[str] | tuple[str, ...] | None = None,
+    primary_phone: str | None = None,
+    whatsapp_phone_indices: list[str] | tuple[str, ...] | None = None,
+    address_line1: str | None = None,
+    address_line2: str | None = None,
+    date_of_birth: str | None = None,
+    gender: str | None = None,
+    nin: str | None = None,
+    city: str | None = None,
+    postal_code: str | None = None,
+    country_code: str | None = None,
+    organization_id: str | None = None,
+    organization_label: str | None = None,
+    pipeline_id: str | None = None,
+    stage_id: str | None = None,
+    lead_source: str | None = None,
+    region_zone_id: str | None = None,
+    estimated_value: str | None = None,
+    currency: str | None = None,
+    probability: str | None = None,
+    expected_close_date: str | None = None,
+    lost_reason: str | None = None,
+    notes: str | None = None,
+    is_active: bool = True,
+) -> NewLeadFormFields:
+    email_rows = tuple(str(value or "") for value in (emails or ("",))) or ("",)
+    phone_rows = tuple(str(value or "") for value in (phones or ("",))) or ("",)
+    return NewLeadFormFields(
+        submission_id=(submission_id or str(uuid4())).strip(),
+        display_name=(display_name or "").strip(),
+        status=(status or LeadStatus.new.value).strip(),
+        owner_agent_id=(owner_agent_id or "").strip(),
+        emails=email_rows,
+        primary_email=(primary_email or "0").strip(),
+        phones=phone_rows,
+        primary_phone=(primary_phone or "0").strip(),
+        whatsapp_phone_indices=tuple(
+            str(value) for value in (whatsapp_phone_indices or ())
         ),
-        mode="create",
-        lead_id=None,
+        address_line1=(address_line1 or "").strip(),
+        address_line2=(address_line2 or "").strip(),
+        date_of_birth=(date_of_birth or "").strip(),
+        gender=(gender or "unknown").strip(),
+        nin=(nin or "").strip(),
+        city=(city or "").strip(),
+        postal_code=(postal_code or "").strip(),
+        country_code=(country_code or "").strip().upper(),
+        organization_id=(organization_id or "").strip(),
+        organization_label=(organization_label or "").strip(),
+        pipeline_id=(pipeline_id or "").strip(),
+        stage_id=(stage_id or "").strip(),
+        lead_source=(lead_source or "").strip(),
+        region_zone_id=(region_zone_id or "").strip(),
+        estimated_value=(estimated_value or "").strip(),
+        currency=(currency or "NGN").strip().upper(),
+        probability=(probability or "0").strip(),
+        expected_close_date=(expected_close_date or "").strip(),
+        lost_reason=(lost_reason or "").strip(),
+        notes=(notes or "").strip(),
+        is_active=is_active,
+    )
+
+
+def _new_lead_context(
+    db: Session,
+    *,
+    lead_form: NewLeadFormFields,
+    actor_system_user_id: str | None,
+    field_errors: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    options = _sales_options(db)
+    regions = region_zones_service.list(
+        db,
+        is_active=True,
+        order_by="name",
+        order_dir="asc",
+        limit=500,
+        offset=0,
+    )
+    owner_id = lead_form.owner_agent_id
+    if not owner_id and actor_system_user_id in options["agent_map"]:
+        owner_id = str(actor_system_user_id)
+        lead_form = replace(lead_form, owner_agent_id=owner_id)
+    return {
+        "lead_form": lead_form,
+        "lead": None,
+        "form_title": "New Lead",
+        "submit_label": "Create Lead",
+        "action_url": "/admin/sales/leads",
+        "lead_statuses": lead_operator_status_values(lead_form.status),
+        "lead_sources": list(sales_service.LEAD_SOURCE_OPTIONS),
+        "lost_reasons": LOST_REASON_OPTIONS,
+        "pipelines": options["pipelines"],
+        "stages": options["stages"],
+        "agents": options["agents"],
+        "regions": regions,
+        "gender_options": (
+            ("unknown", "Unknown"),
+            ("female", "Female"),
+            ("male", "Male"),
+            ("non_binary", "Non Binary"),
+            ("other", "Other"),
+        ),
+        "field_errors": field_errors or {},
+        "error": "Please correct the highlighted fields." if field_errors else None,
+    }
+
+
+def build_lead_new_context(
+    db: Session, *, actor_system_user_id: str | None = None
+) -> dict[str, Any]:
+    return _new_lead_context(
+        db,
+        lead_form=_new_lead_fields(),
+        actor_system_user_id=actor_system_user_id,
+    )
+
+
+def build_lead_create_error_context(
+    db: Session,
+    *,
+    actor_system_user_id: str | None,
+    field_errors: dict[str, str],
+    **fields: object,
+) -> dict[str, Any]:
+    def string_tuple(value: object, *, default: tuple[str, ...]) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            return default
+        return tuple(str(item or "") for item in value)
+
+    return _new_lead_context(
+        db,
+        lead_form=_new_lead_fields(
+            submission_id=str(fields.get("submission_id") or ""),
+            display_name=str(fields.get("display_name") or ""),
+            status=str(fields.get("status") or ""),
+            owner_agent_id=str(fields.get("owner_agent_id") or ""),
+            emails=string_tuple(fields.get("emails"), default=("",)),
+            primary_email=str(fields.get("primary_email") or "0"),
+            phones=string_tuple(fields.get("phones"), default=("",)),
+            primary_phone=str(fields.get("primary_phone") or "0"),
+            whatsapp_phone_indices=string_tuple(
+                fields.get("whatsapp_phone_indices"), default=()
+            ),
+            address_line1=str(fields.get("address_line1") or ""),
+            address_line2=str(fields.get("address_line2") or ""),
+            date_of_birth=str(fields.get("date_of_birth") or ""),
+            gender=str(fields.get("gender") or "unknown"),
+            nin=str(fields.get("nin") or ""),
+            city=str(fields.get("city") or ""),
+            postal_code=str(fields.get("postal_code") or ""),
+            country_code=str(fields.get("country_code") or ""),
+            organization_id=str(fields.get("organization_id") or ""),
+            organization_label=str(fields.get("organization_label") or ""),
+            pipeline_id=str(fields.get("pipeline_id") or ""),
+            stage_id=str(fields.get("stage_id") or ""),
+            lead_source=str(fields.get("lead_source") or ""),
+            region_zone_id=str(fields.get("region_zone_id") or ""),
+            estimated_value=str(fields.get("estimated_value") or ""),
+            currency=str(fields.get("currency") or ""),
+            probability=str(fields.get("probability") or ""),
+            expected_close_date=str(fields.get("expected_close_date") or ""),
+            lost_reason=str(fields.get("lost_reason") or ""),
+            notes=str(fields.get("notes") or ""),
+            is_active=bool(fields.get("is_active")),
+        ),
+        actor_system_user_id=actor_system_user_id,
+        field_errors=field_errors,
     )
 
 
@@ -999,6 +1186,162 @@ def _validate_lead_form(
         notes=(notes or "").strip() or None,
         is_active=is_active,
     )
+
+
+def author_lead_from_form(
+    db: Session,
+    *,
+    actor_system_user_id: str,
+    submission_id: str | None,
+    display_name: str | None,
+    status: str | None,
+    owner_agent_id: str | None,
+    emails: list[str] | tuple[str, ...],
+    primary_email: str | None,
+    phones: list[str] | tuple[str, ...],
+    primary_phone: str | None,
+    whatsapp_phone_indices: list[str] | tuple[str, ...],
+    address_line1: str | None,
+    address_line2: str | None,
+    date_of_birth: str | None,
+    gender: str | None,
+    nin: str | None,
+    city: str | None,
+    postal_code: str | None,
+    country_code: str | None,
+    organization_id: str | None,
+    pipeline_id: str | None,
+    stage_id: str | None,
+    lead_source: str | None,
+    region_zone_id: str | None,
+    estimated_value: str | None,
+    currency: str | None,
+    probability: str | None,
+    expected_close_date: str | None,
+    lost_reason: str | None,
+    notes: str | None,
+    is_active: bool,
+) -> lead_authoring.AuthorLeadOutcome:
+    errors: dict[str, str] = {}
+
+    def required_uuid(value: str | None, field: str) -> UUID:
+        try:
+            return UUID((value or "").strip())
+        except (TypeError, ValueError, AttributeError):
+            errors[field] = "This form expired or is invalid. Reload and try again."
+            return UUID(int=0)
+
+    def optional_uuid(value: str | None, field: str) -> UUID | None:
+        clean = (value or "").strip()
+        if not clean:
+            return None
+        try:
+            return UUID(clean)
+        except (TypeError, ValueError, AttributeError):
+            errors[field] = "Select a valid option."
+            return None
+
+    def optional_date(value: str | None, field: str) -> date | None:
+        clean = (value or "").strip()
+        if not clean:
+            return None
+        try:
+            return date.fromisoformat(clean)
+        except ValueError:
+            errors[field] = "Enter a valid date."
+            return None
+
+    def index(value: str | None, field: str) -> int:
+        try:
+            result = int((value or "0").strip())
+        except ValueError:
+            errors[field] = "Select a valid primary row."
+            return 0
+        return result
+
+    actor_id = required_uuid(actor_system_user_id, "form")
+    lead_id = required_uuid(submission_id, "form")
+    try:
+        lead_status = LeadStatus((status or LeadStatus.new.value).strip())
+    except ValueError:
+        errors["status"] = "Select a valid Lead Status."
+        lead_status = LeadStatus.new
+    if (lead_source or "").strip() and (
+        lead_source or ""
+    ).strip() not in sales_service.LEAD_SOURCE_OPTIONS:
+        errors["lead_source"] = "Select a valid Lead Source."
+
+    amount: Decimal | None = None
+    if (estimated_value or "").strip():
+        try:
+            amount = Decimal((estimated_value or "").strip())
+        except (ArithmeticError, ValueError):
+            errors["estimated_value"] = "Estimated Value must be a number."
+
+    probability_value: int | None = None
+    if (probability or "").strip():
+        try:
+            probability_value = int((probability or "").strip())
+        except ValueError:
+            errors["probability"] = "Probability must be a whole number."
+
+    whatsapp_indexes: list[int] = []
+    for raw in whatsapp_phone_indices:
+        try:
+            whatsapp_indexes.append(int(str(raw)))
+        except ValueError:
+            continue
+
+    if errors:
+        raise LeadFormValidationError(errors)
+
+    command = lead_authoring.AuthorLeadCommand(
+        context=CommandContext.system(
+            actor=str(actor_id),
+            scope="sales:lead-authoring",
+            reason="Authenticated staff created a Lead",
+            idempotency_key=f"admin-lead:{lead_id}",
+        ),
+        lead_id=lead_id,
+        actor_system_user_id=actor_id,
+        status=lead_status,
+        owner_system_user_id=optional_uuid(owner_agent_id, "owner_agent_id"),
+        pipeline_id=optional_uuid(pipeline_id, "pipeline_id"),
+        stage_id=optional_uuid(stage_id, "stage_id"),
+        lead_source=(lead_source or "").strip() or None,
+        region_zone_id=optional_uuid(region_zone_id, "region_zone_id"),
+        estimated_value=amount,
+        currency=(currency or "").strip().upper() or None,
+        probability=probability_value,
+        expected_close_date=optional_date(expected_close_date, "expected_close_date"),
+        lost_reason=(lost_reason or "").strip() or None,
+        notes=(notes or "").strip() or None,
+        is_active=is_active,
+        person=lead_authoring.LeadPersonDraft(
+            display_name=(display_name or "").strip(),
+            emails=lead_authoring.LeadContactDraft(
+                values=tuple(str(value or "") for value in emails),
+                primary_index=index(primary_email, "primary_email"),
+            ),
+            phones=lead_authoring.LeadContactDraft(
+                values=tuple(str(value or "") for value in phones),
+                primary_index=index(primary_phone, "primary_phone"),
+            ),
+            whatsapp_phone_indices=tuple(whatsapp_indexes),
+            address_line1=(address_line1 or "").strip() or None,
+            address_line2=(address_line2 or "").strip() or None,
+            date_of_birth=optional_date(date_of_birth, "date_of_birth"),
+            gender=(gender or "unknown").strip(),
+            nin=(nin or "").strip() or None,
+            city=(city or "").strip() or None,
+            postal_code=(postal_code or "").strip() or None,
+            country_code=(country_code or "").strip().upper() or None,
+            organization_id=optional_uuid(organization_id, "organization_id"),
+        ),
+    )
+    if errors:
+        raise LeadFormValidationError(errors)
+    return lead_authoring.author_lead(db, command)
 
 
 def create_lead_from_form(

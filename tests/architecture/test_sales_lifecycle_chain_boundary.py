@@ -187,6 +187,22 @@ def test_quote_authoring_cannot_perform_sales_conversion():
     assert '"project_template_unconfigured"' in projects
 
 
+def test_admin_new_lead_uses_one_registered_authoring_owner():
+    authoring = _source("app/services/sales/lead_authoring.py")
+    route = _source("app/web/admin/sales.py")
+    create_section = route.split("def lead_create(", 1)[1].split(
+        "def pipeline_board(", 1
+    )[0]
+
+    assert 'owner="sales.lead_authoring"' in authoring
+    assert "execute_owner_command(" in authoring
+    assert "db.commit(" not in authoring
+    assert "db.rollback(" not in authoring
+    assert "author_lead_from_form(" in create_section
+    assert "create_lead_from_form(" not in create_section
+    assert "Form(default=None),\n    party_id" not in create_section
+
+
 def test_released_output_carries_sales_linkage():
     src = _source("app/services/service_order_lifecycle.py")
     released = src.split("EventType.service_order_released", 1)[1]

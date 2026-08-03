@@ -9048,6 +9048,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/search/organizations": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "79dcaa8692e2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/search/parties": {
    "params": [
     "header:authorization",
@@ -19915,7 +19928,7 @@
   "Tr069ParameterMapCreate": "4ca892b9277d",
   "Tr069ParameterMapRead": "d1d311292336",
   "Tr069ParameterMapUpdate": "aeffc63930d4",
-  "TypeaheadItem": "b996761403c6",
+  "TypeaheadItem": "a9790e3d5697",
   "UispApplyRead": "c424fc6a8021",
   "UispIntentRead": "495dedb4b489",
   "UispIntentStage": "90eee3a030e3",
