@@ -59,7 +59,15 @@
     </div>
 
     {# Filters, summaries, and table swap as one canonical HTMX projection. #}
-    <div id="invoice-list" class="space-y-4">
+    <div id="invoice-list"
+         class="space-y-4"
+         hx-indicator="#invoice-list-loading"
+         @htmx:before-request="beginInvoiceListRequest($event)"
+         @htmx:after-request="finishInvoiceListRequest($event)"
+         @htmx:send-abort="finishInvoiceListRequest($event)"
+         @htmx:response-error="failInvoiceListRequest($event, 'response')"
+         @htmx:send-error="failInvoiceListRequest($event, 'network')"
+         @htmx:timeout="failInvoiceListRequest($event, 'timeout')">
         {% include "admin/billing/_invoices_list.html" %}
     </div>
 </div>
@@ -72,6 +80,9 @@ function invoiceBulkActions(initialContract) {
         invoiceIds: [],
         busyAction: null,
         currentQuery: window.location.search,
+        invoiceListLoading: false,
+        invoiceListError: '',
+        invoiceListRetryElement: null,
 
         init() {
             this.syncInvoicePage();
@@ -98,6 +109,45 @@ function invoiceBulkActions(initialContract) {
                     console.error('Invalid invoice bulk-action contract', error);
                 }
             }
+        },
+
+        isInvoiceListRequest(event) {
+            return event.detail?.target?.id === 'invoice-list';
+        },
+
+        beginInvoiceListRequest(event) {
+            if (!this.isInvoiceListRequest(event)) return;
+            this.invoiceListLoading = true;
+            this.invoiceListError = '';
+            this.invoiceListRetryElement = event.detail?.elt || null;
+        },
+
+        finishInvoiceListRequest(event) {
+            if (!this.isInvoiceListRequest(event)) return;
+            this.invoiceListLoading = false;
+        },
+
+        failInvoiceListRequest(event, failureType) {
+            if (!this.isInvoiceListRequest(event)) return;
+            this.invoiceListLoading = false;
+            if (failureType === 'timeout') {
+                this.invoiceListError = 'Loading invoices timed out. The previous results are still shown.';
+                return;
+            }
+            if (failureType === 'network') {
+                this.invoiceListError = 'The invoice list could not reach the server. The previous results are still shown.';
+                return;
+            }
+            this.invoiceListError = 'Invoice results could not be loaded. The previous results are still shown.';
+        },
+
+        retryInvoiceListRequest() {
+            const source = this.invoiceListRetryElement;
+            if (source instanceof HTMLAnchorElement && source.isConnected) {
+                source.click();
+                return;
+            }
+            document.querySelector('#invoice-filters')?.requestSubmit();
         },
 
         actionDefinition(actionKey) {

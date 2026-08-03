@@ -223,7 +223,7 @@ def test_customer_detail_billing_overview_has_responsive_amount_contract() -> No
         'data-testid="billing-overview-cards"', maxsplit=1
     )[1].split("{% set billing_workspace", maxsplit=1)[0]
 
-    assert "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5" in billing_overview
+    assert "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3" in billing_overview
     assert billing_overview.count('data-testid="billing-overview-card"') == 5
     assert billing_overview.count('data-testid="billing-overview-value"') == 5
     assert billing_overview.count("min-w-0") >= 5

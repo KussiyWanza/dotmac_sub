@@ -1,6 +1,8 @@
 """Admin network topology routes (replaces legacy weathermap)."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -37,12 +39,24 @@ def network_topology(
     request: Request,
     group: str | None = None,
     site: str | None = None,
+    sort: Literal["source_device"] | None = Query(None),
+    dir: Literal["asc", "desc"] | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: Literal[10, 25, 50, 100] = Query(25),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """Network topology visualization page."""
     context = _base_context(request, db, active_page="topology")
     context.update(
-        web_topology_service.topology_page_context(db, group=group, site=site)
+        web_topology_service.topology_page_context(
+            db,
+            group=group,
+            site=site,
+            sort_by=sort,
+            sort_dir=dir,
+            page=page,
+            per_page=per_page,
+        )
     )
     return templates.TemplateResponse("admin/network/topology/index.html", context)
 

@@ -92,7 +92,36 @@
     </form>
 </div>
 
+<div id="invoice-list-error"
+     x-show="invoiceListError"
+     x-cloak
+     x-transition.opacity
+     role="alert"
+     class="status-panel status-panel-negative status-foreground status-tone-negative flex flex-col gap-3 rounded-lg border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+    <span x-text="invoiceListError"></span>
+    <button type="button"
+            @click="retryInvoiceListRequest()"
+            class="inline-flex shrink-0 items-center justify-center rounded-lg border border-current bg-white/80 px-3 py-1.5 text-sm font-semibold transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:bg-slate-900/60 dark:hover:bg-slate-900 dark:focus:ring-offset-slate-900">
+        Try again
+    </button>
+</div>
+
 {# Canonical invoice table: full-page and HTMX responses share one projection. #}
-<div id="invoices-table" class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+<div id="invoices-table"
+     :aria-busy="invoiceListLoading.toString()"
+     class="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <div id="invoice-list-loading"
+         class="htmx-indicator pointer-events-none absolute inset-0 z-20 flex items-start justify-center bg-white/80 pt-32 dark:bg-slate-900/80"
+         role="status"
+         aria-live="polite"
+         aria-atomic="true">
+        <div class="flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg dark:bg-slate-700">
+            <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>Loading invoices&hellip;</span>
+        </div>
+    </div>
     {% include "admin/billing/_invoices_table.html" %}
 </div>

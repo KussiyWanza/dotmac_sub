@@ -171,6 +171,29 @@
 
     {# ── Payments Table ── #}
     <div id="payments-table" class="animate-fade-in-up rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        {% if total_pages and total_pages > 1 %}
+        {% set start_item = ((page - 1) * per_page) + 1 if total else 0 %}
+        {% set end_item = [page * per_page, total] | min if total else 0 %}
+        {% set base_path = '/admin/billing/payments/unallocated' if unallocated_only else '/admin/billing/payments' %}
+        {% set _extra %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% if selected_partner_id %}&partner_id={{ selected_partner_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if method %}&method={{ method }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if start_date %}&start_date={{ start_date }}{% endif %}{% if end_date %}&end_date={{ end_date }}{% endif %}{% endset %}
+        <div data-testid="payments-table-controls" class="flex flex-col justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:flex-row sm:items-center">
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ start_item }}</span>
+                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ end_item }}</span>
+                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ total }}</span> results
+            </p>
+            <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <span>Show</span>
+                <select onchange="window.location.href='{{ base_path }}?page=1&per_page=' + this.value + '{{ _extra | e }}'"
+                        class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
+                    {% for size in [10, 25, 50, 100] %}
+                    <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+                <span>rows</span>
+            </div>
+        </div>
+        {% endif %}
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
                 {{ table_head([
@@ -282,28 +305,8 @@
             </table>
         </div>
         {% if total_pages and total_pages > 1 %}
-        {% set start_item = ((page - 1) * per_page) + 1 if total else 0 %}
-        {% set end_item = [page * per_page, total] | min if total else 0 %}
-        {% set base_path = '/admin/billing/payments/unallocated' if unallocated_only else '/admin/billing/payments' %}
-        {% set _extra %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% if selected_partner_id %}&partner_id={{ selected_partner_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if method %}&method={{ method }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if start_date %}&start_date={{ start_date }}{% endif %}{% if end_date %}&end_date={{ end_date }}{% endif %}{% endset %}
-        <div class="flex flex-col items-center justify-between gap-4 border-t border-slate-200 px-4 py-3 dark:border-slate-700 sm:flex-row">
-            <p class="text-sm text-slate-500 dark:text-slate-400">
-                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ start_item }}</span>
-                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ end_item }}</span>
-                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ total }}</span> results
-            </p>
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                    <span>Show</span>
-                    <select onchange="window.location.href='{{ base_path }}?page=1&per_page=' + this.value + '{{ _extra | e }}'"
-                            class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
-                        {% for size in [10, 25, 50, 100] %}
-                        <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
-                        {% endfor %}
-                    </select>
-                    <span>rows</span>
-                </div>
-                <div class="flex items-center gap-1">
+        <div data-testid="payments-pagination" class="flex items-center justify-center border-t border-slate-200 px-4 py-3 dark:border-slate-700">
+            <div class="flex items-center gap-1">
                     {% if page > 1 %}
                     <a href="{{ base_path }}?page={{ page - 1 }}&per_page={{ per_page }}{{ _extra }}" class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
@@ -333,7 +336,6 @@
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                     </span>
                     {% endif %}
-                </div>
             </div>
         </div>
         {% endif %}

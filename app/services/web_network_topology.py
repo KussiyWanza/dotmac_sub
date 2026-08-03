@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -10,6 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.models.network_monitoring import NetworkWeathermapView
 from app.services import network_topology as topology_service
+from app.services.list_query import (
+    ListDefinition,
+    ListFieldDefinition,
+    ListQuery,
+    PageMeta,
+)
 
 DEFAULT_WEATHERMAP_SLUG = "default"
 DEFAULT_WEATHERMAP_SETTINGS = {
@@ -19,23 +27,145 @@ DEFAULT_WEATHERMAP_SETTINGS = {
     "show_link_labels": True,
 }
 
+TOPOLOGY_LINK_LIST_DEFINITION = ListDefinition(
+    key="topology_links",
+    fields=(
+        ListFieldDefinition("group", "Group", filterable=True),
+        ListFieldDefinition("site", "Site", filterable=True),
+        ListFieldDefinition("source_device", "Source device", sortable=True),
+    ),
+    default_sort="source_device",
+    default_sort_dir="asc",
+    default_per_page=25,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyLinkRow:
+    """Typed table projection for one observed or manually recorded link."""
+
+    id: str
+    source_device: str
+    source_interface: str
+    target_device: str
+    target_interface: str
+    status: str
+    role: str
+    medium: str
+    capacity_bps: int | None
+    utilization_pct: float | None
+    util_state: str
+
+    @classmethod
+    def from_graph_edge(cls, edge: Mapping[str, object]) -> TopologyLinkRow:
+        capacity = edge.get("capacity_bps")
+        utilization = edge.get("utilization_pct")
+        return cls(
+            id=str(edge.get("id") or ""),
+            source_device=str(edge.get("source_device") or ""),
+            source_interface=str(edge.get("source_interface") or ""),
+            target_device=str(edge.get("target_device") or ""),
+            target_interface=str(edge.get("target_interface") or ""),
+            status=str(edge.get("status") or "unknown"),
+            role=str(edge.get("role") or "unknown"),
+            medium=str(edge.get("medium") or "unknown"),
+            capacity_bps=int(cast(Any, capacity)) if capacity is not None else None,
+            utilization_pct=float(cast(Any, utilization))
+            if utilization is not None
+            else None,
+            util_state=str(edge.get("util_state") or "unknown"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyLinkTablePage:
+    """Typed, paginated table result; the topology graph remains complete."""
+
+    rows: tuple[TopologyLinkRow, ...]
+    list_query: ListQuery
+    page_meta: PageMeta
+
+
+def build_topology_link_list_query(
+    *,
+    group: str | None = None,
+    site: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    page: int = 1,
+    per_page: int | None = None,
+) -> ListQuery:
+    """Normalize topology-link table controls through the list contract."""
+    return TOPOLOGY_LINK_LIST_DEFINITION.build_query(
+        search=None,
+        filters={"group": group, "site": site},
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        page=page,
+        per_page=per_page,
+    )
+
+
+def build_topology_link_table_page(
+    graph: Mapping[str, object], list_query: ListQuery
+) -> TopologyLinkTablePage:
+    """Page the table projection without truncating the topology canvas graph."""
+    graph_edges = cast(list[Mapping[str, object]], graph.get("edges") or [])
+    rows = [TopologyLinkRow.from_graph_edge(edge) for edge in graph_edges]
+    rows.sort(
+        key=lambda row: (
+            row.source_device.casefold(),
+            row.target_device.casefold(),
+            row.id,
+        ),
+        reverse=list_query.sort_dir == "desc",
+    )
+
+    page_meta = PageMeta.from_query(list_query, total_items=len(rows))
+    canonical_query = list_query.with_page(page_meta.page)
+    start = (page_meta.page - 1) * page_meta.per_page
+    return TopologyLinkTablePage(
+        rows=tuple(rows[start : start + page_meta.per_page]),
+        list_query=canonical_query,
+        page_meta=page_meta,
+    )
+
 
 def topology_page_context(
     db: Session,
     *,
     group: str | None = None,
     site: str | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    page: int = 1,
+    per_page: int | None = None,
 ) -> dict[str, object]:
-    return {
-        "graph": topology_service.list_nodes_and_edges(
-            db,
-            topology_group=group,
-            pop_site_id=site,
-            include_utilization=True,
+    graph = topology_service.list_nodes_and_edges(
+        db,
+        topology_group=group,
+        pop_site_id=site,
+        include_utilization=True,
+    )
+    link_table_page = build_topology_link_table_page(
+        graph,
+        build_topology_link_list_query(
+            group=group,
+            site=site,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            page=page,
+            per_page=per_page,
         ),
+    )
+    return {
+        "graph": graph,
         "form_options": topology_service.get_form_options(db),
         "selected_group": group or "",
         "selected_site": site or "",
+        "topology_links": link_table_page.rows,
+        "list_query": link_table_page.list_query,
+        "page_meta": link_table_page.page_meta,
     }
 
 

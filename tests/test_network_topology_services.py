@@ -310,6 +310,80 @@ def test_topology_template_exposes_layout_save_controls() -> None:
     assert "'X-CSRF-Token': csrfToken()" in template
 
 
+def test_topology_link_table_paginates_without_truncating_graph() -> None:
+    graph_edges = [
+        {
+            "id": f"link-{index:02d}",
+            "source_device": f"Source {index:02d}",
+            "source_interface": "ether1",
+            "target_device": f"Target {index:02d}",
+            "target_interface": "ether2",
+            "status": "up",
+            "role": "access",
+            "medium": "fiber",
+            "capacity_bps": 1_000_000_000,
+            "utilization_pct": float(index),
+            "util_state": "normal",
+        }
+        for index in range(26)
+    ]
+    graph: dict[str, object] = {"nodes": [], "edges": graph_edges}
+    list_query = web_topology_service.build_topology_link_list_query(
+        group="metro",
+        site="pop-1",
+        page=2,
+        per_page=10,
+    )
+
+    table_page = web_topology_service.build_topology_link_table_page(graph, list_query)
+
+    assert len(graph_edges) == 26
+    assert len(table_page.rows) == 10
+    assert table_page.rows[0].id == "link-10"
+    assert table_page.page_meta.start_item == 11
+    assert table_page.page_meta.end_item == 20
+    assert table_page.page_meta.total_items == 26
+    assert table_page.page_meta.total_pages == 3
+    assert (
+        table_page.list_query.url("/admin/network/topology", page=3)
+        == "/admin/network/topology?group=metro&site=pop-1&sort=source_device"
+        "&dir=asc&page=3&per_page=10"
+    )
+
+
+def test_topology_link_table_clamps_an_out_of_range_page() -> None:
+    graph: dict[str, object] = {
+        "edges": [
+            {
+                "id": "link-1",
+                "source_device": "Source",
+                "target_device": "Target",
+            }
+        ]
+    }
+    list_query = web_topology_service.build_topology_link_list_query(
+        page=99, per_page=10
+    )
+
+    table_page = web_topology_service.build_topology_link_table_page(graph, list_query)
+
+    assert table_page.page_meta.page == 1
+    assert table_page.list_query.page == 1
+    assert [row.id for row in table_page.rows] == ["link-1"]
+
+
+def test_topology_template_uses_paginated_rows_and_keeps_full_graph_for_canvas() -> (
+    None
+):
+    template = Path("templates/admin/network/topology/index.html").read_text()
+
+    assert "{% for edge in topology_links %}" in template
+    assert 'aria-label="Topology links pagination"' in template
+    assert 'aria-label="Topology links per page"' in template
+    assert "Showing {{ page_meta.start_item }} to {{ page_meta.end_item }}" in template
+    assert "var graphData = {{ graph | tojson }};" in template
+
+
 def test_topology_gaps_respects_subscription_service_address(
     db_session,
     subscriber,

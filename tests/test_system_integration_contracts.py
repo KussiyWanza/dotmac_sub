@@ -180,6 +180,21 @@ def test_users_template_renders_the_kpi_contract_fields():
     assert "stats.total" not in source
 
 
+def test_users_loading_feedback_lives_inside_the_filter_card():
+    source = (_ROOT / "templates/admin/system/users/index.html").read_text(
+        encoding="utf-8"
+    )
+    filter_start = source.index("Search & Filters")
+    filter_end = source.index("{% endcall %}", filter_start)
+    loader_position = source.index('id="users-loading"')
+    error_position = source.index('x-show="requestError"')
+
+    assert filter_start < loader_position < error_position < filter_end
+    assert 'role="status"' in source
+    assert "animate-spin" in source[loader_position:filter_end]
+    assert "absolute right-8" not in source
+
+
 def test_syncs_template_renders_kpi_state_and_action_fields():
     source = (_ROOT / "templates/admin/integrations/syncs/index.html").read_text(
         encoding="utf-8"

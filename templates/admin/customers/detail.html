@@ -833,7 +833,7 @@
     <!-- Tab Content: Billing -->
     <div x-show="activeTab === 'billing'" x-cloak class="space-y-6">
         <!-- Billing Overview Cards -->
-        <div data-testid="billing-overview-cards" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div data-testid="billing-overview-cards" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3">
             <div data-testid="billing-overview-card" class="min-w-0 rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
                 <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Current Balance</p>
                 <p data-testid="billing-overview-value" class="mt-2 break-words font-mono text-[clamp(1.25rem,2.2vw,1.8rem)] font-bold leading-tight tabular-nums text-slate-900 dark:text-white">₦{{ '{:,.2f}'.format(financials.current_balance | default(0)) }}</p>

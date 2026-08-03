@@ -50,3 +50,15 @@ def test_payment_list_uses_explicit_created_date_filters() -> None:
     assert "list_query.url('/admin/billing/payments/export.csv')" in payment_list
     assert "&start_date={{ start_date }}" in payment_list
     assert "&end_date={{ end_date }}" in payment_list
+
+
+def test_payments_table_controls_render_above_table() -> None:
+    template = _read("templates/admin/billing/payments.html")
+
+    controls_position = template.index('data-testid="payments-table-controls"')
+    table_position = template.index('<div class="overflow-x-auto">', controls_position)
+    pagination_position = template.index('data-testid="payments-pagination"')
+
+    assert controls_position < table_position < pagination_position
+    assert template.count("Showing <span") == 1
+    assert template.count("{% for size in [10, 25, 50, 100] %}") == 1

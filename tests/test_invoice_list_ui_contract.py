@@ -129,6 +129,10 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert "/admin/billing/invoices?page=" not in table
     assert "range(1, total_pages + 1)" not in table
     assert "page_meta.start_item" in table
+    table_start = table.index("<table")
+    assert table.index('aria-label="Invoices per page"') < table_start
+    assert table.index("Showing <span") < table_start
+    assert table.index('aria-label="Invoice pagination"') > table_start
 
 
 def test_invoice_customer_typeahead_refreshes_only_after_selection():
@@ -144,6 +148,33 @@ def test_invoice_customer_typeahead_refreshes_only_after_selection():
     )
     assert hidden_customer_ref is not None
     assert "hx-" not in hidden_customer_ref.group(0)
+
+
+def test_invoice_list_exposes_loading_and_inline_failure_feedback():
+    page = (PROJECT_ROOT / "templates/admin/billing/invoices.html").read_text(
+        encoding="utf-8"
+    )
+    list_partial = (
+        PROJECT_ROOT / "templates/admin/billing/_invoices_list.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'hx-indicator="#invoice-list-loading"' in page
+    assert "@htmx:response-error" in page
+    assert "@htmx:send-error" in page
+    assert "@htmx:timeout" in page
+    assert 'id="invoice-list-loading"' in list_partial
+    assert 'role="status"' in list_partial
+    assert 'aria-live="polite"' in list_partial
+    assert ':aria-busy="invoiceListLoading.toString()"' in list_partial
+    assert 'id="invoice-list-error"' in list_partial
+    assert 'role="alert"' in list_partial
+    assert "retryInvoiceListRequest()" in list_partial
+    assert list_partial.index('id="invoice-filters"') < list_partial.index(
+        'id="invoice-list-error"'
+    )
+    assert list_partial.index('id="invoice-list-error"') < list_partial.index(
+        'id="invoices-table"'
+    )
 
 
 def test_invoice_bulk_ui_consumes_server_contract_and_review_confirmation():
