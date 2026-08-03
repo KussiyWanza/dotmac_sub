@@ -9874,6 +9874,209 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.prepaid_billing_calendar_reconciliation",
+                module="app.services.prepaid_billing_calendar_reconciliation",
+                owns=("historical prepaid billing calendar reconciliation",),
+                depends_on=(
+                    "access.fup_usage_windows",
+                    "financial.invoices",
+                    "financial.payments",
+                    "financial.prepaid_service_renewals",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "A reviewed, fingerprint-bound repair owner for the retired "
+                    "UTC-midnight prepaid settlement calculation. It changes only "
+                    "the exact invoice period, base-line period projection, sourced "
+                    "entitlement interval, and matching subscription anchor. Money, "
+                    "allocation, settlement, invoice status, access, and ledger "
+                    "evidence remain unchanged. Ambiguous chains fail closed."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "reviewed calendar correction command",
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                                "rated quota period evidence",
+                            ),
+                            canonical_writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed calendar correction command",
+                            owner="financial.prepaid_billing_calendar_reconciliation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed invoice identity, signed preview fingerprint, "
+                                "actor, reason, command, correlation, and idempotency "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical paid prepaid invoice chain",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "one active paid invoice, one base-subscription line, "
+                                "one succeeded allocated settlement, one sourced active "
+                                "entitlement, and the unchanged subscription anchor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="rated quota period evidence",
+                            owner="access.fup_usage_windows",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "persisted subscription QuotaBucket intervals that "
+                                "would require a coordinated usage-owner correction"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical settlement business calendar",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed settlement instant and cadence resolved through "
+                                "Africa/Lagos local midnight and persisted as UTC instants"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Reviewed confirmation enters execute_owner_command once on "
+                            "a transaction-free session, rechecks the exact chain under "
+                            "lock, stages calendar projections, audit, outbox event, and "
+                            "idempotency evidence, then commits or rolls back together."
+                        ),
+                        locking=(
+                            "Lock account first, then invoice, subscription, invoice "
+                            "line, entitlement, payment, allocation, and settlement; "
+                            "expire and re-read the full chain before re-running the "
+                            "resolver and reject changed or overlapping evidence."
+                        ),
+                        idempotency=(
+                            "A caller key is reserved per invoice and the invoice stores "
+                            "the exact fingerprint and before/after evidence for stable "
+                            "replay."
+                        ),
+                        retries=(
+                            "Replay a completed identical command. Changed, overlapping, "
+                            "returned, extended, or ambiguous evidence requires a fresh "
+                            "review and is never guessed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.prepaid_billing_calendar_reconciliation.invoice_not_found",
+                            "financial.prepaid_billing_calendar_reconciliation.missing_idempotency_key",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_reason",
+                            "financial.prepaid_billing_calendar_reconciliation.idempotency_conflict",
+                            "financial.prepaid_billing_calendar_reconciliation.stale_preview",
+                            "financial.prepaid_billing_calendar_reconciliation.not_actionable",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_command_context",
+                            "financial.prepaid_billing_calendar_reconciliation.command_contract_violation",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_owner_command",
+                            "financial.prepaid_billing_calendar_reconciliation.active_caller_transaction",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_transaction_completion",
+                        ),
+                        mapping_owner="admin billing-date reconciliation adapter",
+                        retryable_codes=(),
+                        fail_closed_on=(
+                            "non-paid or multi-line invoice evidence",
+                            "missing or multiple succeeded settlement allocations",
+                            "refund, reversal, extension, overlap, or moved anchor",
+                            "an overlapping rated quota period",
+                            "any mismatch from the exact retired UTC-period signature",
+                            "stale preview or active caller transaction",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_billing_calendar.reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Invoice, subscription, entitlement, payment, timezone, "
+                            "before/after instants, zero economic delta, and fingerprint "
+                            "retain their meaning; additions are backward compatible."
+                        ),
+                        replay=(
+                            "Consumers may rebuild evidence views but never re-decide "
+                            "or rewrite financial or service state."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            input_names=(
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                            ),
+                            writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                            freshness="computed from the current database snapshot",
+                            stale_behavior=(
+                                "Confirmation rejects the changed fingerprint and "
+                                "requires a fresh preview."
+                            ),
+                            drift_signal=(
+                                "An exact retired UTC-period signature remains in the "
+                                "review queue until corrected or quarantined."
+                            ),
+                            rebuild_operation=(
+                                "preview_prepaid_billing_calendar_cohort deterministically "
+                                "reclassifies the bounded paid-invoice cohort."
+                            ),
+                            repair_owner=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "historical payment settlement path that floored the "
+                            "settlement instant at UTC midnight"
+                        ),
+                        new_owner=("financial.prepaid_billing_calendar_reconciliation"),
+                        verification=(
+                            "Eligible, stale, replay, refund, extension, overlap, "
+                            "moved-anchor, UTC-boundary, UI permission, and signed-review "
+                            "tests."
+                        ),
+                        cutover_gate=(
+                            "Forward settlement periods resolve in Africa/Lagos and the "
+                            "historical admin queue is preview-only until explicit "
+                            "fingerprint-bound confirmation."
+                        ),
+                        fallback_retirement=(
+                            "Retire the queue after the staging-accepted cohort is "
+                            "reconciled and a verification scan reports no exact legacy "
+                            "signatures."
+                        ),
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                        "docs/designs/PREPAID_BILLING_CALENDAR_RECONCILIATION.md",
+                    ),
+                    test_refs=(
+                        "tests/test_prepaid_billing_calendar_reconciliation.py",
+                        "tests/test_web_prepaid_billing_calendar_reconciliation.py",
+                        "tests/architecture/test_prepaid_billing_anchor_ownership.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_draft_reconciliation",
                 module="app.services.prepaid_draft_reconciliation",
                 owns=(
@@ -10436,6 +10639,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "prepaid service renewal execution",
                     "due prepaid service-cycle funding preview",
                     "settled-payment evidence validation and evaluation outcome",
+                    "WAT lapsed-settlement service-period resolution",
                     "locked and idempotent prepaid renewal debit",
                     "exact debit-to-entitlement evidence",
                     "prepaid subscription paid-through advancement",
@@ -10487,7 +10691,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "anchor policies that previously lived in "
                     "_finalize_invoice_payment_effects and "
                     "finalize_invoice_application_for_owner. The retired inline "
-                    "project_paid_invoice_billing_anchors helper is gone."
+                    "project_paid_invoice_billing_anchors helper is gone. A lapsed "
+                    "settlement period first resolves the payment instant into the "
+                    "Africa/Lagos calendar, starts at local midnight, advances by the "
+                    "typed cadence, and persists the resulting boundaries as UTC "
+                    "instants. Payment participants consume that typed period; they do "
+                    "not derive a UTC calendar date independently."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10517,6 +10726,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "evaluation outcome"
                             ),
                             role=OwnerRole.POLICY,
+                            input_names=(
+                                "settled payment evidence",
+                                "prepaid subscription and renewal terms",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="WAT lapsed-settlement service-period resolution",
+                            role=OwnerRole.RESOLVER,
                             input_names=(
                                 "settled payment evidence",
                                 "prepaid subscription and renewal terms",
@@ -10772,9 +10989,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     design_refs=(
                         "docs/adr/0007-end-to-end-billing-target-architecture.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
                     ),
                     test_refs=(
                         "tests/test_prepaid_service_renewals.py",
+                        "tests/services/billing/test_payment_status_recompute.py",
                         "tests/test_subledger_forward_shadow.py",
                         "tests/architecture/test_prepaid_billing_anchor_ownership.py",
                     ),
@@ -17551,6 +17770,195 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/services/topology/test_customer_outage_accrual.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="network.outage_communications",
+                module="app.services.topology.outage_communications",
+                owns=(
+                    "customer outage communication decisions",
+                    "customer outage notice record",
+                    "committed outage output communication consumption",
+                ),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.service_impact",
+                    "network.customer_outage_accrual",
+                ),
+                notes=(
+                    "OUTAGE_SLA_SPINE §3. Decides WHETHER a customer is owed "
+                    "a message, which stage, and when — never the audience, "
+                    "the impact word, the measured downtime, or the delivery. "
+                    "The restoration cohort is derived from queued notice "
+                    "rows with communication-intent lineage, never from the "
+                    "current audience: a mid-incident joiner was promised "
+                    "nothing and a customer who left is still owed the "
+                    "all-clear. Supersedes the classifier-bound "
+                    "network.outage_notifications and "
+                    "network.outage_auto_notify send paths; arming "
+                    "outage_customer_comms_enabled stands both of them down "
+                    "so two customer outage senders are never live at once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer outage communication decisions",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "per-subscription impact words",
+                                "incident lifecycle and scope history",
+                                "measured customer downtime",
+                                "communication gate configuration",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer outage notice record",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=("per-subscription impact words",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                        ConcernContract(
+                            name=("committed outage output communication consumption"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("incident lifecycle and scope history",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="per-subscription impact words",
+                            owner="network.service_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "six-state impact resolution per audience "
+                                "member with typed evidence; only "
+                                "confirmed_unavailable opens a conversation "
+                                "and only restored closes one"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="incident lifecycle and scope history",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "incident status, lifecycle stamps, and the "
+                                "immutable scope revision the message was "
+                                "composed under"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="measured customer downtime",
+                            owner="network.customer_outage_accrual",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "exact-quality customer outage intervals; a "
+                                "restoration message quotes the ledger and "
+                                "never recomputes a duration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="communication gate configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "outage_customer_comms_enabled, dry-run, "
+                                "settling window, minimum affected count, "
+                                "update interval, per-run recipient cap and "
+                                "per-customer cooldown"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Planning is read-only. A send stages notice "
+                            "rows, communication intents and the breadcrumb "
+                            "event in one transaction owned by the receipted "
+                            "consumer or the operator command; a partial "
+                            "write would suppress a message nobody received."
+                        ),
+                        locking=(
+                            "The unique dedupe key is the concurrency guard: "
+                            "two workers deciding the same message converge "
+                            "on one row instead of two emails."
+                        ),
+                        idempotency=(
+                            "Conversation history makes a replay produce no "
+                            "candidates at all; the dedupe key holds when "
+                            "history has not yet committed. Dry-run plans "
+                            "and blocked recipients use separate key "
+                            "namespaces so neither can mute a later genuine "
+                            "message."
+                        ),
+                        retries=(
+                            "A rolled-back pass leaves no notice row, so no "
+                            "customer is silently marked as already told."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=owner_command_boundary_error_codes(
+                            "network.outage_communications"
+                        ),
+                        mapping_owner="app.web.admin.network_monitoring",
+                        fail_closed_on=(
+                            "communications disarmed",
+                            "incident suspected or exposure-only",
+                            "incident still inside the settling window",
+                            "incident below the minimum affected count",
+                            "preview token no longer matches the plan",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("outage_customer_notice.dispatched",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries incident identity and status, "
+                            "per-stage counts, queued and planned totals and "
+                            "the dry-run flag; fields are additive. The "
+                            "customer messages themselves are communication "
+                            "intents, never this event."
+                        ),
+                        replay=(
+                            "Operational breadcrumb only; no projection "
+                            "handler consumes it, and replaying it sends "
+                            "nothing."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.outage_communications",
+                        old_owner="network.outage_notifications",
+                        verification=(
+                            "Dry run is the default and records a notice row "
+                            "per decided message, so the plan is countable "
+                            "against what the NOC saw — ADR 0004's dry run "
+                            "only logged, which is why nobody could evaluate "
+                            "it."
+                        ),
+                        cutover_gate=(
+                            "Dry-run notice rows show no opening message an "
+                            "operator would not have sent, restoration "
+                            "cohorts match the customers actually told, and "
+                            "per-run recipient counts are within "
+                            "expectation."
+                        ),
+                        fallback_retirement=(
+                            "Arming outage_customer_comms_enabled makes both "
+                            "legacy send paths refuse with "
+                            "superseded_by_outage_communications. They are "
+                            "removed once the new owner has run armed "
+                            "through a full incident cycle."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_outage_communications.py",
                     ),
                 ),
             ),
