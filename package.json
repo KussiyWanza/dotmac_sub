@@ -1,6 +1,6 @@
 {
   "name": "dotmac_sm",
-  "version": "7.101.6",
+  "version": "7.102.0",
   "description": "Dotmac Service Management Platform",
   "main": "index.js",
   "directories": {
