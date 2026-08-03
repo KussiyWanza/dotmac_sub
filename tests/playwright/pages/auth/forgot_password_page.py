@@ -20,7 +20,7 @@ class ForgotPasswordPage(BasePage):
     def expect_loaded(self) -> None:
         """Assert the forgot password page is loaded."""
         expect(
-            self.page.get_by_role("heading", name="Forgot Password", exact=True)
+            self.page.get_by_role("heading", name="Forgot password?", exact=True)
         ).to_be_visible()
 
     def fill_email(self, email: str) -> None:

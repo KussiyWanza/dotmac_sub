@@ -1,61 +1,5 @@
 [
   {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestLogout::test_logout_clears_session",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestLogout::test_logout_prevents_access",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestProtectedRoutes::test_unauthenticated_redirect",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestProtectedRoutes::test_login_preserves_next_url",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestForgotPassword::test_forgot_password_page_loads",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestForgotPassword::test_back_to_login_from_forgot",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_auth_flows.py::TestResetPassword::test_password_mismatch_validation",
-    "reason": "Auth flow locator/redirect drift (e.g. rendered headings and login redirect targets changed)",
-    "issue": "#1895",
-    "category": "auth-drift",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
     "spec": "tests/playwright/e2e/test_billing.py::TestInvoicesList::test_new_invoice_button",
     "reason": "Page-object drift under investigation; fails with the harness repaired",
     "issue": "#1895",
@@ -180,14 +124,6 @@
   },
   {
     "spec": "tests/playwright/e2e/test_permissions.py::TestAuditLogPermissions::test_agent_cannot_view_audit_logs",
-    "reason": "Permission-flow page-object drift; failing with valid authentication",
-    "issue": "#1895",
-    "category": "permissions",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_permissions.py::TestUnauthenticatedAccess::test_unauthenticated_admin_page_redirects",
     "reason": "Permission-flow page-object drift; failing with valid authentication",
     "issue": "#1895",
     "category": "permissions",
