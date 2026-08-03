@@ -12,7 +12,12 @@ ruling matrix itself is covered in `test_ppp_delivery_authorization.py`.
 
 from __future__ import annotations
 
-from app.models.network import OntUnit, OntWanServiceInstance
+from app.models.network import (
+    OntAssignment,
+    OntUnit,
+    OntWanServiceInstance,
+    OntWanServiceLifecycle,
+)
 from app.services.cpe_dialer_credential_reconcile import termination_intent
 
 
@@ -23,11 +28,21 @@ def _ont(db_session, serial):
     return ont
 
 
-def test_declared_pppoe_service_intent_authorises(db_session):
+def test_declared_pppoe_service_intent_authorises(db_session, subscription):
     ont = _ont(db_session, "HWTC-GATE-OK")
     db_session.add(
+        OntAssignment(ont_unit_id=ont.id, subscription_id=subscription.id, active=True)
+    )
+    db_session.add(
         OntWanServiceInstance(
-            ont_id=ont.id, name="internet", connection_type="pppoe", is_active=True
+            ont_id=ont.id,
+            subscription_id=subscription.id,
+            name="internet",
+            service_type="internet",
+            connection_type="pppoe",
+            is_primary=True,
+            lifecycle_state=OntWanServiceLifecycle.active,
+            is_active=True,
         )
     )
     db_session.commit()
@@ -46,7 +61,40 @@ def test_no_declared_intent_refuses(db_session):
     eligible, reason = termination_intent(db_session, ont.id)
 
     assert eligible is False
-    assert reason == "no_pppoe_service_intent"
+    # No active assignment resolves to no exact service to check intent for.
+    assert reason == "no_active_assignment"
+
+
+def test_an_unverified_legacy_row_does_not_authorise_the_producer(
+    db_session, subscription
+):
+    """Producer and delivery must agree, including on the quarantine.
+
+    Migration 456 leaves legacy `is_active` untouched, so this row looks active
+    to anything reading the old flag while the owner holds it non-authorising.
+    """
+    ont = _ont(db_session, "HWTC-GATE-LEGACY")
+    db_session.add(
+        OntAssignment(ont_unit_id=ont.id, subscription_id=subscription.id, active=True)
+    )
+    db_session.add(
+        OntWanServiceInstance(
+            ont_id=ont.id,
+            subscription_id=subscription.id,
+            name="internet",
+            service_type="internet",
+            connection_type="pppoe",
+            is_primary=True,
+            lifecycle_state=OntWanServiceLifecycle.unverified,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    eligible, reason = termination_intent(db_session, ont.id)
+
+    assert eligible is False
+    assert reason == "no_active_service_intent"
 
 
 def test_the_gate_no_longer_reads_migration_084_residue():
@@ -63,7 +111,7 @@ def test_the_gate_no_longer_reads_migration_084_residue():
     # why they are not read, and matching on the word would flag the warning.
     body = gate.split('"""')[-1]
 
-    assert "authorize_ppp_delivery" in gate
+    assert "authorize_ppp_termination_intent" in gate
     assert ".wan_mode" not in body
     assert ".ip_mode" not in body
     assert "assignment_pppoe_username" not in body

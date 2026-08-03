@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -17,8 +19,9 @@ from app.models.sales import Quote, QuoteStatus
 from app.models.subscriber import SubscriberCategory
 from app.models.work_order import WorkOrder
 from app.schemas.subscriber import SubscriberCreate
-from app.services import sales_fulfillment, sales_orders
+from app.services import projects, sales_fulfillment, sales_orders
 from app.services.audit_adapter import stage_audit_event
+from app.services.common import round_money
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
 from app.services.owner_commands import (
@@ -44,6 +47,15 @@ class QuoteAcceptanceError(DomainError):
     """Stable failure raised by the quote-acceptance coordinator."""
 
 
+AcceptedQuoteMutation: TypeAlias = Literal[
+    "quote_fields",
+    "quote_deactivation",
+    "line_item_create",
+    "line_item_update",
+    "line_item_delete",
+]
+
+
 @dataclass(frozen=True)
 class AcceptQuoteCommand:
     context: CommandContext
@@ -59,6 +71,13 @@ class QuoteAcceptanceDeposit:
 
 
 @dataclass(frozen=True)
+class QuoteAcceptanceDepositEvidence:
+    reference: str
+    amount: Decimal
+    provider: str | None
+
+
+@dataclass(frozen=True)
 class QuoteAcceptanceOutcome:
     quote_id: UUID
     lead_id: UUID
@@ -68,6 +87,7 @@ class QuoteAcceptanceOutcome:
     project_template_id: UUID
     project_task_ids: tuple[UUID, ...]
     work_order_ids: tuple[UUID, ...]
+    deposit: QuoteAcceptanceDepositEvidence | None
     replayed: bool
 
 
@@ -76,6 +96,63 @@ def _error(suffix: str, message: str, **details: object) -> QuoteAcceptanceError
         code=f"sales.quote_acceptance.{suffix}",
         message=message,
         details=details,
+    )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def assert_quote_mutable(
+    quote: Quote,
+    *,
+    mutation: AcceptedQuoteMutation,
+) -> None:
+    """Reject changes that would corrupt an accepted commercial snapshot.
+
+    Acceptance copies the Quote and its lines into a SalesOrder. From that
+    transition onward, the accepted Quote is immutable evidence of what the
+    business approved; later commercial changes require a new Quote.
+    """
+
+    if quote.status != QuoteStatus.accepted.value:
+        return
+    raise _error(
+        "accepted_quote_immutable",
+        "An accepted Quote and its line items cannot be changed; create a new "
+        "Quote for revised commercial terms",
+        quote_id=str(quote.id),
+        attempted_mutation=mutation,
+    )
+
+
+def _assert_quote_not_expired(
+    quote: Quote,
+    *,
+    acceptance_attempted_at: datetime,
+) -> None:
+    expires_at = quote.expires_at
+    if expires_at is None:
+        return
+    expires_at_utc = (
+        expires_at.replace(tzinfo=UTC)
+        if expires_at.tzinfo is None
+        else expires_at.astimezone(UTC)
+    )
+    attempted_at_utc = (
+        acceptance_attempted_at.replace(tzinfo=UTC)
+        if acceptance_attempted_at.tzinfo is None
+        else acceptance_attempted_at.astimezone(UTC)
+    )
+    if expires_at_utc > attempted_at_utc:
+        return
+    raise _error(
+        "quote_expired",
+        "This Quote has expired and cannot be accepted; create a new Quote with "
+        "current commercial terms",
+        quote_id=str(quote.id),
+        expires_at=expires_at_utc.isoformat(),
+        acceptance_attempted_at=attempted_at_utc.isoformat(),
     )
 
 
@@ -190,10 +267,11 @@ def _convert_account(db: Session, quote: Quote, actor: str) -> UUID:
 
 
 def _stage_deposit_evidence(
-    quote: Quote, deposit: QuoteAcceptanceDeposit | None
-) -> None:
+    quote: Quote,
+    deposit: QuoteAcceptanceDeposit | None,
+) -> QuoteAcceptanceDepositEvidence | None:
     if deposit is None:
-        return
+        return None
     reference = deposit.reference.strip()
     provider = (deposit.provider or "").strip() or None
     if not reference or not deposit.amount.is_finite() or deposit.amount < 0:
@@ -201,21 +279,35 @@ def _stage_deposit_evidence(
             "deposit_evidence_invalid",
             "Quote acceptance deposit evidence is incomplete or invalid",
         )
+    normalized = QuoteAcceptanceDepositEvidence(
+        reference=reference,
+        amount=round_money(deposit.amount),
+        provider=provider,
+    )
     evidence = {
-        "reference": reference,
-        "amount": str(deposit.amount),
-        "provider": provider,
+        "reference": normalized.reference,
+        "amount": str(normalized.amount),
+        "provider": normalized.provider,
         "paid": True,
     }
     metadata = dict(quote.metadata_ or {})
     existing = metadata.get("deposit")
-    if existing is not None and existing != evidence:
+    if existing == evidence:
+        return normalized
+    if existing != evidence and (
+        existing is not None or quote.status == QuoteStatus.accepted.value
+    ):
         raise _error(
             "deposit_evidence_conflict",
             "Quote already carries different deposit evidence",
+            quote_id=str(quote.id),
+            submitted_reference=normalized.reference,
+            submitted_amount=str(normalized.amount),
+            submitted_provider=normalized.provider,
         )
     metadata["deposit"] = evidence
     quote.metadata_ = metadata
+    return normalized
 
 
 def _automated_work_orders(
@@ -234,13 +326,17 @@ def _automated_work_orders(
         .where(
             ProjectTask.project_id == project_id,
             ProjectTask.is_active.is_(True),
-            ProjectTemplateTask.is_active.is_(True),
-            ProjectTemplateTask.auto_create_work_order.is_(True),
         )
         .order_by(ProjectTemplateTask.sort_order.asc(), ProjectTask.id.asc())
     ).all()
     ids: list[UUID] = []
     for task, template_task in configured:
+        automation = projects.resolve_project_task_work_order_automation(
+            task,
+            template_task,
+        )
+        if not automation.auto_create:
+            continue
         row = work_order_commands.stage_automated_project_task_work_order(
             db,
             AutomatedProjectTaskWorkOrderCommand(
@@ -251,9 +347,7 @@ def _automated_work_orders(
                 description=task.description,
                 priority=task.priority,
                 address=(address or "")[:255] or None,
-                requires_as_built_evidence=(
-                    template_task.work_order_requires_as_built_evidence
-                ),
+                requires_as_built_evidence=automation.requires_as_built_evidence,
                 idempotency_key=f"quote-acceptance:project-task:{task.id}",
             ),
         )
@@ -281,13 +375,17 @@ def _stage_accept_quote(
             "Only Draft or Sent Quotes can transition to Accepted",
             current_status=quote.status,
         )
+    if not was_accepted:
+        _assert_quote_not_expired(
+            quote,
+            acceptance_attempted_at=_utc_now(),
+        )
     if not quote.line_items:
         raise _error(
             "line_items_required",
             "Add at least one line item before accepting this Quote",
         )
-    if not was_accepted:
-        _stage_deposit_evidence(quote, command.deposit)
+    deposit_evidence = _stage_deposit_evidence(quote, command.deposit)
 
     subscriber_id = _convert_account(db, quote, command.context.actor)
     lead = quote.lead
@@ -313,24 +411,22 @@ def _stage_accept_quote(
             .order_by(ProjectTask.created_at.asc(), ProjectTask.id.asc())
         ).all()
     )
-    if was_accepted:
-        work_order_ids = tuple(
-            db.scalars(
-                select(WorkOrder.id)
-                .where(
-                    WorkOrder.project_id == scope.project.id,
-                    WorkOrder.is_active.is_(True),
-                )
-                .order_by(WorkOrder.created_at.asc(), WorkOrder.id.asc())
-            ).all()
-        )
-    else:
-        work_order_ids = _automated_work_orders(
-            db,
-            project_id=scope.project.id,
-            subscriber_id=subscriber_id,
-            address=scope.project.customer_address,
-        )
+    _automated_work_orders(
+        db,
+        project_id=scope.project.id,
+        subscriber_id=subscriber_id,
+        address=scope.project.customer_address,
+    )
+    work_order_ids = tuple(
+        db.scalars(
+            select(WorkOrder.id)
+            .where(
+                WorkOrder.project_id == scope.project.id,
+                WorkOrder.is_active.is_(True),
+            )
+            .order_by(WorkOrder.created_at.asc(), WorkOrder.id.asc())
+        ).all()
+    )
     project_template_id = scope.project.project_template_id
     if project_template_id is None:
         raise _error(
@@ -384,6 +480,7 @@ def _stage_accept_quote(
         project_template_id=project_template_id,
         project_task_ids=project_tasks,
         work_order_ids=work_order_ids,
+        deposit=deposit_evidence,
         replayed=was_accepted,
     )
 

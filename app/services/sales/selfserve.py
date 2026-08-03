@@ -583,11 +583,12 @@ class SelfServeQuotes:
         """Accept a quote after the deposit is verified; record it; return
         the portal payload.
 
-        Idempotent on the quote's accepted state — a repeat call (e.g. a
-        payment-verify retry) returns the same already-created sales order.
+        Idempotent on the accepted Quote and its normalized deposit evidence —
+        an exact payment-verify retry returns the same already-created sales
+        order, while a changed reference, amount, or provider fails closed.
         The Accepted transition enters the atomic ``sales.quote_acceptance``
-        coordinator; the deposit is then only *marked* on the canonical sales
-        order — never a second payment (risk #2).
+        coordinator; the accepted deposit is then only *marked* on the
+        canonical sales order — never a second payment (risk #2).
         """
         quote = SelfServeQuotes.get_for_subscriber(db, subscriber_id, quote_id)
         # Preserve the scalar command identity before releasing the implicit
@@ -598,28 +599,32 @@ class SelfServeQuotes:
         amount = _money(deposit_amount)
         already_accepted = _quote_status(quote) == QuoteStatus.accepted.value
 
-        if not already_accepted:
-            db_session_adapter.release_read_transaction(db)
-            quote_acceptance.accept_quote(
-                db,
-                quote_acceptance.AcceptQuoteCommand(
-                    context=CommandContext.system(
-                        actor=f"subscriber:{subscriber_id}",
-                        scope="sales:quote-acceptance",
-                        reason="Verified self-serve Quote deposit",
-                        idempotency_key=f"quote-acceptance:{quote_uuid}",
-                    ),
-                    quote_id=quote_uuid,
-                    deposit=quote_acceptance.QuoteAcceptanceDeposit(
-                        reference=deposit_reference,
-                        amount=amount,
-                        provider=provider,
-                    ),
+        db_session_adapter.release_read_transaction(db)
+        outcome = quote_acceptance.accept_quote(
+            db,
+            quote_acceptance.AcceptQuoteCommand(
+                context=CommandContext.system(
+                    actor=f"subscriber:{subscriber_id}",
+                    scope="sales:quote-acceptance",
+                    reason="Verified self-serve Quote deposit",
+                    idempotency_key=f"quote-acceptance:{quote_uuid}",
                 ),
+                quote_id=quote_uuid,
+                deposit=quote_acceptance.QuoteAcceptanceDeposit(
+                    reference=deposit_reference,
+                    amount=amount,
+                    provider=provider,
+                ),
+            ),
+        )
+        if outcome.deposit is None:
+            raise quote_acceptance.QuoteAcceptanceError(
+                code="sales.quote_acceptance.command_contract_violation",
+                message="Quote acceptance did not return verified deposit evidence",
             )
-            db.refresh(quote)
+        db.refresh(quote)
 
-        _record_deposit_on_sales_order(db, quote, amount)
+        _record_deposit_on_sales_order(db, quote, outcome.deposit.amount)
         return build_portal_quote_payload(db, quote, already_accepted=already_accepted)
 
 

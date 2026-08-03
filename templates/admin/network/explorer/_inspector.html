@@ -1,0 +1,60 @@
+{% from "components/ui/macros.html" import status_presentation_badge %}
+{# On-demand inspector fragment for one explorer subject. Every tone, label,
+   measurement display, incident state, and link permission is owner-provided
+   by ui.network_explorer_projection; this fragment only arranges them. #}
+{% if inspector %}
+<div class="space-y-3" data-testid="explorer-inspector">
+    <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+            <p class="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{{ inspector.kind_label }}</p>
+            <p class="truncate text-sm font-semibold text-slate-900 dark:text-white">{{ inspector.label }}</p>
+        </div>
+        {% if inspector.state_presentation %}
+        {{ status_presentation_badge(inspector.state_presentation, size="sm") }}
+        {% endif %}
+    </div>
+    {% if inspector.state_reason %}
+    <p class="text-xs text-slate-500 dark:text-slate-400">{{ inspector.state_reason }}{% if inspector.observed_at %} &middot; seen {{ inspector.observed_at }}{% endif %}</p>
+    {% endif %}
+    {% for measurement in inspector.measurements %}
+    <p class="text-xs text-slate-600 dark:text-slate-400">{{ measurement.label }}: <span class="font-mono">{{ measurement.display }}</span></p>
+    {% endfor %}
+    {% for fact in inspector.facts %}
+    <p class="text-xs text-slate-600 dark:text-slate-400">{{ fact.label }}:
+        {% if fact.href and can(request, fact.href_permission) %}
+        <a href="{{ fact.href }}" class="font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400">{{ fact.display }}</a>
+        {% else %}<span class="font-medium">{{ fact.display }}</span>{% endif %}
+    </p>
+    {% endfor %}
+    {% if inspector.affected_count is not none %}
+    <p class="text-xs text-slate-600 dark:text-slate-400" data-testid="inspector-affected">
+        Affected customers: <span class="font-medium">{{ inspector.affected_count }}</span>
+        {% if inspector.affected_online is not none %}<span class="text-slate-400 dark:text-slate-500"> &middot; {{ inspector.affected_online }} online now</span>{% endif %}
+    </p>
+    {% endif %}
+    {% if inspector.incidents %}
+    <div class="space-y-1" data-testid="inspector-incidents">
+        <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Live incidents</p>
+        {% for incident in inspector.incidents %}
+        <p class="flex items-center gap-2 text-xs">
+            {{ status_presentation_badge(incident.presentation, size="sm") }}
+            <span class="text-slate-500 dark:text-slate-400">{{ incident.detection_source }}{% if incident.started_at %} &middot; since {{ incident.started_at }}{% endif %}</span>
+        </p>
+        {% endfor %}
+        {% if can(request, 'monitoring:read') %}
+        <a href="/admin/network/outages" class="text-xs text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open outage console</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    <div class="flex flex-wrap gap-3 border-t border-slate-100 pt-2 dark:border-slate-700">
+        {% if inspector.href and can(request, inspector.href_permission) %}
+        <a href="{{ inspector.href }}" class="text-xs font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400">Open asset page</a>
+        {% endif %}
+        {% if inspector.customer360_href and can(request, 'customer:read') %}
+        <a href="{{ inspector.customer360_href }}" class="text-xs font-medium text-blue-600 underline hover:text-blue-700 dark:text-blue-400" data-testid="inspector-customer360">Open Customer 360</a>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<p class="text-xs text-slate-500 dark:text-slate-400">This subject cannot be inspected — it does not exist, cannot be proven, or requires permissions you do not hold.</p>
+{% endif %}

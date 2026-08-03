@@ -11,8 +11,8 @@ compatible and legacy metadata Project Types are copied into the typed column;
 no commercial lifecycle state is changed. Existing null Lead links remain
 legacy debt, while the application command rejects them for every new write.
 
-Revision ID: 458_quote_acceptance_sales_conversion
-Revises: 457_customer_subledger_opening_positions
+Revision ID: 462_quote_acceptance_sales_conversion
+Revises: 461_outage_incident_ticket_links
 Create Date: 2026-08-02
 """
 
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "458_quote_acceptance_sales_conversion"
-down_revision = "457_customer_subledger_opening_positions"
+revision = "462_quote_acceptance_sales_conversion"
+down_revision = "461_outage_incident_ticket_links"
 branch_labels = None
 depends_on = None
 

@@ -1,6 +1,6 @@
 # Sales-to-Service Lifecycle Source of Truth
 
-**Status:** Approved and implemented through migration 457
+**Status:** Approved and implemented through migration 462
 **System of record:** Sub
 **Decision owner:** Michael
 
@@ -82,7 +82,10 @@ customer_experience.accepted
 
 The self-serve deposit path stages the same funding output with
 `record_order_payment=false`, because the deposit's only ledger event is the
-verified deposit-invoice payment.
+verified deposit-invoice payment. The initial accepted Quote records normalized
+deposit reference, amount, and provider evidence. An exact verification retry
+replays the same conversion and SalesOrder bookkeeping; changed evidence fails
+closed before SalesOrder money can be overwritten.
 
 ## Named owners
 
@@ -222,11 +225,28 @@ configuration. Changing one requires a migration/versioned contract and tests.
    InstallationProject, creates WorkOrders only for template tasks whose
    automation policy is enabled, and stages audit and outbox events. A missing
    template or any participant/event failure rolls the complete change back.
-   Durable event delivery occurs only after commit.
+   A Draft or Sent Quote whose expiry is at or before the locked acceptance
+   decision time fails closed with no downstream records. Durable event
+   delivery occurs only after commit. The accepted Quote and its line items are
+   then an immutable commercial snapshot matching the copied SalesOrder;
+   revised terms require a new Quote rather than editing or deactivating the
+   accepted evidence.
 4. Acceptance replay is idempotent by Quote identity. Structural unique keys
    and deterministic ProjectTask WorkOrder keys return the canonical account,
-   SalesOrder, Project, Tasks, and WorkOrders without duplicates. A conflicting
-   Lead, Party, account, or lifecycle state fails closed.
+   SalesOrder, Project, Tasks, and WorkOrders without duplicates. Each created
+   ProjectTask captures its template WorkOrder automation decision. Replay
+   creates only a missing WorkOrder required by that captured decision,
+   preserves existing and manual WorkOrders, and does not apply later template
+   edits retroactively. Generic ProjectTask metadata edits preserve these
+   owner-captured policy keys. Legacy ProjectTasks without a captured decision
+   use the currently linked active template task as a repair fallback. A conflicting
+   Lead, Party, account, or lifecycle state fails closed. Every Quote or line
+   mutation locks the parent Quote first, so an edit cannot race acceptance and
+   produce stale copied money. An already accepted replay does not re-evaluate
+   expiry; it returns or repairs the same canonical conversion records. When
+   deposit evidence is supplied, replay additionally requires the same
+   normalized reference, amount, and provider. Changed evidence is a conflict
+   and cannot rewrite SalesOrder payment fields.
 5. Every non-cancelled SalesOrder receives at most one structurally linked
    Project and InstallationProject. Users may create a WorkOrder against the
    Project or an individual ProjectTask. ProjectTask may own several
@@ -265,8 +285,10 @@ Quote acceptance is a synchronous structural boundary: no acceptance fact is
 authoritative unless its account, order, implementation scope, configured
 tasks/WorkOrders, audit, and outbox records all committed together. Money,
 implementation verification, provisioning outcomes, and CX acceptance after
-that boundary are never inferred. A later downstream delivery failure retains
-already-authoritative facts and is retried by projection/reconciliation.
+that boundary are never inferred. Accepted-Quote replay is also the repair
+entrypoint for a missing captured-policy WorkOrder and leaves unrelated manual
+work intact. A later downstream delivery failure retains already-authoritative
+facts and is retried by projection/reconciliation.
 
 Run the PII-free audit:
 

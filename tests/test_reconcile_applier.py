@@ -187,7 +187,7 @@ class _StubAcsClient:
 #: ruling is a refusal -- so an authorised ruling is part of the fixture, not
 #: an optional extra. Refusal behaviour is covered in
 #: tests/test_ppp_delivery_authorization.py.
-def _authorized_ppp():
+def _authorized_ppp(fingerprint="no-ppp-content"):
     from app.services.network.ppp_delivery_authorization import (
         PppDeliveryDecision,
         PppDeliveryRuling,
@@ -197,16 +197,46 @@ def _authorized_ppp():
         decision=PppDeliveryDecision.authorized,
         refusal=None,
         ont_id="test-ont",
-        instance_ids=("test-instance",),
+        subscription_id="test-subscription",
+        instance_id="test-instance",
+        instance_revision=1,
+        plan_fingerprint=fingerprint,
+        credential_fingerprint="test-credential-fp",
     )
 
 
-def _ctx(**overrides) -> ApplyContext:
+def _ctx(plan=None, **overrides) -> ApplyContext:
+    """Context whose ruling and scope agree about the plan being applied.
+
+    The scope is derived from the plan's PPP content, exactly as production
+    does, so these fixtures exercise the real equality check rather than a
+    ruling compared against itself.
+    """
+    from app.services.network.ppp_delivery_authorization import (
+        PppDeliveryScope,
+        plan_ppp_fingerprint,
+    )
+
+    actions = getattr(plan, "actions", ()) if plan is not None else ()
+    fingerprint = plan_ppp_fingerprint(actions)
+    ruling = overrides.pop("ppp_authorization", _authorized_ppp(fingerprint))
+    scope = overrides.pop(
+        "ppp_scope",
+        PppDeliveryScope(
+            ont_id="test-ont",
+            subscription_id="test-subscription",
+            instance_id="test-instance",
+            instance_revision=1,
+            plan_fingerprint=fingerprint,
+            credential_fingerprint="test-credential-fp",
+        ),
+    )
     return ApplyContext(
         olt_adapter=overrides.pop("olt_adapter", _StubOltAdapter()),
         acs_client=overrides.pop("acs_client", _StubAcsClient()),
         resolve_secret=overrides.pop("resolve_secret", lambda ref: f"PLAIN({ref})"),
-        ppp_authorization=overrides.pop("ppp_authorization", _authorized_ppp()),
+        ppp_authorization=ruling,
+        ppp_scope=scope,
     )
 
 
@@ -1093,11 +1123,6 @@ def test_default_secret_resolver_passes_ref_through_as_plaintext():
 
 def test_apply_uses_passthrough_when_no_resolver_provided():
     olt = _StubOltAdapter()
-    ctx = ApplyContext(
-        olt_adapter=olt,
-        acs_client=_StubAcsClient(),
-        ppp_authorization=_authorized_ppp(),
-    )
     plan = _plan(
         OltOmciPppoe(
             fsp="0/1/3",
@@ -1108,6 +1133,13 @@ def test_apply_uses_passthrough_when_no_resolver_provided():
             password_ref="literal-pw",
         )
     )
+    # No explicit resolver, but delivery still needs an authorised ruling whose
+    # scope matches this plan -- otherwise the PPP action is withheld and the
+    # passthrough behaviour under test never runs.
+    ctx = _ctx(plan, olt_adapter=olt, resolve_secret=None)
+    ctx.resolve_secret = ApplyContext(
+        olt_adapter=olt, acs_client=_StubAcsClient()
+    ).resolve_secret
     apply_plan(plan, ctx)
     assert olt.calls[0][2]["password"] == "literal-pw"
 

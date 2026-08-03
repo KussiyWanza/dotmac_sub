@@ -374,7 +374,11 @@ def update_quote(
         from fastapi import HTTPException
 
         raise HTTPException(
-            status_code=422,
+            status_code=(
+                409
+                if exc.code == "sales.quote_acceptance.accepted_quote_immutable"
+                else 422
+            ),
             detail={"code": exc.code, "message": exc.message},
         ) from exc
 

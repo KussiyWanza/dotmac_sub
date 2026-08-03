@@ -3,11 +3,17 @@ API port (§2.4): leads keep ``crm:lead:*``; pipelines ride ``crm:lead:*``;
 quotes and sales orders are tightened from the CRM's auth-only surface onto
 ``crm:quote:*`` / ``crm:sales_order:*`` (keys seeded by the RBAC PR)."""
 
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 
 from app.api import crm_sales as crm_sales_api
 from app.api import sales as sales_api
 from app.api import sales_orders as sales_orders_api
+from app.schemas.sales import QuoteUpdate
+from app.services.sales.quote_acceptance import QuoteAcceptanceError
 
 
 def _get_route(router, path: str, method: str) -> APIRoute:
@@ -114,6 +120,32 @@ def test_quote_routes_tightened_onto_crm_quote_permissions():
     assert _route_has_permission(
         router, "/crm/quote-line-items/{item_id}", "PATCH", "crm:quote:write"
     )
+
+
+def test_accepted_quote_mutation_maps_to_api_conflict(monkeypatch):
+    error = QuoteAcceptanceError(
+        code="sales.quote_acceptance.accepted_quote_immutable",
+        message="Accepted Quote cannot be changed",
+    )
+
+    def reject_update(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(crm_sales_api.sales_service.quotes, "update", reject_update)
+
+    with pytest.raises(HTTPException) as exc_info:
+        crm_sales_api.update_quote(
+            str(uuid4()),
+            QuoteUpdate(notes="changed"),
+            db=object(),
+            principal={"user_id": str(uuid4())},
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": error.code,
+        "message": error.message,
+    }
 
 
 def test_kanban_routes_ride_lead_permissions():

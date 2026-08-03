@@ -117,6 +117,74 @@ logger = logging.getLogger(__name__)
 
 _EnumT = TypeVar("_EnumT", bound=enum_module.Enum)
 
+_TEMPLATE_AUTO_CREATE_WORK_ORDER = "template_auto_create_work_order"
+_TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
+    "template_work_order_requires_as_built_evidence"
+)
+
+
+@dataclass(frozen=True)
+class ProjectTaskWorkOrderAutomation:
+    """Captured field-work policy for one instantiated template task."""
+
+    auto_create: bool
+    requires_as_built_evidence: bool
+
+
+def template_task_work_order_automation_metadata(
+    template_task: ProjectTemplateTask,
+) -> dict[str, bool]:
+    """Serialize the template decision when its ProjectTask is created."""
+
+    return {
+        _TEMPLATE_AUTO_CREATE_WORK_ORDER: template_task.auto_create_work_order,
+        _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT: (
+            template_task.work_order_requires_as_built_evidence
+        ),
+    }
+
+
+def resolve_project_task_work_order_automation(
+    task: ProjectTask,
+    template_task: ProjectTemplateTask,
+) -> ProjectTaskWorkOrderAutomation:
+    """Return captured policy, with current template state as legacy fallback."""
+
+    metadata = dict(task.metadata_ or {})
+    if _TEMPLATE_AUTO_CREATE_WORK_ORDER in metadata:
+        return ProjectTaskWorkOrderAutomation(
+            auto_create=metadata[_TEMPLATE_AUTO_CREATE_WORK_ORDER] is True,
+            requires_as_built_evidence=(
+                metadata.get(_TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT, True) is True
+            ),
+        )
+    return ProjectTaskWorkOrderAutomation(
+        auto_create=(template_task.is_active and template_task.auto_create_work_order),
+        requires_as_built_evidence=(
+            template_task.work_order_requires_as_built_evidence
+        ),
+    )
+
+
+def _preserve_template_task_work_order_automation(
+    task: ProjectTask,
+    data: dict[str, Any],
+) -> None:
+    """Keep owner-captured automation keys out of generic metadata updates."""
+
+    if "metadata_" not in data:
+        return
+    existing = dict(task.metadata_ or {})
+    updated = dict(data.get("metadata_") or {})
+    for key in (
+        _TEMPLATE_AUTO_CREATE_WORK_ORDER,
+        _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT,
+    ):
+        if key in existing:
+            updated[key] = existing[key]
+    data["metadata_"] = updated or None
+
+
 _PROJECT_RECONCILE = OwnerCommandDefinition(
     owner="operations.project_lifecycle",
     concern="project derived-state reconciliation",
@@ -2983,6 +3051,12 @@ class ProjectTemplateTasks(ListResponseMixin):
                 "project_id": project_uuid,
                 "title": template_task.title,
                 "template_task_id": template_task.id,
+                # Capture the automation decision on the ProjectTask. A later
+                # template edit must not reinterpret an already-created
+                # implementation scope during Quote-acceptance replay.
+                "metadata_": template_task_work_order_automation_metadata(
+                    template_task
+                ),
             }
             number = generate_number(
                 db=db,
@@ -3478,6 +3552,7 @@ class ProjectTasks(ListResponseMixin):
             _ensure_staff_uuid(str(data["created_by_person_id"]))
         if data.get("ticket_id"):
             _ensure_ticket(db, data["ticket_id"])
+        _preserve_template_task_work_order_automation(task, data)
         changed_fields.extend(list(data.keys()))
         for key, value in data.items():
             setattr(task, key, value)

@@ -112,6 +112,61 @@ def test_quote_acceptance_is_the_only_atomic_sales_conversion_boundary():
     assert "sales.quote_acceptance.required" in api
 
 
+def test_accepted_quote_snapshot_mutations_are_policy_guarded():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    sales = _source("app/services/sales/service.py")
+
+    assert "def assert_quote_mutable(" in coordinator
+    assert '"accepted_quote_immutable"' in coordinator
+    for mutation in (
+        "quote_fields",
+        "quote_deactivation",
+        "line_item_create",
+        "line_item_update",
+        "line_item_delete",
+    ):
+        assert f'mutation="{mutation}"' in sales
+    assert sales.count("assert_quote_mutable(") >= 5
+    assert "def _locked_quote_for_mutation(" in sales
+    assert "with_for_update()" in sales
+
+
+def test_initial_quote_acceptance_fails_closed_on_expiry():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+
+    assert "def _assert_quote_not_expired(" in coordinator
+    assert '"quote_expired"' in coordinator
+    assert "acceptance_attempted_at=_utc_now()" in coordinator
+    assert coordinator.count("_assert_quote_not_expired(") == 2
+
+
+def test_deposit_replay_uses_the_acceptance_owner_fingerprint():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    selfserve = _source("app/services/sales/selfserve.py")
+
+    assert "class QuoteAcceptanceDepositEvidence" in coordinator
+    assert '"deposit_evidence_conflict"' in coordinator
+    assert "amount=round_money(deposit.amount)" in coordinator
+    assert "existing == evidence" in coordinator
+    assert "outcome = quote_acceptance.accept_quote(" in selfserve
+    assert "if not already_accepted:" not in selfserve
+    assert "outcome.deposit.amount" in selfserve
+
+
+def test_quote_acceptance_replay_repairs_captured_work_order_automation():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    projects = _source("app/services/projects.py")
+
+    assert '"template_auto_create_work_order"' in projects
+    assert '"template_work_order_requires_as_built_evidence"' in projects
+    assert "_preserve_template_task_work_order_automation(task, data)" in projects
+    assert coordinator.count("_automated_work_orders(") == 2
+    acceptance = coordinator.split("def _stage_accept_quote(", 1)[1]
+    repair = acceptance.split("_automated_work_orders(", 1)[1]
+    assert "if was_accepted:" not in repair.split("project_template_id =", 1)[0]
+    assert "select(WorkOrder.id)" in repair
+
+
 def test_quote_authoring_cannot_perform_sales_conversion():
     authoring = _source("app/services/sales/quote_authoring.py")
     quote_model = _source("app/models/sales.py")

@@ -391,7 +391,7 @@ def test_accept_with_deposit_is_idempotent(db_session):
         db_session,
         str(sub.id),
         str(quote.id),
-        deposit_reference="ref_1_retry",
+        deposit_reference="ref_1",
         deposit_amount="37500.00",
     )
 
@@ -401,7 +401,7 @@ def test_accept_with_deposit_is_idempotent(db_session):
     assert second["sales_order_id"] == first["sales_order_id"]
     orders = db_session.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).all()
     assert len(orders) == 1
-    # The original deposit stamp survives the retry (no metadata overwrite).
+    # Only the exact evidence is idempotent; the original stamp is unchanged.
     assert second["deposit_reference"] == "ref_1"
 
 

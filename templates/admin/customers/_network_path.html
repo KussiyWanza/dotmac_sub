@@ -1,0 +1,33 @@
+{# Shared renderer for the NetworkGraphView contract
+   (ui.customer_network_path_projection). Templates arrange the owner's
+   nodes, gaps, and measurements; every tone, label, link target, and
+   display string is owner-provided. Links render only when the viewer
+   holds the owner-declared permission for the destination. #}
+{% macro network_path_graph(path, request, testid="network-path") %}
+<div data-testid="{{ testid }}">
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        {% for node in path.nodes %}
+        {% set chip_classes = "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs status-panel status-panel-" ~ node.presentation.tone ~ " status-foreground" %}
+        {% if node.href and can(request, node.href_permission) %}
+        <a href="{{ node.href }}" class="{{ chip_classes }} hover:underline" title="{{ node.tooltip }}" data-testid="{{ testid }}-node">{{ node.label }}</a>
+        {% else %}
+        <span class="{{ chip_classes }}" title="{{ node.tooltip }}" data-testid="{{ testid }}-node">{{ node.label }}</span>
+        {% endif %}
+        {% if not loop.last %}<span class="text-slate-400 dark:text-slate-500">&rarr;</span>{% endif %}
+        {% endfor %}
+    </div>
+    {% for gap in path.gaps %}
+    <p class="mt-2 text-xs status-tone-{{ gap.presentation.tone }} status-foreground" data-testid="{{ testid }}-gap">
+        <span class="font-medium">{{ gap.presentation.label }}</span> &mdash; {{ gap.message }}
+        {% if gap.repair_href and can(request, gap.repair_permission) %}
+        <a href="{{ gap.repair_href }}" class="ml-1 font-medium underline">Repair</a>
+        {% endif %}
+    </p>
+    {% endfor %}
+    {% for node in path.nodes %}
+    {% for measurement in node.measurements %}
+    <p class="mt-2 text-xs text-slate-600 dark:text-slate-400">{{ measurement.label }}: <span class="font-mono">{{ measurement.display }}</span></p>
+    {% endfor %}
+    {% endfor %}
+</div>
+{% endmacro %}

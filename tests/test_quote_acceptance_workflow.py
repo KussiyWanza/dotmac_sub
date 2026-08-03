@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +28,8 @@ from app.models.sales import (
 )
 from app.models.subscriber import Subscriber
 from app.models.work_order import WorkOrder
+from app.schemas.dispatch import WorkOrderHeaderCreate
+from app.schemas.project import ProjectTaskUpdate
 from app.schemas.sales import (
     LeadCapturePartyCreate,
     LeadCaptureRequest,
@@ -34,10 +38,12 @@ from app.schemas.sales import (
     QuoteCreate,
     QuoteLineItemCreate,
 )
+from app.services import projects
 from app.services import sales as sales_service
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.sales import capture, quote_acceptance
+from app.services.work_order_commands import work_order_commands
 
 
 def _lead(db, marker: str) -> Lead:
@@ -130,7 +136,11 @@ def _quote(
     return quote
 
 
-def _command(quote_id: UUID) -> quote_acceptance.AcceptQuoteCommand:
+def _command(
+    quote_id: UUID,
+    *,
+    deposit: quote_acceptance.QuoteAcceptanceDeposit | None = None,
+) -> quote_acceptance.AcceptQuoteCommand:
     return quote_acceptance.AcceptQuoteCommand(
         context=CommandContext.system(
             actor="pytest",
@@ -139,12 +149,21 @@ def _command(quote_id: UUID) -> quote_acceptance.AcceptQuoteCommand:
             idempotency_key=f"quote-acceptance:{quote_id}",
         ),
         quote_id=quote_id,
+        deposit=deposit,
     )
 
 
-def _accept(db, quote_id: UUID) -> quote_acceptance.QuoteAcceptanceOutcome:
+def _accept(
+    db,
+    quote_id: UUID,
+    *,
+    deposit: quote_acceptance.QuoteAcceptanceDeposit | None = None,
+) -> quote_acceptance.QuoteAcceptanceOutcome:
     db_session_adapter.release_read_transaction(db)
-    return quote_acceptance.accept_quote(db, _command(quote_id))
+    return quote_acceptance.accept_quote(
+        db,
+        _command(quote_id, deposit=deposit),
+    )
 
 
 def test_lead_and_draft_quote_create_no_downstream_records(db_session):
@@ -211,6 +230,164 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
         .filter(EventStore.event_type == "quote.accepted")
         .count()
         == 1
+    )
+
+
+def test_expired_quote_cannot_be_accepted(db_session, monkeypatch):
+    now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(quote_acceptance, "_utc_now", lambda: now)
+    _template(db_session)
+    lead = _lead(db_session, "expired")
+    quote = _quote(db_session, lead)
+    quote.expires_at = now - timedelta(seconds=1)
+    db_session.commit()
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as exc_info:
+        _accept(db_session, quote.id)
+
+    assert exc_info.value.code == "sales.quote_acceptance.quote_expired"
+    assert (
+        exc_info.value.details["expires_at"] == (now - timedelta(seconds=1)).isoformat()
+    )
+    db_session.expire_all()
+    assert db_session.get(Quote, quote.id).status == QuoteStatus.draft.value
+    assert db_session.get(Lead, lead.id).status == LeadStatus.new.value
+    assert db_session.query(Subscriber).count() == 0
+    assert db_session.query(SalesOrder).count() == 0
+    assert db_session.query(Project).count() == 0
+
+
+@pytest.mark.parametrize("expiry_delta", [None, timedelta(minutes=5)])
+def test_non_expired_quote_can_be_accepted(
+    db_session,
+    monkeypatch,
+    expiry_delta,
+):
+    now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(quote_acceptance, "_utc_now", lambda: now)
+    _template(db_session)
+    lead = _lead(db_session, f"non-expired-{expiry_delta is not None}")
+    quote = _quote(db_session, lead)
+    quote.expires_at = now + expiry_delta if expiry_delta is not None else None
+    db_session.commit()
+
+    outcome = _accept(db_session, quote.id)
+
+    assert outcome.replayed is False
+    assert db_session.get(Quote, quote.id).status == QuoteStatus.accepted.value
+
+
+def test_expiry_does_not_break_an_accepted_quote_replay(db_session, monkeypatch):
+    accepted_at = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(quote_acceptance, "_utc_now", lambda: accepted_at)
+    _template(db_session)
+    lead = _lead(db_session, "expiry-replay")
+    quote = _quote(db_session, lead)
+    quote.expires_at = accepted_at + timedelta(minutes=5)
+    db_session.commit()
+    first = _accept(db_session, quote.id)
+
+    monkeypatch.setattr(
+        quote_acceptance,
+        "_utc_now",
+        lambda: accepted_at + timedelta(minutes=10),
+    )
+    replay = _accept(db_session, quote.id)
+
+    assert replay.replayed is True
+    assert replay.sales_order_id == first.sales_order_id
+    assert replay.project_id == first.project_id
+
+
+def test_exact_deposit_evidence_replays_after_normalization(db_session):
+    _template(db_session)
+    lead = _lead(db_session, "deposit-replay")
+    quote = _quote(db_session, lead)
+    first = _accept(
+        db_session,
+        quote.id,
+        deposit=quote_acceptance.QuoteAcceptanceDeposit(
+            reference=" deposit-ref ",
+            amount=Decimal("37500.0"),
+            provider=" paystack ",
+        ),
+    )
+
+    replay = _accept(
+        db_session,
+        quote.id,
+        deposit=quote_acceptance.QuoteAcceptanceDeposit(
+            reference="deposit-ref",
+            amount=Decimal("37500.00"),
+            provider="paystack",
+        ),
+    )
+
+    assert replay.replayed is True
+    assert replay.sales_order_id == first.sales_order_id
+    assert replay.deposit == quote_acceptance.QuoteAcceptanceDepositEvidence(
+        reference="deposit-ref",
+        amount=Decimal("37500.00"),
+        provider="paystack",
+    )
+    db_session.refresh(quote)
+    assert quote.metadata_["deposit"] == {
+        "reference": "deposit-ref",
+        "amount": "37500.00",
+        "provider": "paystack",
+        "paid": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "conflicting_deposit",
+    [
+        quote_acceptance.QuoteAcceptanceDeposit(
+            reference="different-ref",
+            amount=Decimal("37500.00"),
+            provider="paystack",
+        ),
+        quote_acceptance.QuoteAcceptanceDeposit(
+            reference="deposit-ref",
+            amount=Decimal("1.00"),
+            provider="paystack",
+        ),
+        quote_acceptance.QuoteAcceptanceDeposit(
+            reference="deposit-ref",
+            amount=Decimal("37500.00"),
+            provider="different-provider",
+        ),
+    ],
+)
+def test_changed_deposit_evidence_is_rejected_on_replay(
+    db_session,
+    conflicting_deposit,
+):
+    _template(db_session)
+    lead = _lead(db_session, f"deposit-conflict-{uuid4().hex[:8]}")
+    quote = _quote(db_session, lead)
+    original = quote_acceptance.QuoteAcceptanceDeposit(
+        reference="deposit-ref",
+        amount=Decimal("37500.00"),
+        provider="paystack",
+    )
+    first = _accept(db_session, quote.id, deposit=original)
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as exc_info:
+        _accept(db_session, quote.id, deposit=conflicting_deposit)
+
+    assert exc_info.value.code == "sales.quote_acceptance.deposit_evidence_conflict"
+    db_session.expire_all()
+    stored = db_session.get(Quote, quote.id)
+    assert stored.metadata_["deposit"] == {
+        "reference": "deposit-ref",
+        "amount": "37500.00",
+        "provider": "paystack",
+        "paid": True,
+    }
+    assert (
+        db_session.query(SalesOrder).filter_by(quote_id=quote.id).one().id
+        == first.sales_order_id
     )
 
 
@@ -291,6 +468,16 @@ def test_duplicate_quote_acceptance_returns_existing_records(db_session):
     survey_policy = (
         db_session.query(ProjectTemplateTask).filter_by(title="Survey site").one()
     )
+    survey_task = (
+        db_session.query(ProjectTask)
+        .filter_by(project_id=first.project_id, title="Survey site")
+        .one()
+    )
+    projects.project_tasks.update(
+        db_session,
+        str(survey_task.id),
+        ProjectTaskUpdate(metadata_={"operator_note": "Site access confirmed"}),
+    )
     survey_policy.auto_create_work_order = True
     db_session.commit()
     second = _accept(db_session, quote.id)
@@ -308,3 +495,40 @@ def test_duplicate_quote_acceptance_returns_existing_records(db_session):
     assert db_session.query(ProjectTask).count() == 2
     assert db_session.query(WorkOrder).count() == 1
     assert db_session.query(AuditEvent).filter_by(action="quote.accepted").count() == 1
+
+
+def test_accepted_quote_replay_repairs_only_missing_configured_work_order(
+    db_session,
+):
+    _template(db_session)
+    lead = _lead(db_session, "repair-missing-work-order")
+    quote = _quote(db_session, lead)
+    first = _accept(db_session, quote.id)
+    automated = db_session.query(WorkOrder).filter_by(project_id=first.project_id).one()
+    manual = work_order_commands.create(
+        db_session,
+        WorkOrderHeaderCreate(
+            subscriber_id=first.subscriber_id,
+            project_id=first.project_id,
+            title="Manual quality inspection",
+        ),
+    )
+    db_session.delete(automated)
+    db_session.commit()
+
+    repaired = _accept(db_session, quote.id)
+    replayed = _accept(db_session, quote.id)
+    rows = (
+        db_session.query(WorkOrder)
+        .filter_by(project_id=first.project_id)
+        .order_by(WorkOrder.created_at.asc(), WorkOrder.id.asc())
+        .all()
+    )
+
+    assert repaired.replayed is True
+    assert replayed.replayed is True
+    assert repaired.work_order_ids == replayed.work_order_ids
+    assert len(rows) == 2
+    assert manual.id in repaired.work_order_ids
+    assert sum(row.project_task_id is not None for row in rows) == 1
+    assert sum(row.project_task_id is None for row in rows) == 1

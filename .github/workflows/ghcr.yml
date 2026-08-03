@@ -52,6 +52,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=dotmac-sub-application
           cache-to: type=gha,mode=max,scope=dotmac-sub-application
+          secrets: |
+            forgejo_token=${{ secrets.FORGEJO_READ_TOKEN }}
 
   # GenieACS used to be the one service compose still built on the production
   # host (`build: context: .`), which is why a prod box had to keep a full

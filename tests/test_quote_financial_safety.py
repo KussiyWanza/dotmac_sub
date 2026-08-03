@@ -13,13 +13,20 @@ all mutate quotes through it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
 from app.models.party import Party
 from app.models.project import ProjectTemplate
-from app.models.sales import Lead, Quote, QuoteStatus, SalesOrder
-from app.schemas.sales import LeadCreate, QuoteCreate, QuoteLineItemCreate, QuoteUpdate
+from app.models.sales import Lead, Quote, QuoteLineItem, QuoteStatus, SalesOrder
+from app.schemas.sales import (
+    LeadCreate,
+    QuoteCreate,
+    QuoteLineItemCreate,
+    QuoteLineItemUpdate,
+    QuoteUpdate,
+)
 from app.services import sales as sales_service
 from app.services.sales import quote_acceptance
 
@@ -74,8 +81,8 @@ def _draft(db_session, subscriber) -> Quote:
     )
 
 
-def _add_line(db_session, quote, *, unit_price="50000.00") -> None:
-    sales_service.quote_line_items.create(
+def _add_line(db_session, quote, *, unit_price="50000.00") -> QuoteLineItem:
+    return sales_service.quote_line_items.create(
         db_session,
         QuoteLineItemCreate(
             quote_id=quote.id,
@@ -212,3 +219,88 @@ def test_a_zero_priced_line_is_allowed(db_session, subscriber):
     db_session.refresh(quote)
     assert quote.status == QuoteStatus.accepted.value
     assert quote.total == 0
+
+
+def test_accepted_quote_fields_and_deactivation_are_rejected(
+    db_session,
+    subscriber,
+):
+    quote = _draft(db_session, subscriber)
+    _add_line(db_session, quote)
+    sales_service.quotes.update(
+        db_session,
+        str(quote.id),
+        QuoteUpdate(status=QuoteStatus.accepted),
+    )
+    order = db_session.query(SalesOrder).filter_by(quote_id=quote.id).one()
+    accepted_total = quote.total
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as edit_error:
+        sales_service.quotes.update(
+            db_session,
+            str(quote.id),
+            QuoteUpdate(notes="Repriced after acceptance"),
+        )
+    assert edit_error.value.code == ("sales.quote_acceptance.accepted_quote_immutable")
+    assert edit_error.value.details["attempted_mutation"] == "quote_fields"
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as delete_error:
+        sales_service.quotes.delete(db_session, str(quote.id))
+    assert delete_error.value.details["attempted_mutation"] == "quote_deactivation"
+
+    db_session.expire_all()
+    accepted = db_session.get(Quote, quote.id)
+    assert accepted is not None
+    assert accepted.notes is None
+    assert accepted.is_active is True
+    assert accepted.total == accepted_total
+    assert db_session.get(SalesOrder, order.id).total == accepted_total
+
+
+def test_accepted_quote_line_items_are_rejected_without_money_drift(
+    db_session,
+    subscriber,
+):
+    quote = _draft(db_session, subscriber)
+    line = _add_line(db_session, quote)
+    sales_service.quotes.update(
+        db_session,
+        str(quote.id),
+        QuoteUpdate(status=QuoteStatus.accepted),
+    )
+    order = db_session.query(SalesOrder).filter_by(quote_id=quote.id).one()
+    accepted_total = quote.total
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as create_error:
+        sales_service.quote_line_items.create(
+            db_session,
+            QuoteLineItemCreate(
+                quote_id=quote.id,
+                description="Unapproved extra work",
+                quantity=Decimal("1"),
+                unit_price=Decimal("1.00"),
+            ),
+        )
+    assert create_error.value.details["attempted_mutation"] == "line_item_create"
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as update_error:
+        sales_service.quote_line_items.update(
+            db_session,
+            str(line.id),
+            QuoteLineItemUpdate(unit_price=Decimal("1.00")),
+        )
+    assert update_error.value.details["attempted_mutation"] == "line_item_update"
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as delete_error:
+        sales_service.quote_line_items.delete(db_session, str(line.id))
+    assert delete_error.value.details["attempted_mutation"] == "line_item_delete"
+
+    db_session.expire_all()
+    accepted = db_session.get(Quote, quote.id)
+    stored_line = db_session.get(QuoteLineItem, line.id)
+    assert accepted is not None
+    assert stored_line is not None
+    assert stored_line.unit_price == Decimal("50000.00")
+    assert accepted.total == accepted_total
+    assert db_session.get(SalesOrder, order.id).total == accepted_total
+    assert db_session.query(QuoteLineItem).filter_by(quote_id=quote.id).count() == 1
