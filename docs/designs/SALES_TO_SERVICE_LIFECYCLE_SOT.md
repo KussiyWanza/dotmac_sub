@@ -185,9 +185,12 @@ depend on HTTP request/response or exception types.
   the same Quote, while conflicting reuse fails closed.
 - States and recovery: ordinary validation failures render an accessible error
   banner and preserve all scalar, location, line, and suggestion-identifier
-  values. Native browser constraints cover required Lead, currency, and numeric
-  bounds. The submit control exposes a Submitting state and rejects an in-flight
-  duplicate submission.
+  values. An active Tax Rate with an invalid percentage is excluded from the
+  selectable projection, emits structured drift evidence, and renders a
+  partial-data warning instead of preventing Quote authoring. Native browser
+  constraints cover required Lead, currency, and numeric bounds. The submit
+  control exposes a Submitting state and rejects an in-flight duplicate
+  submission.
 - Responsive projection: the form card is centered at `max-w-3xl`; multi-column
   rows stack on narrow screens; each Line Item becomes a touch-friendly card;
   keyboard focus, accessible labels, and light/dark variants use shared admin

@@ -33,6 +33,13 @@
     </div>
     {% endif %}
 
+    {% for warning in form_warnings|default(()) %}
+    <div role="status"
+         class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        {{ warning }}
+    </div>
+    {% endfor %}
+
     <form method="post" action="{{ action_url }}"
           x-data="quoteAuthoringForm({{ quote_form.items|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default('0.00')|tojson }})"
           @submit="handleSubmit($event)"
