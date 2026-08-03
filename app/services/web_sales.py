@@ -2110,10 +2110,14 @@ def _quote_tax_rate_options(
         )
     warnings = (
         (
-            "Some active Tax Rates are unavailable because their configured "
-            "percentage is invalid. Review Billing Tax Rates before using them."
-        ),
-    ) if invalid_ids else ()
+            (
+                "Some active Tax Rates are unavailable because their configured "
+                "percentage is invalid. Review Billing Tax Rates before using them."
+            ),
+        )
+        if invalid_ids
+        else ()
+    )
     return options, warnings
 
 

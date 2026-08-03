@@ -118,7 +118,7 @@ def test_new_quote_template_retains_responsive_dark_install_and_line_contracts()
     assert "removeItem(index)" in template
     assert "if (this.rows.length === 1)" in template
     assert 'loading_label="Submitting..."' in template
-    assert 'form_warnings|default(())' in template
+    assert "form_warnings|default(())" in template
     assert 'role="status"' in template
 
 
@@ -149,9 +149,7 @@ def test_new_quote_context_omits_invalid_active_tax_rate_without_500(db_session)
             SimpleNamespace(id=invalid_id, name="Broken VAT", rate=None),
         ],
     ):
-        context = web_sales.build_quote_new_context(
-            db_session, lead_id=str(lead.id)
-        )
+        context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
 
     assert context["tax_rates"] == [
         {
