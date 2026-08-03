@@ -192,6 +192,7 @@ def process_provider_observation(
                         fallback_service_team_id=payload.fallback_service_team_id,
                         metadata={
                             "provider": row.provider,
+                            "provider_account_scope": row.provider_account_scope,
                             "observation_id": str(row.id),
                             "attachments": [
                                 {

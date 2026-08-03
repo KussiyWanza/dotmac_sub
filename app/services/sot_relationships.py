@@ -20838,7 +20838,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "observability.audit_log",
                 ),
                 notes=(
-                    "The one-time pre-426 owner verifies the five retained native "
+                    "The one-time pre-426 owner verifies retained native "
                     "team pointers, retires workflow-setting sources, clears the "
                     "non-authoritative manager pointer, and removes only membership "
                     "rows that migration 426 would reject. It never reads CRM, "
@@ -20873,8 +20873,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "the five retained ticket, project, dispatch, "
-                                "Inbox-route, and Inbox-conversation team pointers"
+                                "retained ticket, project, dispatch, Inbox-route, "
+                                "AI-route, channel-route, and Inbox-conversation "
+                                "team pointers"
                             ),
                         ),
                         AuthorityInput(

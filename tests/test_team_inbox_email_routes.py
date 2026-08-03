@@ -63,6 +63,94 @@ def test_the_plan_builder_sees_the_new_route(db_session):
     assert plan.unmatched_recipients == []
 
 
+def test_channel_route_supplies_default_team_for_social_channel(db_session):
+    team_id = _team(db_session, "Customer Experience")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=team_id,
+        display_name="Main WhatsApp",
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+    )
+
+    assert decision.primary_service_team_id == str(team_id)
+    assert decision.channel_service_team_id == str(team_id)
+    assert decision.reason == "channel_route"
+
+
+def test_ai_route_overrides_channel_default_when_allowed_and_confident(db_session):
+    default_team_id = _team(db_session, "Customer Experience")
+    billing_team_id = _team(db_session, "Billing")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=default_team_id,
+        allow_ai_routing=True,
+    )
+    team_inbox_commands.create_ai_route(
+        db_session,
+        channel_type="any",
+        intent_key="billing_issue",
+        service_team_id=billing_team_id,
+        confidence_threshold=0.8,
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        metadata={"ai_intent": "billing issue", "ai_confidence": 0.91},
+    )
+
+    assert decision.primary_service_team_id == str(billing_team_id)
+    assert decision.channel_service_team_id == str(default_team_id)
+    assert decision.ai_service_team_id == str(billing_team_id)
+    assert decision.reason == "ai_intake_route"
+
+
+def test_ai_route_does_not_override_channel_when_disabled(db_session):
+    default_team_id = _team(db_session, "Customer Experience")
+    billing_team_id = _team(db_session, "Billing")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=default_team_id,
+        allow_ai_routing=False,
+    )
+    team_inbox_commands.create_ai_route(
+        db_session,
+        channel_type="any",
+        intent_key="billing_issue",
+        service_team_id=billing_team_id,
+        confidence_threshold=0.8,
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        metadata={"ai_intent": "billing_issue", "ai_confidence": 0.91},
+    )
+
+    assert decision.primary_service_team_id == str(default_team_id)
+    assert decision.ai_service_team_id is None
+    assert decision.reason == "channel_route"
+
+
 def test_a_duplicate_address_for_the_same_team_is_refused(db_session):
     team_id = _team(db_session, "Support")
     team_inbox_commands.create_email_route(
@@ -158,11 +246,19 @@ def test_the_admin_surface_is_a_thin_adapter():
     assert "team_inbox_commands.create_email_route" in ROUTES_MODULE
     assert "team_inbox_commands.update_email_route" in ROUTES_MODULE
     assert "team_inbox_commands.delete_email_route" in ROUTES_MODULE
+    assert "team_inbox_commands.create_channel_route" in ROUTES_MODULE
+    assert "team_inbox_commands.create_ai_route" in ROUTES_MODULE
     # The route must not touch the ORM directly.
     assert "TeamInboxEmailRoute(" not in ROUTES_MODULE
+    assert "TeamInboxChannelRoute(" not in ROUTES_MODULE
+    assert "TeamInboxAiRoute(" not in ROUTES_MODULE
 
 
 def test_the_page_states_what_it_does_not_control():
     """Routing decides where forwarded mail lands; it does not forward it."""
     assert "forwards to it" in ROUTES_TEMPLATE
+    assert "Channel defaults" in ROUTES_TEMPLATE
+    assert "AI intake routes" in ROUTES_TEMPLATE
+    assert "/admin/crm/inbox/channel-routes" in ROUTES_TEMPLATE
+    assert "/admin/crm/inbox/ai-routes" in ROUTES_TEMPLATE
     assert "components/forms/csrf_input.html" in ROUTES_TEMPLATE

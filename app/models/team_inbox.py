@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -103,6 +104,96 @@ class TeamInboxEmailRoute(Base):
     )
     email_address: Mapped[str] = mapped_column(String(255), nullable=False)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    metadata_: Mapped[dict | None] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON())
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    service_team = relationship("ServiceTeam")
+
+
+class TeamInboxChannelRoute(Base):
+    __tablename__ = "team_inbox_channel_routes"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel_type",
+            "provider",
+            "account_scope",
+            name="uq_team_inbox_channel_routes_identity",
+        ),
+        Index(
+            "ix_team_inbox_channel_routes_channel_active",
+            "channel_type",
+            "is_active",
+        ),
+        Index("ix_team_inbox_channel_routes_team", "service_team_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    service_team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_teams.id"), nullable=False
+    )
+    channel_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(160))
+    allow_ai_routing: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    metadata_: Mapped[dict | None] = mapped_column(
+        "metadata", MutableDict.as_mutable(JSON())
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    service_team = relationship("ServiceTeam")
+
+
+class TeamInboxAiRoute(Base):
+    __tablename__ = "team_inbox_ai_routes"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel_type",
+            "intent_key",
+            name="uq_team_inbox_ai_routes_channel_intent",
+        ),
+        Index("ix_team_inbox_ai_routes_active", "is_active", "priority"),
+        Index("ix_team_inbox_ai_routes_team", "service_team_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    service_team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("service_teams.id"), nullable=False
+    )
+    channel_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    intent_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(160))
+    confidence_threshold: Mapped[float] = mapped_column(
+        Float, default=0.75, nullable=False
+    )
     priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     metadata_: Mapped[dict | None] = mapped_column(

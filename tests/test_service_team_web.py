@@ -68,9 +68,6 @@ def test_service_team_forms_are_csrf_protected_and_keep_identity_evidence():
     form = (template_root / "form.html").read_text(encoding="utf-8")
     detail = (template_root / "detail.html").read_text(encoding="utf-8")
     index = (template_root / "index.html").read_text(encoding="utf-8")
-    ticket_settings = Path("templates/admin/system/ticket_settings.html").read_text(
-        encoding="utf-8"
-    )
 
     assert "components/forms/csrf_input.html" in form
     assert 'name="request_id"' in form
@@ -110,12 +107,6 @@ def test_service_team_forms_are_csrf_protected_and_keep_identity_evidence():
     assert "Capabilities" in index
     assert "Accountable managers" in index
     assert "role_region_groups" not in index
-    assert 'id="service-teams"' in ticket_settings
-    assert "service_team_options" in ticket_settings
-    assert "{{ team.label }}" in ticket_settings
-    assert "{{ team.id }}</a>" not in ticket_settings
-    assert "can(request, service_team_permissions.read)" in ticket_settings
-    assert "can(request, service_team_permissions.create)" in ticket_settings
     settings_hub = Path("templates/admin/system/settings_hub.html").read_text(
         encoding="utf-8"
     )

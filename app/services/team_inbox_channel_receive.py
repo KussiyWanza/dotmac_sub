@@ -427,17 +427,39 @@ def receive_inbound_channel(
 
     # A social or WhatsApp message carries no recipient address to route on, so
     # the plan is fallback-only. The webhooks pass no fallback, which left every
-    # WhatsApp, Messenger and Instagram thread with no owning team at all —
-    # absent from every team filter and from "My team" until a human escalated
-    # it by hand. The configured default team now stands in.
-    routing_plan = team_inbox_routing.build_email_team_routing_plan(
+    # Resolve push-channel ownership before creating the message so WhatsApp,
+    # Messenger and Instagram threads enter the same team queues as mailboxes.
+    metadata = dict(payload.metadata or {})
+    routing_decision = team_inbox_routing.resolve_channel_routing_decision(
         db,
-        to_addresses=[],
-        cc_addresses=[],
+        channel_type=channel_type,
+        provider=str(metadata.get("provider") or "") or None,
+        account_scope=str(
+            metadata.get("provider_account_scope")
+            or metadata.get("page_or_account_id")
+            or metadata.get("phone_number_id")
+            or ""
+        )
+        or None,
         fallback_service_team_id=(
             payload.fallback_service_team_id
             or team_inbox_routing.default_service_team_id(db)
         ),
+        metadata=metadata,
+    )
+    participant_ids = [
+        team_id
+        for team_id in (
+            routing_decision.primary_service_team_id,
+            routing_decision.channel_service_team_id,
+        )
+        if team_id
+    ]
+    routing_plan = team_inbox_routing.EmailTeamRoutingPlan(
+        primary_service_team_id=routing_decision.primary_service_team_id,
+        participant_service_team_ids=list(dict.fromkeys(participant_ids)),
+        matches=[],
+        unmatched_recipients=[],
     )
     team_inbox_routing.apply_email_routing_plan(
         db,
@@ -445,8 +467,18 @@ def receive_inbound_channel(
         plan=routing_plan,
     )
 
-    metadata = dict(payload.metadata or {})
     metadata["contact_resolution"] = resolution.as_metadata()
+    metadata["routing"] = {
+        "primary_service_team_id": routing_decision.primary_service_team_id,
+        "channel_service_team_id": routing_decision.channel_service_team_id,
+        "ai_service_team_id": routing_decision.ai_service_team_id,
+        "channel_route_id": routing_decision.channel_route_id,
+        "ai_route_id": routing_decision.ai_route_id,
+        "ai_routing_allowed": routing_decision.ai_routing_allowed,
+        "ai_intent_key": routing_decision.ai_intent_key,
+        "ai_confidence": routing_decision.ai_confidence,
+        "reason": routing_decision.reason,
+    }
     message = InboxMessage(
         conversation_id=conversation.id,
         channel_type=channel_type,
@@ -533,6 +565,11 @@ def receive_whatsapp_webhook(
             fallback_service_team_id=fallback_service_team_id,
             metadata={
                 "provider": normalized.get("provider"),
+                "provider_account_scope": (
+                    payload.get("phone_number_id")
+                    or payload.get("display_phone_number")
+                    or payload.get("provider_account_scope")
+                ),
                 "attachments": payload.get("attachments")
                 if isinstance(payload.get("attachments"), list)
                 else [],
