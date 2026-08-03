@@ -227,22 +227,6 @@
     "review_by": "2026-09-30"
   },
   {
-    "spec": "tests/playwright/e2e/test_reports.py::TestRevenueReports::test_revenue_report_accessible",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_reports.py::TestRevenueReports::test_revenue_report_date_filter",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
     "spec": "tests/playwright/e2e/test_reseller_portal.py::TestResellerLogin::test_reseller_login_succeeds_with_valid_credentials",
     "reason": "Reseller portal page-object drift; failing with a valid runner-minted session",
     "issue": "#1895",
@@ -311,54 +295,6 @@
     "reason": "Page-object drift under investigation; fails with the harness repaired",
     "issue": "#1895",
     "category": "tail",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_smoke_links.py::test_admin_internal_links_smoke",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_smoke_links.py::test_customer_portal_internal_links_smoke",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_smoke_links.py::test_public_internal_links_smoke",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_subscribers.py::TestSubscribersList::test_search_subscribers",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_subscribers.py::TestSubscriberEdit::test_edit_subscriber_form_loads",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
-    "spec": "tests/playwright/e2e/test_subscribers.py::TestSubscriberEdit::test_edit_subscriber_notes",
-    "reason": "Route retired or moved (/admin/subscribers is a 404; /admin/reports moved to /admin/reports/hub); page object never migrated",
-    "issue": "#1895",
-    "category": "retired-routes",
     "owner": "unassigned",
     "review_by": "2026-09-30"
   },

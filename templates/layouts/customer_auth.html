@@ -56,9 +56,9 @@
             <div class="flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-slate-500 dark:text-slate-400">
                 <p>&copy; 2026 {{ portal_name or (brand.legal_name if brand is defined and brand else 'Dotmac Technologies') }}. All rights reserved.</p>
                 <div class="flex items-center gap-6">
-                    <a href="/contact" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Contact</a>
-                    <a href="/privacy" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Privacy</a>
-                    <a href="/terms" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Terms</a>
+                    <a href="mailto:{{ brand.support_email }}" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Contact</a>
+                    <a href="/legal/privacy" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Privacy</a>
+                    <a href="/legal/terms" class="hover:text-slate-700 dark:hover:text-slate-200 transition-colors">Terms</a>
                 </div>
             </div>
         </div>

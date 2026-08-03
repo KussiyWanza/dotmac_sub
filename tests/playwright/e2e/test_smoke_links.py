@@ -4,6 +4,8 @@ import os
 from collections import deque
 from urllib.parse import urljoin, urlparse, urlunparse
 
+from playwright.sync_api import Error as PlaywrightError
+
 EXCLUDED_PATH_SNIPPETS = {
     "/logout",
     "/stop-impersonation",
@@ -69,7 +71,20 @@ def _crawl_links(page, base_url: str, start_paths: list[str], max_pages: int) ->
         if url in visited:
             continue
 
-        response = page.goto(url, wait_until="domcontentloaded")
+        try:
+            response = page.goto(url, wait_until="domcontentloaded")
+        except PlaywrightError as exc:
+            if "net::ERR_ABORTED" in str(exc):
+                # Navigations that start a download abort the page load;
+                # verify the link over plain HTTP instead.
+                fetched = page.request.get(url)
+                if fetched.status >= 400:
+                    raise AssertionError(
+                        f"{url} returned HTTP {fetched.status}"
+                    ) from exc
+                visited.add(url)
+                continue
+            raise
         visited.add(url)
 
         if response is None:
