@@ -1,10 +1,12 @@
-"""One owner advances the prepaid billing anchor from entitlement evidence.
+"""One forward owner advances the anchor; one reviewed reconciler repairs drift.
 
 `financial.prepaid_service_renewals` owns "prepaid subscription paid-through
 advancement". `financial.payments` commits cash, allocation and entitlement
 evidence and then emits a durable funding-change event; it must not project the
 anchor itself. An earlier attempt that called the projection inline from
 `_finalize_invoice_payment_effects` was reverted for exactly this reason.
+`financial.prepaid_billing_calendar_reconciliation` is the explicit historical
+repair owner and may write only the preview-bound UTC-to-WAT correction.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ ENTITLEMENTS = PROJECT_ROOT / "app" / "services" / "service_entitlements.py"
 OWNER = PROJECT_ROOT / "app" / "services" / "prepaid_service_renewals.py"
 HANDLER = (
     PROJECT_ROOT / "app" / "services" / "events" / "handlers" / "prepaid_renewal.py"
+)
+CALENDAR_RECONCILER = (
+    PROJECT_ROOT / "app" / "services" / "prepaid_billing_calendar_reconciliation.py"
 )
 
 
@@ -120,6 +125,16 @@ def test_the_owner_defines_the_single_anchor_projection() -> None:
         "confirm_prepaid_service_renewal",
         "run_due_prepaid_service_renewals",
     }
+
+
+def test_reviewed_calendar_reconciler_has_one_named_anchor_repair() -> None:
+    assert _assigns_next_billing_at(CALENDAR_RECONCILER) == {
+        "operation",
+        "reconcile_prepaid_billing_calendar",
+    }
+    source = CALENDAR_RECONCILER.read_text(encoding="utf-8")
+    assert "execute_owner_command(" in source
+    assert "preview_fingerprint" in source
 
 
 def test_payment_allocation_emits_the_funding_change_event() -> None:

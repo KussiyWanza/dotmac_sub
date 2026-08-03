@@ -92,6 +92,30 @@ def pinned_thresholds(monkeypatch):
 def enabled(monkeypatch):
     monkeypatch.setattr(outage_auto_notify, "_auto_enabled", lambda _s: True)
     monkeypatch.setattr(outage_auto_notify, "_dry_run", lambda _s: False)
+    # This path is superseded once network.outage_communications is armed;
+    # these tests exercise the pre-cutover behaviour.
+    monkeypatch.setattr(outage_auto_notify, "_superseded", lambda _s: False)
+
+
+def test_arming_the_communications_owner_stands_this_path_down(monkeypatch, enabled):
+    """Two customer outage senders must never be live at once."""
+    monkeypatch.setattr(outage_auto_notify, "_superseded", lambda _s: True)
+    dispatched = []
+    monkeypatch.setattr(
+        outage_auto_notify,
+        "dispatch_outage_notifications",
+        lambda *a, **k: dispatched.append(k) or {},
+    )
+
+    result = outage_auto_notify.auto_dispatch_due_outage_notifications(
+        _Session([_Incident()]),
+        now=NOW,
+        subscription_ids_for=lambda s, i: [uuid.uuid4()],
+    )
+
+    assert dispatched == []
+    assert result["dispatched"] is False
+    assert result["reason"] == "superseded_by_outage_communications"
 
 
 def _eligible(rows, monkeypatch, **overrides):
@@ -168,6 +192,7 @@ def test_scheduling_is_safe_before_the_decision(monkeypatch):
 def test_dry_run_plans_but_never_dispatches(monkeypatch):
     monkeypatch.setattr(outage_auto_notify, "_auto_enabled", lambda _s: True)
     monkeypatch.setattr(outage_auto_notify, "_dry_run", lambda _s: True)
+    monkeypatch.setattr(outage_auto_notify, "_superseded", lambda _s: False)
     dispatched = []
     monkeypatch.setattr(
         outage_auto_notify,

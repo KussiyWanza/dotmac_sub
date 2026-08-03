@@ -16,6 +16,8 @@ from app.models.billing import (
     LedgerSource,
     Payment,
     PaymentAllocation,
+    PaymentSettlement,
+    PaymentSettlementOrigin,
     PaymentStatus,
 )
 from app.models.catalog import BillingMode, SubscriptionStatus
@@ -116,6 +118,96 @@ def test_canonical_ledger_ignores_archived_mirror_and_uses_native_documents(
     assert calculate_customer_balance(db_session, subscriber.id) == Decimal("15.00")
     assert customer_financial_balances_by_currency(db_session, [subscriber.id]) == {
         subscriber.id: {"NGN": Decimal("15.00")}
+    }
+
+
+def test_settlement_net_is_customer_value_not_gross_provider_charge(
+    db_session, subscriber
+):
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("10710.66"),
+        provider_fee=Decimal("710.66"),
+        refunded_amount=Decimal("0.00"),
+        currency="NGN",
+        status=PaymentStatus.succeeded,
+        paid_at=datetime(2026, 8, 2, 20, 18, tzinfo=UTC),
+        memo="Deposit Account Credit",
+    )
+    db_session.add(payment)
+    db_session.flush()
+    db_session.add(
+        PaymentSettlement(
+            payment_id=payment.id,
+            amount=Decimal("10000.00"),
+            unallocated_amount=Decimal("10000.00"),
+            prepaid_amount=Decimal("0.00"),
+            currency="NGN",
+            origin=PaymentSettlementOrigin.provider_event,
+            idempotency_key="customer-value-provider-fee",
+        )
+    )
+    db_session.commit()
+
+    events = list_customer_financial_events(db_session, subscriber.id)
+
+    assert [(event.id, event.amount) for event in events] == [
+        (f"payment:{payment.id}", Decimal("10000.00"))
+    ]
+    assert calculate_customer_balance(db_session, subscriber.id) == Decimal("10000.00")
+    assert customer_financial_balances_by_currency(db_session, [subscriber.id]) == {
+        subscriber.id: {"NGN": Decimal("10000.00")}
+    }
+
+
+def test_settlement_customer_value_applies_refund_once(db_session, subscriber):
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("10710.66"),
+        provider_fee=Decimal("710.66"),
+        refunded_amount=Decimal("2000.00"),
+        currency="NGN",
+        status=PaymentStatus.partially_refunded,
+        paid_at=datetime(2026, 8, 2, 20, 18, tzinfo=UTC),
+    )
+    db_session.add(payment)
+    db_session.flush()
+    db_session.add(
+        PaymentSettlement(
+            payment_id=payment.id,
+            amount=Decimal("10000.00"),
+            unallocated_amount=Decimal("10000.00"),
+            prepaid_amount=Decimal("0.00"),
+            currency="NGN",
+            origin=PaymentSettlementOrigin.provider_event,
+            idempotency_key="customer-value-provider-fee-refund",
+        )
+    )
+    db_session.commit()
+
+    assert calculate_customer_balance(db_session, subscriber.id) == Decimal("8000.00")
+    assert customer_financial_balances_by_currency(db_session, [subscriber.id]) == {
+        subscriber.id: {"NGN": Decimal("8000.00")}
+    }
+
+
+def test_legacy_payment_without_settlement_keeps_gross_fallback(db_session, subscriber):
+    payment = Payment(
+        account_id=subscriber.id,
+        amount=Decimal("10710.66"),
+        provider_fee=Decimal("710.66"),
+        refunded_amount=Decimal("10.66"),
+        currency="NGN",
+        status=PaymentStatus.partially_refunded,
+        paid_at=datetime(2026, 8, 2, 20, 18, tzinfo=UTC),
+    )
+    db_session.add(payment)
+    db_session.commit()
+
+    assert payment.settlement is None
+    assert calculate_customer_balance(db_session, subscriber.id) == Decimal("10700.00")
+    assert customer_financial_balances_by_currency(db_session, [subscriber.id]) == {
+        subscriber.id: {"NGN": Decimal("10700.00")}
     }
 
 

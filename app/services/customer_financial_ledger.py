@@ -39,6 +39,7 @@ from app.models.billing import (
     LedgerSource,
     Payment,
     PaymentAllocation,
+    PaymentSettlement,
     PaymentStatus,
     ServiceEntitlement,
     ServiceEntitlementStatus,
@@ -172,16 +173,32 @@ def _in_window(
 
 
 def _payment_event(payment: Payment) -> CustomerFinancialEvent | None:
-    net_amount = _money(payment.amount) - _money(payment.refunded_amount)
-    if net_amount <= 0 or payment.account_id is None:
+    # A structurally evidenced settlement owns the customer value credited by
+    # a payment. ``Payment.amount`` is the gross gateway charge and may include
+    # a provider fee that never becomes customer funding. Historical payments
+    # without settlement evidence retain the bounded gross fallback until they
+    # are explicitly reconciled; guessing net value from ``provider_fee`` would
+    # assign authority to an unproved field combination.
+    settled_value = (
+        _money(payment.settlement.amount)
+        if payment.settlement is not None
+        else _money(payment.amount)
+    )
+    customer_value = settled_value - _money(payment.refunded_amount)
+    if customer_value <= 0 or payment.account_id is None:
         return None
     return CustomerFinancialEvent(
         id=f"payment:{payment.id}",
         account_id=payment.account_id,
         entry_type=LedgerEntryType.credit,
         source=LedgerSource.payment,
-        amount=net_amount,
-        currency=payment.currency or "NGN",
+        amount=customer_value,
+        currency=(
+            payment.settlement.currency
+            if payment.settlement is not None
+            else payment.currency
+        )
+        or "NGN",
         memo=payment.memo or payment.receipt_number or "Payment received",
         occurred_at=_event_date(payment.paid_at or payment.created_at),
         raw=payment,
@@ -780,16 +797,23 @@ def customer_financial_balances_by_currency(
                 code, Decimal("0.00")
             ) + round_money(Decimal(str(amount or 0)))
 
-    payment_currency = func.coalesce(Payment.currency, "NGN")
-    payment_net = func.coalesce(Payment.amount, 0) - func.coalesce(
-        Payment.refunded_amount, 0
+    payment_currency = func.coalesce(
+        PaymentSettlement.currency,
+        Payment.currency,
+        "NGN",
     )
+    payment_customer_value = func.coalesce(
+        PaymentSettlement.amount,
+        Payment.amount,
+        0,
+    ) - func.coalesce(Payment.refunded_amount, 0)
     payment_query = (
         db.query(
             Payment.account_id,
             payment_currency.label("currency"),
-            func.sum(payment_net).label("balance"),
+            func.sum(payment_customer_value).label("balance"),
         )
+        .outerjoin(PaymentSettlement, PaymentSettlement.payment_id == Payment.id)
         .filter(Payment.account_id.in_(account_uuids))
         .filter(Payment.is_active.is_(True))
         .filter(
@@ -801,7 +825,7 @@ def customer_financial_balances_by_currency(
                 ]
             )
         )
-        .filter(payment_net > 0)
+        .filter(payment_customer_value > 0)
     )
     if start is not None:
         payment_query = payment_query.filter(

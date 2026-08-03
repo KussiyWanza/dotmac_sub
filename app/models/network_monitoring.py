@@ -1243,6 +1243,85 @@ class OutageIncidentTicketLink(Base):
     scope_revision_sequence: Mapped[int | None] = mapped_column(Integer)
 
 
+class OutageCustomerNotice(Base):
+    """One customer-facing outage communication decision (OUTAGE_SLA_SPINE §3).
+
+    Append-only. One row per (incident, customer, stage) message the
+    communications owner decided to make, whether or not it reached anybody:
+    a dry-run plan, a suppressed recipient and a queued send all leave a row,
+    so "who did we tell, and when" is answerable without reading the mailer.
+
+    Two things depend on that completeness:
+
+    - **the recovery cohort.** A restoration message goes to exactly the
+      customers who were told about the outage, never to the current audience
+      — mid-incident joiners were never promised anything, and customers who
+      left still deserve the all-clear. ``communication_intent_id`` carries
+      the delivery lineage the design requires; ``status`` alone is a
+      decision, not a delivery.
+    - **duplicate suppression.** ``dedupe_key`` is unique, so a replayed
+      lifecycle event, a double-clicked console or a concurrent worker
+      converges on one message.
+
+    ``subscriber_id`` and ``subscription_ids`` carry no FK on purpose: the
+    communication audit must outlive a deleted customer (same rationale as
+    ``OutageNotificationDispatch``).
+    """
+
+    __tablename__ = "outage_customer_notices"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_outage_customer_notices_dedupe"),
+        Index(
+            "ix_outage_customer_notices_incident_stage",
+            "incident_id",
+            "subscriber_id",
+            "stage",
+        ),
+        Index(
+            "ix_outage_customer_notices_subscriber",
+            "subscriber_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outage_incidents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subscriber_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # opened | update | restored
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Monotonic per (incident, subscriber): 1 for the opening message, then
+    # each prolonged-outage update. Keeps repeated updates distinguishable
+    # while opened/restored stay naturally once-only.
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # The subscriptions this customer had in the incident audience when the
+    # message was composed — a customer with two affected services still gets
+    # exactly one message.
+    subscription_ids: Mapped[list | None] = mapped_column(JSON)
+    # The service-impact word that justified the message.
+    impact_state: Mapped[str | None] = mapped_column(String(30))
+    scope_revision_sequence: Mapped[int | None] = mapped_column(Integer)
+    # queued | suppressed | deduplicated | planned_dry_run |
+    # skipped_no_recipient | skipped_cap
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(60))
+    communication_intent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    recipient: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(String(255))
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
 class MaintenanceWindow(Base):
     """One planned maintenance window (OUTAGE_SLA_SPINE §5).
 

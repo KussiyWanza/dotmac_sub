@@ -92,6 +92,11 @@ DEFAULT_PERMISSIONS = [
     ("billing:payment:create", "Record payments"),
     ("billing:payment:update", "Update payments"),
     ("billing:payment:delete", "Delete/refund payments"),
+    ("billing:reconciliation:read", "View billing reconciliation queues"),
+    (
+        "billing:reconciliation:write",
+        "Confirm reviewed billing reconciliation corrections",
+    ),
     # Billing - Credit Notes
     ("billing:extension:read", "View service extensions"),
     ("billing:extension:create", "Create service extensions"),
@@ -339,6 +344,7 @@ ROLE_PERMISSIONS = {
         "audit:read",
         "billing:invoice:read",
         "billing:payment:read",
+        "billing:reconciliation:read",
         "billing:credit_note:read",
         "billing:account:read",
         "billing:ledger:read",
@@ -456,6 +462,8 @@ ROLE_PERMISSIONS = {
         "billing:payment:create",
         "billing:payment:update",
         "billing:payment:delete",
+        "billing:reconciliation:read",
+        "billing:reconciliation:write",
         "billing:credit_note:read",
         "billing:credit_note:create",
         "billing:credit_note:update",

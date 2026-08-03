@@ -394,6 +394,21 @@ def dispatch_outage_notifications(
     and final delivery to the notification system via ``emit_event``.
     """
     now = now or datetime.now(UTC)
+    # Superseded: ``network.outage_communications`` becomes the single
+    # canonical customer outage sender once armed. Refusing here (rather than
+    # only disarming the scheduler) is what makes the cutover real — an
+    # operator clicking the legacy console must not produce a second opening
+    # message from an audience the spine did not resolve.
+    from app.services.topology import outage_communications
+
+    if outage_communications.is_armed(session):
+        plan = plan_outage_notifications(
+            session, subscription_ids, incident_id=incident_id, now=now
+        )
+        plan["dispatched"] = False
+        plan["reason"] = "superseded_by_outage_communications"
+        return plan
+
     if not _enabled() or actor_id is None:
         plan = plan_outage_notifications(
             session, subscription_ids, incident_id=incident_id, now=now

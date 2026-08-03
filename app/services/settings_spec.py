@@ -2844,6 +2844,73 @@ SETTINGS_SPECS: list[SettingSpec] = [
         default=300,
         min_value=120,
     ),
+    # Customer outage communications (network.outage_communications,
+    # OUTAGE_SLA_SPINE §3). Arming this makes the spine-driven owner the
+    # canonical customer outage sender and disarms the legacy
+    # outage_notifications paths above — two senders must never be live at
+    # once. Same database-authoritative rationale as ADR 0004: anything that
+    # contacts customers must be re-tightenable from the admin UI mid-incident.
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_enabled",
+        label="Customer Outage Communications",
+        env_var="OUTAGE_CUSTOMER_COMMS_ENABLED",
+        value_type=SettingValueType.boolean,
+        default=False,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_dry_run",
+        label="Customer Outage Communications: Dry Run",
+        env_var="OUTAGE_CUSTOMER_COMMS_DRY_RUN",
+        value_type=SettingValueType.boolean,
+        default=True,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_settle_minutes",
+        label="Customer Outage Communications: Settling Window (minutes)",
+        env_var="OUTAGE_CUSTOMER_COMMS_SETTLE_MINUTES",
+        value_type=SettingValueType.integer,
+        default=15,
+        min_value=1,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_min_affected",
+        label="Customer Outage Communications: Minimum Affected Customers",
+        env_var="OUTAGE_CUSTOMER_COMMS_MIN_AFFECTED",
+        value_type=SettingValueType.integer,
+        default=5,
+        min_value=1,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_update_interval_hours",
+        label="Customer Outage Communications: Update Interval (hours)",
+        env_var="OUTAGE_CUSTOMER_COMMS_UPDATE_INTERVAL_HOURS",
+        value_type=SettingValueType.integer,
+        default=6,
+        min_value=1,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_max_recipients_per_run",
+        label="Customer Outage Communications: Max Recipients Per Run",
+        env_var="OUTAGE_CUSTOMER_COMMS_MAX_RECIPIENTS_PER_RUN",
+        value_type=SettingValueType.integer,
+        default=500,
+        min_value=1,
+    ),
+    SettingSpec(
+        domain=SettingDomain.network_monitoring,
+        key="outage_customer_comms_customer_cooldown_hours",
+        label="Customer Outage Communications: Per-Customer Cooldown (hours)",
+        env_var="OUTAGE_CUSTOMER_COMMS_CUSTOMER_COOLDOWN_HOURS",
+        value_type=SettingValueType.integer,
+        default=2,
+        min_value=1,
+    ),
     SettingSpec(
         domain=SettingDomain.network_monitoring,
         key="server_health_disk_warn_pct",

@@ -112,6 +112,7 @@ class EventType(enum.Enum):
     prepaid_renewal_terms_corrected = "prepaid_renewal_terms.corrected"
     prepaid_renewal_terms_audited = "prepaid_renewal_terms.audited"
     prepaid_draft_reconciled = "prepaid_draft.reconciled"
+    prepaid_billing_calendar_reconciled = "prepaid_billing_calendar.reconciled"
     ip_assignment_service_ownership_reconciled = (
         "ip_assignment.service_ownership_reconciled"
     )
@@ -383,6 +384,11 @@ class EventType(enum.Enum):
     # (network.cabinet_notice). Operational breadcrumb only: customer emails
     # are queued directly through communication intents, never via this event.
     cabinet_notice_dispatched = "cabinet_notice.dispatched"
+    # Customer outage communications pass completed
+    # (network.outage_communications, OUTAGE_SLA_SPINE §3). Operational
+    # breadcrumb only, same as the cabinet notice: the customer messages
+    # themselves are communication intents, never this event.
+    outage_customer_notice_dispatched = "outage_customer_notice.dispatched"
 
     # Outage incident lifecycle outputs
     # (docs/designs/NETWORK_OUTAGE_RESPONSE_LIFECYCLE.md). Staged atomically
