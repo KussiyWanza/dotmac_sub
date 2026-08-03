@@ -2,7 +2,8 @@
 
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
 plan; amended the same day for slice S2 (dependency pinned at
-`dotmac-kernel==0.1.0a8` — see "S2 acceptance claim"). Supersedes the
+`dotmac-kernel==0.1.0a8` — see "S2 acceptance claim") and slice S3 (composition
+declared in `app/composition.py` — see "S3 acceptance claim"). Supersedes the
 2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
 against `origin/main` 7807afcd. No code, schema, or dependency change is
 authorized by this document alone.
@@ -250,6 +251,60 @@ it authoritative and unchanged in meaning:
   transaction authority; adapters call registered owners and never commit.
 - The S4 pilot boundary, `access.radius_projection`, is already registered and
   stays the projection owner behind any `ProvisioningProvider` adapter.
+
+## S3 acceptance claim (declared 2026-08-02)
+
+S3 adds exactly one Sub-owned composition module, `app/composition.py`, and
+its executable acceptance, `tests/architecture/test_composition.py`. It is
+metadata only: no route, middleware, permission, engine, migration, owner, or
+transaction change (proven by a differential canary — the app imported with
+and without the composition module is route-for-route and
+middleware-for-middleware identical).
+
+**What was declared** — the four coarse SOT domains the S4–S6/S8 slices need,
+one `FeatureManifest` per domain (never one per service), five capability
+codes, each naming exactly one existing owner registered in
+`app/services/sot_relationships.py`:
+
+| Module (manifest) | Capability code | Registered SOT owner |
+| --- | --- | --- |
+| `sub.network_projection` | `network_projection.radius` | `access.radius_projection` |
+| `sub.backoffice_collaboration` | `backoffice_collaboration.material_release` | `operations.vendor_material_release` |
+| `sub.backoffice_collaboration` | `backoffice_collaboration.vendor_advance` | `operations.vendor_advances` |
+| `sub.billing_export` | `billing_export.erp_billing` | `integration.dotmac_erp_billing_adapter` |
+| `sub.licensing_reception` | `licensing_reception.module_enablement` | `control.module_manager` |
+
+Plus: a frozen `ProductAssemblySpec` (`dotmac-sub`) consumed by validation
+only — `app.main` remains the runtime owner; a `CapabilityCatalogue` built
+from the manifests (duplicate ownership fails closed, negative-tested); and
+the versioned dedicated-ISP profile `sub-dedicated-isp` v`1.0.0`
+(`DeploymentProfileSpec` + registry preflight) with independent axes —
+required modules (the four above), forbidden modules
+(`kernel.reference_features`, `kernel.messaging` — ledger-prohibited/defer-db
+surfaces), the eight provider seams (`none` for unfilled seams,
+`sub-owned-*` labels for Sub's in-repo owners, `nginx` ingress), locale
+`en-NG`, currency `NGN`, legal authority `NG`, residency `NG`.
+
+**What was deliberately NOT declared** — every other domain in the executable
+SOT registry (~25 further domains). Expansion happens in later domain slices,
+each with its own ledger amendment; generating a catalogue for the whole
+repository at once is expressly rejected by the plan. Sub manifests stay pure
+metadata: router/nav/seed fields are empty tuples (the starter's
+router-carrying manifest use is app-factory machinery; `mount_features`
+remains denied by the S1 guard).
+
+**Capability codes are NOT entitlements or permissions** (plan boundary 5).
+They are product vocabulary for releases and licences. They never feed RBAC,
+subscriber financial-access, or service-readiness decisions, and profile
+names never appear in business logic — enforced by a guard test that scans
+`app/` (outside the composition module) for the profile code and every
+capability code, with a red-sensitivity negative control.
+
+**No-orphan rule** — every declared capability code must map, in
+`app/composition.py::CAPABILITY_OWNERS`, to a service name that resolves in
+`app/services/sot_relationships.py::service_relationship`; a code pointing at
+a nonexistent owner is a test failure. The registry stays the ownership
+authority; the composition module only references it and holds no owner rows.
 
 ## S2 acceptance claim (pinned 2026-08-02)
 
