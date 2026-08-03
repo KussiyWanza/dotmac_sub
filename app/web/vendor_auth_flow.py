@@ -6,9 +6,9 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from app.db import get_db
 from app.services import auth_flow as auth_flow_service
 from app.services import credential_recovery
 from app.services.auth_flow import AuthFlow, decode_access_token
+from app.services.domain_errors import DomainError
 from app.services.field.vendor_auth import (
     VendorLoginEligibilityQuery,
     VendorLoginEligibilityStatus,
@@ -29,7 +30,7 @@ from app.services.web_auth import (
     PASSWORD_RESET_COOKIE,
     PASSWORD_RESET_COOKIE_TTL,
 )
-from app.web.auth.dependencies import AuthenticationRequired, validate_session_token
+from app.web.auth.dependencies import require_web_auth, validate_session_token
 from app.web.portal_branding import auth_branding_context
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,34 @@ class _CookiePolicy:
 class _IssuedTokens:
     access_token: str
     refresh_token: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthFailure:
+    """Typed view of the legacy auth owner's transport-shaped failures."""
+
+    status_code: int | None
+    detail: object
+
+
+class VendorWebAccessError(DomainError):
+    """The authenticated principal is not admitted to Vendor Operations."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="vendor_auth.access_required",
+            message=VENDOR_ACCESS_MESSAGE,
+        )
+
+
+def _auth_failure(exc: Exception) -> _AuthFailure:
+    """Normalize the legacy auth owner's exception into a typed local value."""
+
+    raw_status = getattr(exc, "status_code", None)
+    return _AuthFailure(
+        status_code=raw_status if isinstance(raw_status, int) else None,
+        detail=getattr(exc, "detail", None),
+    )
 
 
 def _cookie_policy(db: Session, request: Request) -> _CookiePolicy:
@@ -94,26 +123,6 @@ def _safe_vendor_next(next_url: str | None) -> str:
         if not candidate.startswith("//") and not candidate.startswith("/\\"):
             return candidate
     return _VENDOR_DEFAULT_PATH
-
-
-def _request_next_url(request: Request) -> str:
-    next_url = str(request.url.path)
-    if request.url.query:
-        next_url += f"?{request.url.query}"
-    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
-        return _safe_vendor_next(next_url)
-    referer = str(request.headers.get("referer") or "").strip()
-    if not referer:
-        return _safe_vendor_next(next_url)
-    parsed = urlparse(referer)
-    if parsed.netloc and parsed.netloc != request.url.netloc:
-        return _safe_vendor_next(next_url)
-    if parsed.scheme and parsed.scheme != request.url.scheme:
-        return _safe_vendor_next(next_url)
-    referer_path = str(parsed.path or "")
-    if parsed.query:
-        referer_path += f"?{parsed.query}"
-    return _safe_vendor_next(referer_path)
 
 
 def _vendor_login_url(next_url: str | None = None, error: str | None = None) -> str:
@@ -155,18 +164,23 @@ def _require_access_token_vendor(db: Session, access_token: str) -> dict[str, ob
     principal_id = str(payload.get("principal_id") or payload.get("sub") or "")
     principal_type = str(payload.get("principal_type") or "")
     if not principal_id or principal_type != "system_user":
-        raise HTTPException(status_code=403, detail=VENDOR_ACCESS_MESSAGE)
-    return vendor_context(
-        db,
-        {
-            "principal_id": principal_id,
-            "person_id": principal_id,
-            "principal_type": principal_type,
-            "session_id": str(payload.get("session_id") or ""),
-            "roles": [],
-            "scopes": [],
-        },
-    )
+        raise VendorWebAccessError()
+    try:
+        return vendor_context(
+            db,
+            {
+                "principal_id": principal_id,
+                "person_id": principal_id,
+                "principal_type": principal_type,
+                "session_id": str(payload.get("session_id") or ""),
+                "roles": [],
+                "scopes": [],
+            },
+        )
+    except Exception as exc:
+        if _auth_failure(exc).status_code == 403:
+            raise VendorWebAccessError from exc
+        raise
 
 
 def _set_login_cookies(
@@ -246,8 +260,9 @@ def vendor_login_page(
     if auth:
         try:
             vendor_context(db, auth)
-        except HTTPException:
-            pass
+        except Exception as exc:
+            if _auth_failure(exc).status_code != 403:
+                raise
         else:
             return RedirectResponse(url=_safe_vendor_next(next_url), status_code=303)
     return templates.TemplateResponse(
@@ -258,13 +273,12 @@ def vendor_login_page(
 
 
 def _login_error(exc: Exception) -> str:
-    if isinstance(exc, HTTPException):
-        detail = exc.detail
-        if isinstance(detail, dict):
-            message = detail.get("message")
-            return str(message) if message else "Invalid credentials"
-        if isinstance(detail, str) and detail:
-            return detail
+    detail = _auth_failure(exc).detail
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        return str(message) if message else "Invalid credentials"
+    if isinstance(detail, str) and detail:
+        return detail
     return "Invalid credentials"
 
 
@@ -345,8 +359,9 @@ def vendor_login_submit(
         _set_remember_cookie(response, db, request, remember)
         return response
     except Exception as exc:
-        if isinstance(exc, HTTPException) and isinstance(exc.detail, dict):
-            if exc.detail.get("code") == "PASSWORD_RESET_REQUIRED":
+        failure = _auth_failure(exc)
+        if isinstance(failure.detail, dict):
+            if failure.detail.get("code") == "PASSWORD_RESET_REQUIRED":
                 reset = credential_recovery.issue_reset_capability_for_email(
                     db, username, ttl_minutes=15
                 )
@@ -415,14 +430,11 @@ def vendor_mfa_submit(
         _set_login_cookies(response, db, request, tokens, remember=remember)
         return response
     except Exception as exc:
-        status_code = (
-            429 if isinstance(exc, HTTPException) and exc.status_code == 429 else 401
-        )
+        failure = _auth_failure(exc)
+        status_code = 429 if failure.status_code == 429 else 401
         message = (
-            str(exc.detail)
-            if isinstance(exc, HTTPException)
-            and exc.status_code == 429
-            and isinstance(exc.detail, str)
+            str(failure.detail)
+            if failure.status_code == 429 and isinstance(failure.detail, str)
             else "Invalid verification code"
         )
         return templates.TemplateResponse(
@@ -475,9 +487,10 @@ def vendor_refresh(
         tokens = _issued_tokens(result)
         _require_access_token_vendor(db, tokens.access_token)
     except Exception as exc:
+        failure = _auth_failure(exc)
         error = (
             VENDOR_ACCESS_MESSAGE
-            if isinstance(exc, HTTPException) and exc.status_code == 403
+            if isinstance(exc, VendorWebAccessError) or failure.status_code == 403
             else None
         )
         return RedirectResponse(
@@ -490,16 +503,7 @@ def vendor_refresh(
 
 
 def require_vendor_web_auth(
-    request: Request,
+    auth: dict = Depends(require_web_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    existing = getattr(request.state, "auth", None)
-    auth = (
-        existing if isinstance(existing, dict) else validate_session_token(request, db)
-    )
-    if not auth or not auth.get("principal_id"):
-        next_url = _request_next_url(request)
-        raise AuthenticationRequired(
-            f"/vendor/auth/refresh?next={quote(next_url, safe='')}"
-        )
     return vendor_context(db, auth)

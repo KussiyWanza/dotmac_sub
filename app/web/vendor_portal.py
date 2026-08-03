@@ -53,7 +53,7 @@ from app.services.vendor_submission_proposals import (
     ConfirmVendorSubmissionCommand,
 )
 from app.services.vendor_supply_views import project_workspace
-from app.services.web_vendor_auth import require_vendor_web_auth
+from app.web.vendor_auth_flow import require_vendor_web_auth
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/vendor", tags=["web-vendor-portal"])

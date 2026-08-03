@@ -18,8 +18,8 @@ from app.models.field_vendor import FieldVendor, FieldVendorUser
 from app.models.subscriber import UserType
 from app.models.system_user import SystemUser
 from app.models.vendor_routes import Vendor
-from app.services import web_vendor_auth
 from app.services.auth_flow import AuthFlow, hash_password
+from app.web import vendor_auth_flow as web_vendor_auth
 
 
 def _request(

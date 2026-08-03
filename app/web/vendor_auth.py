@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.services import web_vendor_auth
+from app.web import vendor_auth_flow
 
 router = APIRouter(prefix="/vendor/auth", tags=["web-vendor-auth"])
 
@@ -17,7 +17,12 @@ def vendor_login_page(
     next: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
-    return web_vendor_auth.vendor_login_page(request, db, error, next)
+    return vendor_auth_flow.vendor_login_page(
+        request=request,
+        db=db,
+        error=error,
+        next_url=next,
+    )
 
 
 @router.post("/login", response_class=HTMLResponse)
@@ -29,8 +34,13 @@ def vendor_login_submit(
     next: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> Response:
-    return web_vendor_auth.vendor_login_submit(
-        request, db, username, password, remember, next
+    return vendor_auth_flow.vendor_login_submit(
+        request=request,
+        db=db,
+        username=username,
+        password=password,
+        remember=remember,
+        next_url=next,
     )
 
 
@@ -40,7 +50,11 @@ def vendor_mfa_page(
     error: str | None = None,
     next: str | None = None,
 ) -> Response:
-    return web_vendor_auth.vendor_mfa_page(request, error, next)
+    return vendor_auth_flow.vendor_mfa_page(
+        request=request,
+        error=error,
+        next_url=next,
+    )
 
 
 @router.post("/mfa", response_class=HTMLResponse)
@@ -50,12 +64,20 @@ def vendor_mfa_submit(
     next: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> Response:
-    return web_vendor_auth.vendor_mfa_submit(request, db, code, next)
+    return vendor_auth_flow.vendor_mfa_submit(
+        request=request,
+        db=db,
+        code=code,
+        next_url=next,
+    )
 
 
 @router.get("/forgot-password", response_class=HTMLResponse)
 def vendor_forgot_password_page(request: Request, success: bool = False) -> Response:
-    return web_vendor_auth.vendor_forgot_password_page(request, success)
+    return vendor_auth_flow.vendor_forgot_password_page(
+        request=request,
+        success=success,
+    )
 
 
 @router.post("/forgot-password", response_class=HTMLResponse)
@@ -64,7 +86,11 @@ def vendor_forgot_password_submit(
     email: str = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
-    return web_vendor_auth.vendor_forgot_password_submit(request, db, email)
+    return vendor_auth_flow.vendor_forgot_password_submit(
+        request=request,
+        db=db,
+        email=email,
+    )
 
 
 @router.get("/refresh")
@@ -73,4 +99,8 @@ def vendor_refresh(
     next: str | None = None,
     db: Session = Depends(get_db),
 ) -> Response:
-    return web_vendor_auth.vendor_refresh(request, db, next)
+    return vendor_auth_flow.vendor_refresh(
+        request=request,
+        db=db,
+        next_url=next,
+    )
