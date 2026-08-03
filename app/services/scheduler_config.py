@@ -1355,6 +1355,16 @@ def build_beat_schedule() -> dict:
             enabled=control_registry.is_enabled(session, "network.ont_reconcile"),
             interval_seconds=max(ont_reconcile_seconds, 300),
         )
+        # Independent of network.ont_reconcile ON PURPOSE: the fleet-wide
+        # control is often disabled while holds are in force, and gating this
+        # on it would silence the overdue alarm exactly when it matters.
+        _sync_scheduled_task(
+            session,
+            name="ont_reconcile_holds_overdue",
+            task_name="app.tasks.ont_reconcile.alert_overdue_reconcile_holds",
+            enabled=True,
+            interval_seconds=3600,
+        )
         ont_status_seconds = resolve_integer(
             session,
             SettingDomain.network_monitoring,

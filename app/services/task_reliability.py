@@ -470,6 +470,17 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
     "app.tasks.ont_reconcile.run_ont_reconcile_sweep": _c(
         "network", SWEEP, IDEMP, HEALTH
     ),
+    "app.tasks.ont_reconcile.alert_overdue_reconcile_holds": _c(
+        "network",
+        SWEEP,
+        IDEMP,
+        HEALTH,
+        "Pure read: reports reconciliation holds past their review date and "
+        "releases nothing, so re-running is free. Scheduled independently of "
+        "network.ont_reconcile because that control is typically disabled while "
+        "holds are in force -- gating the alarm on it would silence it exactly "
+        "when the holds are active and least supervised.",
+    ),
     "app.tasks.ont_reconcile.reconcile_huawei_ont": _c(
         "network",
         STATE,
