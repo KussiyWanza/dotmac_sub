@@ -1146,6 +1146,120 @@ def delete_email_route(db: Session, *, route_id: str | UUID) -> None:
     _commit(db, action)
 
 
+def create_channel_route(
+    db: Session,
+    *,
+    channel_type: str,
+    provider: str | None,
+    account_scope: str | None,
+    service_team_id: str | UUID,
+    display_name: str | None = None,
+    allow_ai_routing: bool = True,
+    priority: int = 100,
+) -> str:
+    def action() -> str:
+        route = team_inbox_routing.create_channel_route(
+            db,
+            channel_type=channel_type,
+            provider=provider,
+            account_scope=account_scope,
+            service_team_id=service_team_id,
+            display_name=display_name,
+            allow_ai_routing=allow_ai_routing,
+            priority=priority,
+        )
+        return str(route.id)
+
+    return _commit(db, action)
+
+
+def update_channel_route(
+    db: Session,
+    *,
+    route_id: str | UUID,
+    service_team_id: str | UUID | None = None,
+    display_name: str | None = None,
+    allow_ai_routing: bool | None = None,
+    priority: int | None = None,
+    is_active: bool | None = None,
+) -> None:
+    def action() -> None:
+        team_inbox_routing.update_channel_route(
+            db,
+            route_id,
+            service_team_id=service_team_id,
+            display_name=display_name,
+            allow_ai_routing=allow_ai_routing,
+            priority=priority,
+            is_active=is_active,
+        )
+
+    _commit(db, action)
+
+
+def delete_channel_route(db: Session, *, route_id: str | UUID) -> None:
+    def action() -> None:
+        team_inbox_routing.delete_channel_route(db, route_id)
+
+    _commit(db, action)
+
+
+def create_ai_route(
+    db: Session,
+    *,
+    channel_type: str,
+    intent_key: str,
+    service_team_id: str | UUID,
+    display_name: str | None = None,
+    confidence_threshold: float = 0.75,
+    priority: int = 100,
+) -> str:
+    def action() -> str:
+        route = team_inbox_routing.create_ai_route(
+            db,
+            channel_type=channel_type,
+            intent_key=intent_key,
+            service_team_id=service_team_id,
+            display_name=display_name,
+            confidence_threshold=confidence_threshold,
+            priority=priority,
+        )
+        return str(route.id)
+
+    return _commit(db, action)
+
+
+def update_ai_route(
+    db: Session,
+    *,
+    route_id: str | UUID,
+    service_team_id: str | UUID | None = None,
+    display_name: str | None = None,
+    confidence_threshold: float | None = None,
+    priority: int | None = None,
+    is_active: bool | None = None,
+) -> None:
+    def action() -> None:
+        team_inbox_routing.update_ai_route(
+            db,
+            route_id,
+            service_team_id=service_team_id,
+            display_name=display_name,
+            confidence_threshold=confidence_threshold,
+            priority=priority,
+            is_active=is_active,
+        )
+
+    _commit(db, action)
+
+
+def delete_ai_route(db: Session, *, route_id: str | UUID) -> None:
+    def action() -> None:
+        team_inbox_routing.delete_ai_route(db, route_id)
+
+    _commit(db, action)
+
+
 def stage_attachments(
     db: Session,
     *,

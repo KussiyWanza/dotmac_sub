@@ -14,12 +14,14 @@ from app.services import service_team_source_retirement
 from app.services.owner_commands import CommandContext
 
 
-def test_source_retirement_gate_is_narrow_and_has_five_native_pointers():
+def test_source_retirement_gate_is_narrow_and_has_native_pointers():
     assert service_team_source_retirement.TEAM_POINTERS == (
         ("support_tickets", "service_team_id"),
         ("projects", "service_team_id"),
         ("dispatch_rules", "service_team_id"),
         ("team_inbox_email_routes", "service_team_id"),
+        ("team_inbox_channel_routes", "service_team_id"),
+        ("team_inbox_ai_routes", "service_team_id"),
         ("inbox_conversation_teams", "service_team_id"),
     )
     source = Path("app/services/service_team_source_retirement.py").read_text(

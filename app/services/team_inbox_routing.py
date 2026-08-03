@@ -11,6 +11,8 @@ from app.models.team_inbox import (
     InboxConversationTeam,
     InboxTeamRole,
     InboxTeamSource,
+    TeamInboxAiRoute,
+    TeamInboxChannelRoute,
     TeamInboxEmailRoute,
 )
 from app.services import team_outbound
@@ -284,6 +286,46 @@ class EmailRouteRow:
     is_active: bool
 
 
+@dataclass(frozen=True)
+class ChannelRouteRow:
+    id: str
+    channel_type: str
+    provider: str
+    account_scope: str
+    display_name: str | None
+    service_team_id: str
+    service_team_name: str | None
+    allow_ai_routing: bool
+    priority: int
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class AiRouteRow:
+    id: str
+    channel_type: str
+    intent_key: str
+    display_name: str | None
+    service_team_id: str
+    service_team_name: str | None
+    confidence_threshold: float
+    priority: int
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class ChannelRoutingDecision:
+    primary_service_team_id: str | None
+    channel_service_team_id: str | None
+    ai_service_team_id: str | None
+    channel_route_id: str | None
+    ai_route_id: str | None
+    ai_routing_allowed: bool
+    ai_intent_key: str | None
+    ai_confidence: float | None
+    reason: str
+
+
 def list_email_routes(
     db: Session, *, include_inactive: bool = True
 ) -> list[EmailRouteRow]:
@@ -318,6 +360,337 @@ def list_email_routes(
         )
         for route, team in query.all()
     ]
+
+
+def _normalize_key(value: str | None) -> str | None:
+    text = "_".join(str(value or "").strip().lower().replace("-", "_").split())
+    return text or None
+
+
+def _normalize_provider(value: str | None) -> str:
+    return _normalize_key(value) or "default"
+
+
+def _normalize_account_scope(value: str | None) -> str:
+    return str(value or "default").strip()[:160] or "default"
+
+
+def _valid_channel(value: str | None, *, allow_any: bool = False) -> str:
+    normalized = _normalize_key(value)
+    if allow_any and normalized == "any":
+        return "any"
+    from app.models.team_inbox import InboxChannelType
+
+    allowed = {item.value for item in InboxChannelType}
+    if normalized not in allowed:
+        raise EmailRouteError("Choose a supported inbox channel.")
+    return normalized
+
+
+def _active_team(db: Session, service_team_id: str | UUID):
+    from app.models.service_team import ServiceTeam
+
+    team_uuid = _coerce_uuid(service_team_id)
+    if team_uuid is None:
+        raise EmailRouteError("Choose a service team.")
+    team = db.get(ServiceTeam, UUID(team_uuid))
+    if team is None or not team.is_active:
+        raise EmailRouteError("Service team not found.")
+    return team
+
+
+def list_channel_routes(
+    db: Session, *, include_inactive: bool = True
+) -> list[ChannelRouteRow]:
+    from app.models.service_team import ServiceTeam
+
+    query = (
+        db.query(TeamInboxChannelRoute, ServiceTeam)
+        .outerjoin(ServiceTeam, ServiceTeam.id == TeamInboxChannelRoute.service_team_id)
+        .order_by(
+            TeamInboxChannelRoute.priority.asc(),
+            TeamInboxChannelRoute.channel_type.asc(),
+            TeamInboxChannelRoute.provider.asc(),
+            TeamInboxChannelRoute.account_scope.asc(),
+        )
+    )
+    if not include_inactive:
+        query = query.filter(TeamInboxChannelRoute.is_active.is_(True))
+    return [
+        ChannelRouteRow(
+            id=str(route.id),
+            channel_type=route.channel_type,
+            provider=route.provider,
+            account_scope=route.account_scope,
+            display_name=route.display_name,
+            service_team_id=str(route.service_team_id),
+            service_team_name=team.name if team is not None else None,
+            allow_ai_routing=bool(route.allow_ai_routing),
+            priority=int(route.priority),
+            is_active=bool(route.is_active),
+        )
+        for route, team in query.all()
+    ]
+
+
+def create_channel_route(
+    db: Session,
+    *,
+    channel_type: str,
+    provider: str | None,
+    account_scope: str | None,
+    service_team_id: str | UUID,
+    display_name: str | None = None,
+    allow_ai_routing: bool = True,
+    priority: int = 100,
+) -> TeamInboxChannelRoute:
+    channel = _valid_channel(channel_type)
+    provider_key = _normalize_provider(provider)
+    scope = _normalize_account_scope(account_scope)
+    team = _active_team(db, service_team_id)
+    existing = (
+        db.query(TeamInboxChannelRoute)
+        .filter(TeamInboxChannelRoute.channel_type == channel)
+        .filter(TeamInboxChannelRoute.provider == provider_key)
+        .filter(TeamInboxChannelRoute.account_scope == scope)
+        .one_or_none()
+    )
+    if existing is not None:
+        raise EmailRouteError("This channel account is already routed.")
+    route = TeamInboxChannelRoute(
+        channel_type=channel,
+        provider=provider_key,
+        account_scope=scope,
+        display_name=str(display_name or "").strip()[:160] or None,
+        service_team_id=team.id,
+        allow_ai_routing=bool(allow_ai_routing),
+        priority=int(priority),
+        is_active=True,
+    )
+    db.add(route)
+    db.flush()
+    return route
+
+
+def update_channel_route(
+    db: Session,
+    route_id: str | UUID,
+    *,
+    service_team_id: str | UUID | None = None,
+    display_name: str | None = None,
+    allow_ai_routing: bool | None = None,
+    priority: int | None = None,
+    is_active: bool | None = None,
+) -> TeamInboxChannelRoute:
+    route_uuid = _coerce_uuid(route_id)
+    route = db.get(TeamInboxChannelRoute, UUID(route_uuid)) if route_uuid else None
+    if route is None:
+        raise EmailRouteError("Channel route not found.")
+    if service_team_id:
+        route.service_team_id = _active_team(db, service_team_id).id
+    if display_name is not None:
+        route.display_name = str(display_name or "").strip()[:160] or None
+    if allow_ai_routing is not None:
+        route.allow_ai_routing = bool(allow_ai_routing)
+    if priority is not None:
+        route.priority = int(priority)
+    if is_active is not None:
+        route.is_active = bool(is_active)
+    db.flush()
+    return route
+
+
+def delete_channel_route(db: Session, route_id: str | UUID) -> None:
+    update_channel_route(db, route_id, is_active=False)
+
+
+def list_ai_routes(db: Session, *, include_inactive: bool = True) -> list[AiRouteRow]:
+    from app.models.service_team import ServiceTeam
+
+    query = (
+        db.query(TeamInboxAiRoute, ServiceTeam)
+        .outerjoin(ServiceTeam, ServiceTeam.id == TeamInboxAiRoute.service_team_id)
+        .order_by(
+            TeamInboxAiRoute.priority.asc(),
+            TeamInboxAiRoute.channel_type.asc(),
+            TeamInboxAiRoute.intent_key.asc(),
+        )
+    )
+    if not include_inactive:
+        query = query.filter(TeamInboxAiRoute.is_active.is_(True))
+    return [
+        AiRouteRow(
+            id=str(route.id),
+            channel_type=route.channel_type,
+            intent_key=route.intent_key,
+            display_name=route.display_name,
+            service_team_id=str(route.service_team_id),
+            service_team_name=team.name if team is not None else None,
+            confidence_threshold=float(route.confidence_threshold),
+            priority=int(route.priority),
+            is_active=bool(route.is_active),
+        )
+        for route, team in query.all()
+    ]
+
+
+def create_ai_route(
+    db: Session,
+    *,
+    channel_type: str,
+    intent_key: str,
+    service_team_id: str | UUID,
+    display_name: str | None = None,
+    confidence_threshold: float = 0.75,
+    priority: int = 100,
+) -> TeamInboxAiRoute:
+    channel = _valid_channel(channel_type, allow_any=True)
+    intent = _normalize_key(intent_key)
+    if not intent:
+        raise EmailRouteError("AI intent is required.")
+    team = _active_team(db, service_team_id)
+    threshold = min(max(float(confidence_threshold), 0.0), 1.0)
+    existing = (
+        db.query(TeamInboxAiRoute)
+        .filter(TeamInboxAiRoute.channel_type == channel)
+        .filter(TeamInboxAiRoute.intent_key == intent)
+        .one_or_none()
+    )
+    if existing is not None:
+        raise EmailRouteError("This AI intake route already exists.")
+    route = TeamInboxAiRoute(
+        channel_type=channel,
+        intent_key=intent,
+        display_name=str(display_name or "").strip()[:160] or None,
+        service_team_id=team.id,
+        confidence_threshold=threshold,
+        priority=int(priority),
+        is_active=True,
+    )
+    db.add(route)
+    db.flush()
+    return route
+
+
+def update_ai_route(
+    db: Session,
+    route_id: str | UUID,
+    *,
+    service_team_id: str | UUID | None = None,
+    display_name: str | None = None,
+    confidence_threshold: float | None = None,
+    priority: int | None = None,
+    is_active: bool | None = None,
+) -> TeamInboxAiRoute:
+    route_uuid = _coerce_uuid(route_id)
+    route = db.get(TeamInboxAiRoute, UUID(route_uuid)) if route_uuid else None
+    if route is None:
+        raise EmailRouteError("AI route not found.")
+    if service_team_id:
+        route.service_team_id = _active_team(db, service_team_id).id
+    if display_name is not None:
+        route.display_name = str(display_name or "").strip()[:160] or None
+    if confidence_threshold is not None:
+        route.confidence_threshold = min(max(float(confidence_threshold), 0.0), 1.0)
+    if priority is not None:
+        route.priority = int(priority)
+    if is_active is not None:
+        route.is_active = bool(is_active)
+    db.flush()
+    return route
+
+
+def delete_ai_route(db: Session, route_id: str | UUID) -> None:
+    update_ai_route(db, route_id, is_active=False)
+
+
+def _metadata_text(metadata: dict | None, *keys: str) -> str | None:
+    if not isinstance(metadata, dict):
+        return None
+    for key in keys:
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _metadata_float(metadata: dict | None, *keys: str) -> float | None:
+    value = _metadata_text(metadata, *keys)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def resolve_channel_routing_decision(
+    db: Session,
+    *,
+    channel_type: str,
+    provider: str | None = None,
+    account_scope: str | None = None,
+    fallback_service_team_id: str | UUID | None = None,
+    metadata: dict | None = None,
+) -> ChannelRoutingDecision:
+    channel = _valid_channel(channel_type)
+    provider_key = _normalize_provider(provider)
+    scope = _normalize_account_scope(account_scope)
+    route = (
+        db.query(TeamInboxChannelRoute)
+        .filter(TeamInboxChannelRoute.is_active.is_(True))
+        .filter(TeamInboxChannelRoute.channel_type == channel)
+        .filter(TeamInboxChannelRoute.provider == provider_key)
+        .filter(TeamInboxChannelRoute.account_scope == scope)
+        .order_by(TeamInboxChannelRoute.priority.asc())
+        .first()
+    )
+    channel_team_id = str(route.service_team_id) if route is not None else None
+    ai_allowed = route.allow_ai_routing if route is not None else True
+    base_team_id = channel_team_id or _coerce_uuid(fallback_service_team_id)
+    intent = _normalize_key(
+        _metadata_text(metadata, "ai_intent", "ai_category", "intent", "category")
+    )
+    confidence = _metadata_float(
+        metadata, "ai_confidence", "classification_confidence", "confidence"
+    )
+    ai_route = None
+    if ai_allowed and intent and confidence is not None:
+        ai_route = (
+            db.query(TeamInboxAiRoute)
+            .filter(TeamInboxAiRoute.is_active.is_(True))
+            .filter(TeamInboxAiRoute.intent_key == intent)
+            .filter(TeamInboxAiRoute.channel_type.in_((channel, "any")))
+            .filter(TeamInboxAiRoute.confidence_threshold <= confidence)
+            .order_by(
+                TeamInboxAiRoute.priority.asc(),
+                TeamInboxAiRoute.channel_type.desc(),
+            )
+            .first()
+        )
+    if ai_route is not None:
+        return ChannelRoutingDecision(
+            primary_service_team_id=str(ai_route.service_team_id),
+            channel_service_team_id=channel_team_id,
+            ai_service_team_id=str(ai_route.service_team_id),
+            channel_route_id=str(route.id) if route is not None else None,
+            ai_route_id=str(ai_route.id),
+            ai_routing_allowed=ai_allowed,
+            ai_intent_key=intent,
+            ai_confidence=confidence,
+            reason="ai_intake_route",
+        )
+    return ChannelRoutingDecision(
+        primary_service_team_id=base_team_id,
+        channel_service_team_id=channel_team_id,
+        ai_service_team_id=None,
+        channel_route_id=str(route.id) if route is not None else None,
+        ai_route_id=None,
+        ai_routing_allowed=ai_allowed,
+        ai_intent_key=intent,
+        ai_confidence=confidence,
+        reason="channel_route" if channel_team_id else "fallback_route",
+    )
 
 
 def _demote_other_primaries(

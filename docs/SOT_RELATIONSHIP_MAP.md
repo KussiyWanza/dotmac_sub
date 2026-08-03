@@ -134,7 +134,7 @@ use configured global routing; a stale binding (a retired GeoArea on the
 nearest bound zone) resolves unavailable and denies the scoped routing
 consequence — it never masquerades as unbound, falls back to legacy fields, or
 rebinds the incident to a wider area. The one-time
-`operations.service_team_source_retirement` gate verifies the five retained
+`operations.service_team_source_retirement` gate verifies retained
 native pointers and retires workflow-setting sources without CRM identity or
 membership adoption. Legacy scalar type, region, manager, role, and workforce
 columns remain migration shadows until the complete-cohort comparison and

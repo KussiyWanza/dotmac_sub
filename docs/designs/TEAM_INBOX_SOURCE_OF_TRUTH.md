@@ -67,6 +67,21 @@ Receipts are ordered by provider occurrence time and delivery rank. Older
 `failed` state. Exact receipt retries return the existing result. Only bounded
 provider error codes are retained.
 
+## Routing policy
+
+`communications.team_inbox_routing` owns the routing policy for all inbound
+channels. Mailbox routes map recipient addresses to teams through
+`TeamInboxEmailRoute`. Push channels map provider/account scopes to a default
+team through `TeamInboxChannelRoute`. AI intake may then override that default
+through `TeamInboxAiRoute` when the inbound metadata carries a supported intent
+and confidence at or above the configured threshold.
+
+The channel route decides whether AI routing is allowed for that account. When
+AI routing is disabled, or when no confident AI result is present, the channel
+default or configured fallback team remains the primary team. The route rows
+are routing policy only; provider credentials and SMTP listener secrets remain
+owned by configuration and secret-management contracts.
+
 ## Outbound flow
 
 An operator command locks the active conversation and records a communication

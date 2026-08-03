@@ -930,6 +930,8 @@ from app.models.team_inbox import (  # noqa: F401
     InboxSavedFilter,
     InboxTeamRole,
     InboxTeamSource,
+    TeamInboxAiRoute,
+    TeamInboxChannelRoute,
     TeamInboxEmailRoute,
 )
 from app.models.ticket_workflow import (  # noqa: F401
