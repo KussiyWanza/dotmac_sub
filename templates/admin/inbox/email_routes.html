@@ -6,7 +6,7 @@
 <div class="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
     <header>
         <nav class="text-xs text-slate-500 dark:text-slate-400"><a href="/admin/inbox" class="hover:text-amber-700">Inbox</a> / Channel routing</nav>
-        <h1 class="mt-1 font-display text-xl font-semibold text-slate-950 dark:text-white">Inbox channel routing</h1>
+        <h1 class="mt-1 font-display text-xl font-semibold text-slate-950 dark:text-white">Mailbox routing</h1>
         <p class="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
             Channel routes choose the default service team for each mailbox, WhatsApp number, Meta page, or Instagram account. AI intake routes can override that default when a classified intent meets the configured confidence threshold.
         </p>
@@ -28,7 +28,7 @@
             </select>
             <input name="provider" value="default" required maxlength="80" placeholder="Provider" class="h-11 rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
             <input name="account_scope" value="default" required maxlength="160" placeholder="Account scope" class="h-11 rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
-            <select name="service_team_id" required class="h-11 rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
+            <select name="channel_service_team_id" required class="h-11 rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
                 <option value="">Choose a team</option>
                 {% for team in service_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
             </select>
@@ -90,7 +90,7 @@
                 {% for channel in ai_channel_options %}<option value="{{ channel.value }}">{{ channel.label }}</option>{% endfor %}
             </select>
             <input name="intent_key" required maxlength="120" placeholder="billing_issue" class="h-11 rounded-lg border-slate-300 px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
-            <select name="service_team_id" required class="h-11 rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
+            <select name="ai_service_team_id" required class="h-11 rounded-lg border-slate-300 text-sm dark:border-slate-700 dark:bg-slate-950">
                 <option value="">Choose a team</option>
                 {% for team in service_team_options %}<option value="{{ team.id }}">{{ team.name }}</option>{% endfor %}
             </select>
