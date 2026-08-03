@@ -2380,12 +2380,15 @@ will reject.
     totals, filters, canonical URLs, pagination, and rows cannot diverge. The
     CSV projects the customer account's human display identity as
     `customer_name`; it does not expose the internal account UUID.
-    `ui.payments_list_projection` applies the same ownership boundary to the
-    admin payments list and its complete CSV scope. Both projections normalize
-    optional `start_date` and `end_date` filters against UTC `created_at`; the
-    end calendar date is inclusive and is implemented as the exclusive start
-    of the following UTC day. Routes and templates only transport and render
-    that owner-defined range.
+`ui.payments_list_projection` owns the filtered admin payments CSV scope as
+well as the paginated list scope. Both consume the same declared filters and
+stable ordering. Optional `start_date` and `end_date` filters bound UTC
+`created_at`; the end calendar date is inclusive and is implemented as the
+exclusive start of the following UTC day. The export streams the complete
+result without a silent row cap, projects the canonical customer account
+display identity as `customer_name`, and does not expose internal account
+UUIDs. Routes and templates only transport and render the owner-defined scope.
+
 12. `ui.support_ticket_list_projection` extends the existing
     `app.services.web_support_tickets` web owner and delegates its filtered
     domain query to `app.services.support.Tickets`. It owns the declared admin

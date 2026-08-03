@@ -327,6 +327,28 @@ def test_require_web_auth_redirects_get_requests_to_current_path(
     )
 
 
+def test_require_web_auth_uses_vendor_refresh_and_rejects_non_vendor_referer(
+    monkeypatch, db_session
+):
+    monkeypatch.setattr(
+        "app.web.auth.dependencies.validate_session_token",
+        lambda request, db: None,
+    )
+    request = _make_web_request(
+        method="POST",
+        path="/vendor/projects/123/route-revisions",
+        headers=[
+            (b"host", b"oss.dotmac.ng"),
+            (b"referer", b"https://oss.dotmac.ng/admin/network/cpes"),
+        ],
+    )
+
+    with pytest.raises(AuthenticationRequired) as exc:
+        require_web_auth(request=request, db=db_session)
+
+    assert exc.value.redirect_url == "/vendor/auth/refresh?next=/vendor"
+
+
 def test_require_user_auth_loads_roles_and_scopes_from_db_when_missing(
     db_session, person, monkeypatch
 ):

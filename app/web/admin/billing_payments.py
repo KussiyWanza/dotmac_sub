@@ -126,13 +126,9 @@ def payments_export_csv(
         )
     except (InclusiveDateRangeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    payments = web_billing_payments_service.list_payments_for_scope(
-        db,
-        list_query=list_query,
-    )
-    content = web_billing_payments_service.render_payments_csv(payments)
+    rows = web_billing_payments_service.stream_payments_csv(db, list_query=list_query)
     return StreamingResponse(
-        iter([content]),
+        rows,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="payments_export.csv"'},
     )
