@@ -1,9 +1,10 @@
 """Admin billing payments routes."""
 
+from datetime import date
 from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -27,6 +28,7 @@ from app.services import (
 )
 from app.services.audit_helpers import build_audit_activities
 from app.services.auth_dependencies import require_permission
+from app.services.inclusive_date_range import InclusiveDateRangeError
 from app.web.request_parsing import parse_json_body
 
 templates = Jinja2Templates(directory="templates")
@@ -47,7 +49,8 @@ def payments_list(
     status: str | None = Query(None),
     method: str | None = Query(None),
     search: str | None = Query(None),
-    date_range: str | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     unallocated_only: bool = Query(False),
     db: Session = Depends(get_db),
 ):
@@ -58,11 +61,14 @@ def payments_list(
             status=status,
             method=method,
             search=search,
-            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
             unallocated_only=unallocated_only,
             page=page,
             per_page=per_page,
         )
+    except InclusiveDateRangeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError:
         # Out-of-contract sort/page params (e.g. hand-edited URL) fall back to
         # the contract defaults rather than erroring the page.
@@ -72,16 +78,7 @@ def payments_list(
 
     state = web_billing_payments_service.build_payments_list_data(
         db,
-        page=list_query.page,
-        per_page=list_query.per_page,
-        customer_ref=list_query.filter_value("customer_ref"),
-        partner_id=list_query.filter_value("partner_id"),
-        status=list_query.filter_value("status"),
-        method=list_query.filter_value("method"),
-        search=list_query.search,
-        date_range=list_query.filter_value("date_range"),
-        unallocated_only=list_query.filter_value("unallocated_only") == "true",
-        sort_dir=list_query.sort_dir,
+        list_query=list_query,
     )
     from app.web.admin import get_current_user, get_sidebar_stats
 
@@ -111,19 +108,24 @@ def payments_export_csv(
     status: str | None = Query(None),
     method: str | None = Query(None),
     search: str | None = Query(None),
-    date_range: str | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     unallocated_only: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    list_query = web_billing_payments_service.build_payments_list_query(
-        customer_ref=customer_ref,
-        partner_id=partner_id,
-        status=status,
-        method=method,
-        search=search,
-        date_range=date_range,
-        unallocated_only=unallocated_only,
-    )
+    try:
+        list_query = web_billing_payments_service.build_payments_list_query(
+            customer_ref=customer_ref,
+            partner_id=partner_id,
+            status=status,
+            method=method,
+            search=search,
+            start_date=start_date,
+            end_date=end_date,
+            unallocated_only=unallocated_only,
+        )
+    except (InclusiveDateRangeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     rows = web_billing_payments_service.stream_payments_csv(db, list_query=list_query)
     return StreamingResponse(
         rows,
@@ -146,7 +148,8 @@ def payments_unallocated(
     status: str | None = Query(None),
     method: str | None = Query(None),
     search: str | None = Query(None),
-    date_range: str | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     db: Session = Depends(get_db),
 ):
     return payments_list(
@@ -158,7 +161,8 @@ def payments_unallocated(
         status=status,
         method=method,
         search=search,
-        date_range=date_range,
+        start_date=start_date,
+        end_date=end_date,
         unallocated_only=True,
         db=db,
     )

@@ -1,5 +1,6 @@
 """Admin billing management web routes."""
 
+from datetime import date
 from typing import Literal
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from app.services import web_billing_invoice_forms as web_billing_invoice_forms_
 from app.services import web_billing_invoices as web_billing_invoices_service
 from app.services import web_billing_overview as web_billing_overview_service
 from app.services.auth_dependencies import require_permission
+from app.services.inclusive_date_range import InclusiveDateRangeError
 from app.services.list_query import ListQuery
 
 templates = Jinja2Templates(directory="templates")
@@ -169,7 +171,8 @@ def invoices_list(
     proforma_only: bool = Query(False),
     customer_ref: str | None = Query(None),
     search: str | None = Query(None),
-    date_range: str | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     sort: Literal[
         "created_at", "invoice_number", "status", "total", "issued_at", "due_at"
     ] = Query("created_at"),
@@ -187,13 +190,14 @@ def invoices_list(
             proforma_only=proforma_only,
             customer_ref=customer_ref,
             search=search,
-            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
             sort_by=sort,
             sort_dir=direction,
             page=page,
             per_page=per_page,
         )
-    except ValueError as exc:
+    except (InclusiveDateRangeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     state = web_billing_overview_service.build_invoices_list_data(
         db,
@@ -263,7 +267,8 @@ def invoices_export_csv(
     proforma_only: bool = Query(False),
     customer_ref: str | None = Query(None),
     search: str | None = Query(None),
-    date_range: str | None = Query(None),
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
     sort: Literal[
         "created_at", "invoice_number", "status", "total", "issued_at", "due_at"
     ] = Query("created_at"),
@@ -278,11 +283,12 @@ def invoices_export_csv(
             proforma_only=proforma_only,
             customer_ref=customer_ref,
             search=search,
-            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
             sort_by=sort,
             sort_dir=direction,
         )
-    except ValueError as exc:
+    except (InclusiveDateRangeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     rows = web_billing_overview_service.stream_invoices_csv(db, list_query=list_query)
     return StreamingResponse(

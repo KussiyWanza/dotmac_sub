@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read(relative_path: str) -> str:
-    return (ROOT / relative_path).read_text()
+    return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
 def test_payment_templates_consume_shared_status_presentation() -> None:
@@ -39,3 +39,14 @@ def test_customer_mobile_payment_surface_renders_server_presentation() -> None:
     assert "StatusChip.fromPresentation(" in screen
     assert "p.statusPresentation" in screen
     assert "StatusChip(p.status)" not in screen
+
+
+def test_payment_list_uses_explicit_created_date_filters() -> None:
+    payment_list = _read("templates/admin/billing/payments.html")
+
+    assert 'type="date" name="start_date"' in payment_list
+    assert 'type="date" name="end_date"' in payment_list
+    assert 'name="date_range"' not in payment_list
+    assert "list_query.url('/admin/billing/payments/export.csv')" in payment_list
+    assert "&start_date={{ start_date }}" in payment_list
+    assert "&end_date={{ end_date }}" in payment_list

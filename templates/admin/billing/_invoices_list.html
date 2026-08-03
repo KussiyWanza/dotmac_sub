@@ -20,7 +20,7 @@
           action="/admin/billing/invoices"
           hx-get="/admin/billing/invoices"
               hx-target="#invoice-list"
-          hx-trigger="submit, change from:select"
+          hx-trigger="submit, change from:select, change from:input[type='date']"
           hx-push-url="true"
           hx-sync="this:replace"
           @typeahead:selected="$el.requestSubmit()"
@@ -31,7 +31,7 @@
         <input type="hidden" name="sort" value="{{ list_query.sort_by }}">
         <input type="hidden" name="dir" value="{{ list_query.sort_dir }}">
         {% if account_id %}<input type="hidden" name="account_id" value="{{ account_id }}">{% endif %}
-        <div class="lg:col-span-3">
+        <div class="lg:col-span-2">
             <label class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Search</label>
             <div class="relative">
                 <svg class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -76,14 +76,14 @@
             </select>
         </div>
         <div class="lg:col-span-1">
-            <label class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Date</label>
-            <select name="date_range" class="block w-full rounded-lg border-0 bg-slate-50 py-2 pl-3 pr-9 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
-                <option value="" {% if not date_range %}selected{% endif %}>All Time</option>
-                <option value="today" {% if date_range == 'today' %}selected{% endif %}>Today</option>
-                <option value="week" {% if date_range == 'week' %}selected{% endif %}>This Week</option>
-                <option value="month" {% if date_range == 'month' %}selected{% endif %}>This Month</option>
-                <option value="quarter" {% if date_range == 'quarter' %}selected{% endif %}>This Quarter</option>
-            </select>
+            <label for="invoice-start-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Start Date</label>
+            <input id="invoice-start-date" type="date" name="start_date" value="{{ start_date or '' }}" {% if end_date %}max="{{ end_date }}"{% endif %}
+                   class="block w-full rounded-lg border-0 bg-slate-50 px-3 py-2 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
+        </div>
+        <div class="lg:col-span-1">
+            <label for="invoice-end-date" class="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">End Date</label>
+            <input id="invoice-end-date" type="date" name="end_date" value="{{ end_date or '' }}" {% if start_date %}min="{{ start_date }}"{% endif %}
+                   class="block w-full rounded-lg border-0 bg-slate-50 px-3 py-2 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
         </div>
         <label class="flex min-w-28 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-700/50 lg:col-span-2">
             <input type="checkbox" name="proforma_only" value="true" {% if proforma_only %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700">
