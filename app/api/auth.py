@@ -65,7 +65,14 @@ def list_user_credentials(
     db: Session = Depends(get_db),
 ):
     return auth_service.user_credentials.list_response(
-        db, subscriber_id, provider, is_active, order_by, order_dir, limit, offset
+        db,
+        subscriber_id=subscriber_id,
+        provider=provider,
+        is_active=is_active,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -129,15 +136,15 @@ def list_mfa_methods(
 ):
     return auth_service.mfa_methods.list_response(
         db,
-        subscriber_id,
-        method_type,
-        is_primary,
-        enabled,
-        is_active,
-        order_by,
-        order_dir,
-        limit,
-        offset,
+        subscriber_id=subscriber_id,
+        method_type=method_type,
+        is_primary=is_primary,
+        enabled=enabled,
+        is_active=is_active,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -195,7 +202,13 @@ def list_sessions(
     db: Session = Depends(get_db),
 ):
     return auth_service.sessions.list_response(
-        db, subscriber_id, status, order_by, order_dir, limit, offset
+        db,
+        subscriber_id=subscriber_id,
+        status=status,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -267,7 +280,13 @@ def list_api_keys(
     db: Session = Depends(get_db),
 ):
     return auth_service.api_keys.list_response(
-        db, subscriber_id, is_active, order_by, order_dir, limit, offset
+        db,
+        subscriber_id=subscriber_id,
+        is_active=is_active,
+        order_by=order_by,
+        order_dir=order_dir,
+        limit=limit,
+        offset=offset,
     )
 
 
