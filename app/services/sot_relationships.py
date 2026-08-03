@@ -32939,9 +32939,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
                 notes=(
                     "The full page and HTMX response share one list partial. "
-                    "Exports consume the same canonical scope without a page cap. "
-                    "The CSV customer_name column uses the customer account's "
-                    "human display identity and does not expose account UUIDs."
+                    "Explicit start_date and end_date filters bound UTC created_at "
+                    "with an inclusive end date. Exports consume the same canonical "
+                    "scope without a page cap. The CSV customer_name column uses "
+                    "the customer account's human display identity and does not "
+                    "expose account UUIDs."
                 ),
             ),
             SOTService(
@@ -32958,8 +32960,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "PAYMENTS_LIST_DEFINITION declares the list capabilities and "
                     "build_payments_list_query normalizes/validates request state; "
                     "build_payments_list_data remains the read owner that issues the "
-                    "SQL, status totals, and enrichment. The route validates through "
-                    "the contract and delegates. The CSV export intentionally reuses "
+                    "SQL, status totals, and enrichment. Explicit start_date and "
+                    "end_date filters bound UTC created_at with an inclusive end "
+                    "date. The route validates through the contract and delegates. "
+                    "The CSV export intentionally reuses "
                     "the read owner without a page cap (same canonical filter scope, "
                     "no pagination). Gated by the existing granular "
                     "billing:payment:read. Read-only: no admin bulk command declared, "

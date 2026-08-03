@@ -122,7 +122,8 @@ def test_empty_invoice_totals_use_display_owner_default_currency(
         status=None,
         customer_ref=None,
         search=None,
-        date_range=None,
+        start_date=None,
+        end_date=None,
         page=1,
         per_page=25,
     )
@@ -187,7 +188,8 @@ def test_invoices_list_returns_status_totals_and_payment_split(db_session, subsc
         status=None,
         customer_ref=None,
         search=None,
-        date_range=None,
+        start_date=None,
+        end_date=None,
         page=1,
         per_page=25,
     )
@@ -232,7 +234,8 @@ def test_invoices_list_status_totals_are_grouped_by_currency(db_session, subscri
         status=None,
         customer_ref=None,
         search=None,
-        date_range=None,
+        start_date=None,
+        end_date=None,
         page=1,
         per_page=25,
     )
@@ -276,7 +279,8 @@ def test_invoices_list_search_filters_invoice_numbers(db_session, subscriber):
         status=None,
         customer_ref=None,
         search="MATCH",
-        date_range=None,
+        start_date=None,
+        end_date=None,
         page=1,
         per_page=25,
     )
@@ -319,7 +323,7 @@ def test_invoice_status_summary_preserves_other_status_tabs(db_session, subscrib
     assert result["status_totals"]["issued"]["count"] == 1
 
 
-def test_invoices_list_date_range_filters_recent_rows(db_session, subscriber):
+def test_invoices_list_filters_by_inclusive_start_and_end_dates(db_session, subscriber):
     now = datetime.now(UTC)
     _create_invoice(
         db_session,
@@ -347,7 +351,8 @@ def test_invoices_list_date_range_filters_recent_rows(db_session, subscriber):
         status=None,
         customer_ref=None,
         search=None,
-        date_range="month",
+        start_date=(now - timedelta(days=7)).date(),
+        end_date=now.date(),
         page=1,
         per_page=25,
     )
@@ -405,7 +410,8 @@ def test_invoices_list_filters_by_partner(db_session):
         status=None,
         customer_ref=None,
         search=None,
-        date_range=None,
+        start_date=None,
+        end_date=None,
         page=1,
         per_page=25,
     )
@@ -498,7 +504,8 @@ def test_stream_invoices_csv_matches_rendered_and_yields_incrementally(
         proforma_only=False,
         customer_ref=None,
         search=None,
-        date_range=None,
+        start_date=None,
+        end_date=None,
     )
     scope = web_billing_overview_service.list_invoices_for_scope(
         db_session, list_query=list_query

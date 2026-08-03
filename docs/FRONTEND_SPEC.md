@@ -149,6 +149,11 @@ generation preview exact eligible/skipped impact before confirmation. The
 confirmation token fingerprints both membership and eligibility, so execution
 returns HTTP 409 if status or scope drift changes the previewed impact. The
 invoice command service re-checks eligibility and audits only processed IDs.
+Invoice and payment list periods use explicit optional `start_date` and
+`end_date` filters against each document's UTC `created_at`. Both calendar dates
+are inclusive; owners translate the end date to the exclusive start of the next
+UTC day. List totals, pagination, status summaries, deep links, and CSV exports
+consume the same normalized range.
 
 The support-ticket queue is the next list adoption. `app.services.support.Tickets`
 owns the canonical filtered domain query, while
@@ -935,7 +940,8 @@ contract used by the invoice table; internal account UUIDs are not exported.
     "proforma_summary": {"count": int},
     "customer_ref": str | None,
     "search": str | None,
-    "date_range": str | None,
+    "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
+    "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC
 
     "active_page": "billing",
 }
@@ -1039,6 +1045,8 @@ atomic transition. Templates do not infer eligibility from account balance.
     },
 
     # ── Pagination ──
+    "list_query": ListQuery,
+    "page_meta": PageMeta,
     "page": int,
     "per_page": int,
     "total": int,
@@ -1054,7 +1062,8 @@ atomic transition. Templates do not infer eligibility from account balance.
     "status": str | None,
     "method": str | None,
     "search": str | None,
-    "date_range": str | None,
+    "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
+    "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC
     "unallocated_only": bool,
 
     "active_page": "payments",

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ast
 import re
+from datetime import date
 from pathlib import Path
 
 import pytest
 from fastapi.templating import Jinja2Templates
 
+from app.services.inclusive_date_range import InclusiveDateRangeError
 from app.services.list_query import PageMeta
 from app.services.web_billing_overview import build_invoice_list_query
 
@@ -55,7 +57,8 @@ def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():
         proforma_only=True,
         customer_ref=" person:customer-1 ",
         search=" INV-100 ",
-        date_range=" MONTH ",
+        start_date=date(2026, 7, 1),
+        end_date=date(2026, 7, 31),
         sort_by="total",
         sort_dir="asc",
         page=2,
@@ -66,7 +69,8 @@ def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():
     assert query.filter_value("status") == "issued"
     assert query.filter_value("proforma_only") == "true"
     assert query.filter_value("customer_ref") == "person:customer-1"
-    assert query.filter_value("date_range") == "month"
+    assert query.filter_value("start_date") == "2026-07-01"
+    assert query.filter_value("end_date") == "2026-07-31"
     assert query.sort_by == "total"
     assert query.sort_dir == "asc"
     assert query.page == 2
@@ -80,7 +84,23 @@ def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():
             proforma_only=False,
             customer_ref=None,
             search=None,
-            date_range=None,
+            start_date=None,
+            end_date=None,
+        )
+
+    with pytest.raises(
+        InclusiveDateRangeError,
+        match="start_date must be before or equal to end_date",
+    ):
+        build_invoice_list_query(
+            account_id=None,
+            partner_id=None,
+            status=None,
+            proforma_only=False,
+            customer_ref=None,
+            search=None,
+            start_date=date(2026, 8, 2),
+            end_date=date(2026, 8, 1),
         )
 
 
@@ -99,6 +119,9 @@ def test_invoice_full_and_htmx_views_share_the_list_contract_partial():
     assert '{% include "admin/billing/_invoices_table.html" %}' in list_partial
     assert 'hx-push-url="true"' in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
+    assert 'type="date" name="start_date"' in list_partial
+    assert 'type="date" name="end_date"' in list_partial
+    assert 'name="date_range"' not in list_partial
     assert "list_query.url('/admin/billing/invoices'" in table
     assert 'aria-sort="' in table
     assert 'aria-current="page"' in table
@@ -163,7 +186,8 @@ def test_invoice_table_contract_renders_with_empty_results():
         proforma_only=False,
         customer_ref=None,
         search="missing",
-        date_range=None,
+        start_date=None,
+        end_date=None,
         sort_by="invoice_number",
         sort_dir="asc",
     )
