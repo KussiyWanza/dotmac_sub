@@ -15,7 +15,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import NoReturn
 from uuid import UUID
@@ -38,6 +38,14 @@ from app.models.billing import (
     ServiceEntitlementStatus,
     TaxApplication,
     TaxRate,
+)
+from app.models.billing_contract import (
+    CadenceAlignment,
+    CollectionTiming,
+    EndOfMonthRule,
+    IntervalUnit,
+    ProrationPolicy,
+    RateBasis,
 )
 from app.models.catalog import (
     AddOnPrice,
@@ -71,6 +79,7 @@ from app.services.billing.adjustments import (
     preview_account_adjustment,
     stage_system_account_adjustment,
 )
+from app.services.billing.cadence import BillingCadence, service_period
 from app.services.common import coerce_uuid, round_money
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import (
@@ -82,6 +91,7 @@ from app.services.service_entitlements import (
     ensure_prepaid_entitlement_for_wallet_debit,
     prepaid_entitlement_coverage_end,
 )
+from app.timezone import APP_TIMEZONE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +141,35 @@ class RunDuePrepaidServiceRenewalsCommand:
     dry_run: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PrepaidSettlementPeriodQuery:
+    """Resolve the service period begun by one lapsed prepaid settlement."""
+
+    effective_at: datetime
+    billing_cycle: BillingCycle
+    timezone_name: str = APP_TIMEZONE_NAME
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidSettlementPeriod:
+    """UTC interval plus the business-calendar dates shown to operators."""
+
+    starts_at: datetime
+    ends_at: datetime
+    starts_on: date
+    ends_on: date
+    timezone_name: str
+
+
+_SETTLEMENT_CYCLE_INTERVAL: dict[BillingCycle, tuple[IntervalUnit, int]] = {
+    BillingCycle.daily: (IntervalUnit.day, 1),
+    BillingCycle.weekly: (IntervalUnit.week, 1),
+    BillingCycle.monthly: (IntervalUnit.month, 1),
+    BillingCycle.quarterly: (IntervalUnit.month, 3),
+    BillingCycle.annual: (IntervalUnit.year, 1),
+}
+
+
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
     raise PrepaidServiceRenewalError(
         code=f"financial.prepaid_service_renewals.{suffix}",
@@ -149,6 +188,56 @@ def _adjustment_error(exc: AccountAdjustmentError) -> NoReturn:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def resolve_prepaid_settlement_period(
+    query: PrepaidSettlementPeriodQuery,
+) -> PrepaidSettlementPeriod:
+    """Resolve a lapsed renewal from the settlement's local calendar day.
+
+    Settlement timestamps are instants and remain UTC at persistence boundaries.
+    The service anniversary is a business-calendar decision: the payment first
+    crosses into the declared billing timezone, starts at that local midnight,
+    and advances through the typed calendar cadence. This prevents a payment in
+    the first hour of a Lagos day from being assigned to the previous UTC day.
+    """
+
+    interval_spec = _SETTLEMENT_CYCLE_INTERVAL.get(query.billing_cycle)
+    if interval_spec is None:
+        _error(
+            "unsupported_cadence",
+            "The prepaid settlement billing cadence is unsupported.",
+            billing_cycle=str(query.billing_cycle),
+        )
+    interval_unit, interval_count = interval_spec
+    cadence = BillingCadence(
+        rate_basis=RateBasis.fixed_per_service_period,
+        rate_unit=interval_unit,
+        rate_quantity=Decimal("1"),
+        service_interval_unit=interval_unit,
+        service_interval_count=interval_count,
+        invoice_interval_unit=interval_unit,
+        invoice_interval_count=interval_count,
+        collection_timing=CollectionTiming.advance,
+        alignment=CadenceAlignment.contract_anniversary,
+        timezone_name=query.timezone_name,
+        end_of_month_rule=EndOfMonthRule.clamp_to_month_end,
+        proration_policy=ProrationPolicy.none,
+    )
+    zone = cadence.zone()
+    local_effective_at = _utc(query.effective_at).astimezone(zone)
+    local_start = datetime.combine(local_effective_at.date(), time.min, tzinfo=zone)
+    interval = service_period(
+        cadence=cadence,
+        contract_start=local_start.astimezone(UTC),
+    )
+    return PrepaidSettlementPeriod(
+        starts_at=interval.starts_at.astimezone(UTC),
+        ends_at=interval.ends_at.astimezone(UTC),
+        starts_on=interval.starts_at.astimezone(zone).date(),
+        ends_on=interval.ends_at.astimezone(zone).date(),
+        timezone_name=query.timezone_name,
+    )
 
 
 def _origin_ref(subscription_id: object, starts_at: datetime, ends_at: datetime) -> str:
@@ -2242,6 +2331,8 @@ __all__ = [
     "FundingChangeRenewalResult",
     "PREPAID_SERVICE_RENEWAL_ELIGIBLE_STATUSES",
     "PrepaidRecurringChargePreview",
+    "PrepaidSettlementPeriod",
+    "PrepaidSettlementPeriodQuery",
     "PrepaidServiceRenewalPreview",
     "PrepaidServiceRenewalError",
     "PrepaidServiceRenewalResult",
@@ -2265,6 +2356,7 @@ __all__ = [
     "retract_prepaid_billing_anchors_after_funding_reversal",
     "resolve_prepaid_monthly_charge",
     "resolve_prepaid_monthly_charges",
+    "resolve_prepaid_settlement_period",
     "run_due_prepaid_service_renewals",
     "stage_prepaid_service_renewed_outcome",
 ]
