@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -483,8 +484,22 @@ def test_lapsed_opening_funded_invoice_reanchors_coverage_to_effective_date(
     db_session.refresh(invoice)
     db_session.refresh(subscription)
     entitlement = db_session.query(ServiceEntitlement).one()
-    assert invoice.billing_period_start == datetime(2026, 7, 23)
-    assert invoice.billing_period_end == datetime(2026, 8, 23)
+    assert invoice.billing_period_start == datetime(2026, 7, 22, 23)
+    assert invoice.billing_period_end == datetime(2026, 8, 22, 23)
+    assert (
+        invoice.billing_period_start.replace(tzinfo=UTC)
+        .astimezone(ZoneInfo("Africa/Lagos"))
+        .date()
+        .isoformat()
+        == "2026-07-23"
+    )
+    assert (
+        invoice.billing_period_end.replace(tzinfo=UTC)
+        .astimezone(ZoneInfo("Africa/Lagos"))
+        .date()
+        .isoformat()
+        == "2026-08-23"
+    )
     assert entitlement.starts_at == invoice.billing_period_start
     assert entitlement.ends_at == invoice.billing_period_end
     assert subscription.next_billing_at == entitlement.ends_at

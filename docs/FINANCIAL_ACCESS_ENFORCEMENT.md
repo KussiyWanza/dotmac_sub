@@ -143,6 +143,25 @@ entitlement. `Subscription.next_billing_at` is also a projection: a future
 anchor without exact evidence is `unresolved_projection`, blocks adverse
 action, and enters reconciliation.
 
+For a lapsed prepaid settlement, the replacement period starts on the
+payment's `Africa/Lagos` calendar date. The owner resolves WAT local midnight
+and advances the typed calendar cadence before converting the half-open period
+boundaries back to UTC for storage. A payment between 00:00 and 00:59 WAT is
+therefore part of the new WAT day even though its UTC timestamp is on the
+previous date. Date-only customer and operator projections convert the stored
+boundary back to the configured display timezone before rendering it.
+
+Historical paid periods that exactly match the retired UTC-midnight rule are
+owned by `financial.prepaid_billing_calendar_reconciliation`. Its admin queue
+is preview-first and fingerprint-bound: only one unambiguous invoice, payment
+settlement, base line, entitlement, and unchanged anchor can be corrected.
+Refunds, reversals, extensions, usage quota periods, coverage overlaps,
+multiple evidence rows, or a moved anchor are quarantined for manual review.
+The command changes calendar
+projections only, records zero economic delta, and stages invoice evidence,
+audit, event, and idempotency rows atomically. See
+`docs/designs/PREPAID_BILLING_CALENDAR_RECONCILIATION.md`.
+
 When an existing prepaid draft is covered by settlement-backed Payments plus a
 signed reviewed opening balance, `financial.prepaid_draft_reconciliation` owns
 the invoice-first repair. It allocates Payments first, records the remainder as

@@ -36,14 +36,46 @@ from app.services.owner_commands import CommandContext
 from app.services.prepaid_service_renewals import (
     FundingChangeRenewalDisposition,
     PrepaidServiceRenewalError,
+    PrepaidSettlementPeriodQuery,
     RunDuePrepaidServiceRenewalsCommand,
     apply_due_prepaid_service_after_funding_change,
     confirm_prepaid_service_renewal,
     execute_due_prepaid_service_renewals,
     preview_prepaid_service_renewal,
+    resolve_prepaid_settlement_period,
     run_due_prepaid_service_renewals,
 )
 from tests.prepaid_funding_helpers import materialize_test_prepaid_opening_balance
+
+
+def test_settlement_period_uses_lagos_calendar_day_before_month_arithmetic():
+    period = resolve_prepaid_settlement_period(
+        PrepaidSettlementPeriodQuery(
+            # 00:30 on July 6 in Lagos is still July 5 in UTC.
+            effective_at=datetime(2026, 7, 5, 23, 30, tzinfo=UTC),
+            billing_cycle=BillingCycle.monthly,
+        )
+    )
+
+    assert period.starts_on.isoformat() == "2026-07-06"
+    assert period.ends_on.isoformat() == "2026-08-06"
+    assert period.starts_at == datetime(2026, 7, 5, 23, tzinfo=UTC)
+    assert period.ends_at == datetime(2026, 8, 5, 23, tzinfo=UTC)
+    assert period.timezone_name == "Africa/Lagos"
+
+
+def test_settlement_period_preserves_declared_month_end_clamp():
+    period = resolve_prepaid_settlement_period(
+        PrepaidSettlementPeriodQuery(
+            effective_at=datetime(2026, 1, 31, 23, 30, tzinfo=UTC),
+            billing_cycle=BillingCycle.monthly,
+        )
+    )
+
+    assert period.starts_on.isoformat() == "2026-02-01"
+    assert period.ends_on.isoformat() == "2026-03-01"
+    assert period.starts_at == datetime(2026, 1, 31, 23, tzinfo=UTC)
+    assert period.ends_at == datetime(2026, 2, 28, 23, tzinfo=UTC)
 
 
 def test_funding_event_without_payment_id_remains_retryable(db_session, subscriber):

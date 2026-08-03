@@ -10,6 +10,9 @@ from app.web.admin.admin_hub import router as admin_hub_router
 from app.web.admin.alerts import router as alerts_router
 from app.web.admin.billing_accounts import router as billing_accounts_router
 from app.web.admin.billing_arrangements import router as billing_arrangements_router
+from app.web.admin.billing_calendar_reconciliation import (
+    router as billing_calendar_reconciliation_router,
+)
 from app.web.admin.billing_channels import router as billing_channels_router
 from app.web.admin.billing_collection_accounts import (
     router as billing_collection_accounts_router,
@@ -255,6 +258,10 @@ router.include_router(
 )
 router.include_router(
     billing_invoice_actions_router,
+    dependencies=[Depends(module_manager_service.require_module_enabled("billing"))],
+)
+router.include_router(
+    billing_calendar_reconciliation_router,
     dependencies=[Depends(module_manager_service.require_module_enabled("billing"))],
 )
 router.include_router(
