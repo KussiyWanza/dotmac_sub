@@ -134,6 +134,8 @@ def test_ci_persists_unit_test_duration_history() -> None:
 
 def test_ci_test_jobs_fail_closed_instead_of_hanging_indefinitely() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     unit_job = workflow[
         workflow.index("  unit-shards:\n") : workflow.index("  architecture:\n")
     ]
@@ -143,6 +145,13 @@ def test_ci_test_jobs_fail_closed_instead_of_hanging_indefinitely() -> None:
 
     assert "    timeout-minutes: 30\n" in unit_job
     assert "    timeout-minutes: 30\n" in architecture_job
+    assert "CI_UNIT_TEST_WORKERS ?= 4" in makefile
+    assert "CI_TEST_TIMEOUT_SECONDS ?= 180" in makefile
+    assert "-n $(CI_UNIT_TEST_WORKERS)" in makefile
+    assert "--max-worker-restart=0" in makefile
+    assert "--timeout=$(CI_TEST_TIMEOUT_SECONDS)" in makefile
+    assert "--timeout-method=signal" in makefile
+    assert "pytest-timeout==2.4.0" in project["dependency-groups"]["dev"]
 
 
 def test_ci_change_classifier_fetches_missing_comparison_base() -> None:
@@ -206,6 +215,7 @@ def test_production_dependency_group_excludes_ci_tools() -> None:
         "pytest",
         "pytest-asyncio",
         "pytest-cov",
+        "pytest-timeout",
         "pytest-xdist",
         "ruff",
         "vulture",
