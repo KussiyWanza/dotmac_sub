@@ -69,6 +69,8 @@ class EventType(enum.Enum):
         "integration.installation.capability_provisioned"
     )
     integration_job_capability_activated = "integration.job.capability_activated"
+    oauth_token_refreshed = "oauth_token.refreshed"
+    oauth_token_refresh_failed = "oauth_token.refresh_failed"
     account_credit_deposited = "account_credit.deposited"
     prepaid_service_renewed = "prepaid_service.renewed"
     subscription_billing_treatment_changed = "subscription_billing_treatment.changed"
