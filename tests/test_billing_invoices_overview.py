@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy import event
+
 from app.models.billing import Invoice, InvoiceStatus
-from app.models.subscriber import Reseller, Subscriber
+from app.models.subscriber import Reseller, Subscriber, SubscriberCategory
 from app.services import web_billing_overview as web_billing_overview_service
 from app.services.web_billing_overview import (
     build_invoices_list_data,
@@ -412,7 +416,9 @@ def test_invoices_list_filters_by_partner(db_session):
     assert result["selected_partner_id"] == str(reseller_a.id)
 
 
-def test_render_invoices_csv_contains_due_and_received_columns(db_session, subscriber):
+def test_render_invoices_csv_contains_customer_name_due_and_received_columns(
+    db_session, subscriber
+):
     now = datetime.now(UTC)
     invoice = _create_invoice(
         db_session,
@@ -424,14 +430,50 @@ def test_render_invoices_csv_contains_due_and_received_columns(db_session, subsc
         created_at=now,
     )
 
-    csv_text = render_invoices_csv([invoice])
+    rows = list(csv.reader(io.StringIO(render_invoices_csv([invoice]))))
 
-    assert (
-        "invoice_id,invoice_number,account_id,status,total,balance_due,payment_received,currency"
-        in csv_text
+    assert rows[0][:8] == [
+        "invoice_id",
+        "invoice_number",
+        "customer_name",
+        "status",
+        "total",
+        "balance_due",
+        "payment_received",
+        "currency",
+    ]
+    assert rows[1][1:8] == [
+        "INV-CSV-1",
+        "Test User",
+        "partially_paid",
+        "150.00",
+        "40.00",
+        "110.00",
+        "NGN",
+    ]
+    assert str(subscriber.id) not in rows[1]
+
+
+def test_render_invoices_csv_uses_business_customer_name_and_csv_escaping(
+    db_session, subscriber
+):
+    subscriber.company_name = "Dotmac, \u0141\u00f3d\u017a"
+    subscriber.category = SubscriberCategory.business
+    db_session.commit()
+    invoice = _create_invoice(
+        db_session,
+        account_id=subscriber.id,
+        invoice_number="INV-CSV-BUSINESS",
+        total="50.00",
+        balance_due="50.00",
+        status=InvoiceStatus.issued,
+        created_at=datetime.now(UTC),
     )
-    assert "INV-CSV-1" in csv_text
-    assert ",150.00,40.00,110.00,NGN," in csv_text
+
+    rows = list(csv.reader(io.StringIO(render_invoices_csv([invoice]))))
+
+    assert rows[1][2] == "Dotmac, \u0141\u00f3d\u017a"
+    assert len(rows[1]) == len(rows[0])
 
 
 def test_stream_invoices_csv_matches_rendered_and_yields_incrementally(
@@ -463,11 +505,22 @@ def test_stream_invoices_csv_matches_rendered_and_yields_incrementally(
     )
     expected = render_invoices_csv(scope)
 
-    chunks = list(
-        web_billing_overview_service.stream_invoices_csv(
-            db_session, list_query=list_query
+    statements: list[str] = []
+
+    def _record_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    bind = db_session.get_bind()
+    db_session.expire_all()
+    event.listen(bind, "before_cursor_execute", _record_statement)
+    try:
+        chunks = list(
+            web_billing_overview_service.stream_invoices_csv(
+                db_session, list_query=list_query
+            )
         )
-    )
+    finally:
+        event.remove(bind, "before_cursor_execute", _record_statement)
 
     # Streamed output is byte-identical to the eager renderer...
     assert "".join(chunks) == expected
@@ -476,3 +529,9 @@ def test_stream_invoices_csv_matches_rendered_and_yields_incrementally(
     assert len(chunks) == len(scope) + 1
     assert chunks[0].startswith("invoice_id,")
     assert all("INV-STREAM-" in chunk for chunk in chunks[1:])
+    assert all("Test User" in chunk for chunk in chunks[1:])
+    assert str(subscriber.id) not in "".join(chunks)
+    assert (
+        sum(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+        == 1
+    )

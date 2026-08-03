@@ -32932,10 +32932,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin invoice page and status-summary projection",
                     "admin invoice export scope",
                 ),
-                depends_on=("ui.list_contracts", "financial.invoices"),
+                depends_on=(
+                    "ui.list_contracts",
+                    "financial.invoices",
+                    "customer.accounts",
+                ),
                 notes=(
                     "The full page and HTMX response share one list partial. "
-                    "Exports consume the same canonical scope without a page cap."
+                    "Exports consume the same canonical scope without a page cap. "
+                    "The CSV customer_name column uses the customer account's "
+                    "human display identity and does not expose account UUIDs."
                 ),
             ),
             SOTService(
