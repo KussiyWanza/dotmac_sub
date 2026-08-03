@@ -2373,7 +2373,9 @@ will reject.
     filterable, and sortable fields; stable ID tie-breaking; page clamping; and
     an uncapped export scope. Full-page and HTMX reads render the same
     `_invoices_list.html` and `_invoices_table.html` projections, so status
-    totals, filters, canonical URLs, pagination, and rows cannot diverge.
+    totals, filters, canonical URLs, pagination, and rows cannot diverge. The
+    CSV projects the customer account's human display identity as
+    `customer_name`; it does not expose the internal account UUID.
 12. `ui.support_ticket_list_projection` extends the existing
     `app.services.web_support_tickets` web owner and delegates its filtered
     domain query to `app.services.support.Tickets`. It owns the declared admin

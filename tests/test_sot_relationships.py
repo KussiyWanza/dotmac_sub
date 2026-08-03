@@ -617,6 +617,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
     assert sot_relationships.dependencies_for("ui.invoice_list_projection") == (
         "ui.list_contracts",
         "financial.invoices",
+        "customer.accounts",
     )
     assert sot_relationships.dependencies_for("ui.support_ticket_list_projection") == (
         "ui.list_contracts",

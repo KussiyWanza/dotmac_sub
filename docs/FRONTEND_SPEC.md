@@ -898,6 +898,11 @@ transition.
 
 ### Billing — Invoices
 
+The filtered invoice CSV at `GET /admin/billing/invoices/export.csv` uses the
+same uncapped filter and stable-sort scope as the list. Its customer identity
+column is `customer_name`, populated from the same customer display-name
+contract used by the invoice table; internal account UUIDs are not exported.
+
 #### `GET /admin/billing`
 **Template:** `admin/billing/index.html`
 

@@ -31,6 +31,22 @@ def test_invoice_route_delegates_query_normalization_to_list_owner():
     assert args["per_page"] == "str | None"
 
 
+def test_invoice_export_route_delegates_csv_projection_to_list_owner():
+    route_path = PROJECT_ROOT / "app/web/admin/billing_invoices.py"
+    tree = ast.parse(route_path.read_text(encoding="utf-8"))
+    route = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "invoices_export_csv"
+    )
+    calls = {
+        ast.unparse(node.func) for node in ast.walk(route) if isinstance(node, ast.Call)
+    }
+
+    assert "web_billing_overview_service.stream_invoices_csv" in calls
+    assert "csv.writer" not in calls
+
+
 def test_invoice_query_normalizes_declared_state_and_rejects_unknown_values():
     query = build_invoice_list_query(
         account_id=None,

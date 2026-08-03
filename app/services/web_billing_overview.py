@@ -14,7 +14,7 @@ from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.billing import Invoice, InvoiceStatus, PaymentAllocation
 from app.models.subscriber import Reseller, Subscriber, UserType
@@ -623,7 +623,7 @@ def build_invoices_list_data(
 _INVOICE_CSV_HEADER = (
     "invoice_id",
     "invoice_number",
-    "account_id",
+    "customer_name",
     "status",
     "total",
     "balance_due",
@@ -652,7 +652,7 @@ def _invoice_csv_row(invoice: Invoice) -> list[str]:
     return [
         str(invoice.id),
         invoice.invoice_number or "",
-        str(invoice.account_id) if invoice.account_id else "",
+        invoice.account.name if invoice.account else "",
         status_value,
         f"{total:.2f}",
         f"{due:.2f}",
@@ -674,13 +674,14 @@ def render_invoices_csv(invoices: list[Invoice]) -> str:
     return buffer.getvalue()
 
 
-def stream_invoices_csv(db, *, list_query: ListQuery) -> Iterator[str]:
+def stream_invoices_csv(db: Session, *, list_query: ListQuery) -> Iterator[str]:
     """Yield the canonical invoice-scope CSV one row at a time.
 
     Same scope and column contract as ``render_invoices_csv``, but iterated from
     a server-side cursor so the export never materializes the full result set or
-    the full CSV body in memory. Only direct invoice columns are read, so
-    ``yield_per`` batching is safe (no per-row relationship loads).
+    the full CSV body in memory. The scalar customer relationship is joined in
+    the same query so customer names do not introduce one query per invoice;
+    ``yield_per`` still bounds result iteration to one batch in memory.
     """
     if list_query.definition.key != INVOICE_LIST_DEFINITION.key:
         raise ValueError("Invoice scope requires the billing invoice definition")
@@ -693,8 +694,10 @@ def stream_invoices_csv(db, *, list_query: ListQuery) -> Iterator[str]:
         customer_account_ids=customer_account_ids,
         include_status=True,
     )
-    query = _apply_invoice_list_sort(query, list_query).yield_per(
-        _INVOICE_CSV_YIELD_PER
+    query = (
+        _apply_invoice_list_sort(query, list_query)
+        .options(joinedload(Invoice.account))
+        .yield_per(_INVOICE_CSV_YIELD_PER)
     )
 
     buffer = io.StringIO()
