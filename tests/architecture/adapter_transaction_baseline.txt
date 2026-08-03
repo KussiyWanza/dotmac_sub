@@ -105,7 +105,7 @@ rollback 1 app/web/admin/network_onts_actions.py
 rollback 6 app/web/admin/notifications.py
 rollback 9 app/web/admin/projects.py
 rollback 5 app/web/admin/resellers.py
-rollback 6 app/web/admin/sales.py
+rollback 5 app/web/admin/sales.py
 rollback 4 app/web/admin/support_tickets.py
 rollback 22 app/web/admin/system.py
 rollback 2 app/web/admin/vendors.py

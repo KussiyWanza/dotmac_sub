@@ -15,6 +15,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.party import PartyContactPointType, PartyType
+from app.models.project import ProjectType
 from app.models.sales import (
     LeadCaptureMethod,
     LeadSourcePlatform,
@@ -225,13 +226,14 @@ class LeadRead(LeadBase):
 
 
 class QuoteBase(BaseModel):
-    """Quote linked to a subscriber in the unified party model."""
+    """Lead-backed commercial offer; Subscriber is attached on acceptance."""
 
-    subscriber_id: UUID  # Required — links to Subscriber
-    lead_id: UUID | None = None
+    subscriber_id: UUID | None = None
+    lead_id: UUID
     # Staff person UUID carried verbatim — staff map for display.
     owner_person_id: UUID | None = None
     status: QuoteStatus = QuoteStatus.draft
+    project_type: ProjectType | None = None
     currency: str = Field(default="NGN", min_length=3, max_length=3)
     subtotal: Decimal = Decimal("0.00")
     tax_rate: Decimal | None = Field(default=None, ge=0, le=100)
@@ -245,7 +247,7 @@ class QuoteBase(BaseModel):
 
 
 class QuoteCreate(QuoteBase):
-    pass
+    project_type: ProjectType
 
 
 class QuoteUpdate(BaseModel):
@@ -253,6 +255,7 @@ class QuoteUpdate(BaseModel):
     lead_id: UUID | None = None
     owner_person_id: UUID | None = None
     status: QuoteStatus | None = None
+    project_type: ProjectType | None = None
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     subtotal: Decimal | None = None
     tax_rate: Decimal | None = Field(default=None, ge=0, le=100)

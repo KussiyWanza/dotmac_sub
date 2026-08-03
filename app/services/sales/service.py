@@ -3,8 +3,8 @@
 Faithful port of ``dotmac_crm/app/services/crm/sales/service.py`` onto sub's
 native models (``app/models/sales.py``), with the deltas applied:
 
-* Revision 355 makes Lead Party-first. Subscriber remains optional account
-  context on Lead and required account context on Quote.
+* Revision 457 makes both Lead and Quote Party/Lead-first. Subscriber remains
+  optional account context until the atomic Accepted-Quote conversion.
 * Staff references (``quotes.owner_person_id``) are plain UUIDs — no FK and
   no existence check; display resolves via the staff map.
 * stubs (risk #8): owner-agent auto-assignment from the CRM inbox
@@ -20,9 +20,8 @@ native models (``app/models/sales.py``), with the deltas applied:
   app-level enum); helpers normalise enum members to their values.
 * ``quote_line_items.inventory_item_id`` is carried verbatim without an
   existence check — inventory remains externally owned.
-* Install-project creation from accepted quotes is deferred to the projects
-  service port (next in the series) — see
-  ``_ensure_project_from_quote``.
+* Accepted-Quote conversion delegates to the atomic
+  ``sales.quote_acceptance`` application coordinator.
 * Native services emit sub events from day one (risk #13):
   ``lead.created`` / ``quote.accepted``.
 """
@@ -34,12 +33,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import String, cast, func, or_
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.domain_settings import SettingDomain
 from app.models.party import Party, PartyContactPoint
+from app.models.project import ProjectType
 from app.models.sales import (
     Lead,
     LeadStatus,
@@ -49,7 +49,13 @@ from app.models.sales import (
     QuoteLineItem,
     QuoteStatus,
 )
-from app.models.subscriber import PartyStatus, Subscriber
+from app.models.subscriber import Subscriber
+from app.schemas.sales import (
+    QuoteCreate,
+    QuoteLineItemCreate,
+    QuoteLineItemUpdate,
+    QuoteUpdate,
+)
 from app.services import control_registry, settings_spec
 from app.services.common import (
     apply_ordering,
@@ -58,7 +64,9 @@ from app.services.common import (
     round_money,
     validate_enum,
 )
+from app.services.db_session_adapter import db_session_adapter
 from app.services.events import EventType, emit_event
+from app.services.owner_commands import CommandContext
 from app.services.response import ListResponseMixin
 from app.services.sales import lifecycle as lead_lifecycle
 from app.services.sales import pipeline_configuration
@@ -365,25 +373,6 @@ def _apply_lead_closed_at(
         lead.closed_at = None
 
 
-def _apply_lead_status_from_quote(db: Session, quote: Quote, status: str | None):
-    if not quote or not status or not quote.lead_id:
-        return
-    lead = db.get(Lead, quote.lead_id)
-    if not lead:
-        return
-    previous_status = lead.status
-    if status == QuoteStatus.accepted.value:
-        lead.status = LeadStatus.won.value
-    elif status == QuoteStatus.rejected.value:
-        lead.status = LeadStatus.lost.value
-    else:
-        return
-    if lead.owner_agent_id is None:
-        lead.owner_agent_id = _resolve_owner_agent_id(db, lead.subscriber_id)
-    _apply_lead_closed_at(lead, lead.status, previous_status=previous_status)
-    db.commit()
-
-
 def _uuid_from_metadata(metadata: dict | None, key: str):
     if not isinstance(metadata, dict):
         return None
@@ -479,6 +468,7 @@ def _line_amount(quantity, unit_price, discount_percent) -> Decimal:
 
 
 def _recalculate_quote_totals(db: Session, quote: Quote) -> None:
+    db.flush()
     items = db.query(QuoteLineItem).filter(QuoteLineItem.quote_id == quote.id).all()
     # Subtotal is the sum of net (discounted) line amounts.
     subtotal = round_money(
@@ -491,7 +481,38 @@ def _recalculate_quote_totals(db: Session, quote: Quote) -> None:
         rate = Decimal(quote.tax_rate or 0)
         quote.tax_total = round_money(subtotal * rate / Decimal("100"))
     quote.total = subtotal + Decimal(quote.tax_total or 0)
-    db.commit()
+    db.flush()
+
+
+def _locked_quote_for_mutation(db: Session, quote_id: uuid.UUID) -> Quote | None:
+    """Serialize every commercial mutation with Quote acceptance."""
+
+    return db.scalars(
+        select(Quote).where(Quote.id == quote_id).with_for_update()
+    ).one_or_none()
+
+
+def _locked_line_and_quote_for_mutation(
+    db: Session,
+    item_id: uuid.UUID,
+) -> tuple[QuoteLineItem | None, Quote | None]:
+    """Lock a line's parent Quote before the line, matching acceptance order."""
+
+    quote_id = db.scalar(
+        select(QuoteLineItem.quote_id).where(QuoteLineItem.id == item_id)
+    )
+    if quote_id is None:
+        return None, None
+    quote = _locked_quote_for_mutation(db, quote_id)
+    item = db.scalars(
+        select(QuoteLineItem)
+        .where(
+            QuoteLineItem.id == item_id,
+            QuoteLineItem.quote_id == quote_id,
+        )
+        .with_for_update()
+    ).one_or_none()
+    return item, quote
 
 
 #: Statuses that put a quote in front of a customer or commit the business to it.
@@ -507,8 +528,8 @@ def _assert_quote_is_sendable(db: Session, quote: Quote, status: str | None) -> 
     """Refuse to send or accept a quote that has no line items.
 
     A quote with no lines has a zero subtotal and a zero total. Accepting one
-    still runs the full fulfilment pipeline (``_handle_quote_accepted``) and
-    produces a customer, a sales order and an install project for no money.
+    still runs the atomic acceptance coordinator and produces a customer, a
+    sales order and an install project for no money.
     Nothing in the write path prevented that, so the admin quote form could
     create an already-``accepted`` quote and commit the business to a job worth
     nothing.
@@ -531,41 +552,6 @@ def _assert_quote_is_sendable(db: Session, quote: Quote, status: str | None) -> 
         )
 
 
-def _upgrade_party_status_to_customer(
-    db: Session, subscriber: Subscriber | None
-) -> None:
-    """Won lead / accepted quote converts a prospect into a customer."""
-    if subscriber is None:
-        return
-    if subscriber.party_id is not None:
-        from app.models.party import PartyRoleStatus, PartyRoleType
-        from app.services import party as party_service
-
-        party_service.ensure_role(
-            db,
-            party_id=subscriber.party_id,
-            role_type=PartyRoleType.customer,
-            status=PartyRoleStatus.active,
-            source="sales.service",
-        )
-    if subscriber.party_status in (PartyStatus.lead.value, PartyStatus.contact.value):
-        subscriber.party_status = PartyStatus.customer.value
-
-
-def _ensure_project_from_quote(db: Session, quote: Quote, sales_order_id: str | None):
-    """Create the structural implementation scope for an accepted Quote."""
-    if sales_order_id is None:
-        raise ValueError("Accepted quote requires a SalesOrder")
-    from app.services import sales_fulfillment
-
-    return sales_fulfillment.ensure_implementation_scope(
-        db,
-        sales_order_id=coerce_uuid(sales_order_id),
-        actor_id="sales.quote_acceptance",
-        commit=False,
-    ).project
-
-
 def _emit_lead_created(db: Session, lead: Lead) -> None:
     try:
         emit_event(
@@ -581,39 +567,6 @@ def _emit_lead_created(db: Session, lead: Lead) -> None:
         )
     except Exception:
         _logger.warning("lead_created_event_failed lead_id=%s", lead.id, exc_info=True)
-
-
-def _emit_quote_accepted(db: Session, quote: Quote, sales_order_id) -> None:
-    try:
-        emit_event(
-            db,
-            EventType.quote_accepted,
-            {
-                "quote_id": str(quote.id),
-                "total": str(quote.total or 0),
-                "currency": quote.currency,
-                "sales_order_id": str(sales_order_id) if sales_order_id else None,
-            },
-            subscriber_id=quote.subscriber_id,
-        )
-    except Exception:
-        _logger.warning(
-            "quote_accepted_event_failed quote_id=%s", quote.id, exc_info=True
-        )
-
-
-def _handle_quote_accepted(db: Session, quote: Quote) -> None:
-    """Accepted quote → order → native implementation scope, atomically."""
-    from app.services import sales_orders as sales_order_service
-
-    _upgrade_party_status_to_customer(db, quote.subscriber)
-    sales_order = sales_order_service.sales_orders.create_from_quote(
-        db, str(quote.id), commit=False
-    )
-    _ensure_project_from_quote(db, quote, str(sales_order.id) if sales_order else None)
-    _emit_quote_accepted(db, quote, sales_order.id if sales_order else None)
-    db.commit()
-    db.refresh(quote)
 
 
 class Pipelines(ListResponseMixin):
@@ -775,6 +728,11 @@ class Leads(ListResponseMixin):
         party_binding_reason = data.pop("party_binding_reason", None)
         if data.get("status"):
             data["status"] = _enum_str(data["status"], LeadStatus, "status")
+        if data.get("status") == LeadStatus.won.value:
+            raise HTTPException(
+                status_code=409,
+                detail="A Lead becomes Won only through Quote acceptance",
+            )
         if "lead_source" in data:
             data["lead_source"] = _normalize_lead_source_or_400(data.get("lead_source"))
         data["pipeline_id"] = _validate_lead_pipeline_stage(
@@ -932,10 +890,6 @@ class Leads(ListResponseMixin):
                 )
             except lead_lifecycle.LeadLifecycleError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-        # Legacy Subscriber party_status remains compatibility state. Apply it
-        # only after every pre-insert Lead validation has succeeded.
-        if subscriber is not None and subscriber.party_status == PartyStatus.lead.value:
-            subscriber.party_status = PartyStatus.contact.value
         db.add(lead)
         try:
             db.flush()
@@ -1167,6 +1121,14 @@ class Leads(ListResponseMixin):
         data = payload.model_dump(exclude_unset=True)
         if "status" in data:
             data["status"] = _enum_str(data["status"], LeadStatus, "status")
+            if (
+                data["status"] == LeadStatus.won.value
+                and lead.status != LeadStatus.won.value
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A Lead becomes Won only through Quote acceptance",
+                )
         if "lead_source" in data:
             data["lead_source"] = _normalize_lead_source_or_400(data.get("lead_source"))
         prospective_stage_id = data["stage_id"] if "stage_id" in data else lead.stage_id
@@ -1188,38 +1150,12 @@ class Leads(ListResponseMixin):
                     detail="Lead origin is immutable; lead_source cannot be changed",
                 )
 
-        subscriber_field_set = "subscriber_id" in data
-        subscriber_change = data.pop("subscriber_id", None)
-        if subscriber_field_set and subscriber_change is None:
+        if "subscriber_id" in data:
             raise HTTPException(
-                status_code=400,
-                detail="Use the reviewed account-repoint workflow to detach a Subscriber",
+                status_code=409,
+                detail="Subscriber conversion is owned by Quote acceptance",
             )
-        if subscriber_change is not None:
-            subscriber = db.get(Subscriber, subscriber_change)
-            if not subscriber:
-                raise HTTPException(status_code=404, detail="Subscriber not found")
-            if lead.party_id is not None:
-                try:
-                    lead_lifecycle.attach_lead_subscriber(
-                        db,
-                        lead_id=lead.id,
-                        subscriber_id=subscriber.id,
-                        source="sales_lead_update",
-                        reason="Subscriber selected through the Lead update workflow",
-                    )
-                except lead_lifecycle.LeadLifecycleError as exc:
-                    raise HTTPException(status_code=409, detail=str(exc)) from exc
-            elif lead.subscriber_id != subscriber.id:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Legacy Lead account cannot be repointed through generic update; "
-                        "use the reviewed merge/repoint workflow"
-                    ),
-                )
-        else:
-            subscriber = lead.subscriber
+        subscriber = lead.subscriber
 
         if "title" in data:
             title_value = data.get("title")
@@ -1235,9 +1171,6 @@ class Leads(ListResponseMixin):
         for key, value in data.items():
             setattr(lead, key, value)
 
-        # When the lead is won, upgrade the party to customer.
-        if data.get("status") == LeadStatus.won.value:
-            _upgrade_party_status_to_customer(db, lead.subscriber)
         if "status" in data:
             if lead.owner_agent_id is None and lead.status in _CLOSED_LEAD_STATUSES:
                 lead.owner_agent_id = _resolve_owner_agent_id(db, lead.subscriber_id)
@@ -1422,25 +1355,28 @@ class Leads(ListResponseMixin):
 
 class Quotes(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload):
+    def create(db: Session, payload: QuoteCreate) -> Quote:
         data = payload.model_dump()
         if data.get("status"):
             data["status"] = _enum_str(data["status"], QuoteStatus, "status")
-
-        subscriber_id = data.get("subscriber_id")
-        if not subscriber_id:
-            raise HTTPException(status_code=400, detail="subscriber_id is required")
-
-        subscriber = db.get(Subscriber, subscriber_id)
-        if not subscriber:
-            raise HTTPException(status_code=404, detail="Subscriber not found")
+        if data.get("project_type") is None:
+            raise HTTPException(status_code=400, detail="project_type is required")
+        data["project_type"] = _enum_str(
+            data["project_type"], ProjectType, "project_type"
+        )
 
         lead_id = data.get("lead_id")
-        lead: Lead | None = None
-        if lead_id is not None:
-            lead = db.get(Lead, lead_id)
-            if lead is None:
-                raise HTTPException(status_code=404, detail="Lead not found")
+        if lead_id is None:
+            raise HTTPException(status_code=400, detail="lead_id is required")
+        lead = db.get(Lead, lead_id)
+        if lead is None or not lead.is_active:
+            raise HTTPException(status_code=404, detail="Lead not found")
+
+        subscriber_id = data.get("subscriber_id")
+        subscriber = db.get(Subscriber, subscriber_id) if subscriber_id else None
+        if subscriber_id and subscriber is None:
+            raise HTTPException(status_code=404, detail="Subscriber not found")
+        if subscriber is not None:
             try:
                 lead_lifecycle.validate_lead_subscriber_alignment(
                     db, lead=lead, subscriber=subscriber
@@ -1448,13 +1384,19 @@ class Quotes(ListResponseMixin):
             except lead_lifecycle.LeadLifecycleError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        # Set quote_name from the subscriber's display name.
+        # Human label remains a projection; Lead is the required relationship.
         if not data.get("metadata_"):
             data["metadata_"] = {}
         if isinstance(data["metadata_"], dict):
             display_name = (
-                subscriber.display_name
-                or f"{subscriber.first_name} {subscriber.last_name}"
+                lead.party.display_name
+                if lead.party is not None
+                else (
+                    subscriber.display_name
+                    or f"{subscriber.first_name} {subscriber.last_name}"
+                    if subscriber is not None
+                    else lead.title
+                )
             )
             data["metadata_"]["quote_name"] = display_name
 
@@ -1469,18 +1411,6 @@ class Quotes(ListResponseMixin):
                 "A new quote starts as a draft. Add line items, then send or accept it."
             )
 
-        if lead is not None and lead.party_id is not None:
-            try:
-                lead_lifecycle.attach_lead_subscriber(
-                    db,
-                    lead_id=lead.id,
-                    subscriber_id=subscriber.id,
-                    source="quote_create",
-                    reason="Account selected for the Lead's first Quote",
-                )
-            except lead_lifecycle.LeadLifecycleError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
         if not data.get("currency"):
             default_currency = _default_currency(db)
             if default_currency:
@@ -1489,7 +1419,6 @@ class Quotes(ListResponseMixin):
         db.add(quote)
         db.commit()
         db.refresh(quote)
-        _apply_lead_status_from_quote(db, quote, quote.status)
         return quote
 
     @staticmethod
@@ -1524,16 +1453,29 @@ class Quotes(ListResponseMixin):
             )
         if search:
             like = f"%{search.strip()}%"
-            query = query.outerjoin(
-                Subscriber, Quote.subscriber_id == Subscriber.id
-            ).filter(
-                or_(
-                    Subscriber.display_name.ilike(like),
-                    Subscriber.first_name.ilike(like),
-                    Subscriber.last_name.ilike(like),
-                    Subscriber.email.ilike(like),
-                    cast(Quote.id, String).ilike(like),
+            query = (
+                query.outerjoin(Subscriber, Quote.subscriber_id == Subscriber.id)
+                .outerjoin(Lead, Quote.lead_id == Lead.id)
+                .outerjoin(Party, Lead.party_id == Party.id)
+                .outerjoin(
+                    PartyContactPoint,
+                    (PartyContactPoint.party_id == Party.id)
+                    & PartyContactPoint.is_active.is_(True),
                 )
+                .filter(
+                    or_(
+                        Subscriber.display_name.ilike(like),
+                        Subscriber.first_name.ilike(like),
+                        Subscriber.last_name.ilike(like),
+                        Subscriber.email.ilike(like),
+                        Party.display_name.ilike(like),
+                        PartyContactPoint.display_value.ilike(like),
+                        PartyContactPoint.normalized_value.ilike(like),
+                        Lead.title.ilike(like),
+                        cast(Quote.id, String).ilike(like),
+                    )
+                )
+                .distinct()
             )
         if is_active is None:
             query = query.filter(Quote.is_active.is_(True))
@@ -1564,29 +1506,101 @@ class Quotes(ListResponseMixin):
         return counts
 
     @staticmethod
-    def update(db: Session, quote_id: str, payload):
-        quote = db.get(Quote, coerce_uuid(quote_id))
+    def update(
+        db: Session,
+        quote_id: str,
+        payload: QuoteUpdate,
+        *,
+        context: CommandContext | None = None,
+    ) -> Quote:
+        from app.services.sales import quote_acceptance
+
+        quote_uuid = coerce_uuid(quote_id)
+        requested = payload.model_dump(exclude_unset=True)
+        quote = _locked_quote_for_mutation(db, quote_uuid)
         if not quote:
             raise HTTPException(status_code=404, detail="Quote not found")
         previous_status = quote.status
-        data = payload.model_dump(exclude_unset=True)
+        requested_status = (
+            _enum_str(requested.get("status"), QuoteStatus, "status")
+            if "status" in requested
+            else None
+        )
+        accepting = requested_status == QuoteStatus.accepted.value
+        if (
+            previous_status == QuoteStatus.accepted.value
+            and not accepting
+            and requested
+        ):
+            quote_acceptance.assert_quote_mutable(
+                quote,
+                mutation="quote_fields",
+            )
+        if previous_status == QuoteStatus.accepted.value and not accepting:
+            db_session_adapter.release_read_transaction(db)
+            return Quotes.get(db, str(quote_uuid))
+        if "project_type" in requested:
+            if requested["project_type"] is None:
+                raise HTTPException(
+                    status_code=400, detail="project_type cannot be cleared"
+                )
+            requested["project_type"] = _enum_str(
+                requested["project_type"], ProjectType, "project_type"
+            )
+        if accepting:
+            requested.pop("status", None)
+        if accepting:
+            changed_fields = tuple(
+                key for key, value in requested.items() if getattr(quote, key) != value
+            )
+            if changed_fields:
+                quote_acceptance.assert_quote_mutable(
+                    quote,
+                    mutation="quote_fields",
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Save Quote edits before accepting it",
+                )
+            db_session_adapter.release_read_transaction(db)
+            quote_acceptance.accept_quote(
+                db,
+                quote_acceptance.AcceptQuoteCommand(
+                    context=context
+                    or CommandContext.system(
+                        actor="sales.quote-update-adapter",
+                        scope="sales:quote-acceptance",
+                        reason="Accept Quote and convert Lead",
+                        idempotency_key=f"quote-acceptance:{quote_uuid}",
+                    ),
+                    quote_id=quote_uuid,
+                ),
+            )
+            return Quotes.get(db, str(quote_uuid))
+        data = requested
         if "status" in data:
             data["status"] = _enum_str(data["status"], QuoteStatus, "status")
+        if "subscriber_id" in data:
+            raise HTTPException(
+                status_code=409,
+                detail="Subscriber conversion is owned by Quote acceptance",
+            )
 
-        prospective_subscriber_id = (
-            data["subscriber_id"] if "subscriber_id" in data else quote.subscriber_id
+        prospective_subscriber_id = data.get("subscriber_id", quote.subscriber_id)
+        subscriber = (
+            db.get(Subscriber, prospective_subscriber_id)
+            if prospective_subscriber_id is not None
+            else None
         )
-        if prospective_subscriber_id is None:
-            raise HTTPException(status_code=400, detail="subscriber_id is required")
-        subscriber = db.get(Subscriber, prospective_subscriber_id)
-        if subscriber is None:
+        if prospective_subscriber_id is not None and subscriber is None:
             raise HTTPException(status_code=404, detail="Subscriber not found")
         prospective_lead_id = data["lead_id"] if "lead_id" in data else quote.lead_id
-        lead: Lead | None = None
-        if prospective_lead_id is not None:
-            lead = db.get(Lead, prospective_lead_id)
-            if lead is None:
-                raise HTTPException(status_code=404, detail="Lead not found")
+        if prospective_lead_id is None:
+            raise HTTPException(status_code=400, detail="lead_id is required")
+        lead = db.get(Lead, prospective_lead_id)
+        if lead is None or not lead.is_active:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        if subscriber is not None:
             try:
                 lead_lifecycle.validate_lead_subscriber_alignment(
                     db, lead=lead, subscriber=subscriber
@@ -1598,59 +1612,48 @@ class Quotes(ListResponseMixin):
 
         # Check before mutating: a rejected transition must leave the quote
         # exactly as it was, not half-applied.
-        if data.get("status") != previous_status:
-            _assert_quote_is_sendable(db, quote, data.get("status"))
-
-        if lead is not None and lead.party_id is not None:
-            try:
-                lead_lifecycle.attach_lead_subscriber(
-                    db,
-                    lead_id=lead.id,
-                    subscriber_id=subscriber.id,
-                    source="quote_update",
-                    reason="Account confirmed by the Quote update workflow",
-                )
-            except lead_lifecycle.LeadLifecycleError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        status_to_validate = (
+            QuoteStatus.accepted.value if accepting else data.get("status")
+        )
+        if status_to_validate != previous_status:
+            _assert_quote_is_sendable(db, quote, status_to_validate)
 
         for key, value in data.items():
             setattr(quote, key, value)
 
-        # When the quote is accepted, upgrade the party to customer.
-        if data.get("status") == QuoteStatus.accepted.value:
-            _upgrade_party_status_to_customer(db, quote.subscriber)
-
-        db.commit()
-        db.refresh(quote)
-        # Re-derive totals when the tax rate changed, so tax follows.
         if "tax_rate" in data:
             _recalculate_quote_totals(db, quote)
-            db.refresh(quote)
-        if "status" in data:
-            _apply_lead_status_from_quote(db, quote, quote.status)
-        transitioned_to_accepted = (
-            previous_status != QuoteStatus.accepted.value
-            and quote.status == QuoteStatus.accepted.value
-        )
-        if transitioned_to_accepted:
-            _handle_quote_accepted(db, quote)
+        db.commit()
+        db.refresh(quote)
         return quote
 
     @staticmethod
-    def delete(db: Session, quote_id: str):
-        quote = db.get(Quote, coerce_uuid(quote_id))
+    def delete(db: Session, quote_id: str) -> None:
+        from app.services.sales import quote_acceptance
+
+        quote = _locked_quote_for_mutation(db, coerce_uuid(quote_id))
         if not quote:
             raise HTTPException(status_code=404, detail="Quote not found")
+        quote_acceptance.assert_quote_mutable(
+            quote,
+            mutation="quote_deactivation",
+        )
         quote.is_active = False
         db.commit()
 
 
 class QuoteLineItems(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload):
-        quote = db.get(Quote, payload.quote_id)
+    def create(db: Session, payload: QuoteLineItemCreate) -> QuoteLineItem:
+        from app.services.sales import quote_acceptance
+
+        quote = _locked_quote_for_mutation(db, payload.quote_id)
         if not quote:
             raise HTTPException(status_code=404, detail="Quote not found")
+        quote_acceptance.assert_quote_mutable(
+            quote,
+            mutation="line_item_create",
+        )
         data = payload.model_dump()
         # ``inventory_item_id`` is a CRM inventory UUID carried verbatim —
         # inventory is so there is nothing to validate against.
@@ -1660,16 +1663,30 @@ class QuoteLineItems(ListResponseMixin):
         )
         item = QuoteLineItem(**data)
         db.add(item)
-        db.commit()
         _recalculate_quote_totals(db, quote)
+        db.commit()
         db.refresh(item)
         return item
 
     @staticmethod
-    def update(db: Session, item_id: str, payload):
-        item = db.get(QuoteLineItem, coerce_uuid(item_id))
+    def update(
+        db: Session,
+        item_id: str,
+        payload: QuoteLineItemUpdate,
+    ) -> QuoteLineItem:
+        from app.services.sales import quote_acceptance
+
+        item, quote = _locked_line_and_quote_for_mutation(
+            db,
+            coerce_uuid(item_id),
+        )
         if not item:
             raise HTTPException(status_code=404, detail="Quote line item not found")
+        assert quote is not None
+        quote_acceptance.assert_quote_mutable(
+            quote,
+            mutation="line_item_update",
+        )
         data = payload.model_dump(exclude_unset=True)
         for key, value in data.items():
             setattr(item, key, value)
@@ -1677,11 +1694,9 @@ class QuoteLineItems(ListResponseMixin):
             item.amount = _line_amount(
                 item.quantity, item.unit_price, item.discount_percent
             )
+        _recalculate_quote_totals(db, quote)
         db.commit()
         db.refresh(item)
-        quote = db.get(Quote, item.quote_id)
-        if quote:
-            _recalculate_quote_totals(db, quote)
         return item
 
     @staticmethod
@@ -1691,14 +1706,22 @@ class QuoteLineItems(ListResponseMixin):
         A hard delete is right here: a line item has no history of its own, and
         leaving a soft-deleted row behind would keep it in the subtotal.
         """
-        item = db.get(QuoteLineItem, coerce_uuid(item_id))
+        from app.services.sales import quote_acceptance
+
+        item, quote = _locked_line_and_quote_for_mutation(
+            db,
+            coerce_uuid(item_id),
+        )
         if not item:
             raise HTTPException(status_code=404, detail="Quote line item not found")
-        quote = db.get(Quote, item.quote_id)
+        assert quote is not None
+        quote_acceptance.assert_quote_mutable(
+            quote,
+            mutation="line_item_delete",
+        )
         db.delete(item)
+        _recalculate_quote_totals(db, quote)
         db.commit()
-        if quote:
-            _recalculate_quote_totals(db, quote)
 
     @staticmethod
     def list(

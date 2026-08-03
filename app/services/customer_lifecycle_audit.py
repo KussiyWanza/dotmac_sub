@@ -549,7 +549,11 @@ def _quote_counts(
         if lead is None:
             counts["missing_lead"] += 1
             continue
-        subscriber_party_id = subscribers.get(quote.subscriber_id, "missing")
+        subscriber_party_id = (
+            subscribers.get(quote.subscriber_id, "missing")
+            if quote.subscriber_id is not None
+            else "missing"
+        )
         if subscriber_party_id == "missing":
             counts["missing_subscriber"] += 1
         elif lead.party_id is not None and subscriber_party_id is None:
@@ -591,9 +595,12 @@ def _sales_order_counts(
             counts["missing_quote"] += 1
         elif order.subscriber_id != quote.subscriber_id:
             counts["subscriber_mismatch"] += 1
-            if subscribers.get(order.subscriber_id) != subscribers.get(
-                quote.subscriber_id
-            ):
+            quote_party_id = (
+                subscribers.get(quote.subscriber_id)
+                if quote.subscriber_id is not None
+                else None
+            )
+            if subscribers.get(order.subscriber_id) != quote_party_id:
                 counts["party_mismatch"] += 1
         else:
             counts["aligned_with_quote"] += 1

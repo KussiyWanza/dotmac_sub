@@ -1,11 +1,14 @@
 """Leads / pipeline / quotes service tests (Phase 3 sales-vertical port)."""
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
 
+from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import (
     LeadStatus,
     QuoteStatus,
@@ -34,6 +37,20 @@ def _make_subscriber(db, **overrides) -> Subscriber:
         "email": f"ada-{uuid.uuid4().hex}@example.com",
     }
     data.update(overrides)
+    if data.get("party_id") is None:
+        party = Party(
+            display_name=(
+                f"{data.get('first_name') or ''} {data.get('last_name') or ''}".strip()
+            ),
+            party_type="person",
+            status="active",
+        )
+        db.add(party)
+        db.flush()
+        data["party_id"] = party.id
+        data["party_bound_at"] = datetime.now(UTC)
+        data["party_binding_source"] = "pytest"
+        data["party_binding_reason"] = "Sales service fixture Party binding"
     subscriber = Subscriber(**data)
     db.add(subscriber)
     db.commit()
@@ -53,6 +70,19 @@ def _make_stage(db, pipeline, name="New", order_index=0, default_probability=25)
             name=name,
             order_index=order_index,
             default_probability=default_probability,
+        ),
+    )
+
+
+def _make_quote(db, subscriber: Subscriber, **overrides):
+    lead = sales_service.leads.create(db, LeadCreate(subscriber_id=subscriber.id))
+    overrides.setdefault("project_type", "fiber_optics_installation")
+    return sales_service.quotes.create(
+        db,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            **overrides,
         ),
     )
 
@@ -204,31 +234,28 @@ def test_lead_dedup_disabled_creates_duplicates(db_session, monkeypatch):
     assert second.id != first.id
 
 
-def test_lead_create_upgrades_party_status_lead_to_contact(db_session):
+def test_lead_create_does_not_upgrade_legacy_party_status(db_session):
     subscriber = _make_subscriber(db_session, party_status=PartyStatus.lead.value)
     sales_service.leads.create(db_session, LeadCreate(subscriber_id=subscriber.id))
-    assert subscriber.party_status == PartyStatus.contact.value
+    assert subscriber.party_status == PartyStatus.lead.value
 
 
-def test_lead_won_stamps_closed_at_and_upgrades_party(db_session):
+def test_lead_cannot_be_marked_won_outside_quote_acceptance(db_session):
     subscriber = _make_subscriber(db_session, party_status=PartyStatus.contact.value)
     lead = sales_service.leads.create(
         db_session, LeadCreate(subscriber_id=subscriber.id)
     )
     assert lead.closed_at is None
 
-    lead = sales_service.leads.update(
-        db_session, str(lead.id), LeadUpdate(status=LeadStatus.won)
-    )
-    assert lead.status == LeadStatus.won.value
-    assert lead.closed_at is not None
-    assert subscriber.party_status == PartyStatus.customer.value
-
-    # Reopening clears the close timestamp.
-    lead = sales_service.leads.update(
-        db_session, str(lead.id), LeadUpdate(status=LeadStatus.contacted)
-    )
+    with pytest.raises(HTTPException) as exc:
+        sales_service.leads.update(
+            db_session, str(lead.id), LeadUpdate(status=LeadStatus.won)
+        )
+    assert exc.value.status_code == 409
+    db_session.refresh(lead)
+    assert lead.status == LeadStatus.new.value
     assert lead.closed_at is None
+    assert subscriber.party_status == PartyStatus.contact.value
 
 
 def test_lead_list_search_by_subscriber_fields(db_session):
@@ -315,9 +342,7 @@ def test_bulk_assign_pipeline_unassigned_scope(db_session):
 
 def test_quote_create_defaults_and_quote_name_metadata(db_session):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
+    quote = _make_quote(db_session, subscriber)
     assert quote.status == QuoteStatus.draft.value
     assert (quote.metadata_ or {}).get("quote_name") == "Ada Obi"
 
@@ -325,21 +350,17 @@ def test_quote_create_defaults_and_quote_name_metadata(db_session):
 def test_quote_owner_from_metadata(db_session):
     subscriber = _make_subscriber(db_session)
     staff_uuid = uuid.uuid4()
-    quote = sales_service.quotes.create(
+    quote = _make_quote(
         db_session,
-        QuoteCreate(
-            subscriber_id=subscriber.id,
-            metadata_={"owner_person_id": str(staff_uuid)},
-        ),
+        subscriber,
+        metadata_={"owner_person_id": str(staff_uuid)},
     )
     assert quote.owner_person_id == staff_uuid
 
 
 def test_quote_sent_stamps_sent_at(db_session):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
+    quote = _make_quote(db_session, subscriber)
     # A quote must have at least one line before it can be sent -- an empty
     # quote is worth nothing and must not reach a customer.
     sales_service.quote_line_items.create(
@@ -359,10 +380,7 @@ def test_quote_sent_stamps_sent_at(db_session):
 
 def test_quote_line_amount_discount_and_totals(db_session):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session,
-        QuoteCreate(subscriber_id=subscriber.id, tax_rate=Decimal("7.5")),
-    )
+    quote = _make_quote(db_session, subscriber, tax_rate=Decimal("7.5"))
     item = sales_service.quote_line_items.create(
         db_session,
         QuoteLineItemCreate(
@@ -392,7 +410,7 @@ def test_quote_line_amount_discount_and_totals(db_session):
 
 def test_quote_count_by_status(db_session):
     subscriber = _make_subscriber(db_session)
-    sales_service.quotes.create(db_session, QuoteCreate(subscriber_id=subscriber.id))
+    _make_quote(db_session, subscriber)
     counts = sales_service.quotes.count_by_status(db_session)
     assert counts[QuoteStatus.draft.value] == 1
     assert counts["total"] == 1
@@ -405,7 +423,11 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
     )
     quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     sales_service.quote_line_items.create(
         db_session,
@@ -417,6 +439,14 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
             metadata_={"note": "one-off"},
         ),
     )
+    db_session.add(
+        ProjectTemplate(
+            name="Sales service installation",
+            project_type="fiber_optics_installation",
+            is_active=True,
+        )
+    )
+    db_session.commit()
 
     quote = sales_service.quotes.update(
         db_session, str(quote.id), QuoteUpdate(status=QuoteStatus.accepted)
@@ -437,7 +467,7 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
     db_session.refresh(lead)
     assert lead.status == LeadStatus.won.value
     assert lead.closed_at is not None
-    assert subscriber.party_status == PartyStatus.customer.value
+    assert subscriber.party_status == PartyStatus.contact.value
 
     # Idempotent: re-accepting must not mint a second sales order.
     sales_service.quotes.update(
@@ -447,16 +477,21 @@ def test_quote_accept_creates_sales_order_and_wins_lead(db_session):
     assert count == 1
 
 
-def test_quote_reject_loses_lead(db_session):
+def test_quote_rejection_does_not_close_the_lead(db_session):
     subscriber = _make_subscriber(db_session)
     lead = sales_service.leads.create(
         db_session, LeadCreate(subscriber_id=subscriber.id)
     )
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     sales_service.quotes.update(
         db_session, str(quote.id), QuoteUpdate(status=QuoteStatus.rejected)
     )
     db_session.refresh(lead)
-    assert lead.status == LeadStatus.lost.value
+    assert lead.status == LeadStatus.new.value

@@ -12,8 +12,9 @@ from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 
+from app.models.party import Party
 from app.models.rbac import Role, SystemUserRole
-from app.models.sales import SalesOrder
+from app.models.sales import LeadStatus, SalesOrder
 from app.models.subscriber import Subscriber
 from app.models.system_user import SystemUser
 from app.schemas.sales import (
@@ -73,6 +74,19 @@ def _make_subscriber(db, **overrides) -> Subscriber:
         "email": f"ada-{uuid.uuid4().hex}@example.com",
     }
     data.update(overrides)
+    party = Party(
+        display_name=f"{data['first_name']} {data['last_name']}",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
+    data.update(
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Admin sales fixture Party binding",
+    )
     subscriber = Subscriber(**data)
     db.add(subscriber)
     db.commit()
@@ -99,7 +113,18 @@ def _make_stage(db, pipeline, name="New", order_index=0, default_probability=25)
 def _make_lead(db, subscriber, **overrides):
     payload = {"subscriber_id": subscriber.id, "title": "Fiber install"}
     payload.update(overrides)
-    return sales_service.leads.create(db, LeadCreate(**payload))
+    requested_status = payload.get("status")
+    if requested_status == LeadStatus.won.value:
+        payload["status"] = LeadStatus.qualified.value
+    lead = sales_service.leads.create(db, LeadCreate(**payload))
+    if requested_status == LeadStatus.won.value:
+        # Reporting tests need historical Won state; the public transition is
+        # exercised separately through Quote acceptance.
+        lead.status = LeadStatus.won.value
+        lead.closed_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(lead)
+    return lead
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +342,12 @@ def test_lead_detail_context_includes_quotes(db_session):
     subscriber = _make_subscriber(db_session)
     lead = _make_lead(db_session, subscriber)
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     context = web_sales.build_lead_detail_context(db_session, lead_id=str(lead.id))
@@ -335,7 +365,7 @@ def test_create_quote_context_preselects_lead_and_subscriber(db_session):
     context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
 
     assert context["quote_form"]["lead_id"] == str(lead.id)
-    assert context["quote_form"]["subscriber_id"] == str(subscriber.id)
+    assert context["quote_form"]["subscriber_id"] == ""
 
 
 def test_lead_form_creates_through_native_sales_owner(db_session):
@@ -347,7 +377,7 @@ def test_lead_form_creates_through_native_sales_owner(db_session):
         db_session,
         title="Enterprise fibre opportunity",
         status="qualified",
-        subscriber_id=str(subscriber.id),
+        party_id=str(subscriber.party_id),
         owner_agent_id=None,
         pipeline_id=str(pipeline.id),
         stage_id=str(stage.id),
@@ -365,7 +395,8 @@ def test_lead_form_creates_through_native_sales_owner(db_session):
 
     lead = sales_service.leads.get(db_session, lead_id)
     assert existing is False
-    assert lead.subscriber_id == subscriber.id
+    assert lead.party_id == subscriber.party_id
+    assert lead.subscriber_id is None
     assert lead.pipeline_id == pipeline.id
     assert lead.stage_id == stage.id
     assert lead.probability == 65
@@ -383,7 +414,7 @@ def test_pipeline_stage_pair_is_enforced_by_sales_owner(db_session):
             db_session,
             title="Mismatched pipeline",
             status="new",
-            subscriber_id=str(subscriber.id),
+            party_id=str(subscriber.party_id),
             owner_agent_id=None,
             pipeline_id=str(first.id),
             stage_id=str(second_stage.id),
@@ -659,7 +690,12 @@ def test_quotes_list_context(db_session):
     subscriber = _make_subscriber(db_session)
     lead = _make_lead(db_session, subscriber)
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id)
+        db_session,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
     context = web_sales.build_quotes_list_context(
@@ -689,10 +725,15 @@ def test_quotes_list_context(db_session):
 
 def test_quote_detail_context_line_items_deposit_and_accept_state(db_session):
     subscriber = _make_subscriber(db_session)
+    lead = sales_service.leads.create(
+        db_session, LeadCreate(subscriber_id=subscriber.id)
+    )
     quote = sales_service.quotes.create(
         db_session,
         QuoteCreate(
             subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
             metadata_={
                 "source": "portal_self_serve",
                 "deposit_percent": 50,

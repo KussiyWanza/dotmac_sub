@@ -8,6 +8,7 @@ and the ledger dedupe guard are the real services on a real database.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +17,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.billing import Invoice, InvoiceStatus, Payment
+from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import Quote, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services import quote_deposits
@@ -27,14 +30,38 @@ _PIN = {"latitude": 9.0765, "longitude": 7.3986, "address": "12 Mississippi St"}
 
 
 def _subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="Flow Quote",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
         first_name="Flow",
         last_name="Quote",
         email=f"fq-{uuid.uuid4().hex[:8]}@example.com",
         # subscribers.reseller_id is NOT NULL (migration 116); default to House.
         reseller_id=_default_reseller_id(db),
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Quote integration fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Quote flow {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.flush()
     return sub
 

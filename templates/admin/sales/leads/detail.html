@@ -42,7 +42,7 @@
             {% if can(request, "crm:quote:write") and can_create_quote %}
             <a href="/admin/sales/quotes/new?lead_id={{ lead.id }}" class="inline-flex items-center justify-center rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700">Create Quote</a>
             {% elif can(request, "crm:quote:write") %}
-            <button type="button" disabled title="Attach a reviewed customer account before creating a quote" class="inline-flex cursor-not-allowed items-center justify-center rounded-lg bg-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-400">Create Quote</button>
+            <button type="button" disabled title="Bind this Lead to a reviewed Party before creating a quote" class="inline-flex cursor-not-allowed items-center justify-center rounded-lg bg-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 dark:bg-slate-700 dark:text-slate-400">Create Quote</button>
             {% endif %}
             {% if can(request, "crm:lead:write") %}
             <a href="/admin/sales/leads/{{ lead.id }}/edit" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">Edit Lead</a>

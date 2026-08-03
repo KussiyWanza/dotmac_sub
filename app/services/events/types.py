@@ -198,6 +198,7 @@ class EventType(enum.Enum):
     # automation consumes these.
     lead_created = "lead.created"
     lead_account_converted = "lead.account_converted"
+    quote_created = "quote.created"
     quote_accepted = "quote.accepted"
     sales_order_paid = "sales_order.paid"
     sales_order_funding_satisfied = "sales_order.funding_satisfied"

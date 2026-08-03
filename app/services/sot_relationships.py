@@ -35230,6 +35230,183 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="sales.quote_authoring",
+                module="app.services.sales.quote_authoring",
+                owns=("atomic Lead-backed Draft/Sent Quote authoring",),
+                depends_on=(
+                    "auth.staff_provisioning",
+                    "events.dispatcher",
+                    "financial.tax_configuration",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.lead_lifecycle",
+                    "sales.service",
+                    "service_intent.catalog_policy",
+                ),
+                notes=(
+                    "Staff author one Lead-backed Draft or Sent Quote and all of its "
+                    "lines under one transaction. Initial Accepted authoring and every "
+                    "Subscriber, order, Project, Task, or WorkOrder consequence are "
+                    "forbidden; acceptance is a separate sales.quote_acceptance command."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="atomic Lead-backed Draft/Sent Quote authoring",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "Quote authoring command evidence",
+                                "canonical staff actor state",
+                                "canonical Lead and Party state",
+                                "canonical commercial reference state",
+                                "canonical Quote lifecycle state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote authoring command evidence",
+                            owner="sales.quote_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed submission id, Lead, Draft/Sent status, currency, "
+                                "tax choice, install location, required Project Type, line values, "
+                                "actor, and CommandContext provenance"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff actor state",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active SystemUser addressed by the session actor",
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead and Party state",
+                            owner="sales.lead_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active open Party-bound Lead",
+                        ),
+                        AuthorityInput(
+                            name="canonical commercial reference state",
+                            owner="sales.quote_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "validated active offer, field-item, tax-rate, currency, "
+                                "quantity, price, discount, and install-pin references"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote lifecycle state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Quote with first-class Project Type and QuoteLineItem "
+                                "records keyed by submission UUID"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "author_quote enters execute_owner_command once on a clean "
+                            "adapter session; Quote, lines, quote.created event, and audit "
+                            "evidence commit or roll back together"
+                        ),
+                        locking=(
+                            "The actor and Lead lock FOR UPDATE; the supplied Quote UUID "
+                            "and database key arbitrate concurrent submissions."
+                        ),
+                        idempotency=(
+                            "Submission UUID plus a canonical command fingerprint returns "
+                            "the original Quote; changed content under that UUID fails closed."
+                        ),
+                        retries=(
+                            "Equivalent retries use the same submission UUID; transient "
+                            "failures retry the complete command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "sales.quote_authoring"
+                            ),
+                            "sales.quote_authoring.actor_not_eligible",
+                            "sales.quote_authoring.currency_invalid",
+                            "sales.quote_authoring.initial_status_invalid",
+                            "sales.quote_authoring.install_pin_incomplete",
+                            "sales.quote_authoring.inventory_description_mismatch",
+                            "sales.quote_authoring.inventory_item_not_active",
+                            "sales.quote_authoring.latitude_invalid",
+                            "sales.quote_authoring.lead_not_eligible",
+                            "sales.quote_authoring.lead_not_found",
+                            "sales.quote_authoring.lead_person_ineligible",
+                            "sales.quote_authoring.lead_person_required",
+                            "sales.quote_authoring.line_description_invalid",
+                            "sales.quote_authoring.line_discount_invalid",
+                            "sales.quote_authoring.line_items_required",
+                            "sales.quote_authoring.line_price_invalid",
+                            "sales.quote_authoring.line_quantity_invalid",
+                            "sales.quote_authoring.line_source_ambiguous",
+                            "sales.quote_authoring.longitude_invalid",
+                            "sales.quote_authoring.manual_tax_invalid",
+                            "sales.quote_authoring.offer_description_mismatch",
+                            "sales.quote_authoring.offer_not_active",
+                            "sales.quote_authoring.submission_conflict",
+                            "sales.quote_authoring.tax_rate_not_active",
+                        ),
+                        mapping_owner="admin sales Quote form adapter",
+                        fail_closed_on=(
+                            "inactive or closed Lead/Party state",
+                            "inactive actor or commercial reference",
+                            "initial Accepted/Rejected/Expired status",
+                            "ambiguous or stale line references",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.created",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, Lead, Party, status, "
+                            "currency, and total without contact PII."
+                        ),
+                        replay=(
+                            "The submission UUID and authoring fingerprint reproduce the "
+                            "original Quote and suppress duplicate event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="admin web form plus per-row sales.service commits",
+                        new_owner="sales.quote_authoring",
+                        verification=(
+                            "Lead and Project Type requirements, Draft/Sent restriction, "
+                            "atomic lines, install metadata, exact replay, manifest, and "
+                            "boundary tests."
+                        ),
+                        cutover_gate=(
+                            "The admin form submits one typed owner command on a clean "
+                            "session and exposes only Draft/Sent initial states."
+                        ),
+                        fallback_retirement=(
+                            "The form cannot create an Accepted Quote or Subscriber and no "
+                            "adapter creates initial Quote lines through separate commits."
+                        ),
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_web_sales_quote_authoring.py",
+                        "tests/test_quote_acceptance_workflow.py",
+                        "tests/architecture/test_sales_lifecycle_chain_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="sales.account_conversion",
                 module="app.services.sales.account_conversion",
                 owns=(
@@ -35246,22 +35423,24 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     concerns=(
                         ConcernContract(
                             name="exact Lead and Party account conversion",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
                                 "canonical attributed Lead state",
                                 "canonical Party identity state",
                                 "reviewed account conversion command",
                                 "canonical customer account state",
                             ),
+                            canonical_writer="sales.account_conversion",
                         ),
                         ConcernContract(
                             name=("customer and pending-subscriber role establishment"),
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
                                 "canonical Party identity state",
                                 "canonical customer account state",
                                 "reviewed account conversion command",
                             ),
+                            canonical_writer="sales.account_conversion",
                         ),
                     ),
                     authoritative_inputs=(
@@ -35297,11 +35476,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.OWNER_MANAGED,
+                        mode=TransactionMode.PARTICIPANT,
                         boundary=(
-                            "The conversion coordinator locks the Lead, stages account, "
-                            "Party roles/binding, Lead attachment and events, then commits "
-                            "or rolls back once."
+                            "This required Quote-acceptance participant locks the Lead and "
+                            "stages account, Party roles/binding, Lead attachment, and "
+                            "events without transaction completion. The outer "
+                            "sales.quote_acceptance coordinator commits or rolls back once."
                         ),
                         locking=(
                             "The exact Lead and any existing Subscriber target are selected "
@@ -35318,11 +35498,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "sales.account_conversion.active_caller_transaction",
-                            "sales.account_conversion.command_contract_violation",
-                            "sales.account_conversion.invalid_command_context",
-                            "sales.account_conversion.nested_owner_command",
-                            "sales.account_conversion.nested_transaction_completion",
                             "actor_required",
                             "account_target_required",
                             "lead_not_found",
@@ -35332,7 +35507,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "existing_target_not_allowed",
                             "conversion_rejected",
                         ),
-                        mapping_owner="sales account-conversion API adapter",
+                        mapping_owner="sales Quote-acceptance coordinator",
                         fail_closed_on=(
                             "Lead/Party mismatch",
                             "ambiguous account target",
@@ -35366,12 +35541,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "and transport-boundary tests."
                         ),
                         cutover_gate=(
-                            "Generic sales capture converts only through this exact "
-                            "Lead/Party command."
+                            "Quote acceptance is the only sales workflow allowed to "
+                            "invoke this Lead/Party conversion participant."
                         ),
                         fallback_retirement=(
-                            "Contact-based account matching and CRM conversion authority "
-                            "are absent."
+                            "The public Lead account-conversion API and service command, "
+                            "contact-based matching, and CRM conversion authority are absent."
                         ),
                     ),
                     steward="sales operations",
@@ -35384,6 +35559,228 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_sales_capture_account_conversion.py",
                         "tests/test_sales_to_service_lifecycle.py",
                         "tests/architecture/test_service_http_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_acceptance",
+                module="app.services.sales.quote_acceptance",
+                owns=(
+                    "atomic accepted-Quote sales conversion",
+                    "accepted-Quote commercial snapshot immutability",
+                ),
+                depends_on=(
+                    "customer.accounts",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "operations.project_lifecycle",
+                    "operations.work_order_commands",
+                    "party.registry",
+                    "sales.account_conversion",
+                    "sales.fulfillment",
+                    "sales.lead_lifecycle",
+                    "sales.orders",
+                    "sales.service",
+                ),
+                notes=(
+                    "Quote acceptance is the sole sales conversion event. It locks the "
+                    "Quote and Lead, creates or replays the exact account, copies the "
+                    "order and lines, copies the Quote-selected Project Type, assigns its "
+                    "configured active template and Tasks, creates only policy-enabled "
+                    "WorkOrders, and stages event and audit evidence under one owner "
+                    "transaction. ProjectTasks capture that automation policy; replay "
+                    "repairs only missing captured-policy WorkOrders while preserving "
+                    "manual work and ignoring later template edits, while generic task "
+                    "metadata updates preserve the captured policy. Initial acceptance "
+                    "fails closed when the locked Quote has expired. Deposit-backed "
+                    "acceptance fingerprints the normalized "
+                    "reference, amount, and provider; only an exact replay is accepted. The "
+                    "accepted Quote and its copied line terms then remain immutable; revised "
+                    "commercial terms require a new Quote."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="atomic accepted-Quote sales conversion",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "accepted-Quote command evidence",
+                                "canonical Lead and Party state",
+                                "canonical Quote and line state",
+                                "canonical customer account state",
+                                "configured implementation automation",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="accepted-Quote commercial snapshot immutability",
+                            role=OwnerRole.POLICY,
+                            input_names=("canonical Quote and line state",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="accepted-Quote command evidence",
+                            owner="sales.quote_acceptance",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed Quote id and CommandContext actor, command, "
+                                "correlation, reason, scope, and idempotency evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead and Party state",
+                            owner="sales.lead_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Party-bound Lead, immutable Party binding, "
+                                "and any exact accepted account link"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote and line state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Lead-backed Draft, Sent, or Accepted Quote, "
+                                "its required first-class Project Type, and priced line items"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer account state",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "exact Lead-attached Subscriber or typed account prepared "
+                                "from the reviewed Party profile"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="configured implementation automation",
+                            owner="operations.project_lifecycle",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "active ProjectTemplate mapped by Quote Project Type, ordered "
+                                "template tasks, and explicit WorkOrder automation flags"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "The public accept_quote command enters execute_owner_command "
+                            "once on a transaction-free adapter session. Every participant "
+                            "uses the supplied session, flushes only, and the coordinator "
+                            "commits or rolls back Quote, Lead, account, order, lines, "
+                            "Project, Tasks, WorkOrders, events, and audit together."
+                        ),
+                        locking=(
+                            "The exact Quote then Lead and Party are selected FOR UPDATE; "
+                            "every Quote and line mutation locks the same parent Quote first; "
+                            "SalesOrder and Project unique structural keys arbitrate concurrent "
+                            "replays."
+                        ),
+                        idempotency=(
+                            "Quote identity is the idempotency scope. Unique Quote-to-order, "
+                            "order-to-Project, template-task identity, and deterministic "
+                            "WorkOrder public ids return the original complete outcome. A "
+                            "replay re-runs the captured ProjectTask automation and creates "
+                            "only a missing deterministic WorkOrder; unrelated WorkOrders "
+                            "are preserved. A "
+                            "deposit-backed retry must match the normalized reference, amount, "
+                            "and provider stored at initial acceptance."
+                        ),
+                        retries=(
+                            "Equivalent retries re-lock the Quote and return canonical "
+                            "identifiers. Conflicting state fails closed; transient database "
+                            "failures retry the entire command."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "sales.quote_acceptance.account_profile_incomplete",
+                            "sales.quote_acceptance.account_profile_invalid",
+                            "sales.quote_acceptance.accepted_quote_immutable",
+                            "sales.quote_acceptance.active_caller_transaction",
+                            "sales.quote_acceptance.command_contract_violation",
+                            "sales.quote_acceptance.deposit_evidence_conflict",
+                            "sales.quote_acceptance.deposit_evidence_invalid",
+                            "sales.quote_acceptance.invalid_command_context",
+                            "sales.quote_acceptance.invalid_transition",
+                            "sales.quote_acceptance.lead_party_required",
+                            "sales.quote_acceptance.lead_required",
+                            "sales.quote_acceptance.line_items_required",
+                            "sales.quote_acceptance.nested_owner_command",
+                            "sales.quote_acceptance.nested_transaction_completion",
+                            "sales.quote_acceptance.party_not_found",
+                            "sales.quote_acceptance.participant_rejected",
+                            "sales.quote_acceptance.project_template_required",
+                            "sales.quote_acceptance.quote_account_conflict",
+                            "sales.quote_acceptance.quote_expired",
+                            "sales.quote_acceptance.quote_not_found",
+                        ),
+                        mapping_owner="sales Quote API and admin web adapters",
+                        fail_closed_on=(
+                            "missing or ambiguous Lead/Party/account evidence",
+                            "non-Draft/Sent transition",
+                            "expired Quote at initial acceptance",
+                            "deposit evidence reuse with changed reference, amount, or provider",
+                            "commercial mutation after Quote acceptance",
+                            "empty commercial lines or missing Quote Project Type/template",
+                            "any account, order, project, task, work-order, event, or audit failure",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "subscriber.created",
+                            "lead.account_converted",
+                            "quote.accepted",
+                            "project.created",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact Quote, Lead, Subscriber, SalesOrder, "
+                            "Project, ProjectTemplate, actor, and currency/value identifiers."
+                        ),
+                        replay=(
+                            "Structural unique keys and deterministic WorkOrder ids rebuild "
+                            "the same outcome, repair missing captured-policy WorkOrders, and "
+                            "preserve manual WorkOrders without duplicate consequences."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "Subscriber-first Quote authoring plus sales.service helper "
+                            "commits before Lead, order, and Project consequences"
+                        ),
+                        new_owner="sales.quote_acceptance",
+                        verification=(
+                            "Success, failure rollback, exact replay, Project Type template "
+                            "assignment, template Tasks, configured WorkOrders, expiry "
+                            "rejection, missing configured-WorkOrder replay repair, manual "
+                            "WorkOrder preservation, exact deposit replay and conflict "
+                            "rejection, accepted commercial immutability, API delegation, "
+                            "manifest, and architecture-boundary tests."
+                        ),
+                        cutover_gate=(
+                            "Every Accepted transition delegates to this coordinator and "
+                            "Lead/Quote generic updates cannot create accounts or mark Won."
+                        ),
+                        fallback_retirement=(
+                            "Lead creation and Quote authoring do not require or create a "
+                            "Subscriber; helper commits and swallowed acceptance events are absent."
+                        ),
+                    ),
+                    steward="sales and service delivery",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_acceptance_workflow.py",
+                        "tests/architecture/test_sales_lifecycle_chain_boundary.py",
                     ),
                 ),
             ),
@@ -35463,8 +35860,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="sales.orders",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked active SalesOrder, Quote metadata, exact Lead, "
-                                "Subscriber, line, and funding state"
+                                "locked active SalesOrder, first-class Quote Project Type, "
+                                "exact Lead, Subscriber, line, and funding state"
                             ),
                         ),
                         AuthorityInput(
@@ -35472,8 +35869,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="control.settings_spec",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "projects-domain default sales type, status, priority, "
-                                "numbering, and duration settings"
+                                "projects-domain status, priority, numbering, duration, "
+                                "and non-Quote sales type defaults"
                             ),
                         ),
                         AuthorityInput(
@@ -35553,6 +35950,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "sales_order_not_found",
                             "sales_order_canceled",
                             "subscriber_not_found",
+                            "quote_project_type_required",
                             "project_type_unconfigured",
                             "fulfillment_rejected",
                             "installation_not_found",
@@ -35560,7 +35958,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         mapping_owner="sales order and lifecycle event adapters",
                         fail_closed_on=(
-                            "missing configured project type",
+                            "missing Quote Project Type or configured Project Template",
                             "structural root mismatch",
                             "unverified implementation",
                             "conflicting verification evidence",
@@ -36644,8 +37042,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         ),
         rule=(
             "A prospect enters as a Party-bound Lead with captured origin, not a "
-            "fake Subscriber. Exact account conversion precedes Quote; SalesOrder "
-            "structurally owns one Project and installation scope; verified "
+            "fake Subscriber. Staff author Lead-backed Quotes without conversion; "
+            "Accepted Quote is the sole atomic account, SalesOrder, Project, Task, "
+            "and configured WorkOrder conversion event. SalesOrder structurally "
+            "owns one Project and installation scope; verified "
             "implementation requests service-order release after its evidence "
             "commits; successful provisioning activates service and its committed "
             "completion requests the CX handoff. Routes, webhooks, jobs, and "

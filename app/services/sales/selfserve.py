@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID
 
 from fastapi import HTTPException
 from geoalchemy2.functions import ST_MakePoint, ST_SetSRID
@@ -64,7 +65,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.models.catalog import CatalogOffer, OfferPrice, PriceType
 from app.models.domain_settings import SettingDomain
 from app.models.network import FiberAccessPoint
-from app.models.project import Project
+from app.models.project import Project, ProjectType
 from app.models.sales import (
     Quote,
     QuoteStatus,
@@ -77,17 +78,18 @@ from app.schemas.sales import (
     LeadCreate,
     QuoteCreate,
     QuoteLineItemCreate,
-    QuoteUpdate,
 )
 from app.services import control_registry, settings_spec
 from app.services.common import coerce_uuid
+from app.services.db_session_adapter import db_session_adapter
+from app.services.owner_commands import CommandContext
+from app.services.sales import quote_acceptance
 from app.services.sales.service import leads, quote_line_items, quotes
 
 logger = logging.getLogger(__name__)
 
 _TWOPLACES = Decimal("0.01")
-# §1.7 ProjectType.fiber_optics_installation — the enum itself arrives with
-# the native projects migration; the metadata contract carries the string value.
+# The self-serve installation product stores this as a typed Quote field.
 _PROJECT_TYPE = "fiber_optics_installation"
 
 
@@ -343,47 +345,42 @@ def _quote_status(quote: Quote) -> str:
     return getattr(quote.status, "value", quote.status)
 
 
-def _find_project_ids_for_quotes(db: Session, quote_ids) -> dict[str, str]:
+def _find_project_ids_for_quotes(db: Session, quote_ids: list[UUID]) -> dict[str, str]:
     """Batch-resolve the install project id for a whole set of quotes.
 
-    One query for the entire quote set (``WHERE metadata->>'quote_id' IN (…)``)
-    instead of the per-quote JSON scan the list read paths used to issue — the
-    N+1 fixed in H1. Keyed by ``str(quote_id)`` → ``str(project.id)``; quotes
-    with no native install project are simply absent from the map.
+    The typed ``Project.quote_id`` relationship is authoritative. Resolve the
+    whole Quote set in one query and key the result by stringified Quote UUID;
+    Quotes without a native Project are absent from the map.
 
-    The old ``.first()`` had no ``ORDER BY``, so a quote referenced by more than
-    one active project resolved to an arbitrary row. We make the pick
-    deterministic here (earliest ``created_at``, then ``id``) and route the
-    single-quote helper through this same resolver, so both paths agree — the
-    common no-project / one-project cases are unaffected.
+    The structural Quote-to-Project uniqueness constraint makes the mapping
+    exact. The single-Quote helper routes through this same resolver so both
+    read paths share the authoritative selection semantics.
     """
-    ids = [str(q) for q in quote_ids]
+    ids = list(dict.fromkeys(quote_ids))
     if not ids:
         return {}
-    key = Project.metadata_["quote_id"].as_string()
     rows = (
-        db.query(key.label("quote_id"), Project.id, Project.created_at)
-        .filter(key.in_(ids))
+        db.query(Project.quote_id, Project.id, Project.created_at)
+        .filter(Project.quote_id.in_(ids))
         .filter(Project.is_active.is_(True))
         .order_by(Project.created_at.asc(), Project.id.asc())
         .all()
     )
     mapping: dict[str, str] = {}
-    for quote_id, project_id, _created_at in rows:
+    for resolved_quote_id, project_id, _created_at in rows:
         # Rows arrive earliest-first; keep the first (earliest) per quote.
-        if quote_id is not None and quote_id not in mapping:
-            mapping[quote_id] = str(project_id)
+        quote_key = str(resolved_quote_id) if resolved_quote_id is not None else None
+        if quote_key is not None and quote_key not in mapping:
+            mapping[quote_key] = str(project_id)
     return mapping
 
 
-def _find_project_id_for_quote(db: Session, quote_id) -> str | None:
+def _find_project_id_for_quote(db: Session, quote_id: UUID) -> str | None:
     """Resolve the install project created from this quote.
 
-    The CRM resolved the payload's ``project_id`` via
-    ``_find_existing_project_for_quote``, idempotent on
-    ``Project.metadata_["quote_id"]`` — the same key sub's native project
-    pipeline stamps. Quotes whose install project predates the native wiring
-    carry ``project_id: None`` (the mobile/web schemas treat it as optional).
+    Native acceptance owns the typed ``Project.quote_id`` relationship.
+    Quotes whose install project predates that wiring carry
+    ``project_id: None`` (the mobile/web schemas treat it as optional).
 
     Thin wrapper over the batch resolver (batch of one) so the single-quote and
     list paths share identical selection + tie-break semantics.
@@ -542,10 +539,10 @@ class SelfServeQuotes:
                 subscriber_id=subscriber.id,
                 lead_id=lead.id,
                 status=QuoteStatus.draft,
+                project_type=ProjectType(_PROJECT_TYPE),
                 currency=currency,
                 metadata_={
                     "source": "portal_self_serve",
-                    "project_type": _PROJECT_TYPE,
                     "install": install,
                     "feasibility": feasibility,
                     "deposit_percent": estimate["deposit_percent"],
@@ -586,34 +583,48 @@ class SelfServeQuotes:
         """Accept a quote after the deposit is verified; record it; return
         the portal payload.
 
-        Idempotent on the quote's accepted state — a repeat call (e.g. a
-        payment-verify retry) returns the same already-created sales order.
-        The accept fires the unchanged sales-service pipeline
-        (``Quotes.update(status=accepted)`` → ``create_from_quote`` +
-        ``_ensure_project_from_quote``, §2.2 step 4); the deposit is then
-        only *marked* on the sales order — never a second payment (risk #2).
+        Idempotent on the accepted Quote and its normalized deposit evidence —
+        an exact payment-verify retry returns the same already-created sales
+        order, while a changed reference, amount, or provider fails closed.
+        The Accepted transition enters the atomic ``sales.quote_acceptance``
+        coordinator; the accepted deposit is then only *marked* on the
+        canonical sales order — never a second payment (risk #2).
         """
         quote = SelfServeQuotes.get_for_subscriber(db, subscriber_id, quote_id)
+        # Preserve the scalar command identity before releasing the implicit
+        # read transaction. Accessing an expired ORM row after that release
+        # can autobegin a fresh transaction before the owner command enters.
+        quote_uuid = quote.id
 
         amount = _money(deposit_amount)
         already_accepted = _quote_status(quote) == QuoteStatus.accepted.value
 
-        if not already_accepted:
-            meta = dict(quote.metadata_ or {})
-            meta["deposit"] = {
-                "reference": deposit_reference,
-                "amount": str(amount),
-                "provider": provider,
-                "paid": True,
-            }
-            quotes.update(
-                db,
-                str(quote.id),
-                QuoteUpdate(status=QuoteStatus.accepted, metadata_=meta),
+        db_session_adapter.release_read_transaction(db)
+        outcome = quote_acceptance.accept_quote(
+            db,
+            quote_acceptance.AcceptQuoteCommand(
+                context=CommandContext.system(
+                    actor=f"subscriber:{subscriber_id}",
+                    scope="sales:quote-acceptance",
+                    reason="Verified self-serve Quote deposit",
+                    idempotency_key=f"quote-acceptance:{quote_uuid}",
+                ),
+                quote_id=quote_uuid,
+                deposit=quote_acceptance.QuoteAcceptanceDeposit(
+                    reference=deposit_reference,
+                    amount=amount,
+                    provider=provider,
+                ),
+            ),
+        )
+        if outcome.deposit is None:
+            raise quote_acceptance.QuoteAcceptanceError(
+                code="sales.quote_acceptance.command_contract_violation",
+                message="Quote acceptance did not return verified deposit evidence",
             )
-            db.refresh(quote)
+        db.refresh(quote)
 
-        _record_deposit_on_sales_order(db, quote, amount)
+        _record_deposit_on_sales_order(db, quote, outcome.deposit.amount)
         return build_portal_quote_payload(db, quote, already_accepted=already_accepted)
 
 
@@ -712,7 +723,7 @@ def build_portal_quote_payload(
         "subtotal": str(_money(quote.subtotal)),
         "tax_total": str(_money(quote.tax_total)),
         "total": str(total),
-        "project_type": meta.get("project_type"),
+        "project_type": quote.project_type,
         # Post-import this is the row's own column (§1.4); the legacy
         # metadata key remains only on imported rows as provenance.
         "subscriber_id": str(quote.subscriber_id),

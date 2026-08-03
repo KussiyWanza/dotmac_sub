@@ -46,6 +46,16 @@
                        class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
             </div>
         </div>
+        <div class="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+            <label class="flex items-start gap-3">
+                <input type="checkbox" name="auto_create_work_order" class="mt-1 rounded border-slate-300 text-emerald-600" {% if prefill.auto_create_work_order %}checked{% endif %}>
+                <span><span class="block text-sm font-semibold text-slate-800 dark:text-slate-100">Create Work Order automatically</span><span class="block text-xs text-slate-500 dark:text-slate-400">When a Quote is accepted, create one idempotent Work Order for this instantiated task.</span></span>
+            </label>
+            <label class="flex items-start gap-3">
+                <input type="checkbox" name="work_order_requires_as_built_evidence" class="mt-1 rounded border-slate-300 text-emerald-600" {% if prefill.work_order_requires_as_built_evidence %}checked{% endif %}>
+                <span><span class="block text-sm font-semibold text-slate-800 dark:text-slate-100">Require as-built evidence</span><span class="block text-xs text-slate-500 dark:text-slate-400">The generated field job cannot complete without its configured as-built evidence.</span></span>
+            </label>
+        </div>
         <div class="flex items-center justify-end gap-2 border-t border-slate-200/70 pt-4 dark:border-slate-700/70">
             <a href="/admin/projects/templates/{{ template.id }}" class="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">Cancel</a>
             <button class="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-emerald-500/20 transition hover:shadow-md">

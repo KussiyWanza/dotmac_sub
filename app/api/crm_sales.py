@@ -38,7 +38,9 @@ from app.schemas.sales import (
     QuoteUpdate,
 )
 from app.services import sales as sales_service
-from app.services.sales import account_conversion, capture
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
+from app.services.sales import capture
 
 router = APIRouter(prefix="/crm", tags=["crm-sales"])
 
@@ -53,15 +55,6 @@ def _actor(principal: dict) -> str:
 
 
 def _capture_error(exc: capture.LeadCaptureError):
-    status_code = {"not_found": 404, "invalid": 422}.get(exc.kind, 409)
-    from fastapi import HTTPException
-
-    raise HTTPException(
-        status_code=status_code, detail={"code": exc.code, "message": str(exc)}
-    ) from exc
-
-
-def _conversion_error(exc: account_conversion.LeadAccountConversionError):
     status_code = {"not_found": 404, "invalid": 422}.get(exc.kind, 409)
     from fastapi import HTTPException
 
@@ -239,18 +232,18 @@ def convert_lead_account(
     db: Session = Depends(get_db),
     principal: dict = Depends(get_current_user),
 ):
-    try:
-        result = account_conversion.convert_lead_account(
-            db,
-            lead_id=lead_id,
-            party_id=payload.party_id,
-            subscriber_id=payload.subscriber_id,
-            new_account=payload.new_account,
-            actor_id=_actor(principal),
-        )
-    except account_conversion.LeadAccountConversionError as exc:
-        return _conversion_error(exc)
-    return LeadAccountConversionRead(**result.__dict__)
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "sales.quote_acceptance.required",
+            "message": (
+                "Lead account conversion occurs only when a Lead-backed Quote "
+                "is accepted"
+            ),
+        },
+    )
 
 
 @router.get(
@@ -359,8 +352,35 @@ def get_quote(quote_id: str, db: Session = Depends(get_db)):
     response_model=QuoteRead,
     dependencies=[Depends(require_permission("crm:quote:write"))],
 )
-def update_quote(quote_id: str, payload: QuoteUpdate, db: Session = Depends(get_db)):
-    return sales_service.quotes.update(db, quote_id, payload)
+def update_quote(
+    quote_id: str,
+    payload: QuoteUpdate,
+    db: Session = Depends(get_db),
+    principal: dict = Depends(get_current_user),
+):
+    try:
+        return sales_service.quotes.update(
+            db,
+            quote_id,
+            payload,
+            context=CommandContext.system(
+                actor=_actor(principal),
+                scope="sales:quote-acceptance",
+                reason="API Quote status update",
+                idempotency_key=f"quote-acceptance:{quote_id}",
+            ),
+        )
+    except DomainError as exc:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=(
+                409
+                if exc.code == "sales.quote_acceptance.accepted_quote_immutable"
+                else 422
+            ),
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 @router.delete(

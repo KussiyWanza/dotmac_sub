@@ -83,6 +83,110 @@ def test_fulfillment_consumers_are_receipted_owner_commands():
     )
 
 
+def test_quote_acceptance_is_the_only_atomic_sales_conversion_boundary():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    sales = _source("app/services/sales/service.py")
+    api = _source("app/api/crm_sales.py")
+    conversion = _source("app/services/sales/account_conversion.py")
+    orders = _source("app/services/sales_orders.py")
+
+    assert 'owner="sales.quote_acceptance"' in coordinator
+    assert "execute_owner_command(" in coordinator
+    assert "stage_lead_account_conversion(" in coordinator
+    assert "_stage_from_quote_acceptance(" in coordinator
+    assert "ensure_implementation_scope(" in coordinator
+    assert "stage_automated_project_task_work_order(" in coordinator
+    assert "def _stage_accept_quote(" in coordinator
+    assert "def stage_accept_quote(" not in coordinator
+    assert "db.commit(" not in coordinator
+    assert "db.rollback(" not in coordinator
+    assert "def convert_lead_account(" not in conversion
+    assert "execute_owner_command(" not in conversion
+    assert "A Quote-linked Sales Order is created only by Quote acceptance" in orders
+    assert "Replay Quote acceptance to repair its missing Sales Order" in orders
+
+    assert "_handle_quote_accepted" not in sales
+    assert "_upgrade_party_status_to_customer" not in sales
+    assert "A Lead becomes Won only through Quote acceptance" in sales
+    assert "Subscriber conversion is owned by Quote acceptance" in sales
+    assert "sales.quote_acceptance.required" in api
+
+
+def test_accepted_quote_snapshot_mutations_are_policy_guarded():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    sales = _source("app/services/sales/service.py")
+
+    assert "def assert_quote_mutable(" in coordinator
+    assert '"accepted_quote_immutable"' in coordinator
+    for mutation in (
+        "quote_fields",
+        "quote_deactivation",
+        "line_item_create",
+        "line_item_update",
+        "line_item_delete",
+    ):
+        assert f'mutation="{mutation}"' in sales
+    assert sales.count("assert_quote_mutable(") >= 5
+    assert "def _locked_quote_for_mutation(" in sales
+    assert "with_for_update()" in sales
+
+
+def test_initial_quote_acceptance_fails_closed_on_expiry():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+
+    assert "def _assert_quote_not_expired(" in coordinator
+    assert '"quote_expired"' in coordinator
+    assert "acceptance_attempted_at=_utc_now()" in coordinator
+    assert coordinator.count("_assert_quote_not_expired(") == 2
+
+
+def test_deposit_replay_uses_the_acceptance_owner_fingerprint():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    selfserve = _source("app/services/sales/selfserve.py")
+
+    assert "class QuoteAcceptanceDepositEvidence" in coordinator
+    assert '"deposit_evidence_conflict"' in coordinator
+    assert "amount=round_money(deposit.amount)" in coordinator
+    assert "existing == evidence" in coordinator
+    assert "outcome = quote_acceptance.accept_quote(" in selfserve
+    assert "if not already_accepted:" not in selfserve
+    assert "outcome.deposit.amount" in selfserve
+
+
+def test_quote_acceptance_replay_repairs_captured_work_order_automation():
+    coordinator = _source("app/services/sales/quote_acceptance.py")
+    projects = _source("app/services/projects.py")
+
+    assert '"template_auto_create_work_order"' in projects
+    assert '"template_work_order_requires_as_built_evidence"' in projects
+    assert "_preserve_template_task_work_order_automation(task, data)" in projects
+    assert coordinator.count("_automated_work_orders(") == 2
+    acceptance = coordinator.split("def _stage_accept_quote(", 1)[1]
+    repair = acceptance.split("_automated_work_orders(", 1)[1]
+    assert "if was_accepted:" not in repair.split("project_template_id =", 1)[0]
+    assert "select(WorkOrder.id)" in repair
+
+
+def test_quote_authoring_cannot_perform_sales_conversion():
+    authoring = _source("app/services/sales/quote_authoring.py")
+    quote_model = _source("app/models/sales.py")
+    fulfillment = _source("app/services/sales_fulfillment.py")
+    projects = _source("app/services/projects.py")
+
+    assert 'owner="sales.quote_authoring"' in authoring
+    assert "execute_owner_command(" in authoring
+    assert "QuoteStatus.draft, QuoteStatus.sent" in authoring
+    assert "quote_acceptance" not in authoring
+    assert "stage_lead_account_conversion" not in authoring
+    assert "_stage_from_quote_acceptance" not in authoring
+    assert "db.commit(" not in authoring
+    assert "db.rollback(" not in authoring
+    assert "project_type: Mapped[str | None]" in quote_model
+    assert "order.quote.project_type" in fulfillment
+    assert 'order.quote.metadata_.get("project_type")' not in fulfillment
+    assert '"project_template_unconfigured"' in projects
+
+
 def test_released_output_carries_sales_linkage():
     src = _source("app/services/service_order_lifecycle.py")
     released = src.split("EventType.service_order_released", 1)[1]

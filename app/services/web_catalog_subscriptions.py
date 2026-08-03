@@ -147,6 +147,7 @@ def _offer_options(
             db.query(OfferPrice.offer_id, OfferPrice.amount, OfferPrice.billing_cycle)
             .filter(OfferPrice.offer_id.in_(offer_ids))
             .filter(OfferPrice.is_active.is_(True))
+            .filter(OfferPrice.price_type == PriceType.recurring)
             .order_by(OfferPrice.created_at.asc())
             .all()
         )
@@ -166,6 +167,7 @@ def _offer_options(
                 "name": name,
                 "price_summary": price_summary,
                 "label": label,
+                "price": str(amount) if amount is not None else "",
             }
         )
     return options

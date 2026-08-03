@@ -280,13 +280,21 @@ def test_quote_order_and_ticket_guards_reject_cross_party_links(db_session):
     with pytest.raises(HTTPException) as quote_error:
         sales_service.quotes.create(
             db_session,
-            QuoteCreate(subscriber_id=other_subscriber.id, lead_id=lead.id),
+            QuoteCreate(
+                subscriber_id=other_subscriber.id,
+                lead_id=lead.id,
+                project_type="fiber_optics_installation",
+            ),
         )
     assert quote_error.value.status_code == 409
 
     quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
     with pytest.raises(HTTPException) as order_error:
         sales_orders.sales_orders.create(
@@ -317,7 +325,7 @@ def test_quote_order_and_ticket_guards_reject_cross_party_links(db_session):
     assert lead_only_ticket.subscriber_id is None
 
 
-def test_quote_conversion_attaches_one_reviewed_account_not_a_sibling_account(
+def test_quote_authoring_does_not_attach_an_account_before_acceptance(
     db_session,
 ):
     party = _party(db_session)
@@ -332,20 +340,28 @@ def test_quote_conversion_attaches_one_reviewed_account_not_a_sibling_account(
         ),
     )
 
-    sales_service.quotes.create(
+    first_quote = sales_service.quotes.create(
         db_session,
-        QuoteCreate(subscriber_id=subscriber.id, lead_id=lead.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
 
-    assert lead.subscriber_id == subscriber.id
-    assert lead.subscriber_linked_at is not None
-    with pytest.raises(HTTPException) as exc:
-        sales_service.quotes.create(
-            db_session,
-            QuoteCreate(subscriber_id=sibling_account.id, lead_id=lead.id),
-        )
-    assert exc.value.status_code == 409
-    assert "reviewed Lead account" in exc.value.detail
+    sibling_quote = sales_service.quotes.create(
+        db_session,
+        QuoteCreate(
+            subscriber_id=sibling_account.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
+    )
+
+    db_session.refresh(lead)
+    assert lead.subscriber_id is None
+    assert lead.subscriber_linked_at is None
+    assert first_quote.lead_id == sibling_quote.lead_id == lead.id
 
 
 def test_quote_order_and_ticket_update_guards_validate_prospective_links(db_session):

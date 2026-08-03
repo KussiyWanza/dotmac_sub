@@ -117,6 +117,74 @@ logger = logging.getLogger(__name__)
 
 _EnumT = TypeVar("_EnumT", bound=enum_module.Enum)
 
+_TEMPLATE_AUTO_CREATE_WORK_ORDER = "template_auto_create_work_order"
+_TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
+    "template_work_order_requires_as_built_evidence"
+)
+
+
+@dataclass(frozen=True)
+class ProjectTaskWorkOrderAutomation:
+    """Captured field-work policy for one instantiated template task."""
+
+    auto_create: bool
+    requires_as_built_evidence: bool
+
+
+def template_task_work_order_automation_metadata(
+    template_task: ProjectTemplateTask,
+) -> dict[str, bool]:
+    """Serialize the template decision when its ProjectTask is created."""
+
+    return {
+        _TEMPLATE_AUTO_CREATE_WORK_ORDER: template_task.auto_create_work_order,
+        _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT: (
+            template_task.work_order_requires_as_built_evidence
+        ),
+    }
+
+
+def resolve_project_task_work_order_automation(
+    task: ProjectTask,
+    template_task: ProjectTemplateTask,
+) -> ProjectTaskWorkOrderAutomation:
+    """Return captured policy, with current template state as legacy fallback."""
+
+    metadata = dict(task.metadata_ or {})
+    if _TEMPLATE_AUTO_CREATE_WORK_ORDER in metadata:
+        return ProjectTaskWorkOrderAutomation(
+            auto_create=metadata[_TEMPLATE_AUTO_CREATE_WORK_ORDER] is True,
+            requires_as_built_evidence=(
+                metadata.get(_TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT, True) is True
+            ),
+        )
+    return ProjectTaskWorkOrderAutomation(
+        auto_create=(template_task.is_active and template_task.auto_create_work_order),
+        requires_as_built_evidence=(
+            template_task.work_order_requires_as_built_evidence
+        ),
+    )
+
+
+def _preserve_template_task_work_order_automation(
+    task: ProjectTask,
+    data: dict[str, Any],
+) -> None:
+    """Keep owner-captured automation keys out of generic metadata updates."""
+
+    if "metadata_" not in data:
+        return
+    existing = dict(task.metadata_ or {})
+    updated = dict(data.get("metadata_") or {})
+    for key in (
+        _TEMPLATE_AUTO_CREATE_WORK_ORDER,
+        _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT,
+    ):
+        if key in existing:
+            updated[key] = existing[key]
+    data["metadata_"] = updated or None
+
+
 _PROJECT_RECONCILE = OwnerCommandDefinition(
     owner="operations.project_lifecycle",
     concern="project derived-state reconciliation",
@@ -1410,9 +1478,13 @@ def prepare_sales_project(
     customer_address: str | None,
     region: str | None,
     actor_id: str,
+    require_project_template: bool = False,
 ) -> Project:
     """Create the native project root for one exact SalesOrder, without commit."""
 
+    normalized_type = _sales_project_enum(
+        project_type, ProjectType, "project_type"
+    ).value
     existing = (
         db.query(Project).filter(Project.sales_order_id == sales_order_id).one_or_none()
     )
@@ -1421,15 +1493,30 @@ def prepare_sales_project(
             existing.subscriber_id != subscriber_id
             or existing.quote_id != quote_id
             or existing.lead_id != lead_id
+            or existing.project_type != normalized_type
+            or (require_project_template and existing.project_template_id is None)
         ):
             raise SalesProjectLifecycleError(
                 "project_binding_conflict",
                 "SalesOrder project binding conflicts with canonical state",
             )
         return existing
-    normalized_type = _sales_project_enum(
-        project_type, ProjectType, "project_type"
-    ).value
+    project_template = (
+        db.query(ProjectTemplate)
+        .filter(
+            ProjectTemplate.project_type == normalized_type,
+            ProjectTemplate.is_active.is_(True),
+        )
+        .one_or_none()
+    )
+    if project_template is None and require_project_template:
+        raise SalesProjectLifecycleError(
+            "project_template_unconfigured",
+            (
+                "No active Project Template is configured for the selected "
+                f"Project Type '{normalized_type}'"
+            ),
+        )
     configured_status = _read_text_setting(
         db, SettingDomain.projects, "default_project_status"
     )
@@ -1463,6 +1550,7 @@ def prepare_sales_project(
         description="Implementation scope created from an accepted sales order",
         customer_address=(customer_address or "").strip() or None,
         project_type=normalized_type,
+        project_template_id=(project_template.id if project_template else None),
         status=project_status,
         priority=project_priority,
         subscriber_id=subscriber_id,
@@ -1477,7 +1565,14 @@ def prepare_sales_project(
     db.add(project)
     db.flush()
     _sync_project_sla_clock(db, project)
-    _seed_fiber_installation_tasks(db, project)
+    if project_template is not None:
+        ProjectTemplateTasks.replace_project_tasks(
+            db,
+            project_id=str(project.id),
+            template_id=str(project_template.id),
+        )
+    else:
+        _seed_fiber_installation_tasks(db, project)
     emit_event(
         db,
         EventType.project_created,
@@ -1487,6 +1582,9 @@ def prepare_sales_project(
             "quote_id": str(quote_id) if quote_id else None,
             "subscriber_id": str(subscriber_id),
             "project_type": normalized_type,
+            "project_template_id": (
+                str(project_template.id) if project_template else None
+            ),
         },
         actor=actor_id,
         subscriber_id=subscriber_id,
@@ -2953,6 +3051,12 @@ class ProjectTemplateTasks(ListResponseMixin):
                 "project_id": project_uuid,
                 "title": template_task.title,
                 "template_task_id": template_task.id,
+                # Capture the automation decision on the ProjectTask. A later
+                # template edit must not reinterpret an already-created
+                # implementation scope during Quote-acceptance replay.
+                "metadata_": template_task_work_order_automation_metadata(
+                    template_task
+                ),
             }
             number = generate_number(
                 db=db,
@@ -3448,6 +3552,7 @@ class ProjectTasks(ListResponseMixin):
             _ensure_staff_uuid(str(data["created_by_person_id"]))
         if data.get("ticket_id"):
             _ensure_ticket(db, data["ticket_id"])
+        _preserve_template_task_work_order_automation(task, data)
         changed_fields.extend(list(data.keys()))
         for key, value in data.items():
             setattr(task, key, value)

@@ -167,8 +167,40 @@ review.
 The complete contract is
 `docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`. Sub owns the chain from a
 signed/staff interaction through immutable Lead origin, exact Party/account
-conversion, Quote, SalesOrder, Project, vendor implementation, ServiceOrder,
-Subscription activation, CX acceptance, and later support history.
+identity, manually authored Lead-backed Quote, atomic accepted-Quote account
+conversion, SalesOrder, configured Project/Tasks/WorkOrders, vendor
+implementation, ServiceOrder, Subscription activation, CX acceptance, and
+later support history.
+
+`sales.quote_authoring` owns the atomic Lead-backed Draft/Sent admin creation boundary.
+Lead is its only recipient selector; the owner validates the authenticated
+staff principal, locks the exact eligible Lead, derives the recipient through
+`Quote -> Lead -> Party`, batch-validates line references and configured tax,
+recalculates totals, and commits the Quote, lines, audit, and outbox together.
+Project Type is a required first-class Quote value; Install Location remains
+optional Quote metadata. Accepted is a separate transition owned only by
+`sales.quote_acceptance`.
+
+`sales.quote_acceptance` owns the sole sales conversion boundary. Draft/Sent
+Quote authoring creates no account or fulfillment roots. Acceptance locks the
+Quote and Lead and commits Lead Won, exact Subscriber conversion, copied order
+and lines, the Quote-selected Project Type, its configured active template and
+Tasks, policy-enabled WorkOrders, audit, and outbox evidence together. A
+missing template fails closed. An identical Quote replay returns the same
+structural records and idempotently repairs a missing WorkOrder from the
+automation policy captured when its ProjectTask was created. Existing and
+manual WorkOrders are preserved, and later template-policy edits are not
+applied retroactively. Generic ProjectTask metadata updates preserve the
+owner-captured policy keys. Any participant or event-staging failure rolls
+back the whole boundary. Initial acceptance rejects a locked Draft/Sent Quote whose
+expiry is at or before the decision time, while an already accepted replay
+returns the same records without re-evaluating expiry. Deposit-backed replay
+also requires the normalized reference, amount, and provider to match the
+initial accepted evidence; changed evidence fails before SalesOrder money is
+updated. Once accepted, the Quote and its line items are immutable commercial
+evidence matching the copied SalesOrder. Every commercial mutation locks the
+parent Quote first, so acceptance cannot race an edit; revised terms require a
+new Quote.
 
 New writes use structural foreign keys. Provider and legacy IDs remain
 provenance. Part payment cannot create service; vendor verification is the
@@ -720,8 +752,11 @@ do not hand-edit these rows.
 | `sales.capture` | provider-neutral Party-first Lead capture command | `application_coordinator` | validated lead-capture contract ← `sales.capture`<br>canonical Party identity state ← `party.registry`<br>canonical Lead lifecycle state ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.capture` | source-interaction idempotency and collision decision | `policy` | validated lead-capture contract ← `sales.capture`<br>immutable captured origin evidence ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.capture` | verified integration receipt to Lead consequence | `application_coordinator` | verified integration receipt ← `integration.inbox`<br>validated lead-capture contract ← `sales.capture`<br>canonical Party identity state ← `party.registry`<br>canonical Lead lifecycle state ← `sales.lead_lifecycle` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_lead_capture_webhook.py`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/architecture/test_service_http_boundary.py` |
-| `sales.account_conversion` | exact Lead and Party account conversion | `application_coordinator` | canonical attributed Lead state ← `sales.lead_lifecycle`<br>canonical Party identity state ← `party.registry`<br>reviewed account conversion command ← `sales.account_conversion`<br>canonical customer account state ← `customer.accounts` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
-| `sales.account_conversion` | customer and pending-subscriber role establishment | `application_coordinator` | canonical Party identity state ← `party.registry`<br>canonical customer account state ← `customer.accounts`<br>reviewed account conversion command ← `sales.account_conversion` | `owner_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
+| `sales.quote_authoring` | atomic Lead-backed Draft/Sent Quote authoring | `application_coordinator` | Quote authoring command evidence ← `sales.quote_authoring`<br>canonical staff actor state ← `auth.staff_provisioning`<br>canonical Lead and Party state ← `sales.lead_lifecycle`<br>canonical commercial reference state ← `sales.quote_authoring`<br>canonical Quote lifecycle state ← `sales.service` | `coordinator_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_web_sales_quote_authoring.py`<br>`tests/test_quote_acceptance_workflow.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
+| `sales.account_conversion` | exact Lead and Party account conversion | `command_writer` | canonical attributed Lead state ← `sales.lead_lifecycle`<br>canonical Party identity state ← `party.registry`<br>reviewed account conversion command ← `sales.account_conversion`<br>canonical customer account state ← `customer.accounts` | `participant` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
+| `sales.account_conversion` | customer and pending-subscriber role establishment | `command_writer` | canonical Party identity state ← `party.registry`<br>canonical customer account state ← `customer.accounts`<br>reviewed account conversion command ← `sales.account_conversion` | `participant` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
+| `sales.quote_acceptance` | atomic accepted-Quote sales conversion | `application_coordinator` | accepted-Quote command evidence ← `sales.quote_acceptance`<br>canonical Lead and Party state ← `sales.lead_lifecycle`<br>canonical Quote and line state ← `sales.service`<br>canonical customer account state ← `customer.accounts`<br>configured implementation automation ← `operations.project_lifecycle` | `coordinator_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_quote_acceptance_workflow.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
+| `sales.quote_acceptance` | accepted-Quote commercial snapshot immutability | `policy` | canonical Quote and line state ← `sales.service` | `coordinator_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_quote_acceptance_workflow.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
 | `sales.fulfillment` | SalesOrder implementation-scope coordination | `application_coordinator` | canonical SalesOrder implementation contract ← `sales.orders`<br>configured project defaults ← `control.settings_spec`<br>canonical native project state ← `operations.project_lifecycle`<br>canonical installation scope ← `operations.installation_scope` | `owner_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sales_lifecycle_migration.py`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.fulfillment` | verified implementation release coordination | `application_coordinator` | canonical vendor verification evidence ← `operations.vendor_project_lifecycle`<br>canonical native project state ← `operations.project_lifecycle`<br>canonical sales ServiceOrder state ← `operations.service_order_lifecycle` | `owner_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sales_lifecycle_migration.py`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.fulfillment` | committed lifecycle output consumption | `command_writer` | canonical vendor verification evidence ← `operations.vendor_project_lifecycle`<br>canonical sales ServiceOrder state ← `operations.service_order_lifecycle`<br>canonical SalesOrder implementation contract ← `sales.orders`<br>receipted owner-output deliveries ← `events.owner_outputs` | `owner_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/test_sales_orders_services.py`<br>`tests/test_sales_lifecycle_migration.py`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/architecture/test_service_http_boundary.py` |
@@ -879,13 +914,15 @@ external origin provenance and are never coerced into those UUIDs.
 
 `sales.service`, `sales.orders`, `access.subscription_lifecycle`, and
 `support.ticket_lifecycle` retain their domain state. Their links are guarded:
-Quote Subscriber must match Lead Party, Sales Order Subscriber must match
-Quote, and any Ticket customer links must match its Lead Party. A Lead-only
-Ticket remains valid for pre-sales support. Billing blocks and Subscription
-status are observed by the PII-free `customer.lifecycle_audit`, never decided
-or changed by it. CRM and `dotmac_mkt` have no runtime customer-lifecycle or
-person-level attribution authority. The complete boundary and cutover gates
-are `docs/PARTY_CUSTOMER_LIFECYCLE.md`.
+a new Quote must reference a Lead; optional legacy Quote Subscriber context
+must match the Lead Party; acceptance supplies the exact converted Subscriber;
+Sales Order Subscriber must match Quote; and any Ticket customer links must
+match its Lead Party. A Lead-only Ticket remains valid for pre-sales support.
+Billing blocks and Subscription status are observed by the PII-free
+`customer.lifecycle_audit`, never decided or changed by it. CRM and
+`dotmac_mkt` have no runtime customer-lifecycle or person-level attribution
+authority. The complete boundary and cutover gates are
+`docs/PARTY_CUSTOMER_LIFECYCLE.md`.
 
 The signed CRM accepted-customer endpoint is observation-only through
 `integration.inbox`. It cannot create accounts or write Subscriber identity,
@@ -4434,15 +4471,19 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
 2. `sales.selfserve`: owns the self-serve quote and signup flow.
 3. `sales.service`: owns the sales pipeline and quote lifecycle, including the
    governed stage-presentation vocabulary and atomic stage ordering.
-4. `referrals.program`: owns Party-first capture policy, canonical ReferralCode,
+4. `sales.quote_acceptance`: owns the atomic accepted-Quote conversion from
+   Lead/Party through Subscriber, SalesOrder and lines, Project, configured
+   Tasks/WorkOrders, audit, and transactional outbox evidence.
+5. `referrals.program`: owns Party-first capture policy, canonical ReferralCode,
    Referral and exact-Party account-attachment records, qualification/reward
    policy, and atomic program transition orchestration.
-5. `referrals.account_conversion`: owns exact Referral/Party/Lead context
+6. `referrals.account_conversion`: owns exact Referral/Party/Lead context
    validation, the bounded public-signup capability contract, and atomic
    account-creation/adjudication orchestration.
 
-Rule: sales order, self-serve quote/signup, sales service, and Refer & Earn
-referral logic resolve through these owners. `web_sales`/`web_referrals`
+Rule: sales order, self-serve quote/signup, sales service, accepted-Quote
+conversion, and Refer & Earn referral logic resolve through these owners.
+`web_sales`/`web_referrals`
 adapters and API/task callers request an outcome; they do not own pipeline
 ordering or stage interpretation. `customer.accounts` creates or prepares
 Subscriber rows; the referral coordinator never constructs them itself.

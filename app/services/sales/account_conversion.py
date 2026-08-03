@@ -15,16 +15,16 @@ from app.models.subscriber import Subscriber
 from app.schemas.subscriber import SubscriberCreate
 from app.services import party as party_service
 from app.services import subscriber as subscriber_service
+from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
 from app.services.sales import lifecycle
 
 AccountConversionOutcome = Literal["created", "attached", "already_attached"]
 
 
-class LeadAccountConversionError(ValueError):
+class LeadAccountConversionError(DomainError):
     def __init__(self, code: str, message: str, *, kind: str = "conflict") -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(code=code, message=message)
         self.kind = kind
 
 
@@ -70,7 +70,7 @@ def _establish_roles(db: Session, party_id: UUID) -> None:
     )
 
 
-def convert_lead_account(
+def stage_lead_account_conversion(
     db: Session,
     *,
     lead_id: UUID,
@@ -79,6 +79,8 @@ def convert_lead_account(
     subscriber_id: UUID | None = None,
     new_account: SubscriberCreate | None = None,
 ) -> LeadAccountConversionResult:
+    """Stage one exact conversion in the caller's transaction without commit."""
+
     actor = str(actor_id or "").strip()
     if not actor:
         raise LeadAccountConversionError(
@@ -90,73 +92,69 @@ def convert_lead_account(
             "Supply exactly one existing Subscriber or new account payload",
             kind="invalid",
         )
-    try:
-        lead = _lock_lead(db, lead_id, party_id)
-        if lead.subscriber_id is not None:
-            subscriber = db.get(Subscriber, lead.subscriber_id)
-            if subscriber is None or subscriber.party_id != party_id:
-                raise LeadAccountConversionError(
-                    "existing_account_mismatch",
-                    "Lead account link does not match its canonical Party",
-                )
-            outcome: AccountConversionOutcome = "already_attached"
-        elif subscriber_id is not None:
-            subscriber = db.scalars(
-                select(Subscriber)
-                .where(Subscriber.id == subscriber_id)
-                .with_for_update()
-            ).one_or_none()
-            if subscriber is None:
-                raise LeadAccountConversionError(
-                    "subscriber_not_found", "Subscriber not found", kind="not_found"
-                )
-            party_service.bind_subscriber_account(
-                db,
-                subscriber_id=subscriber.id,
-                party_id=party_id,
-                source="sales.account_conversion",
-                reason="Reviewed Lead account attachment",
+    lead = _lock_lead(db, lead_id, party_id)
+    if lead.subscriber_id is not None:
+        subscriber = db.get(Subscriber, lead.subscriber_id)
+        if subscriber is None or subscriber.party_id != party_id:
+            raise LeadAccountConversionError(
+                "existing_account_mismatch",
+                "Lead account link does not match its canonical Party",
             )
-            outcome = "attached"
-        else:
-            assert new_account is not None
-            if new_account.person_id is not None:
-                raise LeadAccountConversionError(
-                    "existing_target_not_allowed",
-                    "Use subscriber_id to attach an existing account",
-                    kind="invalid",
-                )
-            subscriber = subscriber_service.subscribers.prepare_new_account(
-                db, new_account
+        outcome: AccountConversionOutcome = "already_attached"
+    elif subscriber_id is not None:
+        subscriber = db.scalars(
+            select(Subscriber).where(Subscriber.id == subscriber_id).with_for_update()
+        ).one_or_none()
+        if subscriber is None:
+            raise LeadAccountConversionError(
+                "subscriber_not_found", "Subscriber not found", kind="not_found"
             )
-            party_service.bind_subscriber_account(
-                db,
-                subscriber_id=subscriber.id,
-                party_id=party_id,
-                source="sales.account_conversion",
-                reason="Account created from the exact reviewed Lead and Party context",
-            )
-            emit_event(
-                db,
-                EventType.subscriber_created,
-                {
-                    "subscriber_id": str(subscriber.id),
-                    "subscriber_number": subscriber.subscriber_number,
-                    "lead_id": str(lead.id),
-                },
-                actor=actor,
-                subscriber_id=subscriber.id,
-            )
-            outcome = "created"
-
-        lifecycle.attach_lead_subscriber(
+        party_service.bind_subscriber_account(
             db,
-            lead_id=lead.id,
             subscriber_id=subscriber.id,
+            party_id=party_id,
             source="sales.account_conversion",
-            reason="Exact Lead Party converted to customer account",
+            reason="Reviewed Lead account attachment",
         )
-        _establish_roles(db, party_id)
+        outcome = "attached"
+    else:
+        assert new_account is not None
+        if new_account.person_id is not None:
+            raise LeadAccountConversionError(
+                "existing_target_not_allowed",
+                "Use subscriber_id to attach an existing account",
+                kind="invalid",
+            )
+        subscriber = subscriber_service.subscribers.prepare_new_account(db, new_account)
+        party_service.bind_subscriber_account(
+            db,
+            subscriber_id=subscriber.id,
+            party_id=party_id,
+            source="sales.account_conversion",
+            reason="Account created from the exact reviewed Lead and Party context",
+        )
+        emit_event(
+            db,
+            EventType.subscriber_created,
+            {
+                "subscriber_id": str(subscriber.id),
+                "subscriber_number": subscriber.subscriber_number,
+                "lead_id": str(lead.id),
+            },
+            actor=actor,
+            subscriber_id=subscriber.id,
+        )
+        outcome = "created"
+
+    lifecycle.attach_lead_subscriber(
+        db,
+        lead_id=lead.id,
+        subscriber_id=subscriber.id,
+        source="sales.account_conversion",
+        reason="Exact Lead Party converted to customer account",
+    )
+    _establish_roles(db, party_id)
+    if outcome != "already_attached":
         emit_event(
             db,
             EventType.lead_account_converted,
@@ -169,15 +167,10 @@ def convert_lead_account(
             actor=actor,
             subscriber_id=subscriber.id,
         )
-        db.commit()
-        return LeadAccountConversionResult(
-            lead_id=lead.id,
-            party_id=party_id,
-            subscriber_id=subscriber.id,
-            outcome=outcome,
-        )
-    except (party_service.PartyInvariantError, lifecycle.LeadLifecycleError) as exc:
-        db.rollback()
-        raise LeadAccountConversionError(
-            "conversion_rejected", str(exc), kind="invalid"
-        ) from exc
+    db.flush()
+    return LeadAccountConversionResult(
+        lead_id=lead.id,
+        party_id=party_id,
+        subscriber_id=subscriber.id,
+        outcome=outcome,
+    )

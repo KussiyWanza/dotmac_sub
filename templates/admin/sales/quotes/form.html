@@ -9,160 +9,384 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
 <style>
-    #quote-install-map { height: 260px; border-radius: 0.5rem; }
+    #quote-install-map { height: 260px; border-radius: 0.75rem; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="mx-auto max-w-3xl space-y-4">
-    <div>
-        <nav class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <a href="/admin/sales/quotes" class="hover:text-cyan-600">Quotes</a>
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-            <span class="text-slate-900 dark:text-white">{{ form_title }}</span>
+<div class="mx-auto max-w-3xl space-y-5">
+    <header>
+        <nav aria-label="Breadcrumb" class="mb-2 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <a href="/admin/sales/quotes"
+               class="rounded-sm hover:text-cyan-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:hover:text-cyan-400 dark:focus:ring-cyan-400">Quotes</a>
+            <svg class="h-4 w-4 text-slate-400 dark:text-slate-500" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span aria-current="page" class="text-slate-900 dark:text-white">{{ form_title }}</span>
         </nav>
-        <h1 class="font-display text-xl font-bold tracking-tight text-slate-900 dark:text-white">{{ form_title }}</h1>
-        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">The install pin is reused downstream for the estimate, the site survey and billing.</p>
-    </div>
+        <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ form_title }}</h1>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Draft and manage pricing proposals</p>
+    </header>
 
     {% if error %}
-    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-200">
+    <div role="alert" aria-live="assertive"
+         class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">
         {{ error }}
     </div>
     {% endif %}
 
-    <form method="post" action="{{ action_url }}" class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <form method="post" action="{{ action_url }}"
+          x-data="quoteAuthoringForm({{ quote_form.items|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default('0.00')|tojson }})"
+          @submit="handleSubmit($event)"
+          class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
-        <div class="space-y-6 p-6">
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                    <label for="quote-subscriber" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Subscriber ID</label>
-                    <input id="quote-subscriber" type="text" name="subscriber_id" value="{{ quote_form.subscriber_id }}"
-                           class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                           placeholder="Subscriber UUID" required>
-                </div>
-                <div>
-                    <label for="quote-lead" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Lead ID <span class="text-slate-400">(optional)</span></label>
-                    <input id="quote-lead" type="text" name="lead_id" value="{{ quote_form.lead_id }}"
-                           class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                           placeholder="Lead UUID">
-                </div>
-            </div>
+        {% if not is_editing %}<input type="hidden" name="submission_id" value="{{ quote_form.submission_id }}">{% endif %}
 
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div class="space-y-7 p-4 sm:p-6">
+            <section class="space-y-4" aria-labelledby="quote-details-heading">
+                <h2 id="quote-details-heading" class="sr-only">Quote details</h2>
                 <div>
-                    <label for="quote-status" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Status</label>
-                    <select id="quote-status" name="status"
-                            class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                        {% for value in status_values %}
-                        <option value="{{ value }}" {% if quote_form.status == value %}selected{% endif %}>{{ value|replace('_', ' ')|title }}</option>
+                    <label for="quote-lead" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Lead <span class="text-red-600 dark:text-red-400" aria-hidden="true">*</span></label>
+                    <select id="quote-lead" name="lead_id" required aria-required="true"
+                            class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                        <option value="">Select a Lead</option>
+                        {% for lead in leads %}
+                        <option value="{{ lead.id }}" {% if quote_form.lead_id == lead.id %}selected{% endif %}>{{ lead.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">The linked Person is resolved securely from the selected Lead.</p>
+                </div>
+
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                        <label for="quote-status" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Status</label>
+                        <select id="quote-status" name="status"
+                                class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            {% for value in status_values %}
+                            <option value="{{ value }}" {% if quote_form.status == value %}selected{% endif %}>{{ value|replace('_', ' ')|title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div>
+                        <label for="quote-currency" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Currency</label>
+                        <input id="quote-currency" type="text" name="currency" value="{{ quote_form.currency }}"
+                               required maxlength="3" minlength="3" pattern="[A-Za-z]{3}" title="Enter exactly three alphabetic characters"
+                               x-model="currency" @input="currency = $event.target.value.toUpperCase()"
+                               class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm uppercase text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                    </div>
+                </div>
+
+                {% if not is_editing %}
+                <div>
+                    <label for="quote-project-type" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Project Type</label>
+                    <select id="quote-project-type" name="project_type" required aria-required="true"
+                            class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                        <option value="">Select a Project Type</option>
+                        {% for item in project_types %}
+                        <option value="{{ item.value }}" {% if quote_form.project_type == item.value %}selected{% endif %}>{{ item.label }}</option>
                         {% endfor %}
                     </select>
                 </div>
-                <div>
-                    <label for="quote-currency" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Currency</label>
-                    <input id="quote-currency" type="text" name="currency" value="{{ quote_form.currency }}" maxlength="3"
-                           class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm uppercase focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                </div>
-                <div>
-                    <label for="quote-tax-rate" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Tax Rate % <span class="text-slate-400">(optional)</span></label>
-                    <input id="quote-tax-rate" type="text" inputmode="decimal" name="tax_rate" value="{{ quote_form.tax_rate }}"
-                           class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                           placeholder="e.g. 7.5">
-                </div>
-            </div>
+                {% endif %}
+            </section>
 
-            <div>
-                <label for="quote-expires" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Expires On <span class="text-slate-400">(optional)</span></label>
-                <input id="quote-expires" type="date" name="expires_at" value="{{ quote_form.expires_at }}"
-                       class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-            </div>
-
-            <div class="space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/60">
-                <div>
-                    <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Install Location</h2>
-                    <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Click the map or drag the pin. Feasibility is computed from the pin when you save.</p>
+            {% if not is_editing %}
+            <section aria-labelledby="line-items-heading" class="space-y-4">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <h2 id="line-items-heading" class="text-base font-bold text-slate-900 dark:text-white">Line Items</h2>
+                        <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Choose a suggestion or enter a custom description.</p>
+                    </div>
+                    <button type="button" @click="addItem()"
+                            class="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-2.5 text-sm font-semibold text-cyan-700 transition hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300 dark:hover:bg-cyan-900/50 dark:focus:ring-cyan-400 dark:focus:ring-offset-slate-800">
+                        <svg class="h-4 w-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                        Add Item
+                    </button>
                 </div>
 
+                <datalist id="quote-item-suggestions">
+                    <template x-for="suggestion in suggestions" :key="`${suggestion.kind}:${suggestion.id}`">
+                        <option :value="suggestion.description" :label="suggestion.label"></option>
+                    </template>
+                </datalist>
+
+                <div class="space-y-3">
+                    <template x-for="(row, index) in rows" :key="row.key">
+                        <article class="rounded-xl border border-slate-200 bg-slate-50/70 p-3 shadow-sm dark:border-slate-600 dark:bg-slate-900/30">
+                            <div class="grid grid-cols-1 gap-3 sm:grid-cols-12 sm:items-end">
+                                <div class="sm:col-span-4">
+                                    <label :for="`item-description-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Description</label>
+                                    <input :id="`item-description-${index}`" name="item_description" type="text" maxlength="255"
+                                           list="quote-item-suggestions" x-model="row.description"
+                                           :required="rowNonEmpty(row)" @input="syncSuggestion(row)"
+                                           class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30"
+                                           placeholder="Service, material, or custom item">
+                                    <input type="hidden" name="item_sub_offer_id" :value="row.sub_offer_id">
+                                    <input type="hidden" name="item_inventory_item_id" :value="row.inventory_item_id">
+                                </div>
+                                <div class="grid grid-cols-2 gap-3 sm:col-span-5 sm:grid-cols-3">
+                                    <div>
+                                        <label :for="`item-quantity-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Quantity</label>
+                                        <input :id="`item-quantity-${index}`" name="item_quantity" type="number" step="0.001" min="0.001"
+                                               x-model="row.quantity" :required="rowNonEmpty(row)" @input="recalculate()"
+                                               class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                                    </div>
+                                    <div>
+                                        <label :for="`item-price-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Unit Price</label>
+                                        <input :id="`item-price-${index}`" name="item_unit_price" type="number" step="0.01" min="0"
+                                               x-model="row.unit_price" :required="rowNonEmpty(row)" @input="row.priceEdited = true; recalculate()"
+                                               class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                                    </div>
+                                    <div class="col-span-2 sm:col-span-1">
+                                        <label :for="`item-discount-${index}`" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Discount %</label>
+                                        <input :id="`item-discount-${index}`" name="item_discount_percent" type="number" step="0.01" min="0" max="100"
+                                               x-model="row.discount_percent" :required="rowNonEmpty(row)" @input="recalculate()"
+                                               class="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                                    </div>
+                                </div>
+                                <div class="flex items-end justify-between gap-3 sm:col-span-3">
+                                    <div class="min-w-0 flex-1">
+                                        <span class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Amount</span>
+                                        <output class="block min-h-11 rounded-lg border border-slate-200 bg-slate-100 px-3 py-2.5 text-right text-sm font-semibold tabular-nums text-slate-800 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                                                x-text="formatMoney(lineAmount(row))"></output>
+                                    </div>
+                                    <button type="button" @click="removeItem(index)" :aria-label="`Remove Line Item ${index + 1}`"
+                                            class="inline-flex h-11 w-11 flex-none items-center justify-center rounded-lg border border-red-200 bg-white text-red-600 transition hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500 dark:border-red-800 dark:bg-slate-800 dark:text-red-400 dark:hover:bg-red-950/40 dark:focus:ring-red-400">
+                                        <svg class="h-4 w-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    </template>
+                </div>
+            </section>
+            {% endif %}
+
+            <section class="space-y-4" aria-labelledby="financials-heading">
+                <h2 id="financials-heading" class="sr-only">Tax and totals</h2>
                 <div>
-                    <label for="quote-address" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Address</label>
-                    <input id="quote-address" type="text" name="address" value="{{ quote_form.address }}"
-                           class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                           placeholder="Street address">
+                    {% if is_editing %}
+                    <label for="quote-tax-rate" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Tax Rate % <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
+                    <input id="quote-tax-rate" name="tax_rate" type="number" step="0.01" min="0" max="100" value="{{ quote_form.tax_rate }}"
+                           class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                    {% else %}
+                    <label for="quote-tax-rate" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Tax Rate <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
+                    <select id="quote-tax-rate" name="tax_rate_id" x-model="taxRateId" @change="recalculate()"
+                            class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                        <option value="">No configured Tax Rate</option>
+                        {% for rate in tax_rates %}
+                        <option value="{{ rate.id }}">{{ rate.label }}</option>
+                        {% endfor %}
+                    </select>
+                    {% endif %}
                 </div>
 
                 <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
                     <div>
-                        <label for="quote-region" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Region</label>
-                        <input id="quote-region" type="text" name="region" value="{{ quote_form.region }}"
-                               class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                               placeholder="e.g. Abuja">
+                        <span class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Subtotal</span>
+                        <output class="flex min-h-11 items-center justify-between rounded-xl border border-slate-200 bg-slate-100 px-3 py-2.5 text-sm font-semibold tabular-nums text-slate-800 dark:border-slate-600 dark:bg-slate-900/40 dark:text-slate-100">
+                            <span x-text="currency"></span><span x-text="formatMoney(subtotal)"></span>
+                        </output>
                     </div>
                     <div>
-                        <label for="latitude" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Latitude</label>
-                        <input id="latitude" type="text" inputmode="decimal" name="latitude" value="{{ quote_form.latitude }}"
-                               class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                               placeholder="9.082000">
+                        <label for="quote-tax-total" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Tax Total</label>
+                        <input id="quote-tax-total" {% if not is_editing %}name="manual_tax_total"{% endif %} type="number" step="0.01" min="0"
+                               x-model="manualTaxTotal" :readonly="Boolean(taxRateId)" @input="recalculate()"
+                               class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-right text-sm font-semibold tabular-nums text-slate-900 shadow-sm read-only:cursor-not-allowed read-only:bg-slate-100 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:read-only:bg-slate-900/40 dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
                     </div>
                     <div>
-                        <label for="longitude" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Longitude</label>
-                        <input id="longitude" type="text" inputmode="decimal" name="longitude" value="{{ quote_form.longitude }}"
-                               class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                               placeholder="8.675300">
+                        <span class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Total</span>
+                        <output class="flex min-h-11 items-center justify-between rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2.5 text-sm font-bold tabular-nums text-cyan-900 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-100">
+                            <span x-text="currency"></span><span x-text="formatMoney(total)"></span>
+                        </output>
                     </div>
                 </div>
+            </section>
 
-                <div id="quote-install-map"></div>
-            </div>
+            <section class="space-y-4" aria-labelledby="install-location-heading">
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-600 dark:bg-slate-900/30">
+                    <h2 id="install-location-heading" class="text-base font-bold text-slate-900 dark:text-white">Install Location</h2>
+                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Click the map or drag the pin. Feasibility is computed from the saved location.</p>
 
-            <div>
-                <label for="quote-notes" class="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">Notes</label>
-                <textarea id="quote-notes" name="notes" rows="3"
-                          class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                          placeholder="Internal notes">{{ quote_form.notes }}</textarea>
-            </div>
+                    <div class="mt-4 space-y-4">
+                        <div>
+                            <label for="quote-address" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Address</label>
+                            <input id="quote-address" type="text" name="address" value="{{ quote_form.address }}"
+                                   class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30"
+                                   placeholder="Street address">
+                        </div>
+                        <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                            <div>
+                                <label for="quote-region" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Region</label>
+                                <input id="quote-region" type="text" name="region" value="{{ quote_form.region }}"
+                                       class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            </div>
+                            <div>
+                                <label for="latitude" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Latitude</label>
+                                <input id="latitude" type="number" step="0.000001" min="-90" max="90" name="latitude" value="{{ quote_form.latitude }}"
+                                       class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            </div>
+                            <div>
+                                <label for="longitude" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Longitude</label>
+                                <input id="longitude" type="number" step="0.000001" min="-180" max="180" name="longitude" value="{{ quote_form.longitude }}"
+                                       class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm tabular-nums text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                            </div>
+                        </div>
+                        <div id="quote-install-map" class="border border-slate-200 bg-slate-100 dark:border-slate-600 dark:bg-slate-900" aria-label="Install location map"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="space-y-4" aria-labelledby="quote-notes-heading">
+                <h2 id="quote-notes-heading" class="sr-only">Quote timing and notes</h2>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end">
+                    <div>
+                        <label for="quote-expires" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Expires At <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
+                        <input id="quote-expires" type="datetime-local" name="expires_at" value="{{ quote_form.expires_at }}"
+                               class="block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30">
+                    </div>
+                    {% if not is_editing %}
+                    <label class="flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 focus-within:ring-2 focus-within:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900/30 dark:focus-within:ring-cyan-400">
+                        <input type="checkbox" name="is_active" value="1" {% if quote_form.is_active %}checked{% endif %}
+                               class="h-5 w-5 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-700 dark:focus:ring-cyan-400">
+                        <span>
+                            <span class="block text-sm font-semibold text-slate-700 dark:text-slate-200">Active</span>
+                            <span class="block text-xs text-slate-500 dark:text-slate-400">Available in active Quote views</span>
+                        </span>
+                    </label>
+                    {% endif %}
+                </div>
+                <div>
+                    <label for="quote-notes" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-200">Notes <span class="font-normal text-slate-400 dark:text-slate-500">(optional)</span></label>
+                    <textarea id="quote-notes" name="notes" rows="4"
+                              class="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/30"
+                              placeholder="Internal notes">{{ quote_form.notes }}</textarea>
+                </div>
+            </section>
         </div>
-        <div class="flex items-center justify-end gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4 dark:border-slate-700 dark:bg-slate-800/50">
-            <a href="/admin/sales/quotes" class="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">Cancel</a>
-            {{ submit_button(submit_label, loading_label="Saving...") }}
-        </div>
+
+        <footer class="flex flex-col-reverse gap-3 border-t border-slate-200 bg-slate-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6 dark:border-slate-700 dark:bg-slate-900/30">
+            <a href="/admin/sales/quotes"
+               class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:ring-slate-400 dark:focus:ring-offset-slate-800">Cancel</a>
+            {{ submit_button(submit_label, loading_label="Submitting...", icon="plus") }}
+        </footer>
     </form>
 </div>
 
 <script>
-// Leaflet install-pin picker (same pattern as the NAS device form).
+window.quoteAuthoringForm = function(initialRows, suggestionRows, taxRateRows, selectedTaxRateId, initialManualTax, initialSubtotal) {
+    const emptyRow = () => ({
+        key: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+        description: '', quantity: '', unit_price: '', discount_percent: '',
+        sub_offer_id: '', inventory_item_id: '', priceEdited: false
+    });
+    const normalizeRow = (row) => ({
+        ...emptyRow(),
+        description: String(row.description || ''),
+        quantity: String(row.quantity || ''),
+        unit_price: String(row.unit_price || ''),
+        discount_percent: String(row.discount_percent || ''),
+        sub_offer_id: String(row.sub_offer_id || ''),
+        inventory_item_id: String(row.inventory_item_id || ''),
+        priceEdited: Boolean(row.unit_price)
+    });
+    return {
+        submitting: false,
+        rows: (initialRows && initialRows.length ? initialRows : [emptyRow()]).map(normalizeRow),
+        suggestions: suggestionRows || [],
+        taxRates: taxRateRows || [],
+        taxRateId: String(selectedTaxRateId || ''),
+        manualTaxTotal: String(initialManualTax || '0.00'),
+        currency: {{ quote_form.currency|tojson }},
+        initialSubtotal: Number(initialSubtotal || 0),
+        get subtotal() {
+            {% if is_editing %}return this.initialSubtotal;{% else %}return this.rows.reduce((sum, row) => sum + this.lineAmount(row), 0);{% endif %}
+        },
+        get configuredTaxTotal() {
+            const selected = this.taxRates.find((rate) => String(rate.id) === String(this.taxRateId));
+            if (!selected) return Math.max(0, Number(this.manualTaxTotal || 0));
+            return Math.round((this.subtotal * Number(selected.rate || 0) / 100 + Number.EPSILON) * 100) / 100;
+        },
+        get total() { return Math.round((this.subtotal + this.configuredTaxTotal + Number.EPSILON) * 100) / 100; },
+        rowNonEmpty(row) {
+            return Boolean(String(row.description || '').trim() || String(row.quantity || '').trim() ||
+                String(row.unit_price || '').trim() || String(row.discount_percent || '').trim() ||
+                row.sub_offer_id || row.inventory_item_id);
+        },
+        lineAmount(row) {
+            if (!String(row.description || '').trim()) return 0;
+            const quantity = Math.max(0, Number(row.quantity || 0));
+            const price = Math.max(0, Number(row.unit_price || 0));
+            const discount = Math.min(100, Math.max(0, Number(row.discount_percent || 0)));
+            return Math.round((quantity * price * (100 - discount) / 100 + Number.EPSILON) * 100) / 100;
+        },
+        formatMoney(value) {
+            return Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        },
+        addItem() { this.rows.push(emptyRow()); this.$nextTick(() => this.recalculate()); },
+        clearRow(row) {
+            Object.assign(row, emptyRow(), { key: row.key });
+        },
+        removeItem(index) {
+            if (this.rows.length === 1) this.clearRow(this.rows[0]);
+            else this.rows.splice(index, 1);
+            this.recalculate();
+        },
+        syncSuggestion(row) {
+            const value = String(row.description || '').trim().toLocaleLowerCase();
+            const suggestion = this.suggestions.find((item) => String(item.description || '').trim().toLocaleLowerCase() === value);
+            if (!suggestion) {
+                row.sub_offer_id = '';
+                row.inventory_item_id = '';
+                this.recalculate();
+                return;
+            }
+            if (suggestion.kind === 'offer') {
+                row.sub_offer_id = String(suggestion.id);
+                row.inventory_item_id = '';
+                if (!row.priceEdited && suggestion.price !== '') row.unit_price = String(suggestion.price);
+            } else {
+                row.inventory_item_id = String(suggestion.id);
+                row.sub_offer_id = '';
+            }
+            this.recalculate();
+        },
+        recalculate() {
+            if (this.taxRateId) this.manualTaxTotal = this.configuredTaxTotal.toFixed(2);
+        },
+        handleSubmit(event) {
+            if (this.submitting) { event.preventDefault(); return; }
+            if (!event.target.checkValidity()) {
+                event.preventDefault();
+                this.submitting = false;
+                event.target.reportValidity();
+                return;
+            }
+            this.recalculate();
+            this.submitting = true;
+        }
+    };
+};
+
 const latitudeInput = document.getElementById('latitude');
 const longitudeInput = document.getElementById('longitude');
 const mapEl = document.getElementById('quote-install-map');
 if (mapEl && window.L) {
     const hasPin = Boolean(latitudeInput.value && longitudeInput.value);
-    // Default view: centre of Nigeria, zoomed out until a pin exists.
-    const startLat = parseFloat(latitudeInput.value || '9.0820');
-    const startLng = parseFloat(longitudeInput.value || '8.6753');
+    const startLat = Number(latitudeInput.value || '9.0820');
+    const startLng = Number(longitudeInput.value || '8.6753');
     const map = L.map('quote-install-map').setView([startLat, startLng], hasPin ? 15 : 6);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors',
-        maxZoom: 19
+        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
     }).addTo(map);
-
-    let marker = hasPin
-        ? L.marker([startLat, startLng], { draggable: true }).addTo(map)
-        : null;
-
-    function syncFromMarker() {
-        const pos = marker.getLatLng();
-        latitudeInput.value = pos.lat.toFixed(6);
-        longitudeInput.value = pos.lng.toFixed(6);
-    }
-
-    if (marker) {
-        marker.on('dragend', syncFromMarker);
-    }
-
+    let marker = hasPin ? L.marker([startLat, startLng], { draggable: true }).addTo(map) : null;
+    const syncFromMarker = () => {
+        const position = marker.getLatLng();
+        latitudeInput.value = position.lat.toFixed(6);
+        longitudeInput.value = position.lng.toFixed(6);
+    };
+    if (marker) marker.on('dragend', syncFromMarker);
     map.on('click', (event) => {
-        if (marker) {
-            marker.setLatLng(event.latlng);
-        } else {
+        if (marker) marker.setLatLng(event.latlng);
+        else {
             marker = L.marker(event.latlng, { draggable: true }).addTo(map);
             marker.on('dragend', syncFromMarker);
         }

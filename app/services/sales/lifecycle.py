@@ -324,6 +324,22 @@ def validate_lead_subscriber_alignment(
         )
 
 
+def stage_quote_acceptance(db: Session, *, lead: Lead) -> None:
+    """Stage the sole sales transition that marks a Lead Won."""
+
+    if not lead.is_active:
+        raise LeadLifecycleError("Inactive Lead cannot receive a Quote outcome")
+    if lead.status in {LeadStatus.won.value, LeadStatus.lost.value}:
+        if lead.status != LeadStatus.won.value:
+            raise LeadLifecycleError(
+                "Quote acceptance conflicts with the Lead's existing closed status"
+            )
+        return
+    lead.status = LeadStatus.won.value
+    lead.closed_at = lead.closed_at or datetime.now(UTC)
+    db.flush()
+
+
 def _capture_values(payload: dict[str, Any], *, lead_source: str) -> dict[str, Any]:
     capture_method = _enum_value(
         payload.get("capture_method"), LeadCaptureMethod, "capture_method"
