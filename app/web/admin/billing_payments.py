@@ -124,9 +124,7 @@ def payments_export_csv(
         date_range=date_range,
         unallocated_only=unallocated_only,
     )
-    rows = web_billing_payments_service.stream_payments_csv(
-        db, list_query=list_query
-    )
+    rows = web_billing_payments_service.stream_payments_csv(db, list_query=list_query)
     return StreamingResponse(
         rows,
         media_type="text/csv",

@@ -1006,9 +1006,7 @@ def stream_payments_csv(db: Session, *, list_query: ListQuery) -> Iterator[str]:
         raise ValueError("Payment scope requires the payments definition")
     customer_ref = list_query.filter_value("customer_ref")
     account_ids = _payment_customer_account_ids(db, customer_ref)
-    selected_partner_id = _payment_partner_id(
-        list_query.filter_value("partner_id")
-    )
+    selected_partner_id = _payment_partner_id(list_query.filter_value("partner_id"))
     stmt = _apply_payment_list_filters(
         select(Payment).options(
             joinedload(Payment.account),
