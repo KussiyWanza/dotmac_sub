@@ -1678,6 +1678,11 @@ Each follows the same pattern — context dict with list data, form helpers, and
 | `/admin/system/audit` | Audit log | events, filters, page |
 | `/admin/system/health` | System health | cpu, memory, disk, services |
 
+The role editor submits role attributes and the complete visible permission
+policy to `auth.rbac_catalog` in one atomic command. Saving permissions preserves
+an unchanged legacy role name; only a genuine rename must satisfy the canonical
+lowercase identifier syntax.
+
 ---
 
 ## Model Field Reference

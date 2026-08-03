@@ -27776,6 +27776,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "This is the only application and seed writer for roles, "
                     "permissions, and role_permissions. Catalog identities are "
                     "case-normalized and protected by functional unique indexes. "
+                    "Permission-policy updates preserve an unchanged legacy role "
+                    "name, while new and genuinely renamed roles must use the "
+                    "canonical lowercase identifier syntax. "
                     "Assigned identities cannot be renamed or deactivated, and "
                     "non-assignable permissions may be granted only to admin."
                 ),

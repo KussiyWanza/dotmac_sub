@@ -1,14 +1,25 @@
 import uuid
 
 import pytest
+from sqlalchemy import select
 
-from app.models.rbac import Permission, Role, SubscriberRole, SystemUserRole
+from app.models.rbac import (
+    Permission,
+    Role,
+    RolePermission,
+    SubscriberRole,
+    SystemUserRole,
+)
 from app.models.subscriber import Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.services import rbac_catalog
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
-from app.services.web_system_role_forms import get_permissions_for_form
+from app.services.web_system_role_forms import (
+    build_role_update_payload,
+    get_permissions_for_form,
+    update_role_with_permissions,
+)
 from app.services.web_system_roles import get_roles_page_data
 
 
@@ -96,3 +107,57 @@ def test_role_update_rejects_hidden_permission_ids(db_session):
                 permission_ids=(hidden_id,),
             ),
         )
+
+
+def test_role_form_saves_permissions_for_unchanged_legacy_role_name(db_session):
+    role = Role(name="NOC Team", is_active=True)
+    permission = Permission(
+        key="network:noc_read",
+        description="View NOC network data",
+        is_active=True,
+        is_ui_assignable=True,
+    )
+    user = SystemUser(
+        first_name="NOC",
+        last_name="Operator",
+        email=f"noc-role-form-{uuid.uuid4().hex}@example.com",
+        user_type=UserType.system_user,
+        is_active=True,
+    )
+    db_session.add_all((role, permission, user))
+    db_session.flush()
+    role_id = role.id
+    permission_id = permission.id
+    db_session.add(SystemUserRole(system_user_id=user.id, role_id=role_id))
+    db_session.commit()
+
+    payload = build_role_update_payload(
+        name="NOC Team",
+        description=None,
+        is_active=True,
+    )
+    command_id = uuid.uuid4()
+    update_role_with_permissions(
+        db_session,
+        role_id=str(role_id),
+        payload=payload,
+        permission_ids=[str(permission_id)],
+        context=CommandContext(
+            command_id=command_id,
+            correlation_id=command_id,
+            actor="user:web-role-test",
+            scope=rbac_catalog.ROLE_WRITE_SCOPE,
+            reason="Verify legacy role form permission update",
+        ),
+    )
+
+    assert db_session.get(Role, role_id).name == "NOC Team"
+    assert (
+        db_session.scalar(
+            select(RolePermission).where(
+                RolePermission.role_id == role_id,
+                RolePermission.permission_id == permission_id,
+            )
+        )
+        is not None
+    )

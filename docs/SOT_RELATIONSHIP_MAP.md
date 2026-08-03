@@ -4207,8 +4207,10 @@ Authorization:
 1. `auth.rbac_catalog`: is the only application and seed writer for roles,
    permissions, and role-permission policy. Catalog identities are normalized
    lowercase identifiers with database-enforced case/whitespace uniqueness.
-   Assigned identities cannot be renamed or deactivated, and non-assignable
-   permissions are protected admin policy.
+   Permission-policy updates preserve an unchanged legacy role name, while new
+   and genuinely renamed roles must use the canonical lowercase identifier
+   syntax. Assigned identities cannot be renamed or deactivated, and
+   non-assignable permissions are protected admin policy.
 2. `auth.subscriber_assignments`: is the only application and seed writer for
    `subscriber_roles` and `subscriber_permissions`. Public commands own the
    grant, audit, event, and cache-invalidation boundary; reseller onboarding
