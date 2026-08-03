@@ -256,17 +256,25 @@ def test_customer_360_service_health_contains_only_active_services(
     assert context["restorable_subscription_ids"] == {str(previous_service.id)}
 
 
-def test_customer_360_places_contact_and_portal_access_side_by_side() -> None:
+def test_customer_360_groups_profile_location_and_account_access() -> None:
     template = Path("templates/admin/customers/detail.html").read_text(encoding="utf-8")
+    account_tab = template.split("<!-- Tab Content: Overview -->", maxsplit=1)[1].split(
+        "<!-- Tab Content: Billing -->", maxsplit=1
+    )[0]
 
+    assert "Customer Profile &amp; Location" in account_tab
+    assert "Contact details" in account_tab
+    assert "Identity details" in account_tab
+    assert "Location not set" in account_tab
+    assert "#customer-mini-map { height: 400px; }" in template
+    assert "#customer-mini-map { height: 300px; }" in template
+    assert "Account &amp; Access" in account_tab
+    assert "Subscriber Accounts" in account_tab
+    assert "Portal Access" in account_tab
+    assert "CRM Sync" in account_tab
     assert '<div class="contents">' in template
-    assert (
-        'class="order-3 rounded-2xl border border-slate-200/60 bg-white shadow-sm'
-    ) in template
-    assert (
-        'class="order-4 rounded-2xl border border-slate-200/60 bg-white shadow-sm'
-    ) in template
-    assert "lg:col-span-2" in template
+    assert 'data-convert-id="{{ customer.id }}"' in account_tab
+    assert "<!-- Active Subscriptions Preview -->" not in account_tab
 
 
 def test_customer_360_restore_action_is_permission_gated_and_reviewed() -> None:

@@ -136,4 +136,4 @@ def test_customer_detail_template_still_compiles():
     from jinja2 import Environment, FileSystemLoader
 
     env = Environment(loader=FileSystemLoader("templates"), autoescape=True)
-    env.parse(Path("templates/admin/customers/detail.html").read_text())
+    env.parse(Path("templates/admin/customers/detail.html").read_text(encoding="utf-8"))
