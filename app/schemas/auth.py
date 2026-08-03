@@ -78,6 +78,11 @@ class UserCredentialUpdate(BaseModel):
 class UserCredentialRead(UserCredentialBase):
     model_config = ConfigDict(from_attributes=True)
 
+    # Staff-owned rows bind to system_user_id (or reseller_user_id), so
+    # subscriber_id is legitimately NULL on them — the model allows exactly
+    # one principal. Reads must not require it; writes stay strict.
+    subscriber_id: UUID | None = None
+
     id: UUID
     created_at: datetime
     updated_at: datetime
@@ -121,6 +126,11 @@ class MFAMethodUpdate(BaseModel):
 class MFAMethodRead(MFAMethodBase):
     model_config = ConfigDict(from_attributes=True)
 
+    # Staff-owned rows bind to system_user_id (or reseller_user_id), so
+    # subscriber_id is legitimately NULL on them — the model allows exactly
+    # one principal. Reads must not require it; writes stay strict.
+    subscriber_id: UUID | None = None
+
     id: UUID
     created_at: datetime
     updated_at: datetime
@@ -158,6 +168,11 @@ class SessionUpdate(BaseModel):
 
 class SessionRead(SessionBase):
     model_config = ConfigDict(from_attributes=True)
+
+    # Staff-owned rows bind to system_user_id (or reseller_user_id), so
+    # subscriber_id is legitimately NULL on them — the model allows exactly
+    # one principal. Reads must not require it; writes stay strict.
+    subscriber_id: UUID | None = None
 
     id: UUID
     created_at: datetime
