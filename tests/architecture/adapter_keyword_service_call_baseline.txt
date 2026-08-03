@@ -1,0 +1,58 @@
+# Adapter modules that still call owning services with more than three
+# positional arguments. Each line is `path count`. This is migration debt, not
+# permission: a mid-signature parameter insertion silently rebinds every
+# positional argument after it, which is how four auth API endpoints came to
+# answer 400/500 to every request (issue #1895).
+#
+# The guard ratchets. A module may only appear with a count less than or equal
+# to the one recorded here, and a module absent from this file must have none.
+# Lower the count when you convert call sites to keywords; never raise it, and
+# never add a new module.
+app/api/analytics.py 2
+app/api/auth_flow.py 3
+app/api/billing.py 22
+app/api/campaigns.py 1
+app/api/catalog.py 18
+app/api/comms.py 2
+app/api/connectors.py 1
+app/api/crm_sales.py 4
+app/api/domains_monitoring.py 7
+app/api/domains_network_access.py 19
+app/api/domains_network_fiber.py 10
+app/api/domains_provisioning.py 7
+app/api/domains_usage.py 5
+app/api/external.py 1
+app/api/field/materials.py 1
+app/api/field/worklogs.py 1
+app/api/gis.py 10
+app/api/integrations.py 3
+app/api/me.py 16
+app/api/nas.py 1
+app/api/network_ont_ops.py 3
+app/api/notifications.py 8
+app/api/payment_proofs.py 3
+app/api/projects.py 1
+app/api/qualification.py 6
+app/api/reseller.py 9
+app/api/sales_orders.py 1
+app/api/scheduler.py 1
+app/api/search.py 1
+app/api/service_requests.py 1
+app/api/settings.py 18
+app/api/subscribers.py 4
+app/api/tables.py 2
+app/web/admin/catalog.py 4
+app/web/admin/network_authorization_presets.py 1
+app/web/admin/network_firmware_catalog.py 1
+app/web/admin/network_olts_inventory.py 1
+app/web/admin/network_olts_profiles.py 1
+app/web/admin/network_ont_service_ports.py 1
+app/web/admin/network_onts.py 1
+app/web/admin/network_onts_actions.py 2
+app/web/admin/surveys.py 1
+app/web/admin/system.py 1
+app/web/auth/routes.py 7
+app/web/customer/auth.py 2
+app/web/customer/routes.py 10
+app/web/reseller/auth.py 1
+app/web/reseller/routes.py 16
