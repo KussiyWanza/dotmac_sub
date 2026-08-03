@@ -20,10 +20,10 @@ class ResellerAccountDetailPage(BasePage):
     def expect_loaded(self) -> None:
         """Assert the account detail page is loaded."""
         expect(
-            self.page.get_by_role("heading", name="Customer Information")
+            self.page.get_by_role("heading", name="Customer context")
         ).to_be_visible()
-        expect(self.page.get_by_role("button", name="View as Customer")).to_be_visible()
+        expect(self.page.get_by_role("button", name="View as customer")).to_be_visible()
 
     def view_as_customer(self) -> None:
         """Click the 'View as Customer' impersonation button."""
-        self.page.get_by_role("button", name="View as Customer").first.click()
+        self.page.get_by_role("button", name="View as customer").first.click()
