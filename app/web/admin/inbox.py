@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
+from app.models.team_inbox import InboxChannelType
 from app.services import (
     conversation_ticket_handoff,
     team_inbox_commands,
@@ -1552,16 +1553,50 @@ def team_inbox_email_routes(
     cutover: the SMTP listener only receives what is forwarded to it, and this
     is where an operator says which team owns each address.
     """
+    return templates.TemplateResponse(
+        "admin/inbox/email_routes.html",
+        _settings_context(request, db, status=status, message=message),
+    )
+
+
+def _settings_context(
+    request: Request,
+    db: Session,
+    *,
+    status: str | None = None,
+    message: str | None = None,
+) -> dict:
     context = _ctx(request, db)
     context.update(
         {
             "email_routes": team_inbox_routing.list_email_routes(db),
+            "channel_routes": team_inbox_routing.list_channel_routes(db),
+            "ai_routes": team_inbox_routing.list_ai_routes(db),
             "service_team_options": team_inbox_metrics.active_service_team_options(db),
+            "channel_options": [
+                {
+                    "value": item.value,
+                    "label": item.value.replace("_", " ").title(),
+                }
+                for item in InboxChannelType
+                if item.value not in {"email", "note", "field_job"}
+            ],
+            "ai_channel_options": [
+                {"value": "any", "label": "Any channel"},
+                *[
+                    {
+                        "value": item.value,
+                        "label": item.value.replace("_", " ").title(),
+                    }
+                    for item in InboxChannelType
+                    if item.value not in {"note", "field_job"}
+                ],
+            ],
             "notice_status": _query_text(status),
             "notice_message": _query_text(message),
         }
     )
-    return templates.TemplateResponse("admin/inbox/email_routes.html", context)
+    return context
 
 
 @settings_router.get(
@@ -1571,26 +1606,22 @@ def team_inbox_email_routes(
 )
 def team_inbox_settings_entrypoint(
     request: Request,
+    status: str | None = Query(default=None),
+    message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    """Render mailbox routing at the requested CRM-shaped settings URL."""
+    """Render channel and AI routing at the requested CRM-shaped settings URL."""
 
-    context = _ctx(request, db)
-    context.update(
-        {
-            "email_routes": team_inbox_routing.list_email_routes(db),
-            "service_team_options": team_inbox_metrics.active_service_team_options(db),
-            "notice_status": None,
-            "notice_message": None,
-        }
+    return templates.TemplateResponse(
+        "admin/inbox/email_routes.html",
+        _settings_context(request, db, status=status, message=message),
     )
-    return templates.TemplateResponse("admin/inbox/email_routes.html", context)
 
 
 def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
     return RedirectResponse(
         url=(
-            "/admin/inbox/settings/email-routes"
+            "/admin/crm/inbox/settings"
             f"?status={quote_plus(status)}&message={quote_plus(message)}"
         ),
         status_code=303,
@@ -1599,6 +1630,10 @@ def _routes_redirect(*, status: str, message: str) -> RedirectResponse:
 
 @router.post(
     "/settings/email-routes",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+@settings_router.post(
+    "/email-routes",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
 def team_inbox_email_route_create(
@@ -1626,6 +1661,10 @@ def team_inbox_email_route_create(
     "/settings/email-routes/{route_id}",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
+@settings_router.post(
+    "/email-routes/{route_id}",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
 def team_inbox_email_route_update(
     route_id: UUID,
     priority: int | None = Form(default=None),
@@ -1651,6 +1690,10 @@ def team_inbox_email_route_update(
     "/settings/email-routes/{route_id}/delete",
     dependencies=[Depends(require_permission("support:ticket:update"))],
 )
+@settings_router.post(
+    "/email-routes/{route_id}/delete",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
 def team_inbox_email_route_delete(
     route_id: UUID,
     db: Session = Depends(get_db),
@@ -1661,6 +1704,156 @@ def team_inbox_email_route_delete(
     except (team_inbox_routing.EmailRouteError, ValueError) as exc:
         return _routes_redirect(status="error", message=str(exc))
     return _routes_redirect(status="success", message="Mailbox route deactivated.")
+
+
+@settings_router.post(
+    "/channel-routes",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_channel_route_create(
+    channel_type: str = Form(...),
+    provider: str = Form("default"),
+    account_scope: str = Form("default"),
+    display_name: str | None = Form(default=None),
+    service_team_id: str = Form(..., alias="channel_service_team_id"),
+    priority: int = Form(default=100),
+    allow_ai_routing: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.create_channel_route(
+            db,
+            channel_type=channel_type,
+            provider=provider,
+            account_scope=account_scope,
+            display_name=display_name,
+            service_team_id=service_team_id,
+            allow_ai_routing=allow_ai_routing,
+            priority=priority,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Channel route saved.")
+
+
+@settings_router.post(
+    "/channel-routes/{route_id}",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_channel_route_update(
+    route_id: UUID,
+    display_name: str | None = Form(default=None),
+    service_team_id: str | None = Form(default=None, alias="channel_service_team_id"),
+    priority: int | None = Form(default=None),
+    allow_ai_routing: bool | None = Form(default=None),
+    is_active: bool | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.update_channel_route(
+            db,
+            route_id=route_id,
+            display_name=display_name,
+            service_team_id=service_team_id,
+            allow_ai_routing=allow_ai_routing,
+            priority=priority,
+            is_active=is_active,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Channel route updated.")
+
+
+@settings_router.post(
+    "/channel-routes/{route_id}/delete",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_channel_route_delete(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.delete_channel_route(db, route_id=route_id)
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="Channel route deactivated.")
+
+
+@settings_router.post(
+    "/ai-routes",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_route_create(
+    channel_type: str = Form("any"),
+    intent_key: str = Form(...),
+    display_name: str | None = Form(default=None),
+    service_team_id: str = Form(..., alias="ai_service_team_id"),
+    confidence_threshold: float = Form(default=0.75),
+    priority: int = Form(default=100),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.create_ai_route(
+            db,
+            channel_type=channel_type,
+            intent_key=intent_key,
+            display_name=display_name,
+            service_team_id=service_team_id,
+            confidence_threshold=confidence_threshold,
+            priority=priority,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="AI intake route saved.")
+
+
+@settings_router.post(
+    "/ai-routes/{route_id}",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_route_update(
+    route_id: UUID,
+    display_name: str | None = Form(default=None),
+    service_team_id: str | None = Form(default=None, alias="ai_service_team_id"),
+    confidence_threshold: float | None = Form(default=None),
+    priority: int | None = Form(default=None),
+    is_active: bool | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.update_ai_route(
+            db,
+            route_id=route_id,
+            display_name=display_name,
+            service_team_id=service_team_id,
+            confidence_threshold=confidence_threshold,
+            priority=priority,
+            is_active=is_active,
+        )
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="AI intake route updated.")
+
+
+@settings_router.post(
+    "/ai-routes/{route_id}/delete",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_ai_route_delete(
+    route_id: UUID,
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        team_inbox_commands.delete_ai_route(db, route_id=route_id)
+    except (team_inbox_routing.EmailRouteError, ValueError) as exc:
+        return _routes_redirect(status="error", message=str(exc))
+    return _routes_redirect(status="success", message="AI intake route deactivated.")
 
 
 @router.post(

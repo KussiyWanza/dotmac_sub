@@ -149,6 +149,11 @@ generation preview exact eligible/skipped impact before confirmation. The
 confirmation token fingerprints both membership and eligibility, so execution
 returns HTTP 409 if status or scope drift changes the previewed impact. The
 invoice command service re-checks eligibility and audits only processed IDs.
+Invoice and payment list periods use explicit optional `start_date` and
+`end_date` filters against each document's UTC `created_at`. Both calendar dates
+are inclusive; owners translate the end date to the exclusive start of the next
+UTC day. List totals, pagination, status summaries, deep links, and CSV exports
+consume the same normalized range.
 
 The support-ticket queue is the next list adoption. `app.services.support.Tickets`
 owns the canonical filtered domain query, while
@@ -898,6 +903,11 @@ transition.
 
 ### Billing — Invoices
 
+The filtered invoice CSV at `GET /admin/billing/invoices/export.csv` uses the
+same uncapped filter and stable-sort scope as the list. Its customer identity
+column is `customer_name`, populated from the same customer display-name
+contract used by the invoice table; internal account UUIDs are not exported.
+
 #### `GET /admin/billing`
 **Template:** `admin/billing/index.html`
 
@@ -930,7 +940,8 @@ transition.
     "proforma_summary": {"count": int},
     "customer_ref": str | None,
     "search": str | None,
-    "date_range": str | None,
+    "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
+    "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC
 
     "active_page": "billing",
 }
@@ -1016,6 +1027,12 @@ atomic transition. Templates do not infer eligibility from account balance.
 
 ### Billing — Payments
 
+The filtered payment CSV at `GET /admin/billing/payments/export.csv` uses the
+same uncapped filter and stable-sort scope as the payments list. Its customer
+identity column is `customer_name`, populated from the canonical customer
+account display name; internal account UUIDs are not exported. Rows stream
+incrementally so large reconciliation exports are not held entirely in memory.
+
 #### `GET /admin/billing/payments`
 **Template:** `admin/billing/payments/index.html`
 
@@ -1034,6 +1051,8 @@ atomic transition. Templates do not infer eligibility from account balance.
     },
 
     # ── Pagination ──
+    "list_query": ListQuery,
+    "page_meta": PageMeta,
     "page": int,
     "per_page": int,
     "total": int,
@@ -1049,7 +1068,8 @@ atomic transition. Templates do not infer eligibility from account balance.
     "status": str | None,
     "method": str | None,
     "search": str | None,
-    "date_range": str | None,
+    "start_date": str | None,                  # inclusive YYYY-MM-DD, UTC
+    "end_date": str | None,                    # inclusive YYYY-MM-DD, UTC
     "unallocated_only": bool,
 
     "active_page": "payments",
@@ -1657,6 +1677,11 @@ Each follows the same pattern — context dict with list data, form helpers, and
 | `/admin/settings/billing/payment-channel-accounts` | Channel-to-collection-account attribution | mappings, channels, collection_accounts, show_inactive |
 | `/admin/system/audit` | Audit log | events, filters, page |
 | `/admin/system/health` | System health | cpu, memory, disk, services |
+
+The role editor submits role attributes and the complete visible permission
+policy to `auth.rbac_catalog` in one atomic command. Saving permissions preserves
+an unchanged legacy role name; only a genuine rename must satisfy the canonical
+lowercase identifier syntax.
 
 ---
 

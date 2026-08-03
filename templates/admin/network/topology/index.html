@@ -103,10 +103,25 @@
     </div>
 
     <!-- Links Table -->
-    {% if graph.edges %}
+    {% if page_meta.total_items %}
     <div class="overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
-        <div class="border-b border-slate-200/60 px-6 py-4 dark:border-slate-700/60">
+        <div class="flex flex-col gap-3 border-b border-slate-200/60 px-6 py-4 dark:border-slate-700/60 sm:flex-row sm:items-center sm:justify-between">
             <h2 class="text-lg font-display font-bold text-slate-900 dark:text-white">Topology Links</h2>
+            <div class="flex flex-wrap items-center gap-3">
+                <p class="text-xs text-slate-500 dark:text-slate-400">
+                    Showing {{ page_meta.start_item }} to {{ page_meta.end_item }} of {{ page_meta.total_items }} links
+                </p>
+                <label class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                    <span>Rows</span>
+                    <select onchange="window.location.href = this.selectedOptions[0].dataset.url"
+                            aria-label="Topology links per page"
+                            class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-xs text-slate-700 focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-slate-300">
+                        {% for size in list_query.definition.per_page_options %}
+                        <option value="{{ size }}" data-url="{{ list_query.url('/admin/network/topology', per_page=size) }}" {% if list_query.per_page == size %}selected{% endif %}>{{ size }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
         </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200/60 dark:divide-slate-700/60">
@@ -123,7 +138,7 @@
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
-                    {% for edge in graph.edges %}
+                    {% for edge in topology_links %}
                     <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
                         <td class="px-4 py-3">
                             <span class="text-sm font-medium text-slate-900 dark:text-white">{{ edge.source_device }}</span>
@@ -167,6 +182,29 @@
                 </tbody>
             </table>
         </div>
+        {% if page_meta.total_pages > 1 %}
+        <nav class="flex flex-wrap items-center justify-center gap-1 border-t border-slate-200/60 px-6 py-4 dark:border-slate-700/60" aria-label="Topology links pagination">
+            {% if page_meta.has_previous %}
+            <a href="{{ list_query.url('/admin/network/topology', page=page_meta.page - 1) }}" class="inline-flex h-8 items-center rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Previous</a>
+            {% else %}
+            <span aria-disabled="true" class="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-medium text-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-600">Previous</span>
+            {% endif %}
+            {% for page_number in page_meta.navigation %}
+                {% if page_number is none %}
+                <span class="px-1 text-slate-400" aria-hidden="true">&hellip;</span>
+                {% elif page_number == page_meta.page %}
+                <span aria-current="page" class="inline-flex h-8 min-w-8 items-center justify-center rounded-lg bg-primary-600 px-2 text-xs font-semibold text-white">{{ page_number }}</span>
+                {% else %}
+                <a href="{{ list_query.url('/admin/network/topology', page=page_number) }}" class="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-slate-300 bg-white px-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">{{ page_number }}</a>
+                {% endif %}
+            {% endfor %}
+            {% if page_meta.has_next %}
+            <a href="{{ list_query.url('/admin/network/topology', page=page_meta.page + 1) }}" class="inline-flex h-8 items-center rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Next</a>
+            {% else %}
+            <span aria-disabled="true" class="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-medium text-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-600">Next</span>
+            {% endif %}
+        </nav>
+        {% endif %}
     </div>
     {% endif %}
 </div>
@@ -182,6 +220,7 @@ function updateTopologyFilters() {
     var group = document.getElementById('groupFilter').value;
     if (site) params.set('site', site);
     if (group) params.set('group', group);
+    params.set('per_page', '{{ list_query.per_page }}');
     window.location = '/admin/network/topology' + (params.toString() ? '?' + params.toString() : '');
 }
 

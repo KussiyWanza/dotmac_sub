@@ -28,8 +28,8 @@
         breadcrumbs=[{"label": "Billing", "href": "/admin/billing"}, {"label": "Payments"}]
     ) %}
         {{ action_button("Import", href="/admin/billing/payments/import", icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>', variant="secondary", color="emerald") }}
-        {{ action_button("Export CSV", href="/admin/billing/payments/export.csv?customer_ref=" ~ (customer_ref or '') ~ "&partner_id=" ~ (selected_partner_id or '') ~ "&status=" ~ (status or '') ~ "&method=" ~ (method or '') ~ "&search=" ~ (search or '') ~ "&date_range=" ~ (date_range or '') ~ "&unallocated_only=" ~ ('true' if unallocated_only else 'false'), icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v10m0 0l-3-3m3 3l3-3M4 20h16"/></svg>', variant="secondary", color="emerald") }}
-        {{ action_button("Unallocated", href="/admin/billing/payments/unallocated", icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/></svg>', variant="secondary", color="emerald") }}
+        {{ action_button("Export CSV", href=list_query.url('/admin/billing/payments/export.csv'), icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v10m0 0l-3-3m3 3l3-3M4 20h16"/></svg>', variant="secondary", color="emerald") }}
+        {{ action_button("Unallocated", href=list_query.url('/admin/billing/payments/unallocated', page=1, filters={'unallocated_only': none}), icon='<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/></svg>', variant="secondary", color="emerald") }}
         {{ action_button("Record Payment", href="/admin/billing/payments/new", icon=icon_plus("h-4 w-4"), variant="primary", color="amber", color2="orange") }}
     {% endcall %}
 
@@ -100,8 +100,8 @@
 
     {# ── Filters ── #}
     <div class="relative z-20 animate-fade-in-up rounded-2xl border border-slate-200/60 bg-white/80 backdrop-blur-sm p-5 shadow-sm dark:border-slate-700/60 dark:bg-slate-800/80">
-        <form method="get" action="/admin/billing/payments{% if unallocated_only %}/unallocated{% endif %}" class="flex flex-col gap-4 sm:flex-row sm:items-end">
-            <div class="flex-1">
+        <form method="get" action="/admin/billing/payments{% if unallocated_only %}/unallocated{% endif %}" class="grid gap-4 sm:grid-cols-2 xl:grid-cols-12 xl:items-end">
+            <div class="sm:col-span-2 xl:col-span-3">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Search</label>
                 <div class="relative">
                     <svg class="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -112,7 +112,7 @@
                            class="block w-full rounded-xl border-0 bg-slate-100 py-3 pl-10 pr-4 text-sm text-slate-900 placeholder-slate-500 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:placeholder-slate-400 dark:focus:bg-slate-600" />
                 </div>
             </div>
-            <div class="w-full sm:w-64">
+            <div class="sm:col-span-2 xl:col-span-3">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Customer</label>
                 <div class="relative" data-typeahead-url="/api/v1/search/customers" data-typeahead-min="2" data-typeahead-limit="8">
                     <input type="text" data-typeahead-input
@@ -123,7 +123,7 @@
                     <div data-typeahead-results></div>
                 </div>
             </div>
-            <div class="w-full sm:w-44">
+            <div class="xl:col-span-2">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Partner</label>
                 <select name="partner_id" class="block w-full rounded-xl border-0 bg-slate-100 py-3 pl-4 pr-10 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
                     <option value="">All Partners</option>
@@ -132,7 +132,7 @@
                     {% endfor %}
                 </select>
             </div>
-            <div class="w-full sm:w-44">
+            <div class="xl:col-span-2">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Status</label>
                 <select name="status" class="block w-full rounded-xl border-0 bg-slate-100 py-3 pl-4 pr-10 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
                     <option value="">All statuses</option>
@@ -141,7 +141,7 @@
                     {% endfor %}
                 </select>
             </div>
-            <div class="w-full sm:w-44">
+            <div class="xl:col-span-2">
                 <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Method</label>
                 <select name="method" class="block w-full rounded-xl border-0 bg-slate-100 py-3 pl-4 pr-10 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
                     <option value="">All Methods</option>
@@ -151,17 +151,17 @@
                     <option value="other" {% if method == 'other' %}selected{% endif %}>Other</option>
                 </select>
             </div>
-            <div class="w-full sm:w-44">
-                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Date Range</label>
-                <select name="date_range" class="block w-full rounded-xl border-0 bg-slate-100 py-3 pl-4 pr-10 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
-                    <option value="" {% if not date_range %}selected{% endif %}>All Time</option>
-                    <option value="today" {% if date_range == 'today' %}selected{% endif %}>Today</option>
-                    <option value="week" {% if date_range == 'week' %}selected{% endif %}>This Week</option>
-                    <option value="month" {% if date_range == 'month' %}selected{% endif %}>This Month</option>
-                    <option value="quarter" {% if date_range == 'quarter' %}selected{% endif %}>This Quarter</option>
-                </select>
+            <div class="xl:col-span-2">
+                <label for="payment-start-date" class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Start Date</label>
+                <input id="payment-start-date" type="date" name="start_date" value="{{ start_date or '' }}" {% if end_date %}max="{{ end_date }}"{% endif %}
+                       class="block w-full rounded-xl border-0 bg-slate-100 px-4 py-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
             </div>
-            <div class="w-full sm:w-auto">
+            <div class="xl:col-span-2">
+                <label for="payment-end-date" class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">End Date</label>
+                <input id="payment-end-date" type="date" name="end_date" value="{{ end_date or '' }}" {% if start_date %}min="{{ start_date }}"{% endif %}
+                       class="block w-full rounded-xl border-0 bg-slate-100 px-4 py-3 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 transition-all focus:bg-white focus:ring-2 focus:ring-amber-500 dark:bg-slate-700 dark:text-white dark:ring-slate-600 dark:focus:bg-slate-600">
+            </div>
+            <div class="xl:col-span-2">
                 <button type="submit" class="inline-flex w-full items-center justify-center rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-700 sm:w-auto">
                     Apply
                 </button>
@@ -171,6 +171,29 @@
 
     {# ── Payments Table ── #}
     <div id="payments-table" class="animate-fade-in-up rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+        {% if total_pages and total_pages > 1 %}
+        {% set start_item = ((page - 1) * per_page) + 1 if total else 0 %}
+        {% set end_item = [page * per_page, total] | min if total else 0 %}
+        {% set base_path = '/admin/billing/payments/unallocated' if unallocated_only else '/admin/billing/payments' %}
+        {% set _extra %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% if selected_partner_id %}&partner_id={{ selected_partner_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if method %}&method={{ method }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if start_date %}&start_date={{ start_date }}{% endif %}{% if end_date %}&end_date={{ end_date }}{% endif %}{% endset %}
+        <div data-testid="payments-table-controls" class="flex flex-col justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700 sm:flex-row sm:items-center">
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ start_item }}</span>
+                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ end_item }}</span>
+                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ total }}</span> results
+            </p>
+            <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <span>Show</span>
+                <select onchange="window.location.href='{{ base_path }}?page=1&per_page=' + this.value + '{{ _extra | e }}'"
+                        class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
+                    {% for size in [10, 25, 50, 100] %}
+                    <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+                <span>rows</span>
+            </div>
+        </div>
+        {% endif %}
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
                 {{ table_head([
@@ -270,7 +293,7 @@
                     {% else %}
                     {{ empty_state(
                         title="No payments found",
-                        message="Record your first payment to get started",
+                        message=("No payments match the current filters. Try changing or clearing them." if (customer_ref or selected_partner_id or status or method or search or start_date or end_date or unallocated_only) else "Record your first payment to get started"),
                         icon='<svg class="h-8 w-8 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>',
                         color="emerald",
                         action_label="Record Payment",
@@ -282,28 +305,8 @@
             </table>
         </div>
         {% if total_pages and total_pages > 1 %}
-        {% set start_item = ((page - 1) * per_page) + 1 if total else 0 %}
-        {% set end_item = [page * per_page, total] | min if total else 0 %}
-        {% set base_path = '/admin/billing/payments/unallocated' if unallocated_only else '/admin/billing/payments' %}
-        {% set _extra %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% if selected_partner_id %}&partner_id={{ selected_partner_id }}{% endif %}{% if status %}&status={{ status }}{% endif %}{% if method %}&method={{ method }}{% endif %}{% if search %}&search={{ search }}{% endif %}{% if date_range %}&date_range={{ date_range }}{% endif %}{% endset %}
-        <div class="flex flex-col items-center justify-between gap-4 border-t border-slate-200 px-4 py-3 dark:border-slate-700 sm:flex-row">
-            <p class="text-sm text-slate-500 dark:text-slate-400">
-                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ start_item }}</span>
-                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ end_item }}</span>
-                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ total }}</span> results
-            </p>
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                    <span>Show</span>
-                    <select onchange="window.location.href='{{ base_path }}?page=1&per_page=' + this.value + '{{ _extra | e }}'"
-                            class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
-                        {% for size in [10, 25, 50, 100] %}
-                        <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
-                        {% endfor %}
-                    </select>
-                    <span>rows</span>
-                </div>
-                <div class="flex items-center gap-1">
+        <div data-testid="payments-pagination" class="flex items-center justify-center border-t border-slate-200 px-4 py-3 dark:border-slate-700">
+            <div class="flex items-center gap-1">
                     {% if page > 1 %}
                     <a href="{{ base_path }}?page={{ page - 1 }}&per_page={{ per_page }}{{ _extra }}" class="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
@@ -333,7 +336,6 @@
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                     </span>
                     {% endif %}
-                </div>
             </div>
         </div>
         {% endif %}

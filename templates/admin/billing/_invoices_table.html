@@ -9,6 +9,23 @@
         <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
             Showing invoices {{ page_meta.start_item }} to {{ page_meta.end_item }} of {{ page_meta.total_items }}.
         </p>
+        <div class="flex flex-col gap-3 border-b border-slate-200 px-3 py-3 dark:border-slate-700 sm:flex-row sm:items-center sm:justify-between">
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.start_item }}</span>
+                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.end_item }}</span>
+                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.total_items }}</span> invoices
+            </p>
+            <label class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <span>Rows</span>
+                <select @change="window.location.href = $event.target.selectedOptions[0].dataset.url"
+                        aria-label="Invoices per page"
+                        class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-slate-300">
+                    {% for size in list_query.definition.per_page_options %}
+                    <option value="{{ size }}" data-url="{{ list_query.url('/admin/billing/invoices', per_page=size) }}" {% if list_query.per_page == size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
                 <thead>
@@ -133,25 +150,9 @@
                 </tbody>
             </table>
         </div>
-        <div class="flex flex-col items-center justify-between gap-3 border-t border-slate-200 px-3 py-3 dark:border-slate-700 sm:flex-row">
-            <p class="text-sm text-slate-500 dark:text-slate-400">
-                Showing <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.start_item }}</span>
-                to <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.end_item }}</span>
-                of <span class="font-medium text-slate-700 dark:text-slate-200">{{ page_meta.total_items }}</span> invoices
-            </p>
-            <div class="flex flex-wrap items-center justify-center gap-3">
-                <label class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                    <span>Rows</span>
-                    <select @change="window.location.href = $event.target.selectedOptions[0].dataset.url"
-                            aria-label="Invoices per page"
-                            class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-primary-500 dark:bg-slate-700 dark:text-slate-300">
-                        {% for size in list_query.definition.per_page_options %}
-                        <option value="{{ size }}" data-url="{{ list_query.url('/admin/billing/invoices', per_page=size) }}" {% if list_query.per_page == size %}selected{% endif %}>{{ size }}</option>
-                        {% endfor %}
-                    </select>
-                </label>
-                {% if page_meta.total_pages > 1 %}
-                <nav class="flex items-center gap-1" aria-label="Invoice pagination">
+        {% if page_meta.total_pages > 1 %}
+        <div class="flex items-center justify-center border-t border-slate-200 px-3 py-3 dark:border-slate-700">
+            <nav class="flex items-center gap-1" aria-label="Invoice pagination">
                     {% if page_meta.has_previous %}
                     {% set previous_url = list_query.url('/admin/billing/invoices', page=page_meta.page - 1) %}
                     <a href="{{ previous_url }}" hx-get="{{ previous_url }}" hx-target="#invoice-list" hx-push-url="true" class="inline-flex h-9 items-center rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Previous</a>
@@ -174,8 +175,7 @@
                     {% else %}
                     <span aria-disabled="true" class="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-600">Next</span>
                     {% endif %}
-                </nav>
-                {% endif %}
-            </div>
+            </nav>
         </div>
+        {% endif %}
 </div>

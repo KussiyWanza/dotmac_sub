@@ -86,6 +86,22 @@
 
     {# ── Credits Table ── #}
     {% call card(color="emerald", padding=False) %}
+        {% set _extra %}{% if status %}&status={{ status }}{% endif %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% endset %}
+        <div class="flex flex-col gap-3 border-b border-slate-200 bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-800 sm:flex-row sm:items-center sm:justify-between">
+            <p class="text-sm text-slate-500 dark:text-slate-400">
+                Showing {{ (((page - 1) * per_page) + 1) if total else 0 }} to {{ [page * per_page, total] | min }} of {{ total }} credit notes
+            </p>
+            <label class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <span>Rows</span>
+                <select onchange="window.location.href='?page=1&per_page=' + this.value + '{{ _extra | e }}'"
+                        aria-label="Credit notes per page"
+                        class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
+                    {% for size in [10, 25, 50, 100] %}
+                    <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
                 {{ table_head([
@@ -153,37 +169,19 @@
 
         {# Pagination #}
         {% if total_pages > 1 %}
-        {% set _extra %}{% if status %}&status={{ status }}{% endif %}{% if customer_ref %}&customer_ref={{ customer_ref }}{% endif %}{% endset %}
-        <div class="flex items-center justify-between border-t border-slate-200 bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-800">
-            <div class="text-sm text-slate-500 dark:text-slate-400">
-                Showing {{ ((page - 1) * per_page) + 1 }} to {{ [page * per_page, total] | min }} of {{ total }} credit notes
-            </div>
-            <div class="flex items-center gap-4">
-                <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                    <span>Show</span>
-                    <select onchange="window.location.href='?page=1&per_page=' + this.value + '{{ _extra | e }}'"
-                            class="rounded-lg border-0 bg-slate-100 py-1 pl-2 pr-7 text-sm text-slate-700 focus:ring-2 focus:ring-emerald-500 dark:bg-slate-700 dark:text-slate-300">
-                        {% for size in [10, 25, 50, 100] %}
-                        <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
-                        {% endfor %}
-                    </select>
-                    <span>rows</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    {% if page > 1 %}
-                    <a href="?page={{ page - 1 }}&per_page={{ per_page }}{{ _extra }}"
-                       class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
-                        Previous
-                    </a>
-                    {% endif %}
-                    {% if page < total_pages %}
-                    <a href="?page={{ page + 1 }}&per_page={{ per_page }}{{ _extra }}"
-                       class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
-                        Next
-                    </a>
-                    {% endif %}
-                </div>
-            </div>
+        <div class="flex items-center justify-center gap-2 border-t border-slate-200 bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-800" aria-label="Credit note pagination">
+            {% if page > 1 %}
+            <a href="?page={{ page - 1 }}&per_page={{ per_page }}{{ _extra }}"
+               class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
+                Previous
+            </a>
+            {% endif %}
+            {% if page < total_pages %}
+            <a href="?page={{ page + 1 }}&per_page={{ per_page }}{{ _extra }}"
+               class="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700">
+                Next
+            </a>
+            {% endif %}
         </div>
         {% endif %}
     {% endcall %}

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -117,6 +118,8 @@ def test_new_quote_template_retains_responsive_dark_install_and_line_contracts()
     assert "removeItem(index)" in template
     assert "if (this.rows.length === 1)" in template
     assert 'loading_label="Submitting..."' in template
+    assert "form_warnings|default(())" in template
+    assert 'role="status"' in template
 
 
 def test_new_quote_context_renders_defaults_and_one_empty_line(db_session):
@@ -131,6 +134,35 @@ def test_new_quote_context_renders_defaults_and_one_empty_line(db_session):
     assert {item["value"] for item in context["project_types"]} == {
         item.value for item in ProjectType
     }
+
+
+def test_new_quote_context_omits_invalid_active_tax_rate_without_500(db_session):
+    _actor, lead, _party = _identity(db_session)
+    valid_id = uuid4()
+    invalid_id = uuid4()
+
+    with patch.object(
+        web_sales.billing_service.tax_rates,
+        "list",
+        return_value=[
+            SimpleNamespace(id=valid_id, name="VAT", rate=Decimal("7.5")),
+            SimpleNamespace(id=invalid_id, name="Broken VAT", rate=None),
+        ],
+    ):
+        context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
+
+    assert context["tax_rates"] == [
+        {
+            "id": str(valid_id),
+            "name": "VAT",
+            "rate": "7.5",
+            "label": "VAT (7.5%)",
+        }
+    ]
+    assert context["form_warnings"] == (
+        "Some active Tax Rates are unavailable because their configured "
+        "percentage is invalid. Review Billing Tax Rates before using them.",
+    )
 
 
 def test_missing_and_nonexistent_leads_fail_server_side(db_session):

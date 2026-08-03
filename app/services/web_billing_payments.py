@@ -8,7 +8,8 @@ import io
 import logging
 import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 from uuid import UUID
@@ -50,15 +51,18 @@ from app.services import display_format, settings_spec
 from app.services import subscriber as subscriber_service
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.audit_helpers import build_changes_metadata, log_audit_event
+from app.services.inclusive_date_range import InclusiveDateRange
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
     ListQuery,
+    PageMeta,
 )
 from app.services.status_presentation import payment_status_presentation
 
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,120}$")
+_PAYMENT_CSV_YIELD_PER = 500
 
 
 IMPORT_HANDLERS: dict[str, dict[str, tuple[str, ...]]] = {
@@ -553,7 +557,8 @@ PAYMENTS_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("partner_id", "Partner", filterable=True),
         ListFieldDefinition("status", "Status", filterable=True),
         ListFieldDefinition("method", "Method", filterable=True),
-        ListFieldDefinition("date_range", "Date range", filterable=True),
+        ListFieldDefinition("start_date", "Start date", filterable=True),
+        ListFieldDefinition("end_date", "End date", filterable=True),
         ListFieldDefinition("unallocated_only", "Unallocated only", filterable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
@@ -570,7 +575,8 @@ def build_payments_list_query(
     status: str | None = None,
     method: str | None = None,
     search: str | None = None,
-    date_range: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     unallocated_only: bool = False,
     sort_by: str | None = None,
     sort_dir: str | None = None,
@@ -583,6 +589,10 @@ def build_payments_list_query(
     read owner receives an already-validated query. ``unallocated_only`` is
     carried as a filter value so it round-trips through the contract.
     """
+    created_range = InclusiveDateRange.from_dates(
+        start_date=start_date,
+        end_date=end_date,
+    )
     return PAYMENTS_LIST_DEFINITION.build_query(
         search=search,
         filters={
@@ -590,7 +600,8 @@ def build_payments_list_query(
             "partner_id": partner_id,
             "status": status,
             "method": method,
-            "date_range": date_range,
+            "start_date": created_range.start_value,
+            "end_date": created_range.end_value,
             "unallocated_only": "true" if unallocated_only else None,
         },
         sort_by=sort_by,
@@ -600,17 +611,149 @@ def build_payments_list_query(
     )
 
 
+def _payment_customer_account_ids(
+    db: Session, customer_ref: str | None
+) -> tuple[UUID, ...]:
+    if not customer_ref:
+        return ()
+    return tuple(
+        UUID(item["id"])
+        for item in web_billing_customers_service.accounts_for_customer(
+            db, customer_ref
+        )
+    )
+
+
+def _payment_partner_id(partner_id: str | None) -> UUID | None:
+    if not partner_id:
+        return None
+    try:
+        return UUID(partner_id)
+    except ValueError:
+        return None
+
+
+def _payment_method_enum(value: str) -> PaymentMethodType | None:
+    mapping = {
+        "card": PaymentMethodType.card,
+        "cash": PaymentMethodType.cash,
+        "check": PaymentMethodType.check,
+        "transfer": PaymentMethodType.transfer,
+        "bank_transfer": PaymentMethodType.transfer,
+        "bank_account": PaymentMethodType.bank_account,
+        "other": PaymentMethodType.other,
+        "mobile": PaymentMethodType.other,
+    }
+    return mapping.get(value)
+
+
+def _apply_payment_list_filters(
+    stmt,
+    *,
+    list_query: ListQuery,
+    account_ids: tuple[UUID, ...],
+    selected_partner_id: UUID | None,
+):  # type: ignore[no-untyped-def]
+    scoped = stmt.where(Payment.is_active.is_(True))
+    customer_ref = list_query.filter_value("customer_ref")
+    status = list_query.filter_value("status")
+    method = list_query.filter_value("method")
+    created_range = InclusiveDateRange.from_iso_values(
+        start_date=list_query.filter_value("start_date"),
+        end_date=list_query.filter_value("end_date"),
+    )
+
+    if customer_ref:
+        if not account_ids:
+            return scoped.where(Payment.id.is_(None))
+        scoped = scoped.where(Payment.account_id.in_(account_ids))
+    if selected_partner_id:
+        scoped = scoped.where(
+            Payment.account.has(Subscriber.reseller_id == selected_partner_id)
+        )
+    if status:
+        try:
+            scoped = scoped.where(Payment.status == PaymentStatus(status))
+        except ValueError:
+            pass
+    if method:
+        method_enum = _payment_method_enum(method)
+        if method_enum:
+            scoped = scoped.where(
+                Payment.payment_method.has(PaymentMethod.method_type == method_enum)
+            )
+    if list_query.search:
+        term = f"%{list_query.search}%"
+        scoped = scoped.where(
+            (Payment.memo.ilike(term))
+            | (Payment.external_id.ilike(term))
+            | (Payment.receipt_number.ilike(term))
+        )
+    if list_query.filter_value("unallocated_only") == "true":
+        scoped = scoped.where(~Payment.allocations.any())
+    if created_range.start_at is not None:
+        scoped = scoped.where(Payment.created_at >= created_range.start_at)
+    if created_range.end_before is not None:
+        scoped = scoped.where(Payment.created_at < created_range.end_before)
+    return scoped
+
+
+def _apply_payment_list_sort(stmt, list_query: ListQuery):  # type: ignore[no-untyped-def]
+    created_order = (
+        Payment.created_at.asc()
+        if list_query.sort_dir == "asc"
+        else Payment.created_at.desc()
+    )
+    return stmt.order_by(created_order, Payment.id.asc())
+
+
+def _enrich_payment_row(payment: Payment) -> None:
+    method_type = None
+    if payment.payment_method and payment.payment_method.method_type:
+        raw_method = payment.payment_method.method_type
+        method_type = (
+            raw_method.value if hasattr(raw_method, "value") else str(raw_method)
+        )
+    elif payment.payment_channel and payment.payment_channel.channel_type:
+        raw_channel = payment.payment_channel.channel_type
+        method_type = (
+            raw_channel.value if hasattr(raw_channel, "value") else str(raw_channel)
+        )
+    else:
+        method_type = "other"
+
+    method_labels = {
+        "cash": "Cash",
+        "card": "Card",
+        "transfer": "Bank",
+        "bank_account": "Bank",
+        "check": "Check",
+        "other": "Online",
+    }
+    prefix = method_labels.get(method_type, "Payment")
+    receipt = payment.receipt_number or str(payment.id)[:8]
+    payment.display_number = f"{prefix} {receipt}"  # type: ignore[attr-defined]
+    payment.display_method = method_labels.get(  # type: ignore[attr-defined]
+        method_type, "Other"
+    )
+    payment.narration = (  # type: ignore[attr-defined]
+        payment.memo or payment.external_id or "-"
+    )
+
+
 def build_payments_list_data(
     db: Session,
     *,
-    page: int,
-    per_page: int,
-    customer_ref: str | None,
+    list_query: ListQuery | None = None,
+    page: int = 1,
+    per_page: int = 25,
+    customer_ref: str | None = None,
     partner_id: str | None = None,
     status: str | None = None,
     method: str | None = None,
     search: str | None = None,
-    date_range: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     unallocated_only: bool = False,
     sort_dir: str = "desc",
 ) -> dict[str, object]:
@@ -620,6 +763,34 @@ def build_payments_list_data(
     sortable) ``created_at`` column; the route supplies it from the validated
     ListQuery. Other filters keep their existing semantics.
     """
+
+    if list_query is None:
+        list_query = build_payments_list_query(
+            customer_ref=customer_ref,
+            partner_id=partner_id,
+            status=status,
+            method=method,
+            search=search,
+            start_date=start_date,
+            end_date=end_date,
+            unallocated_only=unallocated_only,
+            sort_dir=sort_dir,
+            page=page,
+            per_page=per_page,
+        )
+    if list_query.definition.key != PAYMENTS_LIST_DEFINITION.key:
+        raise ValueError("Payments list requires the payments definition")
+
+    customer_ref = list_query.filter_value("customer_ref")
+    partner_id = list_query.filter_value("partner_id")
+    status = list_query.filter_value("status")
+    method = list_query.filter_value("method")
+    search = list_query.search
+    created_range = InclusiveDateRange.from_iso_values(
+        start_date=list_query.filter_value("start_date"),
+        end_date=list_query.filter_value("end_date"),
+    )
+    unallocated_only = list_query.filter_value("unallocated_only") == "true"
 
     default_currency = display_format.default_currency(db)
 
@@ -689,108 +860,9 @@ def build_payments_list_data(
         }
         return summary
 
-    def _method_enum(value: str) -> PaymentMethodType | None:
-        mapping = {
-            "card": PaymentMethodType.card,
-            "cash": PaymentMethodType.cash,
-            "check": PaymentMethodType.check,
-            "transfer": PaymentMethodType.transfer,
-            "bank_transfer": PaymentMethodType.transfer,
-            "bank_account": PaymentMethodType.bank_account,
-            "other": PaymentMethodType.other,
-            "mobile": PaymentMethodType.other,
-        }
-        return mapping.get(value)
-
-    def _apply_payment_filters(stmt):  # type: ignore[no-untyped-def]
-        scoped = stmt.where(Payment.is_active.is_(True))
-        if account_ids:
-            scoped = scoped.where(Payment.account_id.in_(account_ids))
-        if selected_partner_id:
-            scoped = scoped.where(
-                Payment.account.has(Subscriber.reseller_id == selected_partner_id)
-            )
-        if status:
-            try:
-                status_enum = PaymentStatus(status)
-                scoped = scoped.where(Payment.status == status_enum)
-            except ValueError:
-                pass
-        if method:
-            method_enum = _method_enum(method)
-            if method_enum:
-                scoped = scoped.where(
-                    Payment.payment_method.has(PaymentMethod.method_type == method_enum)
-                )
-        if search:
-            term = f"%{search.strip()}%"
-            scoped = scoped.where(
-                (Payment.memo.ilike(term))
-                | (Payment.external_id.ilike(term))
-                | (Payment.receipt_number.ilike(term))
-            )
-        if unallocated_only:
-            scoped = scoped.where(~Payment.allocations.any())
-        if date_range in {"today", "week", "month", "quarter"}:
-            now = datetime.now(UTC)
-            if date_range == "today":
-                start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-            elif date_range == "week":
-                start = datetime(now.year, now.month, now.day, tzinfo=UTC) - timedelta(
-                    days=now.weekday()
-                )
-            elif date_range == "month":
-                start = now - timedelta(days=30)
-            else:
-                start = now - timedelta(days=90)
-            scoped = scoped.where(Payment.created_at >= start)
-        return scoped
-
-    def _enrich_payment_row(payment: Payment) -> None:
-        method_type = None
-        if payment.payment_method and payment.payment_method.method_type:
-            raw_method = payment.payment_method.method_type
-            method_type = (
-                raw_method.value if hasattr(raw_method, "value") else str(raw_method)
-            )
-        elif payment.payment_channel and payment.payment_channel.channel_type:
-            raw_channel = payment.payment_channel.channel_type
-            method_type = (
-                raw_channel.value if hasattr(raw_channel, "value") else str(raw_channel)
-            )
-        else:
-            method_type = "other"
-
-        method_labels = {
-            "cash": "Cash",
-            "card": "Card",
-            "transfer": "Bank",
-            "bank_account": "Bank",
-            "check": "Check",
-            "other": "Online",
-        }
-        prefix = method_labels.get(method_type, "Payment")
-        receipt = payment.receipt_number or str(payment.id)[:8]
-        payment.display_number = f"{prefix} {receipt}"  # type: ignore[attr-defined]
-        payment.display_method = method_labels.get(method_type, "Other")  # type: ignore[attr-defined]
-        payment.narration = payment.memo or payment.external_id or "-"  # type: ignore[attr-defined]
-
-    offset = (page - 1) * per_page
-    account_ids = []
-    selected_partner_id = None
-    if partner_id:
-        try:
-            selected_partner_id = UUID(partner_id)
-        except ValueError:
-            selected_partner_id = None
+    account_ids = _payment_customer_account_ids(db, customer_ref)
+    selected_partner_id = _payment_partner_id(partner_id)
     customer_filtered = bool(customer_ref)
-    if customer_ref:
-        account_ids = [
-            UUID(item["id"])
-            for item in web_billing_customers_service.accounts_for_customer(
-                db, customer_ref
-            )
-        ]
 
     payments: list[Payment] = []
     total = 0
@@ -806,24 +878,38 @@ def build_payments_list_data(
             "all",
         )
     }
-    if account_ids or not customer_filtered:
-        filtered_subquery = _apply_payment_filters(
-            select(Payment.id, Payment.status, Payment.amount, Payment.currency)
+    has_queryable_scope = bool(account_ids) or not customer_filtered
+    if has_queryable_scope:
+        filtered_subquery = _apply_payment_list_filters(
+            select(Payment.id, Payment.status, Payment.amount, Payment.currency),
+            list_query=list_query,
+            account_ids=account_ids,
+            selected_partner_id=selected_partner_id,
         ).subquery()
         total = db.scalar(select(func.count()).select_from(filtered_subquery)) or 0
         status_totals = _build_status_totals(filtered_subquery)
 
-        created_order = (
-            Payment.created_at.asc() if sort_dir == "asc" else Payment.created_at.desc()
+    page_meta = PageMeta.from_query(list_query, total)
+    effective_query = list_query.with_page(page_meta.page)
+    if has_queryable_scope:
+        base_stmt = _apply_payment_list_filters(
+            select(Payment).options(
+                joinedload(Payment.account),
+                joinedload(Payment.payment_method),
+                joinedload(Payment.payment_channel),
+            ),
+            list_query=effective_query,
+            account_ids=account_ids,
+            selected_partner_id=selected_partner_id,
         )
-        base_stmt = _apply_payment_filters(
-            select(Payment).options(joinedload(Payment.account))
-        ).order_by(created_order)
-        payments = list(db.scalars(base_stmt.offset(offset).limit(per_page)).all())
+        base_stmt = _apply_payment_list_sort(base_stmt, effective_query)
+        payments = list(
+            db.scalars(
+                base_stmt.offset(effective_query.offset).limit(effective_query.per_page)
+            ).all()
+        )
         for payment in payments:
             _enrich_payment_row(payment)
-
-    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
 
     accounts = subscriber_service.accounts.list(
         db=db,
@@ -862,10 +948,12 @@ def build_payments_list_data(
             }
             for payment_status in PaymentStatus
         ],
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "total_pages": total_pages,
+        "list_query": effective_query,
+        "page_meta": page_meta,
+        "page": page_meta.page,
+        "per_page": page_meta.per_page,
+        "total": page_meta.total_items,
+        "total_pages": page_meta.total_pages,
         "total_balance": total_balance,
         "active_count": active_count,
         "suspended_count": suspended_count,
@@ -877,49 +965,117 @@ def build_payments_list_data(
         "status": status,
         "method": method,
         "search": search,
-        "date_range": date_range,
+        "start_date": created_range.start_value,
+        "end_date": created_range.end_value,
         "unallocated_only": unallocated_only,
         "status_totals": status_totals,
     }
 
 
+def list_payments_for_scope(
+    db: Session,
+    *,
+    list_query: ListQuery,
+) -> list[Payment]:
+    """Return the complete canonical payment scope in bounded owner queries."""
+
+    if list_query.definition.key != PAYMENTS_LIST_DEFINITION.key:
+        raise ValueError("Payments scope requires the payments definition")
+
+    page_query = list_query.with_per_page(
+        max(PAYMENTS_LIST_DEFINITION.per_page_options)
+    )
+    payments: list[Payment] = []
+    while True:
+        state = build_payments_list_data(db, list_query=page_query)
+        payments.extend(cast(list[Payment], state["payments"]))
+        page_meta = cast(PageMeta, state["page_meta"])
+        if not page_meta.has_next:
+            return payments
+        page_query = page_query.with_page(page_meta.page + 1)
+
+
+_PAYMENT_CSV_HEADER = [
+    "payment_id",
+    "display_number",
+    "customer_name",
+    "amount",
+    "currency",
+    "status",
+    "method",
+    "narration",
+    "paid_at",
+    "created_at",
+]
+
+
+def _payment_csv_row(payment: Payment) -> list[str]:
+    method_value = getattr(payment, "display_method", None) or "Other"
+    narration = getattr(payment, "narration", None) or payment.memo or ""
+    return [
+        str(payment.id),
+        getattr(payment, "display_number", None) or "",
+        payment.account.name if payment.account else "",
+        f"{Decimal(str(payment.amount or 0)):.2f}",
+        display_format.currency_code(payment.currency),
+        payment.status.value
+        if hasattr(payment.status, "value")
+        else str(payment.status or ""),
+        method_value,
+        narration,
+        payment.paid_at.isoformat() if payment.paid_at else "",
+        payment.created_at.isoformat() if payment.created_at else "",
+    ]
+
+
 def render_payments_csv(payments: list[Payment]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "payment_id",
-            "display_number",
-            "account_id",
-            "amount",
-            "currency",
-            "status",
-            "method",
-            "narration",
-            "paid_at",
-            "created_at",
-        ]
-    )
+    writer.writerow(_PAYMENT_CSV_HEADER)
     for payment in payments:
-        method_value = getattr(payment, "display_method", None) or "Other"
-        narration = getattr(payment, "narration", None) or payment.memo or ""
-        writer.writerow(
-            [
-                str(payment.id),
-                getattr(payment, "display_number", None) or "",
-                str(payment.account_id) if payment.account_id else "",
-                f"{Decimal(str(payment.amount or 0)):.2f}",
-                display_format.currency_code(payment.currency),
-                payment.status.value
-                if hasattr(payment.status, "value")
-                else str(payment.status or ""),
-                method_value,
-                narration,
-                payment.paid_at.isoformat() if payment.paid_at else "",
-                payment.created_at.isoformat() if payment.created_at else "",
-            ]
-        )
+        writer.writerow(_payment_csv_row(payment))
     return buffer.getvalue()
+
+
+def stream_payments_csv(db: Session, *, list_query: ListQuery) -> Iterator[str]:
+    """Yield the canonical payment-scope CSV one row at a time.
+
+    The export reuses the list owner's filters and stable ordering without a
+    page cap. Scalar relationships needed for customer identity and display
+    enrichment are joined in the streaming query to avoid per-row selects.
+    """
+    if list_query.definition.key != PAYMENTS_LIST_DEFINITION.key:
+        raise ValueError("Payment scope requires the payments definition")
+    customer_ref = list_query.filter_value("customer_ref")
+    account_ids = _payment_customer_account_ids(db, customer_ref)
+    selected_partner_id = _payment_partner_id(list_query.filter_value("partner_id"))
+    stmt = _apply_payment_list_filters(
+        select(Payment).options(
+            joinedload(Payment.account),
+            joinedload(Payment.payment_method),
+            joinedload(Payment.payment_channel),
+        ),
+        list_query=list_query,
+        account_ids=account_ids,
+        selected_partner_id=selected_partner_id,
+    )
+    stmt = _apply_payment_list_sort(stmt, list_query).execution_options(
+        yield_per=_PAYMENT_CSV_YIELD_PER
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    def _emit(values: list[str]) -> str:
+        buffer.seek(0)
+        buffer.truncate(0)
+        writer.writerow(values)
+        return buffer.getvalue()
+
+    yield _emit(_PAYMENT_CSV_HEADER)
+    for payment in db.scalars(stmt):
+        _enrich_payment_row(payment)
+        yield _emit(_payment_csv_row(payment))
 
 
 def resolve_default_currency(db: Session) -> str:

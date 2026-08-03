@@ -122,6 +122,16 @@ def test_render_project_detail_with_stages(db_session, base_context, fiber_proje
     assert "Fiber Installation Stages" in html
     assert "Project Plan" in html
     assert work_order.public_id in html
+    attachment_input = html.split(
+        'data-testid="project-comment-attachments"', maxsplit=1
+    )[1].split(">", maxsplit=1)[0]
+    assert "cursor-pointer" in attachment_input
+    assert "border-dashed" in attachment_input
+    assert "data-mention-textarea" in html
+    assert "data-mention-menu" in html
+    assert "data-mention-select" not in html
+    assert "Type <span" in html
+    assert "to mention a staff member or team" in html
 
 
 def test_render_project_detail_vendor_delivery_respects_finance_scope(

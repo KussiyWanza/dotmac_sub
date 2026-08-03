@@ -228,17 +228,47 @@
             </div>
             <form method="post" enctype="multipart/form-data" action="/admin/projects/{{ project.number or project.id }}/comments" class="mt-5 space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-600 dark:bg-slate-700/30" data-project-comment-form>
                 <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-                <textarea name="body" rows="3" required placeholder="Add a comment..." class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></textarea>
-                <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Attachments
-                        <input type="file" name="attachments" multiple class="mt-1 block w-full text-xs">
-                    </label>
-                    <label class="text-xs font-semibold text-slate-600 dark:text-slate-300">Mention staff or teams
-                        <select multiple data-mention-select class="mt-1 block w-full rounded-lg border border-slate-200 bg-white p-2 text-xs dark:border-slate-600 dark:bg-slate-700">
-                            {% for agent in mention_agents %}<option value="{{ agent.id }}">{{ agent.label }}</option>{% endfor %}
-                        </select>
-                    </label>
+                <div class="relative" data-mention-composer>
+                    <textarea name="body" rows="3" required placeholder="Add a comment..." data-mention-textarea
+                              aria-label="Comment. Type @ to mention staff or teams"
+                              aria-autocomplete="list"
+                              aria-expanded="false"
+                              class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"></textarea>
+                    <div data-mention-menu role="listbox" aria-label="Staff and team suggestions"
+                         class="absolute left-0 right-0 z-30 mt-1 hidden max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-600 dark:bg-slate-800">
+                        <div data-mention-group>
+                            <p class="px-2 pb-1 pt-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Staff</p>
+                            {% for agent in mention_agents if agent.kind == 'person' %}
+                            <button type="button" role="option" data-mention-option data-mention-id="{{ agent.id }}" data-mention-label="{{ agent.label }}"
+                                    class="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition hover:bg-emerald-50 hover:text-emerald-800 focus:bg-emerald-50 focus:outline-none dark:text-slate-200 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-300 dark:focus:bg-emerald-900/20">
+                                <span class="truncate">{{ agent.label }}</span>
+                                <span class="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:bg-slate-700 dark:text-slate-300">Staff</span>
+                            </button>
+                            {% endfor %}
+                        </div>
+                        <div data-mention-group>
+                            <p class="px-2 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Teams</p>
+                            {% for agent in mention_agents if agent.kind == 'group' %}
+                            <button type="button" role="option" data-mention-option data-mention-id="{{ agent.id }}" data-mention-label="{{ agent.label }}"
+                                    class="flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-slate-700 transition hover:bg-emerald-50 hover:text-emerald-800 focus:bg-emerald-50 focus:outline-none dark:text-slate-200 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-300 dark:focus:bg-emerald-900/20">
+                                <span class="truncate">{{ agent.label }}</span>
+                                <span class="shrink-0 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-600 dark:bg-violet-900/30 dark:text-violet-300">Team</span>
+                            </button>
+                            {% endfor %}
+                        </div>
+                        <p data-mention-empty class="hidden px-3 py-4 text-center text-xs text-slate-500 dark:text-slate-400">No matching staff or teams.</p>
+                    </div>
                 </div>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400">Type <span class="font-semibold text-emerald-700 dark:text-emerald-400">@</span> to mention a staff member or team. Select a suggestion to notify them.</p>
+                <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    <span class="flex items-center gap-1.5">
+                        <svg class="h-4 w-4 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828L18 9.828a4 4 0 00-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.5 13"/></svg>
+                        Attachments
+                    </span>
+                    <input data-testid="project-comment-attachments" type="file" name="attachments" multiple
+                           class="mt-1.5 block w-full cursor-pointer rounded-xl border-2 border-dashed border-slate-300 bg-white px-3 py-3 text-xs text-slate-600 transition hover:border-emerald-400 hover:bg-emerald-50/40 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-emerald-700 hover:file:bg-emerald-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-500 dark:hover:bg-emerald-950/20 dark:file:bg-emerald-900/30 dark:file:text-emerald-300">
+                    <span class="mt-1.5 block text-[11px] font-normal text-slate-500 dark:text-slate-400">Click the box to choose one or more files.</span>
+                </label>
                 <input type="hidden" name="mentions" value="[]" data-mentions-json>
                 <div class="flex justify-end">
                     <button class="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-emerald-500/20">Add Comment</button>
@@ -247,9 +277,86 @@
             {% endcall %}
             <script>
             document.querySelectorAll('[data-project-comment-form]').forEach(function (form) {
+                var composer = form.querySelector('[data-mention-composer]');
+                var textarea = form.querySelector('[data-mention-textarea]');
+                var menu = form.querySelector('[data-mention-menu]');
+                var empty = form.querySelector('[data-mention-empty]');
+                var options = Array.from(form.querySelectorAll('[data-mention-option]'));
+                var groups = Array.from(form.querySelectorAll('[data-mention-group]'));
+                var mentionsInput = form.querySelector('[data-mentions-json]');
+                var selectedMentions = new Map();
+                var triggerStart = null;
+
+                function closeMentionMenu() {
+                    menu.classList.add('hidden');
+                    textarea.setAttribute('aria-expanded', 'false');
+                    triggerStart = null;
+                }
+
+                function syncMentionPayload() {
+                    selectedMentions.forEach(function (label, id) {
+                        if (!textarea.value.includes('@' + label)) selectedMentions.delete(id);
+                    });
+                    mentionsInput.value = JSON.stringify(Array.from(selectedMentions.keys()));
+                }
+
+                function updateMentionMenu() {
+                    var cursor = textarea.selectionStart;
+                    var beforeCursor = textarea.value.slice(0, cursor);
+                    var match = beforeCursor.match(/(^|[\s(])@([^@\s]*)$/);
+                    if (!match) {
+                        closeMentionMenu();
+                        return;
+                    }
+
+                    var query = match[2].trim().toLowerCase();
+                    triggerStart = cursor - match[2].length - 1;
+                    var visibleCount = 0;
+                    options.forEach(function (option) {
+                        var visible = option.dataset.mentionLabel.toLowerCase().includes(query);
+                        option.classList.toggle('hidden', !visible);
+                        if (visible) visibleCount += 1;
+                    });
+                    groups.forEach(function (group) {
+                        var hasVisibleOption = Array.from(group.querySelectorAll('[data-mention-option]')).some(function (option) {
+                            return !option.classList.contains('hidden');
+                        });
+                        group.classList.toggle('hidden', !hasVisibleOption);
+                    });
+                    empty.classList.toggle('hidden', visibleCount > 0);
+                    menu.classList.remove('hidden');
+                    textarea.setAttribute('aria-expanded', 'true');
+                }
+
+                options.forEach(function (option) {
+                    option.addEventListener('click', function () {
+                        if (triggerStart === null) return;
+                        var cursor = textarea.selectionStart;
+                        var label = option.dataset.mentionLabel;
+                        var replacement = '@' + label + ' ';
+                        textarea.value = textarea.value.slice(0, triggerStart) + replacement + textarea.value.slice(cursor);
+                        selectedMentions.set(option.dataset.mentionId, label);
+                        syncMentionPayload();
+                        closeMentionMenu();
+                        var nextCursor = triggerStart + replacement.length;
+                        textarea.focus();
+                        textarea.setSelectionRange(nextCursor, nextCursor);
+                    });
+                });
+
+                textarea.addEventListener('input', function () {
+                    syncMentionPayload();
+                    updateMentionMenu();
+                });
+                textarea.addEventListener('click', updateMentionMenu);
+                textarea.addEventListener('keydown', function (event) {
+                    if (event.key === 'Escape') closeMentionMenu();
+                });
+                document.addEventListener('click', function (event) {
+                    if (!composer.contains(event.target)) closeMentionMenu();
+                });
                 form.addEventListener('submit', function () {
-                    var select = form.querySelector('[data-mention-select]');
-                    form.querySelector('[data-mentions-json]').value = JSON.stringify(Array.from(select.selectedOptions).map(function (option) { return option.value; }));
+                    syncMentionPayload();
                 });
             });
             </script>

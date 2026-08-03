@@ -176,7 +176,16 @@ def require_web_auth(
         # For expired POST-backed form submits, bounce the user back to the form
         # they came from instead of the collection endpoint that handled the POST.
         next_url = _next_url_for_refresh(request)
-        redirect_url = f"/auth/refresh?next={quote(next_url)}"
+        request_path = str(request.url.path)
+        is_vendor_route = request_path == "/vendor" or request_path.startswith(
+            "/vendor/"
+        )
+        if is_vendor_route and not (
+            next_url == "/vendor" or next_url.startswith("/vendor/")
+        ):
+            next_url = "/vendor"
+        refresh_path = "/vendor/auth/refresh" if is_vendor_route else "/auth/refresh"
+        redirect_url = f"{refresh_path}?next={quote(next_url)}"
         raise AuthenticationRequired(redirect_url)
 
     # Store auth info in request state for use by templates

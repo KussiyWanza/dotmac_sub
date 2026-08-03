@@ -850,6 +850,7 @@ class Tickets:
         search: str | None = None,
         status: str | None = None,
         ticket_type: str | None = None,
+        region: str | None = None,
         assigned_to_person_id: str | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
@@ -869,6 +870,7 @@ class Tickets:
             search=search,
             status=status,
             ticket_type=ticket_type,
+            region=region,
             assigned_to_person_id=assigned_to_person_id,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,
@@ -2421,6 +2423,7 @@ class Tickets:
         search: str | None = None,
         status: str | None = None,
         ticket_type: str | None = None,
+        region: str | None = None,
         assigned_to_person_id: str | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
@@ -2452,6 +2455,8 @@ class Tickets:
             query = query.filter(Ticket.status == str(status).strip())
         if ticket_type:
             query = query.filter(Ticket.ticket_type == ticket_type)
+        if region:
+            query = query.filter(Ticket.region == str(region).strip())
         if priority:
             query = query.filter(Ticket.priority == str(priority).strip())
         if channel:
@@ -2497,6 +2502,7 @@ class Tickets:
         search: str | None = None,
         status: str | None = None,
         ticket_type: str | None = None,
+        region: str | None = None,
         assigned_to_person_id: str | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
@@ -2515,6 +2521,7 @@ class Tickets:
                 search=search,
                 status=status,
                 ticket_type=ticket_type,
+                region=region,
                 assigned_to_person_id=assigned_to_person_id,
                 project_manager_person_id=project_manager_person_id,
                 site_coordinator_person_id=site_coordinator_person_id,
@@ -2535,6 +2542,7 @@ class Tickets:
         search: str | None = None,
         status: str | None = None,
         ticket_type: str | None = None,
+        region: str | None = None,
         assigned_to_person_id: str | None = None,
         project_manager_person_id: str | None = None,
         site_coordinator_person_id: str | None = None,
@@ -2554,6 +2562,7 @@ class Tickets:
             search=search,
             status=status,
             ticket_type=ticket_type,
+            region=region,
             assigned_to_person_id=assigned_to_person_id,
             project_manager_person_id=project_manager_person_id,
             site_coordinator_person_id=site_coordinator_person_id,

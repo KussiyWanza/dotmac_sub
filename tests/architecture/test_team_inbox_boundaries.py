@@ -25,6 +25,8 @@ APP = PROJECT_ROOT / "app"
 # Inbox ORM classes (app/models/team_inbox.py) that carry decision state.
 _INBOX_MODELS = (
     "TeamInboxEmailRoute",
+    "TeamInboxChannelRoute",
+    "TeamInboxAiRoute",
     "InboxConversation",
     "InboxSavedFilter",
     "InboxLabel",

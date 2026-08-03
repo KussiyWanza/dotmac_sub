@@ -20838,7 +20838,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "observability.audit_log",
                 ),
                 notes=(
-                    "The one-time pre-426 owner verifies the five retained native "
+                    "The one-time pre-426 owner verifies retained native "
                     "team pointers, retires workflow-setting sources, clears the "
                     "non-authoritative manager pointer, and removes only membership "
                     "rows that migration 426 would reject. It never reads CRM, "
@@ -20873,8 +20873,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="operations.service_team_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "the five retained ticket, project, dispatch, "
-                                "Inbox-route, and Inbox-conversation team pointers"
+                                "retained ticket, project, dispatch, Inbox-route, "
+                                "AI-route, channel-route, and Inbox-conversation "
+                                "team pointers"
                             ),
                         ),
                         AuthorityInput(
@@ -22787,7 +22788,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         locking="A transaction-current read requires no row lock.",
                         idempotency=(
                             "Re-reading the same committed inputs returns the same normalized "
-                            "values."
+                            "values ordered by region value ascending."
                         ),
                         retries=(
                             "Adapters may retry the complete read after transient database "
@@ -27776,6 +27777,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "This is the only application and seed writer for roles, "
                     "permissions, and role_permissions. Catalog identities are "
                     "case-normalized and protected by functional unique indexes. "
+                    "Permission-policy updates preserve an unchanged legacy role "
+                    "name, while new and genuinely renamed roles must use the "
+                    "canonical lowercase identifier syntax. "
                     "Assigned identities cannot be renamed or deactivated, and "
                     "non-assignable permissions may be granted only to admin."
                 ),
@@ -32932,10 +32936,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin invoice page and status-summary projection",
                     "admin invoice export scope",
                 ),
-                depends_on=("ui.list_contracts", "financial.invoices"),
+                depends_on=(
+                    "ui.list_contracts",
+                    "financial.invoices",
+                    "customer.accounts",
+                ),
                 notes=(
                     "The full page and HTMX response share one list partial. "
-                    "Exports consume the same canonical scope without a page cap."
+                    "Explicit start_date and end_date filters bound UTC created_at "
+                    "with an inclusive end date. Exports consume the same canonical "
+                    "scope without a page cap. The CSV customer_name column uses "
+                    "the customer account's human display identity and does not "
+                    "expose account UUIDs."
                 ),
             ),
             SOTService(
@@ -32946,19 +32958,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin payments filter semantics",
                     "admin payments stable sort and default-order semantics",
                     "admin payments list pagination normalization",
+                    "admin payments export scope",
                 ),
-                depends_on=("ui.list_contracts", "financial.payments"),
+                depends_on=(
+                    "ui.list_contracts",
+                    "financial.payments",
+                    "customer.accounts",
+                ),
                 notes=(
                     "PAYMENTS_LIST_DEFINITION declares the list capabilities and "
                     "build_payments_list_query normalizes/validates request state; "
                     "build_payments_list_data remains the read owner that issues the "
-                    "SQL, status totals, and enrichment. The route validates through "
-                    "the contract and delegates. The CSV export intentionally reuses "
-                    "the read owner without a page cap (same canonical filter scope, "
-                    "no pagination). Gated by the existing granular "
+                    "SQL, status totals, and enrichment. Explicit start_date and "
+                    "end_date filters bound UTC created_at with an inclusive end "
+                    "date. The route validates through the contract and delegates. "
+                    "The streaming CSV export reuses the "
+                    "same filter and stable-sort owner without a page cap or full-body "
+                    "materialization. Its customer_name column uses the customer "
+                    "account's human display identity and does not expose account "
+                    "UUIDs. Gated by the existing granular "
                     "billing:payment:read. Read-only: no admin bulk command declared, "
-                    "so no selection or bulk. Follow-up: decompose the read owner so "
-                    "list and export share a hoisted filter helper."
+                    "so no selection or bulk."
                 ),
             ),
             SOTService(

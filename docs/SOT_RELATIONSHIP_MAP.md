@@ -134,7 +134,7 @@ use configured global routing; a stale binding (a retired GeoArea on the
 nearest bound zone) resolves unavailable and denies the scoped routing
 consequence — it never masquerades as unbound, falls back to legacy fields, or
 rebinds the incident to a wider area. The one-time
-`operations.service_team_source_retirement` gate verifies the five retained
+`operations.service_team_source_retirement` gate verifies retained
 native pointers and retires workflow-setting sources without CRM identity or
 membership adoption. Legacy scalar type, region, manager, role, and workforce
 columns remain migration shadows until the complete-cohort comparison and
@@ -2377,7 +2377,18 @@ will reject.
     filterable, and sortable fields; stable ID tie-breaking; page clamping; and
     an uncapped export scope. Full-page and HTMX reads render the same
     `_invoices_list.html` and `_invoices_table.html` projections, so status
-    totals, filters, canonical URLs, pagination, and rows cannot diverge.
+    totals, filters, canonical URLs, pagination, and rows cannot diverge. The
+    CSV projects the customer account's human display identity as
+    `customer_name`; it does not expose the internal account UUID.
+`ui.payments_list_projection` owns the filtered admin payments CSV scope as
+well as the paginated list scope. Both consume the same declared filters and
+stable ordering. Optional `start_date` and `end_date` filters bound UTC
+`created_at`; the end calendar date is inclusive and is implemented as the
+exclusive start of the following UTC day. The export streams the complete
+result without a silent row cap, projects the canonical customer account
+display identity as `customer_name`, and does not expose internal account
+UUIDs. Routes and templates only transport and render the owner-defined scope.
+
 12. `ui.support_ticket_list_projection` extends the existing
     `app.services.web_support_tickets` web owner and delegates its filtered
     domain query to `app.services.support.Tickets`. It owns the declared admin
@@ -4196,8 +4207,10 @@ Authorization:
 1. `auth.rbac_catalog`: is the only application and seed writer for roles,
    permissions, and role-permission policy. Catalog identities are normalized
    lowercase identifiers with database-enforced case/whitespace uniqueness.
-   Assigned identities cannot be renamed or deactivated, and non-assignable
-   permissions are protected admin policy.
+   Permission-policy updates preserve an unchanged legacy role name, while new
+   and genuinely renamed roles must use the canonical lowercase identifier
+   syntax. Assigned identities cannot be renamed or deactivated, and
+   non-assignable permissions are protected admin policy.
 2. `auth.subscriber_assignments`: is the only application and seed writer for
    `subscriber_roles` and `subscriber_permissions`. Public commands own the
    grant, audit, event, and cache-invalidation boundary; reseller onboarding

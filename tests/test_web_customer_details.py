@@ -223,7 +223,7 @@ def test_customer_detail_billing_overview_has_responsive_amount_contract() -> No
         'data-testid="billing-overview-cards"', maxsplit=1
     )[1].split("{% set billing_workspace", maxsplit=1)[0]
 
-    assert "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5" in billing_overview
+    assert "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3" in billing_overview
     assert billing_overview.count('data-testid="billing-overview-card"') == 5
     assert billing_overview.count('data-testid="billing-overview-value"') == 5
     assert billing_overview.count("min-w-0") >= 5
@@ -266,8 +266,12 @@ def test_customer_360_groups_profile_location_and_account_access() -> None:
     assert "Contact details" in account_tab
     assert "Identity details" in account_tab
     assert "Location not set" in account_tab
-    assert "#customer-mini-map { height: 400px; }" in template
-    assert "#customer-mini-map { height: 300px; }" in template
+    assert ".customer-location-map { width: 100%; height: 400px; }" in template
+    assert ".customer-location-map { height: 300px; }" in template
+    assert account_tab.count('id="customer-overview-map"') == 1
+    assert template.count('id="customer-mini-map"') == 1
+    assert "new ResizeObserver(refreshMapLayout)" in template
+    assert "mapResizeObserver.observe(mapElement)" in template
     assert "Account &amp; Access" in account_tab
     assert "Subscriber Accounts" in account_tab
     assert "Portal Access" in account_tab

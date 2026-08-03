@@ -261,6 +261,8 @@ def test_olt_detail_template_exposes_pon_port_identifier_editor() -> None:
     template = Path("templates/admin/network/olts/detail.html").read_text()
 
     assert "Edit PON Port Identifier" in template
+    assert "Edit identifiers" in template
+    assert 'aria-haspopup="dialog"' in template
     assert "/pon-port-identifier" in template
     assert "Identifier Name" in template
     assert "No identifier" in template

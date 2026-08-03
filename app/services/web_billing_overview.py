@@ -14,13 +14,14 @@ from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models.billing import Invoice, InvoiceStatus, PaymentAllocation
 from app.models.subscriber import Reseller, Subscriber, UserType
 from app.services import display_format
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services.common import validate_enum
+from app.services.inclusive_date_range import InclusiveDateRange
 from app.services.list_query import (
     ListDefinition,
     ListFieldDefinition,
@@ -86,8 +87,6 @@ _UNPAID_INVOICE_STATUSES = (
 _INVOICE_STATUS_FILTERS = frozenset(
     {status.value for status in InvoiceStatus} | {"unpaid"}
 )
-_INVOICE_DATE_FILTERS = frozenset({"today", "week", "month", "quarter"})
-
 INVOICE_LIST_DEFINITION = ListDefinition(
     key="billing_invoices",
     fields=(
@@ -100,7 +99,8 @@ INVOICE_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True, sortable=True),
         ListFieldDefinition("proforma_only", "Proforma", filterable=True),
         ListFieldDefinition("customer_ref", "Customer", filterable=True),
-        ListFieldDefinition("date_range", "Date range", filterable=True),
+        ListFieldDefinition("start_date", "Start date", filterable=True),
+        ListFieldDefinition("end_date", "End date", filterable=True),
         ListFieldDefinition("total", "Amount", sortable=True),
         ListFieldDefinition("issued_at", "Issued", sortable=True),
         ListFieldDefinition("due_at", "Due", sortable=True),
@@ -139,7 +139,8 @@ def build_invoice_list_query(
     proforma_only: bool,
     customer_ref: str | None,
     search: str | None,
-    date_range: str | None,
+    start_date: date | None,
+    end_date: date | None,
     sort_by: str | None = None,
     sort_dir: SortDirection | str | None = None,
     page: int = 1,
@@ -150,9 +151,10 @@ def build_invoice_list_query(
     normalized_status = str(status or "").strip().lower() or None
     if normalized_status and normalized_status not in _INVOICE_STATUS_FILTERS:
         raise ValueError(f"Unsupported status filter: {normalized_status}")
-    normalized_date_range = str(date_range or "").strip().lower() or None
-    if normalized_date_range and normalized_date_range not in _INVOICE_DATE_FILTERS:
-        raise ValueError(f"Unsupported date_range filter: {normalized_date_range}")
+    created_range = InclusiveDateRange.from_dates(
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     return INVOICE_LIST_DEFINITION.build_query(
         search=search,
@@ -162,7 +164,8 @@ def build_invoice_list_query(
             "status": normalized_status,
             "proforma_only": "true" if proforma_only else None,
             "customer_ref": str(customer_ref or "").strip() or None,
-            "date_range": normalized_date_range,
+            "start_date": created_range.start_value,
+            "end_date": created_range.end_value,
         },
         sort_by=sort_by,
         sort_dir=sort_dir,
@@ -346,7 +349,10 @@ def _apply_invoice_list_filters(
     account_id = list_query.filter_value("account_id")
     partner_id = list_query.filter_value("partner_id")
     status = list_query.filter_value("status")
-    date_range = list_query.filter_value("date_range")
+    created_range = InclusiveDateRange.from_iso_values(
+        start_date=list_query.filter_value("start_date"),
+        end_date=list_query.filter_value("end_date"),
+    )
 
     if customer_ref:
         if not customer_account_ids:
@@ -379,19 +385,10 @@ def _apply_invoice_list_filters(
         scoped = scoped.filter(
             (Invoice.invoice_number.ilike(term)) | (Invoice.memo.ilike(term))
         )
-    if date_range:
-        now = datetime.now(UTC)
-        if date_range == "today":
-            start = datetime(now.year, now.month, now.day, tzinfo=UTC)
-        elif date_range == "week":
-            start = datetime(now.year, now.month, now.day, tzinfo=UTC) - timedelta(
-                days=now.weekday()
-            )
-        elif date_range == "month":
-            start = now - timedelta(days=30)
-        else:
-            start = now - timedelta(days=90)
-        scoped = scoped.filter(Invoice.created_at >= start)
+    if created_range.start_at is not None:
+        scoped = scoped.filter(Invoice.created_at >= created_range.start_at)
+    if created_range.end_before is not None:
+        scoped = scoped.filter(Invoice.created_at < created_range.end_before)
     return scoped
 
 
@@ -513,7 +510,8 @@ def build_invoices_list_data(
     proforma_only: bool = False,
     customer_ref: str | None = None,
     search: str | None = None,
-    date_range: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     sort_by: str | None = None,
     sort_dir: SortDirection | str | None = None,
     page: int = 1,
@@ -530,7 +528,8 @@ def build_invoices_list_data(
             proforma_only=proforma_only,
             customer_ref=customer_ref,
             search=search,
-            date_range=date_range,
+            start_date=start_date,
+            end_date=end_date,
             sort_by=sort_by,
             sort_dir=sort_dir,
             page=page,
@@ -616,14 +615,15 @@ def build_invoices_list_data(
         "proforma_summary": {"count": proforma_count},
         "customer_ref": effective_query.filter_value("customer_ref"),
         "search": effective_query.search,
-        "date_range": effective_query.filter_value("date_range"),
+        "start_date": effective_query.filter_value("start_date"),
+        "end_date": effective_query.filter_value("end_date"),
     }
 
 
 _INVOICE_CSV_HEADER = (
     "invoice_id",
     "invoice_number",
-    "account_id",
+    "customer_name",
     "status",
     "total",
     "balance_due",
@@ -652,7 +652,7 @@ def _invoice_csv_row(invoice: Invoice) -> list[str]:
     return [
         str(invoice.id),
         invoice.invoice_number or "",
-        str(invoice.account_id) if invoice.account_id else "",
+        invoice.account.name if invoice.account else "",
         status_value,
         f"{total:.2f}",
         f"{due:.2f}",
@@ -674,13 +674,14 @@ def render_invoices_csv(invoices: list[Invoice]) -> str:
     return buffer.getvalue()
 
 
-def stream_invoices_csv(db, *, list_query: ListQuery) -> Iterator[str]:
+def stream_invoices_csv(db: Session, *, list_query: ListQuery) -> Iterator[str]:
     """Yield the canonical invoice-scope CSV one row at a time.
 
     Same scope and column contract as ``render_invoices_csv``, but iterated from
     a server-side cursor so the export never materializes the full result set or
-    the full CSV body in memory. Only direct invoice columns are read, so
-    ``yield_per`` batching is safe (no per-row relationship loads).
+    the full CSV body in memory. The scalar customer relationship is joined in
+    the same query so customer names do not introduce one query per invoice;
+    ``yield_per`` still bounds result iteration to one batch in memory.
     """
     if list_query.definition.key != INVOICE_LIST_DEFINITION.key:
         raise ValueError("Invoice scope requires the billing invoice definition")
@@ -693,8 +694,10 @@ def stream_invoices_csv(db, *, list_query: ListQuery) -> Iterator[str]:
         customer_account_ids=customer_account_ids,
         include_status=True,
     )
-    query = _apply_invoice_list_sort(query, list_query).yield_per(
-        _INVOICE_CSV_YIELD_PER
+    query = (
+        _apply_invoice_list_sort(query, list_query)
+        .options(joinedload(Invoice.account))
+        .yield_per(_INVOICE_CSV_YIELD_PER)
     )
 
     buffer = io.StringIO()

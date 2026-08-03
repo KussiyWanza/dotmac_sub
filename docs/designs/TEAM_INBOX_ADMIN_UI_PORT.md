@@ -96,6 +96,14 @@ but has **no API, no admin UI, no service CRUD** — reachable only by direct DB
 insert. Hence 0 rows against 6 live mailboxes. SMTP config knobs stay env-owned in
 `app/config.py`; do not build UI for those.
 
+The native inbox settings page now covers the same routing-control concern for
+mailbox, WhatsApp, Facebook Messenger, Instagram DM, and social-comment
+channels. Mailboxes still route by recipient address. Push channels route by
+channel, provider, and account scope. AI intake rules can override the channel
+default only when a routed account permits AI routing and the inbound metadata
+carries an intent with sufficient confidence. Provider credentials, webhook
+verification secrets, and SMTP listener settings remain secret/config owned.
+
 Cutover means pointing MX or per-mailbox forwarding at the inbound listener — a
 mail-side change, verified by the existing `verify_smtp_probe_delivery` probe. No
 IMAP bridge, ever.

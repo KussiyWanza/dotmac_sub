@@ -1,6 +1,6 @@
 """Retire legacy service-team sources without adopting CRM membership identity.
 
-This owner exists only for the pre-426 cutover. It preserves the five native
+This owner exists only for the pre-426 cutover. It preserves the native
 team pointers, verifies their referential integrity, retires the two workflow
 setting sources, clears the non-authoritative scalar manager pointer, and
 removes only membership rows whose identity resolves to neither a Party nor a
@@ -45,13 +45,16 @@ LEGACY_SETTING_KEYS = (
     "support_service_team_members",
 )
 
-# The five native decision pointers retained from #1634. The gate proves that
+# The native decision pointers retained from #1634 and later native routing
+# slices. The gate proves that
 # source retirement cannot orphan any current consumer.
 TEAM_POINTERS = (
     ("support_tickets", "service_team_id"),
     ("projects", "service_team_id"),
     ("dispatch_rules", "service_team_id"),
     ("team_inbox_email_routes", "service_team_id"),
+    ("team_inbox_channel_routes", "service_team_id"),
+    ("team_inbox_ai_routes", "service_team_id"),
     ("inbox_conversation_teams", "service_team_id"),
 )
 
