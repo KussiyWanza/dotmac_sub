@@ -341,7 +341,8 @@ function commentMentions() {
         onInput() {
             this.selectedMentions = this.selectedMentions.filter((mention) => {
                 const label = mention && mention.label ? mention.label : '';
-                return label && this.commentText.includes(`@${label}`);
+                const token = mention && mention.token ? mention.token : '';
+                return token && label && this.commentText.includes(`@${label}`);
             });
             const match = this.commentText.match(/@([^\s@]{1,40})$/);
             if (!match) {
@@ -358,8 +359,8 @@ function commentMentions() {
         applyMention(person) {
             const label = person.label || person.email || 'user';
             this.commentText = this.commentText.replace(/@([^\s@]{1,40})$/, `@${label} `);
-            if (person.id && !this.selectedMentions.some((item) => item.id === person.id)) {
-                this.selectedMentions.push({id: person.id, label});
+            if (person.id && !this.selectedMentions.some((item) => item.token === person.id)) {
+                this.selectedMentions.push({id: person.id, token: person.id, label});
             }
             this.showSuggestions = false;
         },
