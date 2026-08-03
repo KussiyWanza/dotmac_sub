@@ -25,4 +25,4 @@ class ResellerBillingPage(BasePage):
 
     def go_to_revenue_report(self) -> None:
         """Follow the revenue report link in the page header."""
-        self.page.get_by_role("link", name="Revenue").first.click()
+        self.page.get_by_role("link", name="Customer billing summary").first.click()

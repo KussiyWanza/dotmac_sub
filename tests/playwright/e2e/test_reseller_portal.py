@@ -138,7 +138,7 @@ class TestResellerDashboard:
         page = ResellerDashboardPage(reseller_page, settings.base_url)
         page.goto()
         page.expect_loaded()
-        reseller_page.get_by_role("link", name="View all accounts").click()
+        reseller_page.get_by_role("link", name="View all accounts").first.click()
         expect(reseller_page).to_have_url(re.compile(r".*/reseller/accounts.*"))
 
 

@@ -35,7 +35,9 @@ class ResellerLoginPage(BasePage):
 
     def fill_password(self, password: str) -> None:
         """Fill password field."""
-        self.page.get_by_label("Password").fill(password)
+        # "Password" also substring-matches the visibility-toggle button's
+        # aria-label, so target the field itself.
+        self.page.locator("input#password").fill(password)
 
     def click_login(self) -> None:
         """Click login button."""
