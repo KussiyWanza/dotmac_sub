@@ -1,15 +1,10 @@
 from datetime import UTC, datetime
 
-from app.schemas.comms import (
-    CustomerNotificationCreate,
-    EtaUpdateCreate,
-    SurveyCreate,
-    SurveyResponseCreate,
-)
+from app.schemas.comms import CustomerNotificationCreate, EtaUpdateCreate
 from app.services import comms as comms_service
 
 
-def test_eta_and_survey(db_session, work_order, ticket):
+def test_eta_update(db_session, work_order):
     eta = comms_service.eta_updates.create(
         db_session,
         EtaUpdateCreate(
@@ -18,22 +13,6 @@ def test_eta_and_survey(db_session, work_order, ticket):
         ),
     )
     assert eta.work_order_id == work_order.id
-
-    survey = comms_service.surveys.create(
-        db_session,
-        SurveyCreate(name="Post-install", questions=[{"q": "Satisfaction?"}]),
-    )
-    response = comms_service.survey_responses.create(
-        db_session,
-        SurveyResponseCreate(
-            survey_id=survey.id,
-            work_order_id=work_order.id,
-            ticket_id=ticket.id,
-            responses={"q1": "Great"},
-            rating=5,
-        ),
-    )
-    assert response.survey_id == survey.id
 
 
 def test_customer_notification(db_session, work_order):

@@ -43,6 +43,13 @@ provisioning outcomes are chains. Activation and resume have an additional
 in-stage rule: enforcement depends on provisioning so RADIUS/session work
 cannot run before IP/service provisioning has completed.
 
+Survey automation is a communication-stage consequence. The
+`SurveyTriggerHandler` consumes committed ticket-resolution and field-completion
+events and delegates eligibility and idempotent invitation creation to
+`communications.surveys`. It never polls ticket or work-order state. Only
+Surveys whose lifecycle status is `active`, whose compatibility flag remains
+enabled, and which have valid questions can create invitations.
+
 ## Retry contract
 
 `EventStore.failed_handlers` is the current failure manifest. Historical

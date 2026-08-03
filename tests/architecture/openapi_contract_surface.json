@@ -13493,6 +13493,7 @@
   },
   "POST /api/v1/comms/surveys": {
    "params": [
+    "header:Idempotency-Key",
     "header:authorization",
     "header:x-api-key"
    ],
@@ -19868,11 +19869,15 @@
   "SuppressionCreate": "875f5ad57243",
   "SuppressionReason": "e3c4e28c7028",
   "SuppressionScope": "8a2a4910b101",
-  "SurveyCreate": "1d9502bdde96",
-  "SurveyRead": "a2748dc3c3bc",
-  "SurveyResponseCreate": "5fd45efd02d1",
-  "SurveyResponseRead": "82d026810a8b",
-  "SurveyUpdate": "50488be1c556",
+  "SurveyCreate": "d42fc295eeb0",
+  "SurveyQuestion": "299d4a0b3d42",
+  "SurveyQuestionType": "525c6f577f48",
+  "SurveyRead": "e5f1febfdbf8",
+  "SurveyResponseCreate": "202071005e5c",
+  "SurveyResponseRead": "32628d91e3bb",
+  "SurveyStatus": "04cb51b8b989",
+  "SurveyTriggerType": "b6672355648c",
+  "SurveyUpdate": "3ad4ec3680d0",
   "SuspensionAction": "b7fb99a5345c",
   "TableColumnAvailable": "7fb9e3161452",
   "TableColumnPreference": "ac831e199b75",

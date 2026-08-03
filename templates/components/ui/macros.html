@@ -163,7 +163,7 @@
 
 {% if variant == "primary" %}
 <a href="{{ href }}"
-   class="group inline-flex items-center {{ sizes[size] }} rounded-xl bg-gradient-to-r from-{{ color }}-500 to-{{ c2 }}-600 font-semibold text-white shadow-lg shadow-{{ color }}-500/25 transition-all hover:shadow-xl hover:shadow-{{ color }}-500/30 hover:-translate-y-0.5"
+   class="group inline-flex items-center {{ sizes[size] }} rounded-xl bg-gradient-to-r from-{{ color }}-500 to-{{ c2 }}-600 font-semibold text-white shadow-lg shadow-{{ color }}-500/25 transition-all hover:shadow-xl hover:shadow-{{ color }}-500/30 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-{{ color }}-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900"
    {% for key, val in hx_attrs.items() %}{{ key }}="{{ val }}"{% endfor %}>
     {% if icon %}
     <span class="{{ icon_sizes[size] }} transition-transform group-hover:rotate-90">{{ icon|safe }}</span>
@@ -667,7 +667,7 @@
    Frequently used SVG icons
    ============================================ #}
 {% macro icon_plus(class="h-4 w-4") %}
-<svg class="{{ class }}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
+<svg class="{{ class }}" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
 {% endmacro %}
 
 {% macro icon_view(class="h-4 w-4") %}
@@ -1000,7 +1000,7 @@
 <button type="submit"
         :disabled="submitting"
         :class="{ 'opacity-50 cursor-wait': submitting }"
-        class="inline-flex items-center {{ sizes[size] }} rounded-xl bg-gradient-to-r from-{{ color }}-500 to-{{ color }}-600 font-semibold text-white shadow-lg shadow-{{ color }}-500/25 transition-all hover:shadow-xl hover:shadow-{{ color }}-500/30 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-{{ color }}-500 focus:ring-offset-2 disabled:hover:translate-y-0 disabled:hover:shadow-lg">
+        class="inline-flex items-center {{ sizes[size] }} rounded-xl bg-gradient-to-r from-{{ color }}-500 to-{{ color }}-600 font-semibold text-white shadow-lg shadow-{{ color }}-500/25 transition-all hover:shadow-xl hover:shadow-{{ color }}-500/30 hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-{{ color }}-500 focus:ring-offset-2 disabled:hover:translate-y-0 disabled:hover:shadow-lg dark:focus:ring-offset-slate-900">
     <span x-show="!submitting" class="flex items-center gap-2">
         {% if icon == "check" %}
         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>

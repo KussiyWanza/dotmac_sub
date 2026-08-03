@@ -174,6 +174,12 @@ HANDLER_CONTROLS: dict[str, HandlerControl] = {
         48,
         ("support_lifecycle_projection",),
     ),
+    "SurveyTriggerHandler": HandlerControl(
+        "SurveyTriggerHandler",
+        HandlerStage.communication,
+        15,
+        ("active_survey_trigger_invitations",),
+    ),
     "MaterialsLifecycleProjectionHandler": HandlerControl(
         "MaterialsLifecycleProjectionHandler",
         HandlerStage.state,
@@ -371,6 +377,10 @@ def handler_event_types(handler_name: str) -> frozenset[str] | None:
         from app.services.events.handlers.support_lifecycle_projection import (
             HANDLED_EVENT_TYPES,
         )
+
+        return frozenset(item.value for item in HANDLED_EVENT_TYPES)
+    if handler_name == "SurveyTriggerHandler":
+        from app.services.events.handlers.surveys import HANDLED_EVENT_TYPES
 
         return frozenset(item.value for item in HANDLED_EVENT_TYPES)
     if handler_name == "MaterialsLifecycleProjectionHandler":
