@@ -1200,6 +1200,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "financial.prepaid_funding_reconstruction",
                 ),
                 notes=(
+                    "A structurally evidenced PaymentSettlement owns the net "
+                    "customer value credited by a payment; the gross gateway "
+                    "charge and provider fee remain cash/accounting evidence and "
+                    "cannot inflate prepaid funding. Historical payments without "
+                    "settlement evidence retain their explicit gross-minus-refund "
+                    "fallback until reviewed reconciliation. "
                     "Paid prepaid subscription invoices are non-AR documents but "
                     "become exact customer-position service debits only when fully "
                     "paid and backed by exact active settlement applications. "
@@ -1274,8 +1280,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.payments",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "active succeeded or refunded Payment amount, currency, "
-                                "paid time, refund amount, and exact allocation evidence"
+                                "active succeeded or refunded Payment plus exact "
+                                "PaymentSettlement net customer value and currency when "
+                                "present, paid time, refund amount, and exact allocation "
+                                "evidence; unreconciled historical payments retain the "
+                                "gross Payment amount fallback"
                             ),
                         ),
                         AuthorityInput(
@@ -1387,7 +1396,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="customer.financial_position",
                         verification=(
                             "Scalar/bulk parity, reviewed-baseline, paid prepaid invoice, "
-                            "direct-renewal precedence, refund, and architecture tests."
+                            "direct-renewal precedence, settlement-net provider-fee, "
+                            "refund, legacy fallback, and architecture tests."
                         ),
                         cutover_gate=(
                             "Every prepaid balance display and enforcement reader consumes "

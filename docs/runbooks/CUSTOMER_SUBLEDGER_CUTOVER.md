@@ -96,6 +96,13 @@ equal the verified legacy position; the quarantined account must fail closed;
 the new posting must have authoritative authority and the correct typed source,
 producer, effects, and instant.
 
+For a provider settlement, compare the posting against the structural
+`PaymentSettlement.amount`, not the gross `Payment.amount`. The gross charge may
+include a provider fee that is cash/accounting evidence but is not customer
+funding. Require scalar and bounded-cohort position parity after the first live
+settlement, including a non-zero-fee settlement when the active gateway charges
+one; a zero-fact or fee-free window alone does not close this semantic gate.
+
 Continue monitoring posting coverage and per-lane parity. Recovery after
 activation is a forward owner correction or code fix. Never delete the cutover,
 rewrite an opening, restore a fallback balance reader, or manufacture a missing
