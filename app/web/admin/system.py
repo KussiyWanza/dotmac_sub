@@ -4532,6 +4532,10 @@ def ticket_settings_page(request: Request, db: Session = Depends(get_db)):
             "technical_supervisor",
             "site_coordinator",
         ],
+        "service_team_permissions": {
+            "read": "operations:service_team:read",
+            "create": "operations:service_team:create",
+        },
         "saved": request.query_params.get("saved") == "1",
         "rule_saved": request.query_params.get("rule_saved") == "1",
         "rule_deleted": request.query_params.get("rule_deleted") == "1",
@@ -4647,6 +4651,10 @@ def ticket_settings_update(
                     "technical_supervisor",
                     "site_coordinator",
                 ],
+                "service_team_permissions": {
+                    "read": "operations:service_team:read",
+                    "create": "operations:service_team:create",
+                },
                 "saved": False,
                 "rule_saved": False,
                 "rule_deleted": False,
