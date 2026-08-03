@@ -372,6 +372,12 @@ class ProjectTemplateTask(Base):
     priority: Mapped[str | None] = mapped_column(String(40))
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     effort_hours: Mapped[int | None] = mapped_column(Integer)
+    auto_create_work_order: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    work_order_requires_as_built_evidence: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(

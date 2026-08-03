@@ -61,8 +61,13 @@ source size as a deterministic fallback. Every completed run records aggregate
 execution time per test file, combines the four records, and stores the small
 duration index in the GitHub Actions cache. Later runs greedily balance by those
 measured durations, while new files retain the source-size fallback. Each shard
-still uses pytest-xdist. Coverage data from all shards is combined before the
-XML report is published.
+still uses exactly four pytest-xdist workers. A worker crash fails the shard
+without a silent restart, and `pytest-timeout` terminates any individual test
+that exceeds 180 seconds while emitting thread stacks for diagnosis. The
+worker count and timeout can be overridden locally through
+`CI_UNIT_TEST_WORKERS` and `CI_TEST_TIMEOUT_SECONDS`; CI retains the checked-in
+defaults. Coverage data from all shards is combined before the XML report is
+published.
 
 Architecture guards remain a separate required group. This prevents the same
 architecture suite from being collected and run as part of every general unit
@@ -71,6 +76,7 @@ default. High-volume static guards share a worker-local index of file listings,
 source text, and parsed ASTs, and the job reports its 50 slowest checks so the
 next optimization remains evidence-led.
 
-Each unit-test shard and the architecture job has a 30-minute job timeout.
-Their normal runtime is well below that limit, so a blocked test fails closed
-instead of consuming a runner indefinitely.
+Each unit-test shard and the architecture job also has a 30-minute job timeout.
+The per-test watchdog catches a blocked unit test first; the job timeout remains
+the outer guard for collection, environment, plugin, and architecture-suite
+failures that occur outside an individual unit test.

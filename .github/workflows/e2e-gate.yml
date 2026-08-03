@@ -1,0 +1,120 @@
+name: E2E Gate
+
+# Always-reported PR check: reports success immediately when the PR touches
+# nothing e2e-relevant, and runs the full Playwright suite (with the
+# known-failure quarantine ratchet) when it does. Branch protection can
+# require "E2E Gate" without ever waiting on a skipped workflow.
+
+on:
+  pull_request:
+
+concurrency:
+  group: e2e-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  # Read auth for the private Forgejo PyPI index (dotmac-kernel). Same
+  # ci-reader pattern as ci.yml; token source of record is OpenBao
+  # (secret/dotmac/forgejo/read-token).
+  POETRY_HTTP_BASIC_FORGEJO_USERNAME: ci-reader
+  POETRY_HTTP_BASIC_FORGEJO_PASSWORD: ${{ secrets.FORGEJO_READ_TOKEN }}
+
+jobs:
+  gate:
+    name: E2E Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether this PR is e2e-relevant
+        id: relevance
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          echo "$changed"
+          if echo "$changed" | grep -qE \
+            '^(templates/|static/|tests/playwright/|app/web/|app/services/web_|scripts/seed/|\.github/workflows/e2e)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No e2e-relevant paths changed — gate passes without a run."
+          fi
+
+      - name: Start database + redis
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          docker network create e2e-net
+          docker run -d --name e2e-db --network e2e-net \
+            -p 127.0.0.1:55432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -e POSTGRES_DB=dotmac_sub_e2e \
+            --health-cmd "pg_isready -U postgres" --health-interval 5s \
+            --health-retries 10 postgis/postgis:16-3.4
+          docker run -d --name e2e-redis --network e2e-net \
+            -p 127.0.0.1:56379:6379 redis:7
+          for i in $(seq 1 30); do
+            docker exec e2e-db pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+      - name: Install Python + Poetry
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies + browser
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          pipx install poetry
+          poetry install --no-interaction
+          poetry run playwright install chromium --with-deps
+
+      - name: Migrate + seed + start app from this PR's code
+        if: steps.relevance.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: "postgresql+psycopg://postgres@127.0.0.1:55432/dotmac_sub_e2e"
+          SECRET_KEY: "e2e-test-secret-key-not-for-production"
+          REDIS_URL: "redis://127.0.0.1:56379/0"
+        run: |
+          poetry run alembic upgrade head
+          poetry run python -m scripts.seed.seed_rbac
+          poetry run python -m scripts.seed.seed_admin \
+            --email e2e.admin@example.com --first-name E2E --last-name Admin \
+            --username e2e.admin@example.com --password "E2eAdminPass123!"
+          JWT_SECRET="$(openssl rand -hex 32)" \
+            TOTP_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_')" \
+            nohup poetry run uvicorn app.main:app --host 127.0.0.1 --port 8001 \
+            > uvicorn.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8001/health >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "app never became healthy"; tail -50 uvicorn.log; exit 1
+
+      - name: Run Playwright suite
+        if: steps.relevance.outputs.relevant == 'true'
+        env:
+          PLAYWRIGHT_BASE_URL: "http://127.0.0.1:8001"
+          PLAYWRIGHT_BROWSER: "chromium"
+          TEST_DATABASE_URL: "postgresql+psycopg://postgres@127.0.0.1:55432/dotmac_sub_e2e"
+          E2E_REDIS_URL: "redis://127.0.0.1:56379/0"
+          E2E_ADMIN_USERNAME: "e2e.admin@example.com"
+          E2E_ADMIN_PASSWORD: "E2eAdminPass123!"
+        run: |
+          poetry run pytest tests/playwright/ -v --tb=short -o "addopts="
+
+      - name: App log on failure
+        if: failure() && steps.relevance.outputs.relevant == 'true'
+        run: tail -200 uvicorn.log || true
+
+      - name: Cleanup
+        if: always() && steps.relevance.outputs.relevant == 'true'
+        run: |
+          docker rm -f e2e-db e2e-redis 2>/dev/null || true
+          docker network rm e2e-net 2>/dev/null || true

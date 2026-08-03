@@ -456,10 +456,12 @@ def _reject_lead_origin_capture_delete(*_args: object) -> None:
 
 
 class Quote(Base):
-    """Sales quote. ``metadata`` carries the whole portal contract:
-    source, project_type, install{...}, feasibility{}, deposit_percent,
-    estimate_provisional, pricing_mode, deposit{...}. The legacy
-    ``metadata.subscriber_external_id`` key is provenance only post-import."""
+    """Sales quote. ``project_type`` owns the implementation classification.
+
+    ``metadata`` carries the remaining portal contract: source, install{...},
+    feasibility{}, deposit_percent, estimate_provisional, pricing_mode, and
+    deposit{...}. ``metadata.project_type`` is a compatibility projection;
+    ``metadata.subscriber_external_id`` is legacy provenance."""
 
     __tablename__ = "quotes"
     __table_args__ = (
@@ -475,8 +477,8 @@ class Quote(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    subscriber_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("subscribers.id"), nullable=False
+    subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subscribers.id"), nullable=True
     )
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id")
@@ -486,6 +488,9 @@ class Quote(Base):
     status: Mapped[str] = mapped_column(
         String(20), default=QuoteStatus.draft.value, nullable=False
     )
+    # Nullable only for imported legacy rows. Every native Quote authoring
+    # command requires this value before the Quote can be accepted.
+    project_type: Mapped[str | None] = mapped_column(String(60))
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     # Applied tax rate percent (e.g. 7.5). When set, tax_total is auto-derived
@@ -520,6 +525,15 @@ class Quote(Base):
         uselist=False,
         foreign_keys="Project.quote_id",
     )
+
+    @property
+    def person_id(self) -> uuid.UUID | None:
+        """Return the authoritative recipient through ``Quote -> Lead -> Party``.
+
+        Party identity is intentionally not duplicated on the Quote row.
+        """
+
+        return self.lead.party_id if self.lead is not None else None
 
     @hybrid_property
     def sales_order_id(self):

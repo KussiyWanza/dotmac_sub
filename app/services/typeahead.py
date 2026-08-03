@@ -1,4 +1,5 @@
 import logging
+from uuid import UUID
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -6,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.models.billing import Invoice
 from app.models.catalog import CatalogOffer, NasDevice, Subscription
 from app.models.network_monitoring import NetworkDevice, PopSite
+from app.models.party import Party, PartyContactPoint, PartyContactPointType
 from app.models.subscriber import Reseller, Subscriber, SubscriberCategory, UserType
+from app.schemas.typeahead import TypeaheadItem
 from app.services import service_address as service_address_service
 from app.services.response import list_response
 
@@ -242,6 +245,71 @@ def people(db: Session, query: str, limit: int) -> list[dict]:
     return items
 
 
+def parties(db: Session, query: str, limit: int) -> list[TypeaheadItem]:
+    """Search reviewed Party identities without requiring a Subscriber account."""
+
+    term = (query or "").strip()
+    if not term:
+        return []
+    like_term = f"%{term}%"
+    rows = (
+        db.query(Party)
+        .outerjoin(
+            PartyContactPoint,
+            (PartyContactPoint.party_id == Party.id)
+            & PartyContactPoint.is_active.is_(True),
+        )
+        .filter(Party.status.in_(("active", "quarantined")))
+        .filter(
+            or_(
+                Party.display_name.ilike(like_term),
+                PartyContactPoint.display_value.ilike(like_term),
+                PartyContactPoint.normalized_value.ilike(like_term),
+            )
+        )
+        .distinct()
+        .order_by(Party.display_name.asc(), Party.id.asc())
+        .limit(limit)
+        .all()
+    )
+    party_ids = [row.id for row in rows]
+    points = (
+        db.query(PartyContactPoint)
+        .filter(
+            PartyContactPoint.party_id.in_(party_ids),
+            PartyContactPoint.is_active.is_(True),
+            PartyContactPoint.channel_type.in_(
+                (
+                    PartyContactPointType.email.value,
+                    PartyContactPointType.phone.value,
+                )
+            ),
+        )
+        .order_by(
+            PartyContactPoint.is_primary.desc(),
+            PartyContactPoint.created_at.asc(),
+        )
+        .all()
+        if party_ids
+        else []
+    )
+    contacts: dict[UUID, dict[str, str]] = {}
+    for point in points:
+        contacts.setdefault(point.party_id, {}).setdefault(
+            point.channel_type, point.display_value or point.normalized_value
+        )
+    return [
+        TypeaheadItem(
+            id=party.id,
+            label=party.display_name,
+            type="party",
+            email=contacts.get(party.id, {}).get("email") or None,
+            phone=contacts.get(party.id, {}).get("phone") or None,
+        )
+        for party in rows
+    ]
+
+
 def invoices(
     db: Session, query: str, limit: int, subscriber_id: str | None = None
 ) -> list[dict]:
@@ -297,6 +365,10 @@ def invoices_response(
 
 def people_response(db: Session, query: str, limit: int) -> dict:
     return list_response(people(db, query, limit), limit, 0)
+
+
+def parties_response(db: Session, query: str, limit: int) -> dict:
+    return list_response(parties(db, query, limit), limit, 0)
 
 
 def nas_devices(db: Session, query: str, limit: int) -> list[dict]:

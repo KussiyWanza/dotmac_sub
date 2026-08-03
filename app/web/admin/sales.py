@@ -33,6 +33,8 @@ from app.db import get_db
 from app.services import web_sales as web_sales_service
 from app.services import web_sales_dashboard as dashboard_service
 from app.services.auth_dependencies import require_permission
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 
 router = APIRouter(prefix="/sales", tags=["web-admin-sales"])
 templates = Jinja2Templates(directory="templates")
@@ -55,6 +57,23 @@ def _error_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
 
+def _quote_command_context(request: Request, quote_id: str) -> CommandContext:
+    return CommandContext.system(
+        actor=str(getattr(request.state, "actor_id", None) or "admin-sales-user"),
+        scope="sales:quote-acceptance",
+        reason="Admin accepted Quote",
+        idempotency_key=f"quote-acceptance:{quote_id}",
+    )
+
+
+def _quote_actor_system_user_id(request: Request) -> str:
+    user = getattr(request.state, "user", None)
+    actor_id = str(getattr(user, "id", "") or "").strip()
+    if not actor_id:
+        raise ValueError("An authenticated staff user is required.")
+    return actor_id
+
+
 def _lead_field_errors(exc: Exception) -> dict[str, str]:
     if isinstance(exc, web_sales_service.LeadFormValidationError):
         return exc.field_errors
@@ -70,9 +89,7 @@ def _lead_field_errors(exc: Exception) -> dict[str, str]:
         if "stage does not belong" in detail or "pipeline stage" in detail:
             return {"stage_id": "Select a stage from the chosen pipeline."}
         if "subscriber" in detail or "party" in detail:
-            return {
-                "subscriber_id": ("Select a valid existing Person/Contact identity.")
-            }
+            return {"party_id": "Select a valid existing Person/Contact identity."}
     return {"form": "The lead change was rejected. Review the form and try again."}
 
 
@@ -238,7 +255,7 @@ def lead_create(
     request: Request,
     title: str | None = Form(default=None),
     status: str | None = Form(default=None),
-    subscriber_id: str | None = Form(default=None),
+    party_id: str | None = Form(default=None),
     contact_label: str | None = Form(default=None),
     owner_agent_id: str | None = Form(default=None),
     pipeline_id: str | None = Form(default=None),
@@ -259,7 +276,7 @@ def lead_create(
     fields: dict[str, str | bool | None] = {
         "title": title,
         "status": status,
-        "subscriber_id": subscriber_id,
+        "party_id": party_id,
         "contact_label": contact_label,
         "owner_agent_id": owner_agent_id,
         "pipeline_id": pipeline_id,
@@ -280,7 +297,7 @@ def lead_create(
             db,
             title=title,
             status=status,
-            subscriber_id=subscriber_id,
+            party_id=party_id,
             owner_agent_id=owner_agent_id,
             pipeline_id=pipeline_id,
             stage_id=stage_id,
@@ -394,7 +411,7 @@ def lead_update(
     lead_id: str,
     title: str | None = Form(default=None),
     status: str | None = Form(default=None),
-    subscriber_id: str | None = Form(default=None),
+    party_id: str | None = Form(default=None),
     contact_label: str | None = Form(default=None),
     owner_agent_id: str | None = Form(default=None),
     pipeline_id: str | None = Form(default=None),
@@ -415,7 +432,7 @@ def lead_update(
     fields: dict[str, str | bool | None] = {
         "title": title,
         "status": status,
-        "subscriber_id": subscriber_id,
+        "party_id": party_id,
         "contact_label": contact_label,
         "owner_agent_id": owner_agent_id,
         "pipeline_id": pipeline_id,
@@ -437,7 +454,7 @@ def lead_update(
             lead_id=lead_id,
             title=title,
             status=status,
-            subscriber_id=subscriber_id,
+            party_id=party_id,
             contact_label=contact_label,
             owner_agent_id=owner_agent_id,
             pipeline_id=pipeline_id,
@@ -972,43 +989,87 @@ def quote_new(
 )
 def quote_create(
     request: Request,
-    subscriber_id: str | None = Form(default=None),
+    submission_id: str | None = Form(default=None),
     lead_id: str | None = Form(default=None),
     status: str | None = Form(default=None),
     currency: str | None = Form(default=None),
-    tax_rate: str | None = Form(default=None),
+    project_type: str | None = Form(default=None),
+    tax_rate_id: str | None = Form(default=None),
+    manual_tax_total: str | None = Form(default=None),
     expires_at: str | None = Form(default=None),
+    is_active: str | None = Form(default=None),
     notes: str | None = Form(default=None),
     latitude: str | None = Form(default=None),
     longitude: str | None = Form(default=None),
     address: str | None = Form(default=None),
     region: str | None = Form(default=None),
+    item_description: list[str] = Form(default=[]),
+    item_quantity: list[str] = Form(default=[]),
+    item_unit_price: list[str] = Form(default=[]),
+    item_discount_percent: list[str] = Form(default=[]),
+    item_sub_offer_id: list[str] = Form(default=[]),
+    item_inventory_item_id: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
 ):
+    active = is_active is not None
+    items = web_sales_service.quote_form_item_rows(
+        descriptions=item_description,
+        quantities=item_quantity,
+        unit_prices=item_unit_price,
+        discount_percents=item_discount_percent,
+        sub_offer_ids=item_sub_offer_id,
+        inventory_item_ids=item_inventory_item_id,
+    )
     fields = {
-        "subscriber_id": subscriber_id,
+        "submission_id": submission_id,
         "lead_id": lead_id,
         "status": status,
         "currency": currency,
-        "tax_rate": tax_rate,
+        "project_type": project_type,
+        "tax_rate_id": tax_rate_id,
+        "manual_tax_total": manual_tax_total,
         "expires_at": expires_at,
+        "is_active": active,
         "notes": notes,
         "latitude": latitude,
         "longitude": longitude,
         "address": address,
         "region": region,
+        "items": items,
     }
     try:
-        quote_id = web_sales_service.create_quote_from_form(db, **fields)
-        return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
-    except (ValidationError, ValueError) as exc:
-        db.rollback()
+        web_sales_service.create_quote_from_form(
+            db,
+            actor_system_user_id=_quote_actor_system_user_id(request),
+            submission_id=submission_id,
+            lead_id=lead_id,
+            status=status,
+            currency=currency,
+            project_type=project_type,
+            tax_rate_id=tax_rate_id,
+            manual_tax_total=manual_tax_total,
+            expires_at=expires_at,
+            is_active=active,
+            notes=notes,
+            latitude=latitude,
+            longitude=longitude,
+            address=address,
+            region=region,
+            descriptions=item_description,
+            quantities=item_quantity,
+            unit_prices=item_unit_price,
+            discount_percents=item_discount_percent,
+            sub_offer_ids=item_sub_offer_id,
+            inventory_item_ids=item_inventory_item_id,
+        )
+        return RedirectResponse(url="/admin/sales/quotes", status_code=303)
+    except (DomainError, ValidationError, ValueError) as exc:
         error = _error_detail(exc)
 
     context = _ctx(request, db, "sales-quotes")
     context.update(
         web_sales_service.build_quote_form_error_context(
-            mode="create", quote_id=None, **fields
+            db, mode="create", quote_id=None, **fields
         )
     )
     context["error"] = error
@@ -1047,7 +1108,6 @@ def quote_edit(request: Request, quote_id: str, db: Session = Depends(get_db)):
 def quote_update(
     request: Request,
     quote_id: str,
-    subscriber_id: str | None = Form(default=None),
     lead_id: str | None = Form(default=None),
     status: str | None = Form(default=None),
     currency: str | None = Form(default=None),
@@ -1061,7 +1121,6 @@ def quote_update(
     db: Session = Depends(get_db),
 ):
     fields = {
-        "subscriber_id": subscriber_id,
         "lead_id": lead_id,
         "status": status,
         "currency": currency,
@@ -1074,16 +1133,21 @@ def quote_update(
         "region": region,
     }
     try:
-        web_sales_service.update_quote_from_form(db, quote_id=quote_id, **fields)
+        web_sales_service.update_quote_from_form(
+            db,
+            quote_id=quote_id,
+            context=_quote_command_context(request, quote_id),
+            **fields,
+        )
         return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         error = _error_detail(exc)
 
     context = _ctx(request, db, "sales-quotes")
     context.update(
         web_sales_service.build_quote_form_error_context(
-            mode="update", quote_id=quote_id, **fields
+            db, mode="update", quote_id=quote_id, **fields
         )
     )
     context["error"] = error
@@ -1148,8 +1212,13 @@ def quote_set_status(
     db: Session = Depends(get_db),
 ):
     try:
-        web_sales_service.set_quote_status(db, quote_id, status)
-    except (ValidationError, ValueError) as exc:
+        web_sales_service.set_quote_status(
+            db,
+            quote_id,
+            status,
+            context=_quote_command_context(request, quote_id),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
         # Sending or accepting a quote with no line items is refused by the
         # sales service. Surface that to the operator instead of 500ing.
         db.rollback()

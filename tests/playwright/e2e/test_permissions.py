@@ -5,6 +5,7 @@ from __future__ import annotations
 from playwright.sync_api import Page, expect
 
 from tests.playwright.helpers.api import api_get, api_post_json, bearer_headers
+from tests.playwright.pages.auth import LOGIN_URL_PATTERN
 
 
 class TestAPICredentialPermissions:
@@ -120,7 +121,7 @@ class TestAuditLogPermissions:
         """Admin should be able to view audit logs."""
         response = api_get(
             api_context,
-            "/api/v1/audit/events?limit=10",
+            "/api/v1/audit-events?limit=10",
             headers=bearer_headers(admin_token),
         )
         assert response.status == 200
@@ -129,7 +130,7 @@ class TestAuditLogPermissions:
         """Support agent should not be able to view audit logs."""
         response = api_get(
             api_context,
-            "/api/v1/audit/events?limit=10",
+            "/api/v1/audit-events?limit=10",
             headers=bearer_headers(agent_token),
         )
         assert response.status == 403
@@ -146,7 +147,7 @@ class TestUnauthenticatedAccess:
     def test_unauthenticated_admin_page_redirects(self, anon_page: Page, settings):
         """Unauthenticated access to admin pages should redirect to login."""
         anon_page.goto(f"{settings.base_url}/admin/dashboard")
-        anon_page.wait_for_url("**/auth/login**")
+        anon_page.wait_for_url(LOGIN_URL_PATTERN)
 
 
 class TestWebPortalAccess:
@@ -156,17 +157,21 @@ class TestWebPortalAccess:
         """Admin should be able to access dashboard."""
         admin_page.goto(f"{settings.base_url}/admin/dashboard")
         expect(
-            admin_page.get_by_role("heading", name="Operations Center")
+            admin_page.get_by_role("heading", name="Operations Overview")
         ).to_be_visible()
 
     def test_admin_can_access_tickets(self, admin_page: Page, settings):
         """Admin should be able to access tickets page."""
-        admin_page.goto(f"{settings.base_url}/admin/tickets")
-        expect(admin_page.get_by_role("heading", name="Tickets")).to_be_visible()
+        # /admin/tickets is retired (404); the canonical path is
+        # /admin/support/tickets.
+        admin_page.goto(f"{settings.base_url}/admin/support/tickets")
+        expect(
+            admin_page.get_by_role("heading", name="Support Tickets")
+        ).to_be_visible()
 
     def test_agent_can_access_dashboard(self, agent_page: Page, settings):
         """Support agent should be able to access dashboard."""
         agent_page.goto(f"{settings.base_url}/admin/dashboard")
         expect(
-            agent_page.get_by_role("heading", name="Operations Center")
+            agent_page.get_by_role("heading", name="Operations Overview")
         ).to_be_visible()

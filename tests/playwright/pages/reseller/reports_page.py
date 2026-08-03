@@ -19,5 +19,9 @@ class ResellerRevenueReportPage(BasePage):
 
     def expect_loaded(self) -> None:
         """Assert the revenue report is loaded."""
-        expect(self.page.get_by_role("heading", name="Revenue summary")).to_be_visible()
-        expect(self.page.get_by_text("Total Revenue").first).to_be_visible()
+        expect(
+            self.page.get_by_role("heading", name="Customer billing summary")
+        ).to_be_visible()
+        # KPI captions come from the reseller-portal owner (Kpi.label), so
+        # assert what it publishes rather than inventing wording.
+        expect(self.page.get_by_text("Customer billing (paid)").first).to_be_visible()

@@ -25,7 +25,7 @@ class SubscribersPage(BasePage):
 
     def search(self, query: str) -> None:
         """Search for customers."""
-        search_input = self.page.get_by_placeholder("Search by name, email, phone...")
+        search_input = self.page.get_by_placeholder("Search by name, email, phone")
         search_input.fill(query)
         self.page.keyboard.press("Enter")
 

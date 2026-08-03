@@ -288,12 +288,14 @@ def test_customer_party_columns_not_null():
     """Account-specific records remain required; Party-first Lead/referral
     account links are nullable compatibility/conversion context."""
     for table_name, column_name in [
-        ("quotes", "subscriber_id"),
         ("sales_orders", "subscriber_id"),
         ("referral_codes", "subscriber_id"),
         ("referrals", "referrer_subscriber_id"),
     ]:
         assert not Base.metadata.tables[table_name].columns[column_name].nullable
+    # Draft/Sent Quotes are Lead-first and receive their account only during
+    # the atomic Accepted transition.
+    assert Base.metadata.tables["quotes"].columns["subscriber_id"].nullable
     assert Base.metadata.tables["leads"].columns["subscriber_id"].nullable
     assert Base.metadata.tables["referrals"].columns["referred_subscriber_id"].nullable
     # projects.subscriber_id stays nullable (CRM shape).

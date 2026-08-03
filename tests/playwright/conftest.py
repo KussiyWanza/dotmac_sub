@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,82 @@ from tests.playwright.helpers.data import ensure_person_subscriber_account
 CUSTOMER_PORTAL_PASSWORD = "CustomerPass123!"
 RESELLER_PORTAL_USERNAME = "e2e.reseller@example.com"
 RESELLER_PORTAL_PASSWORD = "ResellerPass123!"
+
+# --- Known-failure quarantine (ratchet) -----------------------------------
+#
+# tests/playwright/quarantine.json lists specs with a known, tracked failure.
+# Quarantined specs run as strict xfail: a failure is reported as xfailed (the
+# suite stays green), while a PASS is reported as a failure (XPASS strict) so
+# a repaired spec MUST be removed from the file. Any spec not listed fails the
+# run normally — the failure count can only go down. Entries whose review_by
+# date has passed lose their protection and fail the run again until
+# re-reviewed. Setup errors cannot be xfailed; entries may set
+# "action": "skip" for those, which skips the spec entirely. Specs that
+# pass and fail intermittently may set "action": "flaky" (non-strict
+# xfail: neither outcome breaks the run) until repaired — expiry still
+# forces review.
+
+_QUARANTINE_PATH = Path(__file__).with_name("quarantine.json")
+_QUARANTINE_REQUIRED_FIELDS = (
+    "spec",
+    "reason",
+    "issue",
+    "category",
+    "owner",
+    "review_by",
+)
+
+
+def _load_quarantine() -> dict[str, dict[str, str]]:
+    if not _QUARANTINE_PATH.exists():
+        return {}
+    entries = json.loads(_QUARANTINE_PATH.read_text(encoding="utf-8"))
+    quarantine: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        missing = [
+            field for field in _QUARANTINE_REQUIRED_FIELDS if not entry.get(field)
+        ]
+        if missing:
+            raise pytest.UsageError(
+                f"quarantine.json entry {entry.get('spec', '<no spec>')!r} "
+                f"is missing required fields: {missing}"
+            )
+        _dt.date.fromisoformat(entry["review_by"])
+        if entry.get("action", "xfail") not in ("xfail", "skip", "flaky"):
+            raise pytest.UsageError(
+                f"quarantine.json entry {entry['spec']!r} has unknown action "
+                f"{entry['action']!r} (expected 'xfail', 'skip', or 'flaky')"
+            )
+        if entry["spec"] in quarantine:
+            raise pytest.UsageError(f"quarantine.json lists {entry['spec']!r} twice")
+        quarantine[entry["spec"]] = entry
+    return quarantine
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    quarantine = _load_quarantine()
+    if not quarantine:
+        return
+    today = _dt.date.today()
+    for item in items:
+        entry = quarantine.get(item.nodeid)
+        if entry is None:
+            continue
+        review_by = _dt.date.fromisoformat(entry["review_by"])
+        if review_by < today:
+            # Protection lapsed: the spec fails the run again until the entry
+            # is re-reviewed (new date) or the spec is repaired and removed.
+            continue
+        reason = (
+            f"quarantined ({entry['category']}, {entry['issue']}, "
+            f"review by {entry['review_by']}): {entry['reason']}"
+        )
+        if entry.get("action") == "skip":
+            item.add_marker(pytest.mark.skip(reason=reason))
+        elif entry.get("action") == "flaky":
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=False))
+        else:
+            item.add_marker(pytest.mark.xfail(reason=reason, strict=True))
 
 
 def _latest_subscription_id(db, subscriber_id: str) -> str | None:
@@ -502,9 +579,21 @@ def admin_auth_api_context(
     context.dispose()
 
 
+_TOUR_SUPPRESS_SCRIPT = "window.localStorage.setItem('dotmac_admin_tour_seen_v1', '1')"
+
+
+def _suppress_admin_tour(context) -> None:
+    """The first-login quick tour opens an aria-modal dialog that removes the
+    whole page from the accessibility tree; specs must see the page, not the
+    tour."""
+
+    context.add_init_script(_TOUR_SUPPRESS_SCRIPT)
+
+
 @pytest.fixture()
 def admin_context(browser, settings: E2ESettings, admin_storage_state: Path):
     context = browser.new_context(storage_state=admin_storage_state)
+    _suppress_admin_tour(context)
     context.set_default_timeout(settings.action_timeout_ms)
     context.set_default_navigation_timeout(settings.navigation_timeout_ms)
     yield context
@@ -517,6 +606,7 @@ def admin_context(browser, settings: E2ESettings, admin_storage_state: Path):
 @pytest.fixture()
 def agent_context(browser, settings: E2ESettings, agent_storage_state: Path):
     context = browser.new_context(storage_state=agent_storage_state)
+    _suppress_admin_tour(context)
     context.set_default_timeout(settings.action_timeout_ms)
     context.set_default_navigation_timeout(settings.navigation_timeout_ms)
     yield context

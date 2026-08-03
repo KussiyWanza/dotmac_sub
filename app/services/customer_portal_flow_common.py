@@ -1,7 +1,7 @@
 """Shared helpers for customer portal flow modules."""
 
 import logging
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, cast
 
 from sqlalchemy.orm import Session
@@ -20,7 +20,14 @@ def _resolve_next_billing_date(db: Session, subscription: Any) -> date | None:
         return None
     next_billing_at = getattr(subscription, "next_billing_at", None)
     if isinstance(next_billing_at, datetime):
-        return next_billing_at.date()
+        from app.services.display_format import display_timezone
+
+        aware = (
+            next_billing_at
+            if next_billing_at.tzinfo is not None
+            else next_billing_at.replace(tzinfo=UTC)
+        )
+        return aware.astimezone(display_timezone(db)).date()
     start_at = getattr(subscription, "start_at", None) or getattr(
         subscription, "created_at", None
     )

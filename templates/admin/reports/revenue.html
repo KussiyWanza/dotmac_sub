@@ -124,8 +124,7 @@
             </table>
         {% endcall %}
         {% else %}
-        {% call empty_state("No recent payments", "Payments will appear here as they are recorded.") %}
-        {% endcall %}
+        {{ empty_state("No recent payments", "Payments will appear here as they are recorded.") }}
         {% endif %}
     {% endcall %}
     </div>

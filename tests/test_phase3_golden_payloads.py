@@ -17,7 +17,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.models.domain_settings import DomainSetting, SettingDomain, SettingValueType
-from app.models.project import Project
+from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror, QuoteSyncState
 from app.models.referral import ReferralMirror, ReferralProgramCache
 from app.models.subscriber import Reseller, Subscriber
@@ -69,13 +70,37 @@ def _assert_same_shape(native, mirror, path="$"):
 
 
 def _subscriber(db, reseller_id=None) -> Subscriber:
+    party = Party(
+        display_name="Cust Omer",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
         first_name="Cust",
         last_name="Omer",
         email=f"c-{uuid.uuid4().hex[:8]}@example.com",
         reseller_id=reseller_id,
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Golden payload fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Golden quote {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub
@@ -159,7 +184,7 @@ def _mirror_quote(db, sub) -> QuoteMirror:
 def _native_quote(db, sub, *, accept=True):
     """A fully-populated native quote: self-serve request (map pin +
     feasibility + estimate lines) then the deposit accept (sales order) and
-    its install project (metadata.quote_id link)."""
+    its structurally linked acceptance-owned Project."""
     fap = SimpleNamespace(id=uuid.uuid4(), name="NAP-041")
     with patch(
         "app.services.sales.selfserve._nearest_fiber_access_point",
@@ -183,15 +208,6 @@ def _native_quote(db, sub, *, accept=True):
             provider="paystack",
         )
         db.refresh(quote)
-        project = Project(
-            name="Fiber install",
-            project_type="fiber_optics_installation",
-            status="open",
-            subscriber_id=sub.id,
-            metadata_={"quote_id": str(quote.id)},
-        )
-        db.add(project)
-        db.commit()
     return quote
 
 
@@ -235,6 +251,7 @@ def test_me_quotes_native_matches_mirror_golden_payload(db_session):
     assert item["deposit_paid"] is True
     assert item["deposit_reference"] == "ref_1"
     uuid.UUID(item["sales_order_id"])
+    assert item["project_id"] is not None
     uuid.UUID(item["project_id"])
 
 

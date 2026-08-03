@@ -9048,6 +9048,19 @@
     "422": "a11c9d9b2af8"
    }
   },
+  "GET /api/v1/search/parties": {
+   "params": [
+    "header:authorization",
+    "header:x-api-key",
+    "query:limit",
+    "query:q!"
+   ],
+   "request": null,
+   "responses": {
+    "200": "79dcaa8692e2",
+    "422": "a11c9d9b2af8"
+   }
+  },
   "GET /api/v1/search/people": {
    "params": [
     "header:authorization",
@@ -19365,8 +19378,8 @@
   "LoginResponse": "66d2d92d7c0a",
   "LogoutRequest": "3c96d37b2d06",
   "LogoutResponse": "9155dc4b9b07",
-  "MFAMethodCreate": "854efc217c50",
-  "MFAMethodRead": "da7604bde380",
+  "MFAMethodCreate": "8add4a868659",
+  "MFAMethodRead": "006b381ab9f1",
   "MFAMethodType": "7eb08d5473d8",
   "MFAMethodUpdate": "1ce054d49864",
   "MeResponse": "ed7d1f888118",
@@ -19662,7 +19675,7 @@
   "QuotaBucketCreate": "6fb66e0ff1f2",
   "QuotaBucketRead": "8f8ae6360d0d",
   "QuotaBucketUpdate": "4f890c55f818",
-  "QuoteCreate": "8a6361731f0f",
+  "QuoteCreate": "70ff85da3a68",
   "QuoteDepositInitiateRequest": "7cd28325a734",
   "QuoteDepositInitiateResponse": "cbc971929ac9",
   "QuoteDepositVerifyRequest": "b9a599c857d0",
@@ -19673,10 +19686,10 @@
   "QuoteLineItemCreate": "796c2143285e",
   "QuoteLineItemRead": "4b18876d8e37",
   "QuoteLineItemUpdate": "4330f197b26f",
-  "QuoteRead": "aa18a0c6a27a",
+  "QuoteRead": "9a294fc5b623",
   "QuoteRequestCreate": "162e1e5d1fd3",
   "QuoteStatus": "62c779ee038e",
-  "QuoteUpdate": "e564ad46694c",
+  "QuoteUpdate": "d59ce59d151b",
   "RadiusAccountingSessionCreate": "bd7f8b12df68",
   "RadiusAccountingSessionRead": "fc7cb667dc87",
   "RadiusAttributeCreate": "1702427a0179",
@@ -19764,10 +19777,10 @@
   "ServiceStatusAction": "7a92398e0d65",
   "ServiceStatusActionKind": "3a5b0379d84f",
   "ServiceType": "fda443194483",
-  "SessionCreate": "73aa4549de57",
+  "SessionCreate": "2a36cdfd8a5b",
   "SessionInfoResponse": "bea9f0553443",
   "SessionListResponse": "5bf6eafa1432",
-  "SessionRead": "c648c720e31c",
+  "SessionRead": "f86168749200",
   "SessionRevokeResponse": "6f65989aa4a7",
   "SessionStatus": "da0d2e5253e5",
   "SessionUpdate": "67c007064d12",
@@ -19931,7 +19944,7 @@
   "UsageSource": "63438cc886f5",
   "UsageSummaryResponse": "973ccd315781",
   "UserCredentialCreate": "8244eed07b39",
-  "UserCredentialRead": "39ca96741e09",
+  "UserCredentialRead": "5d5150859933",
   "UserCredentialUpdate": "083fa613d28f",
   "ValidationAddOnRequest": "712ae15dbfdd",
   "ValidationError": "743962c190f1",

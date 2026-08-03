@@ -1,9 +1,11 @@
 # Platform Adoption Ledger — dotmac_sub
 
 **Status:** Rebaselined 2026-08-02 for slice S1 of the selective kernel-adoption
-plan. Supersedes the 2026-07-19 Phase-0 draft, which was surveyed before the
-kernel was released and against `origin/main` 7807afcd. No code, schema, or
-dependency change is authorized by this document alone.
+plan; amended the same day for slice S2 (dependency pinned at
+`dotmac-kernel==0.1.0a8` — see "S2 acceptance claim"). Supersedes the
+2026-07-19 Phase-0 draft, which was surveyed before the kernel was released and
+against `origin/main` 7807afcd. No code, schema, or dependency change is
+authorized by this document alone.
 **Decision authority:** `dotmac_starter_mt` `docs/adr/0003-unified-deployment-profiles.md`
 and the execution plan
 `dotmac_starter_mt/docs/superpowers/plans/2026-08-02-dotmac-sub-kernel-improvements.md`
@@ -249,9 +251,51 @@ it authoritative and unchanged in meaning:
 - The S4 pilot boundary, `access.radius_projection`, is already registered and
   stays the projection owner behind any `ProvisioningProvider` adapter.
 
+## S2 acceptance claim (pinned 2026-08-02)
+
+S2 pins **`dotmac-kernel==0.1.0a8`** exactly, superseding the plan text's
+`0.1.0a7`: the first S2 attempt against a7 was blocked and reverted because
+a7's published floors (`fastapi>=0.115`, `pydantic>=2.9`, Python `>=3.12,<3.14`)
+conflicted with Sub's pins (`fastapi==0.111.0`, `pydantic==2.7.4`,
+`>=3.11,<3.13`). The released a8 resolves every conflict without loosening one
+Sub pin:
+
+- **Floors widened:** `fastapi>=0.111,<0.116`, `pydantic>=2.7.4,<3.0`,
+  `pydantic-settings>=2.2,<3.0`, Python `>=3.11,<3.14` — Sub's exact pins and
+  Python range now satisfy the kernel directly; no python marker needed.
+- **Extras split:** `cryptography>=42` moved to the `licensing` extra only; the
+  `testing` extra now pulls only `httpx (>=0.27,<0.28)`, which Sub's own
+  `httpx==0.27.0` already satisfies. Sub's `cryptography==42.0.8` pin is
+  compatible (and `FakeLicenceSigner` works against it — proven by test).
+- **`dotmac_kernel.testing` is DB-free:** every canary imports with
+  `DATABASE_URL` and all DB-ish env stripped, so the test-kit canaries RUN
+  (zero skips) instead of being skipped behind an extra.
+- **`dotmac_kernel.profiles` is supported** as classified above; the
+  collision-relevant model/migration surface is unchanged a7→a8, so the
+  collision inventory below (verified against a7) stands.
+
+Mechanics of the pin, per this ledger's rules:
+
+- `[project.dependencies]` carries the exact `dotmac-kernel==0.1.0a8`;
+  `[tool.poetry.dependencies]` enriches it with `source = "forgejo"`
+  (`[[tool.poetry.source]]` `priority = "explicit"`, URL only — the credential
+  lives in Poetry's auth store, never in Git).
+- The `[testing]` extra is declared only in the dev dependency group;
+  `dotmac_kernel.testing.*` usage is confined to `tests/` (the S1 guard keeps
+  it out of `app/`).
+- Resolution added only the kernel's own transitive closure —
+  `pydantic-settings`, `argon2-cffi` (+ bindings), `typing-inspection` — and
+  moved no existing Sub pin.
+- `tests/architecture/test_kernel_compatibility.py` is the executable proof:
+  no-DB import canaries for every allowlisted pure surface and the test kit,
+  the exact-pin/named-index gate (an unreviewed range upgrade is a CI
+  failure), pure value-contract behavior, and the app-unchanged canary (no
+  `dotmac_kernel` module in `app.main`'s import graph, middleware stack,
+  route endpoints, or top-level route prefixes). Zero skipped tests.
+
 ## S1 acceptance claim
 
-Adding `dotmac-kernel==0.1.0a7` as a dependency, by itself:
+Adding `dotmac-kernel==0.1.0a8` as a dependency, by itself:
 
 - **runs no kernel migrations** — Sub's `alembic.ini` keeps
   `script_location = alembic` with no `version_locations`; kernel revisions are
@@ -271,7 +315,8 @@ negative-control test that fails the checker on a synthetic forbidden import.
 
 ## Explicitly out of scope for this ledger
 
-- Adding the dependency itself (S2), any `tenant_id` column, or any schema change.
+- Any `tenant_id` column or any schema change (the S2 dependency pin above adds
+  code to no runtime path).
 - Renaming or merging `Subscriber`/`Organization`/`Party` into kernel identity.
 - Any dual-write, second writer, second outbox/inbox, or writer replacement.
 - Shared database or ORM imports with dotmac_erp or the vendor control plane.

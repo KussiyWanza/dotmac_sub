@@ -22,8 +22,12 @@ class SubscriberFormPage(BasePage):
         super().goto(f"/admin/customers/person/{subscriber_id}/edit")
 
     def expect_loaded(self) -> None:
-        """Assert the form is loaded."""
-        expect(self.page.locator("form")).to_be_visible()
+        """Assert the form is loaded.
+
+        The edit page renders a second form (convert-to-business), so the
+        assertion targets the first — the main create/edit form.
+        """
+        expect(self.page.locator("form").first).to_be_visible()
 
     def expect_create_mode(self) -> None:
         """Assert form is in create mode."""
@@ -60,8 +64,12 @@ class SubscriberFormPage(BasePage):
         self.page.get_by_label("Subscriber Number").fill(number)
 
     def fill_notes(self, notes: str) -> None:
-        """Fill the notes field."""
-        self.page.locator("#notes, textarea[name='notes']").first.fill(notes)
+        """Fill the notes field, which lives in the edit form's Status
+        section and stays hidden until that tab is opened."""
+        field = self.page.locator("#notes, textarea[name='notes']").first
+        if not field.is_visible():
+            self.page.get_by_role("button", name="Status", exact=True).click()
+        field.fill(notes)
 
     def set_active(self, active: bool) -> None:
         """Set the active checkbox."""
@@ -72,8 +80,9 @@ class SubscriberFormPage(BasePage):
             checkbox.uncheck()
 
     def submit(self) -> None:
-        """Submit the form."""
-        self.page.locator("button[type='submit']").click()
+        """Submit the main create/edit form (the edit page carries a second
+        convert-to-business form with its own submit button)."""
+        self.page.locator("form").first.locator("button[type='submit']").click()
 
     def cancel(self) -> None:
         """Cancel and go back."""

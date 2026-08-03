@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -74,6 +75,21 @@ _ASSIGNMENT_HEADER_FIELDS = frozenset(
         "technician_phone",
     }
 )
+
+
+@dataclass(frozen=True)
+class AutomatedProjectTaskWorkOrderCommand:
+    """Typed participant command for configured ProjectTask field work."""
+
+    project_id: uuid.UUID
+    project_task_id: uuid.UUID
+    subscriber_id: uuid.UUID
+    title: str
+    description: str | None
+    priority: str | None
+    address: str | None
+    requires_as_built_evidence: bool
+    idempotency_key: str
 
 
 def _data(payload: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
@@ -491,6 +507,37 @@ class WorkOrderCommands:
                 detail="Work order id already exists",
             ) from exc
         return row
+
+    @staticmethod
+    def stage_automated_project_task_work_order(
+        db: Session, command: AutomatedProjectTaskWorkOrderCommand
+    ) -> WorkOrder:
+        """Stage a configured template-task WorkOrder without committing."""
+
+        try:
+            return WorkOrderCommands.create(
+                db,
+                WorkOrderHeaderCreate(
+                    title=command.title,
+                    description=command.description,
+                    subscriber_id=command.subscriber_id,
+                    project_id=command.project_id,
+                    project_task_id=command.project_task_id,
+                    priority=command.priority or "normal",
+                    work_type="install",
+                    address=command.address,
+                    requires_as_built_evidence=command.requires_as_built_evidence,
+                ),
+                request_id=command.idempotency_key,
+                idempotency_key=command.idempotency_key,
+                commit=False,
+            )
+        except HTTPException as exc:
+            raise WorkOrderCommandError(
+                "automated_project_task_rejected",
+                str(exc.detail or "Configured ProjectTask WorkOrder was rejected"),
+                kind="invalid" if exc.status_code == 422 else "conflict",
+            ) from exc
 
     @staticmethod
     def update_header(

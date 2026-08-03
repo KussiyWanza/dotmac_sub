@@ -31,7 +31,13 @@ ENV PATH="$VIRTUAL_ENV/bin:$POETRY_HOME/bin:$PATH"
 RUN poetry config virtualenvs.create false
 
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --only main --no-interaction --no-ansi
+# dotmac-kernel resolves from the private Forgejo index; the read token is a
+# BuildKit secret (id=forgejo_token) so it never lands in a layer. Build with:
+#   docker build --secret id=forgejo_token,src=<file-with-token> .
+RUN --mount=type=secret,id=forgejo_token \
+    POETRY_HTTP_BASIC_FORGEJO_USERNAME=ci-reader \
+    POETRY_HTTP_BASIC_FORGEJO_PASSWORD="$(cat /run/secrets/forgejo_token)" \
+    poetry install --only main --no-interaction --no-ansi
 
 COPY . .
 

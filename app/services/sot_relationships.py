@@ -1200,6 +1200,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "financial.prepaid_funding_reconstruction",
                 ),
                 notes=(
+                    "A structurally evidenced PaymentSettlement owns the net "
+                    "customer value credited by a payment; the gross gateway "
+                    "charge and provider fee remain cash/accounting evidence and "
+                    "cannot inflate prepaid funding. Historical payments without "
+                    "settlement evidence retain their explicit gross-minus-refund "
+                    "fallback until reviewed reconciliation. "
                     "Paid prepaid subscription invoices are non-AR documents but "
                     "become exact customer-position service debits only when fully "
                     "paid and backed by exact active settlement applications. "
@@ -1274,8 +1280,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.payments",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "active succeeded or refunded Payment amount, currency, "
-                                "paid time, refund amount, and exact allocation evidence"
+                                "active succeeded or refunded Payment plus exact "
+                                "PaymentSettlement net customer value and currency when "
+                                "present, paid time, refund amount, and exact allocation "
+                                "evidence; unreconciled historical payments retain the "
+                                "gross Payment amount fallback"
                             ),
                         ),
                         AuthorityInput(
@@ -1387,7 +1396,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner="customer.financial_position",
                         verification=(
                             "Scalar/bulk parity, reviewed-baseline, paid prepaid invoice, "
-                            "direct-renewal precedence, refund, and architecture tests."
+                            "direct-renewal precedence, settlement-net provider-fee, "
+                            "refund, legacy fallback, and architecture tests."
                         ),
                         cutover_gate=(
                             "Every prepaid balance display and enforcement reader consumes "
@@ -9874,6 +9884,209 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.prepaid_billing_calendar_reconciliation",
+                module="app.services.prepaid_billing_calendar_reconciliation",
+                owns=("historical prepaid billing calendar reconciliation",),
+                depends_on=(
+                    "access.fup_usage_windows",
+                    "financial.invoices",
+                    "financial.payments",
+                    "financial.prepaid_service_renewals",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "A reviewed, fingerprint-bound repair owner for the retired "
+                    "UTC-midnight prepaid settlement calculation. It changes only "
+                    "the exact invoice period, base-line period projection, sourced "
+                    "entitlement interval, and matching subscription anchor. Money, "
+                    "allocation, settlement, invoice status, access, and ledger "
+                    "evidence remain unchanged. Ambiguous chains fail closed."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "reviewed calendar correction command",
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                                "rated quota period evidence",
+                            ),
+                            canonical_writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed calendar correction command",
+                            owner="financial.prepaid_billing_calendar_reconciliation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed invoice identity, signed preview fingerprint, "
+                                "actor, reason, command, correlation, and idempotency "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical paid prepaid invoice chain",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "one active paid invoice, one base-subscription line, "
+                                "one succeeded allocated settlement, one sourced active "
+                                "entitlement, and the unchanged subscription anchor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="rated quota period evidence",
+                            owner="access.fup_usage_windows",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "persisted subscription QuotaBucket intervals that "
+                                "would require a coordinated usage-owner correction"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical settlement business calendar",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed settlement instant and cadence resolved through "
+                                "Africa/Lagos local midnight and persisted as UTC instants"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Reviewed confirmation enters execute_owner_command once on "
+                            "a transaction-free session, rechecks the exact chain under "
+                            "lock, stages calendar projections, audit, outbox event, and "
+                            "idempotency evidence, then commits or rolls back together."
+                        ),
+                        locking=(
+                            "Lock account first, then invoice, subscription, invoice "
+                            "line, entitlement, payment, allocation, and settlement; "
+                            "expire and re-read the full chain before re-running the "
+                            "resolver and reject changed or overlapping evidence."
+                        ),
+                        idempotency=(
+                            "A caller key is reserved per invoice and the invoice stores "
+                            "the exact fingerprint and before/after evidence for stable "
+                            "replay."
+                        ),
+                        retries=(
+                            "Replay a completed identical command. Changed, overlapping, "
+                            "returned, extended, or ambiguous evidence requires a fresh "
+                            "review and is never guessed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.prepaid_billing_calendar_reconciliation.invoice_not_found",
+                            "financial.prepaid_billing_calendar_reconciliation.missing_idempotency_key",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_reason",
+                            "financial.prepaid_billing_calendar_reconciliation.idempotency_conflict",
+                            "financial.prepaid_billing_calendar_reconciliation.stale_preview",
+                            "financial.prepaid_billing_calendar_reconciliation.not_actionable",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_command_context",
+                            "financial.prepaid_billing_calendar_reconciliation.command_contract_violation",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_owner_command",
+                            "financial.prepaid_billing_calendar_reconciliation.active_caller_transaction",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_transaction_completion",
+                        ),
+                        mapping_owner="admin billing-date reconciliation adapter",
+                        retryable_codes=(),
+                        fail_closed_on=(
+                            "non-paid or multi-line invoice evidence",
+                            "missing or multiple succeeded settlement allocations",
+                            "refund, reversal, extension, overlap, or moved anchor",
+                            "an overlapping rated quota period",
+                            "any mismatch from the exact retired UTC-period signature",
+                            "stale preview or active caller transaction",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_billing_calendar.reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Invoice, subscription, entitlement, payment, timezone, "
+                            "before/after instants, zero economic delta, and fingerprint "
+                            "retain their meaning; additions are backward compatible."
+                        ),
+                        replay=(
+                            "Consumers may rebuild evidence views but never re-decide "
+                            "or rewrite financial or service state."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            input_names=(
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                            ),
+                            writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                            freshness="computed from the current database snapshot",
+                            stale_behavior=(
+                                "Confirmation rejects the changed fingerprint and "
+                                "requires a fresh preview."
+                            ),
+                            drift_signal=(
+                                "An exact retired UTC-period signature remains in the "
+                                "review queue until corrected or quarantined."
+                            ),
+                            rebuild_operation=(
+                                "preview_prepaid_billing_calendar_cohort deterministically "
+                                "reclassifies the bounded paid-invoice cohort."
+                            ),
+                            repair_owner=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "historical payment settlement path that floored the "
+                            "settlement instant at UTC midnight"
+                        ),
+                        new_owner=("financial.prepaid_billing_calendar_reconciliation"),
+                        verification=(
+                            "Eligible, stale, replay, refund, extension, overlap, "
+                            "moved-anchor, UTC-boundary, UI permission, and signed-review "
+                            "tests."
+                        ),
+                        cutover_gate=(
+                            "Forward settlement periods resolve in Africa/Lagos and the "
+                            "historical admin queue is preview-only until explicit "
+                            "fingerprint-bound confirmation."
+                        ),
+                        fallback_retirement=(
+                            "Retire the queue after the staging-accepted cohort is "
+                            "reconciled and a verification scan reports no exact legacy "
+                            "signatures."
+                        ),
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                        "docs/designs/PREPAID_BILLING_CALENDAR_RECONCILIATION.md",
+                    ),
+                    test_refs=(
+                        "tests/test_prepaid_billing_calendar_reconciliation.py",
+                        "tests/test_web_prepaid_billing_calendar_reconciliation.py",
+                        "tests/architecture/test_prepaid_billing_anchor_ownership.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_draft_reconciliation",
                 module="app.services.prepaid_draft_reconciliation",
                 owns=(
@@ -10436,6 +10649,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "prepaid service renewal execution",
                     "due prepaid service-cycle funding preview",
                     "settled-payment evidence validation and evaluation outcome",
+                    "WAT lapsed-settlement service-period resolution",
                     "locked and idempotent prepaid renewal debit",
                     "exact debit-to-entitlement evidence",
                     "prepaid subscription paid-through advancement",
@@ -10487,7 +10701,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "anchor policies that previously lived in "
                     "_finalize_invoice_payment_effects and "
                     "finalize_invoice_application_for_owner. The retired inline "
-                    "project_paid_invoice_billing_anchors helper is gone."
+                    "project_paid_invoice_billing_anchors helper is gone. A lapsed "
+                    "settlement period first resolves the payment instant into the "
+                    "Africa/Lagos calendar, starts at local midnight, advances by the "
+                    "typed cadence, and persists the resulting boundaries as UTC "
+                    "instants. Payment participants consume that typed period; they do "
+                    "not derive a UTC calendar date independently."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10517,6 +10736,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "evaluation outcome"
                             ),
                             role=OwnerRole.POLICY,
+                            input_names=(
+                                "settled payment evidence",
+                                "prepaid subscription and renewal terms",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="WAT lapsed-settlement service-period resolution",
+                            role=OwnerRole.RESOLVER,
                             input_names=(
                                 "settled payment evidence",
                                 "prepaid subscription and renewal terms",
@@ -10772,9 +10999,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     design_refs=(
                         "docs/adr/0007-end-to-end-billing-target-architecture.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
                     ),
                     test_refs=(
                         "tests/test_prepaid_service_renewals.py",
+                        "tests/services/billing/test_payment_status_recompute.py",
                         "tests/test_subledger_forward_shadow.py",
                         "tests/architecture/test_prepaid_billing_anchor_ownership.py",
                     ),
@@ -17551,6 +17780,195 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     test_refs=(
                         "tests/services/topology/test_customer_outage_accrual.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="network.outage_communications",
+                module="app.services.topology.outage_communications",
+                owns=(
+                    "customer outage communication decisions",
+                    "customer outage notice record",
+                    "committed outage output communication consumption",
+                ),
+                depends_on=(
+                    "network.outage_lifecycle",
+                    "network.service_impact",
+                    "network.customer_outage_accrual",
+                ),
+                notes=(
+                    "OUTAGE_SLA_SPINE §3. Decides WHETHER a customer is owed "
+                    "a message, which stage, and when — never the audience, "
+                    "the impact word, the measured downtime, or the delivery. "
+                    "The restoration cohort is derived from queued notice "
+                    "rows with communication-intent lineage, never from the "
+                    "current audience: a mid-incident joiner was promised "
+                    "nothing and a customer who left is still owed the "
+                    "all-clear. Supersedes the classifier-bound "
+                    "network.outage_notifications and "
+                    "network.outage_auto_notify send paths; arming "
+                    "outage_customer_comms_enabled stands both of them down "
+                    "so two customer outage senders are never live at once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="customer outage communication decisions",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "per-subscription impact words",
+                                "incident lifecycle and scope history",
+                                "measured customer downtime",
+                                "communication gate configuration",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer outage notice record",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=("per-subscription impact words",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                        ConcernContract(
+                            name=("committed outage output communication consumption"),
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("incident lifecycle and scope history",),
+                            canonical_writer="network.outage_communications",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="per-subscription impact words",
+                            owner="network.service_impact",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "six-state impact resolution per audience "
+                                "member with typed evidence; only "
+                                "confirmed_unavailable opens a conversation "
+                                "and only restored closes one"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="incident lifecycle and scope history",
+                            owner="network.outage_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "incident status, lifecycle stamps, and the "
+                                "immutable scope revision the message was "
+                                "composed under"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="measured customer downtime",
+                            owner="network.customer_outage_accrual",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "exact-quality customer outage intervals; a "
+                                "restoration message quotes the ledger and "
+                                "never recomputes a duration"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="communication gate configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "outage_customer_comms_enabled, dry-run, "
+                                "settling window, minimum affected count, "
+                                "update interval, per-run recipient cap and "
+                                "per-customer cooldown"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Planning is read-only. A send stages notice "
+                            "rows, communication intents and the breadcrumb "
+                            "event in one transaction owned by the receipted "
+                            "consumer or the operator command; a partial "
+                            "write would suppress a message nobody received."
+                        ),
+                        locking=(
+                            "The unique dedupe key is the concurrency guard: "
+                            "two workers deciding the same message converge "
+                            "on one row instead of two emails."
+                        ),
+                        idempotency=(
+                            "Conversation history makes a replay produce no "
+                            "candidates at all; the dedupe key holds when "
+                            "history has not yet committed. Dry-run plans "
+                            "and blocked recipients use separate key "
+                            "namespaces so neither can mute a later genuine "
+                            "message."
+                        ),
+                        retries=(
+                            "A rolled-back pass leaves no notice row, so no "
+                            "customer is silently marked as already told."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=owner_command_boundary_error_codes(
+                            "network.outage_communications"
+                        ),
+                        mapping_owner="app.web.admin.network_monitoring",
+                        fail_closed_on=(
+                            "communications disarmed",
+                            "incident suspected or exposure-only",
+                            "incident still inside the settling window",
+                            "incident below the minimum affected count",
+                            "preview token no longer matches the plan",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("outage_customer_notice.dispatched",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries incident identity and status, "
+                            "per-stage counts, queued and planned totals and "
+                            "the dry-run flag; fields are additive. The "
+                            "customer messages themselves are communication "
+                            "intents, never this event."
+                        ),
+                        replay=(
+                            "Operational breadcrumb only; no projection "
+                            "handler consumes it, and replaying it sends "
+                            "nothing."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.outage_communications",
+                        old_owner="network.outage_notifications",
+                        verification=(
+                            "Dry run is the default and records a notice row "
+                            "per decided message, so the plan is countable "
+                            "against what the NOC saw — ADR 0004's dry run "
+                            "only logged, which is why nobody could evaluate "
+                            "it."
+                        ),
+                        cutover_gate=(
+                            "Dry-run notice rows show no opening message an "
+                            "operator would not have sent, restoration "
+                            "cohorts match the customers actually told, and "
+                            "per-run recipient counts are within "
+                            "expectation."
+                        ),
+                        fallback_retirement=(
+                            "Arming outage_customer_comms_enabled makes both "
+                            "legacy send paths refuse with "
+                            "superseded_by_outage_communications. They are "
+                            "removed once the new owner has run armed "
+                            "through a full incident cycle."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=(
+                        "docs/designs/OUTAGE_SLA_SPINE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/services/topology/test_outage_communications.py",
                     ),
                 ),
             ),
@@ -35230,6 +35648,183 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="sales.quote_authoring",
+                module="app.services.sales.quote_authoring",
+                owns=("atomic Lead-backed Draft/Sent Quote authoring",),
+                depends_on=(
+                    "auth.staff_provisioning",
+                    "events.dispatcher",
+                    "financial.tax_configuration",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.lead_lifecycle",
+                    "sales.service",
+                    "service_intent.catalog_policy",
+                ),
+                notes=(
+                    "Staff author one Lead-backed Draft or Sent Quote and all of its "
+                    "lines under one transaction. Initial Accepted authoring and every "
+                    "Subscriber, order, Project, Task, or WorkOrder consequence are "
+                    "forbidden; acceptance is a separate sales.quote_acceptance command."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="atomic Lead-backed Draft/Sent Quote authoring",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "Quote authoring command evidence",
+                                "canonical staff actor state",
+                                "canonical Lead and Party state",
+                                "canonical commercial reference state",
+                                "canonical Quote lifecycle state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote authoring command evidence",
+                            owner="sales.quote_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed submission id, Lead, Draft/Sent status, currency, "
+                                "tax choice, install location, required Project Type, line values, "
+                                "actor, and CommandContext provenance"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff actor state",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active SystemUser addressed by the session actor",
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead and Party state",
+                            owner="sales.lead_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active open Party-bound Lead",
+                        ),
+                        AuthorityInput(
+                            name="canonical commercial reference state",
+                            owner="sales.quote_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "validated active offer, field-item, tax-rate, currency, "
+                                "quantity, price, discount, and install-pin references"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote lifecycle state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Quote with first-class Project Type and QuoteLineItem "
+                                "records keyed by submission UUID"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "author_quote enters execute_owner_command once on a clean "
+                            "adapter session; Quote, lines, quote.created event, and audit "
+                            "evidence commit or roll back together"
+                        ),
+                        locking=(
+                            "The actor and Lead lock FOR UPDATE; the supplied Quote UUID "
+                            "and database key arbitrate concurrent submissions."
+                        ),
+                        idempotency=(
+                            "Submission UUID plus a canonical command fingerprint returns "
+                            "the original Quote; changed content under that UUID fails closed."
+                        ),
+                        retries=(
+                            "Equivalent retries use the same submission UUID; transient "
+                            "failures retry the complete command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "sales.quote_authoring"
+                            ),
+                            "sales.quote_authoring.actor_not_eligible",
+                            "sales.quote_authoring.currency_invalid",
+                            "sales.quote_authoring.initial_status_invalid",
+                            "sales.quote_authoring.install_pin_incomplete",
+                            "sales.quote_authoring.inventory_description_mismatch",
+                            "sales.quote_authoring.inventory_item_not_active",
+                            "sales.quote_authoring.latitude_invalid",
+                            "sales.quote_authoring.lead_not_eligible",
+                            "sales.quote_authoring.lead_not_found",
+                            "sales.quote_authoring.lead_person_ineligible",
+                            "sales.quote_authoring.lead_person_required",
+                            "sales.quote_authoring.line_description_invalid",
+                            "sales.quote_authoring.line_discount_invalid",
+                            "sales.quote_authoring.line_items_required",
+                            "sales.quote_authoring.line_price_invalid",
+                            "sales.quote_authoring.line_quantity_invalid",
+                            "sales.quote_authoring.line_source_ambiguous",
+                            "sales.quote_authoring.longitude_invalid",
+                            "sales.quote_authoring.manual_tax_invalid",
+                            "sales.quote_authoring.offer_description_mismatch",
+                            "sales.quote_authoring.offer_not_active",
+                            "sales.quote_authoring.submission_conflict",
+                            "sales.quote_authoring.tax_rate_not_active",
+                        ),
+                        mapping_owner="admin sales Quote form adapter",
+                        fail_closed_on=(
+                            "inactive or closed Lead/Party state",
+                            "inactive actor or commercial reference",
+                            "initial Accepted/Rejected/Expired status",
+                            "ambiguous or stale line references",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.created",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, Lead, Party, status, "
+                            "currency, and total without contact PII."
+                        ),
+                        replay=(
+                            "The submission UUID and authoring fingerprint reproduce the "
+                            "original Quote and suppress duplicate event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="admin web form plus per-row sales.service commits",
+                        new_owner="sales.quote_authoring",
+                        verification=(
+                            "Lead and Project Type requirements, Draft/Sent restriction, "
+                            "atomic lines, install metadata, exact replay, manifest, and "
+                            "boundary tests."
+                        ),
+                        cutover_gate=(
+                            "The admin form submits one typed owner command on a clean "
+                            "session and exposes only Draft/Sent initial states."
+                        ),
+                        fallback_retirement=(
+                            "The form cannot create an Accepted Quote or Subscriber and no "
+                            "adapter creates initial Quote lines through separate commits."
+                        ),
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_web_sales_quote_authoring.py",
+                        "tests/test_quote_acceptance_workflow.py",
+                        "tests/architecture/test_sales_lifecycle_chain_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="sales.account_conversion",
                 module="app.services.sales.account_conversion",
                 owns=(
@@ -35246,22 +35841,24 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     concerns=(
                         ConcernContract(
                             name="exact Lead and Party account conversion",
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
                                 "canonical attributed Lead state",
                                 "canonical Party identity state",
                                 "reviewed account conversion command",
                                 "canonical customer account state",
                             ),
+                            canonical_writer="sales.account_conversion",
                         ),
                         ConcernContract(
                             name=("customer and pending-subscriber role establishment"),
-                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            role=OwnerRole.COMMAND_WRITER,
                             input_names=(
                                 "canonical Party identity state",
                                 "canonical customer account state",
                                 "reviewed account conversion command",
                             ),
+                            canonical_writer="sales.account_conversion",
                         ),
                     ),
                     authoritative_inputs=(
@@ -35297,11 +35894,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.OWNER_MANAGED,
+                        mode=TransactionMode.PARTICIPANT,
                         boundary=(
-                            "The conversion coordinator locks the Lead, stages account, "
-                            "Party roles/binding, Lead attachment and events, then commits "
-                            "or rolls back once."
+                            "This required Quote-acceptance participant locks the Lead and "
+                            "stages account, Party roles/binding, Lead attachment, and "
+                            "events without transaction completion. The outer "
+                            "sales.quote_acceptance coordinator commits or rolls back once."
                         ),
                         locking=(
                             "The exact Lead and any existing Subscriber target are selected "
@@ -35318,11 +35916,6 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "sales.account_conversion.active_caller_transaction",
-                            "sales.account_conversion.command_contract_violation",
-                            "sales.account_conversion.invalid_command_context",
-                            "sales.account_conversion.nested_owner_command",
-                            "sales.account_conversion.nested_transaction_completion",
                             "actor_required",
                             "account_target_required",
                             "lead_not_found",
@@ -35332,7 +35925,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "existing_target_not_allowed",
                             "conversion_rejected",
                         ),
-                        mapping_owner="sales account-conversion API adapter",
+                        mapping_owner="sales Quote-acceptance coordinator",
                         fail_closed_on=(
                             "Lead/Party mismatch",
                             "ambiguous account target",
@@ -35366,12 +35959,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "and transport-boundary tests."
                         ),
                         cutover_gate=(
-                            "Generic sales capture converts only through this exact "
-                            "Lead/Party command."
+                            "Quote acceptance is the only sales workflow allowed to "
+                            "invoke this Lead/Party conversion participant."
                         ),
                         fallback_retirement=(
-                            "Contact-based account matching and CRM conversion authority "
-                            "are absent."
+                            "The public Lead account-conversion API and service command, "
+                            "contact-based matching, and CRM conversion authority are absent."
                         ),
                     ),
                     steward="sales operations",
@@ -35384,6 +35977,228 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_sales_capture_account_conversion.py",
                         "tests/test_sales_to_service_lifecycle.py",
                         "tests/architecture/test_service_http_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_acceptance",
+                module="app.services.sales.quote_acceptance",
+                owns=(
+                    "atomic accepted-Quote sales conversion",
+                    "accepted-Quote commercial snapshot immutability",
+                ),
+                depends_on=(
+                    "customer.accounts",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "operations.project_lifecycle",
+                    "operations.work_order_commands",
+                    "party.registry",
+                    "sales.account_conversion",
+                    "sales.fulfillment",
+                    "sales.lead_lifecycle",
+                    "sales.orders",
+                    "sales.service",
+                ),
+                notes=(
+                    "Quote acceptance is the sole sales conversion event. It locks the "
+                    "Quote and Lead, creates or replays the exact account, copies the "
+                    "order and lines, copies the Quote-selected Project Type, assigns its "
+                    "configured active template and Tasks, creates only policy-enabled "
+                    "WorkOrders, and stages event and audit evidence under one owner "
+                    "transaction. ProjectTasks capture that automation policy; replay "
+                    "repairs only missing captured-policy WorkOrders while preserving "
+                    "manual work and ignoring later template edits, while generic task "
+                    "metadata updates preserve the captured policy. Initial acceptance "
+                    "fails closed when the locked Quote has expired. Deposit-backed "
+                    "acceptance fingerprints the normalized "
+                    "reference, amount, and provider; only an exact replay is accepted. The "
+                    "accepted Quote and its copied line terms then remain immutable; revised "
+                    "commercial terms require a new Quote."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="atomic accepted-Quote sales conversion",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "accepted-Quote command evidence",
+                                "canonical Lead and Party state",
+                                "canonical Quote and line state",
+                                "canonical customer account state",
+                                "configured implementation automation",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="accepted-Quote commercial snapshot immutability",
+                            role=OwnerRole.POLICY,
+                            input_names=("canonical Quote and line state",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="accepted-Quote command evidence",
+                            owner="sales.quote_acceptance",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed Quote id and CommandContext actor, command, "
+                                "correlation, reason, scope, and idempotency evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead and Party state",
+                            owner="sales.lead_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Party-bound Lead, immutable Party binding, "
+                                "and any exact accepted account link"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote and line state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Lead-backed Draft, Sent, or Accepted Quote, "
+                                "its required first-class Project Type, and priced line items"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical customer account state",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "exact Lead-attached Subscriber or typed account prepared "
+                                "from the reviewed Party profile"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="configured implementation automation",
+                            owner="operations.project_lifecycle",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "active ProjectTemplate mapped by Quote Project Type, ordered "
+                                "template tasks, and explicit WorkOrder automation flags"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "The public accept_quote command enters execute_owner_command "
+                            "once on a transaction-free adapter session. Every participant "
+                            "uses the supplied session, flushes only, and the coordinator "
+                            "commits or rolls back Quote, Lead, account, order, lines, "
+                            "Project, Tasks, WorkOrders, events, and audit together."
+                        ),
+                        locking=(
+                            "The exact Quote then Lead and Party are selected FOR UPDATE; "
+                            "every Quote and line mutation locks the same parent Quote first; "
+                            "SalesOrder and Project unique structural keys arbitrate concurrent "
+                            "replays."
+                        ),
+                        idempotency=(
+                            "Quote identity is the idempotency scope. Unique Quote-to-order, "
+                            "order-to-Project, template-task identity, and deterministic "
+                            "WorkOrder public ids return the original complete outcome. A "
+                            "replay re-runs the captured ProjectTask automation and creates "
+                            "only a missing deterministic WorkOrder; unrelated WorkOrders "
+                            "are preserved. A "
+                            "deposit-backed retry must match the normalized reference, amount, "
+                            "and provider stored at initial acceptance."
+                        ),
+                        retries=(
+                            "Equivalent retries re-lock the Quote and return canonical "
+                            "identifiers. Conflicting state fails closed; transient database "
+                            "failures retry the entire command."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "sales.quote_acceptance.account_profile_incomplete",
+                            "sales.quote_acceptance.account_profile_invalid",
+                            "sales.quote_acceptance.accepted_quote_immutable",
+                            "sales.quote_acceptance.active_caller_transaction",
+                            "sales.quote_acceptance.command_contract_violation",
+                            "sales.quote_acceptance.deposit_evidence_conflict",
+                            "sales.quote_acceptance.deposit_evidence_invalid",
+                            "sales.quote_acceptance.invalid_command_context",
+                            "sales.quote_acceptance.invalid_transition",
+                            "sales.quote_acceptance.lead_party_required",
+                            "sales.quote_acceptance.lead_required",
+                            "sales.quote_acceptance.line_items_required",
+                            "sales.quote_acceptance.nested_owner_command",
+                            "sales.quote_acceptance.nested_transaction_completion",
+                            "sales.quote_acceptance.party_not_found",
+                            "sales.quote_acceptance.participant_rejected",
+                            "sales.quote_acceptance.project_template_required",
+                            "sales.quote_acceptance.quote_account_conflict",
+                            "sales.quote_acceptance.quote_expired",
+                            "sales.quote_acceptance.quote_not_found",
+                        ),
+                        mapping_owner="sales Quote API and admin web adapters",
+                        fail_closed_on=(
+                            "missing or ambiguous Lead/Party/account evidence",
+                            "non-Draft/Sent transition",
+                            "expired Quote at initial acceptance",
+                            "deposit evidence reuse with changed reference, amount, or provider",
+                            "commercial mutation after Quote acceptance",
+                            "empty commercial lines or missing Quote Project Type/template",
+                            "any account, order, project, task, work-order, event, or audit failure",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "subscriber.created",
+                            "lead.account_converted",
+                            "quote.accepted",
+                            "project.created",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries exact Quote, Lead, Subscriber, SalesOrder, "
+                            "Project, ProjectTemplate, actor, and currency/value identifiers."
+                        ),
+                        replay=(
+                            "Structural unique keys and deterministic WorkOrder ids rebuild "
+                            "the same outcome, repair missing captured-policy WorkOrders, and "
+                            "preserve manual WorkOrders without duplicate consequences."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "Subscriber-first Quote authoring plus sales.service helper "
+                            "commits before Lead, order, and Project consequences"
+                        ),
+                        new_owner="sales.quote_acceptance",
+                        verification=(
+                            "Success, failure rollback, exact replay, Project Type template "
+                            "assignment, template Tasks, configured WorkOrders, expiry "
+                            "rejection, missing configured-WorkOrder replay repair, manual "
+                            "WorkOrder preservation, exact deposit replay and conflict "
+                            "rejection, accepted commercial immutability, API delegation, "
+                            "manifest, and architecture-boundary tests."
+                        ),
+                        cutover_gate=(
+                            "Every Accepted transition delegates to this coordinator and "
+                            "Lead/Quote generic updates cannot create accounts or mark Won."
+                        ),
+                        fallback_retirement=(
+                            "Lead creation and Quote authoring do not require or create a "
+                            "Subscriber; helper commits and swallowed acceptance events are absent."
+                        ),
+                    ),
+                    steward="sales and service delivery",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_acceptance_workflow.py",
+                        "tests/architecture/test_sales_lifecycle_chain_boundary.py",
                     ),
                 ),
             ),
@@ -35463,8 +36278,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="sales.orders",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "locked active SalesOrder, Quote metadata, exact Lead, "
-                                "Subscriber, line, and funding state"
+                                "locked active SalesOrder, first-class Quote Project Type, "
+                                "exact Lead, Subscriber, line, and funding state"
                             ),
                         ),
                         AuthorityInput(
@@ -35472,8 +36287,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="control.settings_spec",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "projects-domain default sales type, status, priority, "
-                                "numbering, and duration settings"
+                                "projects-domain status, priority, numbering, duration, "
+                                "and non-Quote sales type defaults"
                             ),
                         ),
                         AuthorityInput(
@@ -35553,6 +36368,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "sales_order_not_found",
                             "sales_order_canceled",
                             "subscriber_not_found",
+                            "quote_project_type_required",
                             "project_type_unconfigured",
                             "fulfillment_rejected",
                             "installation_not_found",
@@ -35560,7 +36376,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         mapping_owner="sales order and lifecycle event adapters",
                         fail_closed_on=(
-                            "missing configured project type",
+                            "missing Quote Project Type or configured Project Template",
                             "structural root mismatch",
                             "unverified implementation",
                             "conflicting verification evidence",
@@ -36644,8 +37460,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         ),
         rule=(
             "A prospect enters as a Party-bound Lead with captured origin, not a "
-            "fake Subscriber. Exact account conversion precedes Quote; SalesOrder "
-            "structurally owns one Project and installation scope; verified "
+            "fake Subscriber. Staff author Lead-backed Quotes without conversion; "
+            "Accepted Quote is the sole atomic account, SalesOrder, Project, Task, "
+            "and configured WorkOrder conversion event. SalesOrder structurally "
+            "owns one Project and installation scope; verified "
             "implementation requests service-order release after its evidence "
             "commits; successful provisioning activates service and its committed "
             "completion requests the CX handoff. Routes, webhooks, jobs, and "

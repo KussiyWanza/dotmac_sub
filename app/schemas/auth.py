@@ -15,10 +15,9 @@ from pydantic import (
 from app.models.auth import AuthProvider, MFAMethodType, SessionStatus
 
 
-class UserCredentialBase(BaseModel):
-    subscriber_id: UUID = Field(
-        validation_alias=AliasChoices("subscriber_id", "person_id")
-    )
+class UserCredentialFields(BaseModel):
+    """Fields shared by the credential write and read shapes."""
+
     provider: AuthProvider = AuthProvider.local
     username: str | None = Field(default=None, max_length=150)
     radius_server_id: UUID | None = None
@@ -28,6 +27,12 @@ class UserCredentialBase(BaseModel):
     locked_until: datetime | None = None
     last_login_at: datetime | None = None
     is_active: bool = True
+
+
+class UserCredentialBase(UserCredentialFields):
+    subscriber_id: UUID = Field(
+        validation_alias=AliasChoices("subscriber_id", "person_id")
+    )
 
 
 class UserCredentialCreate(UserCredentialBase):
@@ -75,18 +80,23 @@ class UserCredentialUpdate(BaseModel):
         return self
 
 
-class UserCredentialRead(UserCredentialBase):
+class UserCredentialRead(UserCredentialFields):
     model_config = ConfigDict(from_attributes=True)
+
+    # A row binds exactly one principal, so staff-owned rows carry
+    # system_user_id and a NULL subscriber_id. Reads must accept that;
+    # writes keep it required, which is why the read shape does not
+    # inherit the write shape.
+    subscriber_id: UUID | None = None
 
     id: UUID
     created_at: datetime
     updated_at: datetime
 
 
-class MFAMethodBase(BaseModel):
-    subscriber_id: UUID = Field(
-        validation_alias=AliasChoices("subscriber_id", "person_id")
-    )
+class MFAMethodFields(BaseModel):
+    """Fields shared by the MFA-method write and read shapes."""
+
     method_type: MFAMethodType
     label: str | None = Field(default=None, max_length=120)
     phone: str | None = Field(default=None, max_length=40)
@@ -96,6 +106,12 @@ class MFAMethodBase(BaseModel):
     is_active: bool = True
     verified_at: datetime | None = None
     last_used_at: datetime | None = None
+
+
+class MFAMethodBase(MFAMethodFields):
+    subscriber_id: UUID = Field(
+        validation_alias=AliasChoices("subscriber_id", "person_id")
+    )
 
 
 class MFAMethodCreate(MFAMethodBase):
@@ -118,18 +134,23 @@ class MFAMethodUpdate(BaseModel):
     last_used_at: datetime | None = None
 
 
-class MFAMethodRead(MFAMethodBase):
+class MFAMethodRead(MFAMethodFields):
     model_config = ConfigDict(from_attributes=True)
+
+    # A row binds exactly one principal, so staff-owned rows carry
+    # system_user_id and a NULL subscriber_id. Reads must accept that;
+    # writes keep it required, which is why the read shape does not
+    # inherit the write shape.
+    subscriber_id: UUID | None = None
 
     id: UUID
     created_at: datetime
     updated_at: datetime
 
 
-class SessionBase(BaseModel):
-    subscriber_id: UUID = Field(
-        validation_alias=AliasChoices("subscriber_id", "person_id")
-    )
+class SessionFields(BaseModel):
+    """Fields shared by the session write and read shapes."""
+
     status: SessionStatus = SessionStatus.active
     token_hash: str = Field(min_length=1, max_length=255)
     ip_address: str | None = Field(default=None, max_length=64)
@@ -137,6 +158,12 @@ class SessionBase(BaseModel):
     last_seen_at: datetime | None = None
     expires_at: datetime
     revoked_at: datetime | None = None
+
+
+class SessionBase(SessionFields):
+    subscriber_id: UUID = Field(
+        validation_alias=AliasChoices("subscriber_id", "person_id")
+    )
 
 
 class SessionCreate(SessionBase):
@@ -156,8 +183,14 @@ class SessionUpdate(BaseModel):
     revoked_at: datetime | None = None
 
 
-class SessionRead(SessionBase):
+class SessionRead(SessionFields):
     model_config = ConfigDict(from_attributes=True)
+
+    # A row binds exactly one principal, so staff-owned rows carry
+    # system_user_id and a NULL subscriber_id. Reads must accept that;
+    # writes keep it required, which is why the read shape does not
+    # inherit the write shape.
+    subscriber_id: UUID | None = None
 
     id: UUID
     created_at: datetime

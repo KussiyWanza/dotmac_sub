@@ -11,15 +11,23 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.catalog import Subscription, SubscriptionStatus
-from app.models.project import Project, ProjectTask
+from app.models.party import Party
+from app.models.project import Project, ProjectTask, ProjectTemplate
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus
 from app.models.sales import (
+    QuoteStatus,
+    SalesOrder,
     SalesOrderPaymentStatus,
     SalesOrderStatus,
 )
 from app.models.sequence import DocumentSequence
 from app.models.subscriber import Subscriber
-from app.schemas.sales import QuoteCreate, QuoteLineItemCreate
+from app.schemas.sales import (
+    LeadCreate,
+    QuoteCreate,
+    QuoteLineItemCreate,
+    QuoteUpdate,
+)
 from app.schemas.sales_order import (
     SalesOrderCreate,
     SalesOrderLineCreate,
@@ -31,15 +39,68 @@ from app.services import sales_orders as sales_order_service
 
 
 def _make_subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="Bola Ade",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     subscriber = Subscriber(
         first_name="Bola",
         last_name="Ade",
         email=f"bola-{uuid.uuid4().hex}@example.com",
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Sales order fixture Party binding",
     )
     db.add(subscriber)
     db.commit()
     db.refresh(subscriber)
     return subscriber
+
+
+def _make_quote(db, subscriber: Subscriber):
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name="Sales-order service installation",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
+        db.commit()
+    lead = sales_service.leads.create(db, LeadCreate(subscriber_id=subscriber.id))
+    return sales_service.quotes.create(
+        db,
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
+    )
+
+
+def _accept_quote(db, quote):
+    sales_service.quote_line_items.create(
+        db,
+        QuoteLineItemCreate(
+            quote_id=quote.id,
+            description="Accepted implementation scope",
+            quantity=Decimal("1"),
+            unit_price=Decimal("1.00"),
+        ),
+    )
+    sales_service.quotes.update(
+        db, str(quote.id), QuoteUpdate(status=QuoteStatus.accepted)
+    )
+    return db.query(SalesOrder).filter_by(quote_id=quote.id).one()
 
 
 @pytest.fixture()
@@ -111,13 +172,8 @@ def test_list_signature_has_no_account_id_slot():
 def test_list_filters_by_subscriber_quote_and_status(db_session):
     subscriber = _make_subscriber(db_session)
     other = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
-    with_quote = sales_order_service.sales_orders.create(
-        db_session,
-        SalesOrderCreate(subscriber_id=subscriber.id, quote_id=quote.id),
-    )
+    quote = _make_quote(db_session, subscriber)
+    with_quote = _accept_quote(db_session, quote)
     sales_order_service.sales_orders.create(
         db_session, SalesOrderCreate(subscriber_id=other.id)
     )
@@ -131,19 +187,15 @@ def test_list_filters_by_subscriber_quote_and_status(db_session):
     assert [so.id for so in by_quote] == [with_quote.id]
 
     by_status = sales_order_service.sales_orders.list(
-        db_session, status=SalesOrderStatus.draft.value
+        db_session, status=SalesOrderStatus.confirmed.value
     )
     assert {so.id for so in by_status} >= {with_quote.id}
 
 
 def test_second_sales_order_for_quote_rejected(db_session):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
-    sales_order_service.sales_orders.create(
-        db_session, SalesOrderCreate(subscriber_id=subscriber.id, quote_id=quote.id)
-    )
+    quote = _make_quote(db_session, subscriber)
+    _accept_quote(db_session, quote)
     with pytest.raises(HTTPException) as exc:
         sales_order_service.sales_orders.create(
             db_session,
@@ -154,9 +206,8 @@ def test_second_sales_order_for_quote_rejected(db_session):
 
 def test_create_from_quote_is_idempotent(db_session):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
+    quote = _make_quote(db_session, subscriber)
+    _accept_quote(db_session, quote)
     first = sales_order_service.sales_orders.create_from_quote(
         db_session, str(quote.id)
     )
@@ -687,9 +738,7 @@ def test_installation_invoice_created_once_for_project(db_session, billing_calls
 
 def test_installation_amount_falls_back_to_quote_lines(db_session, billing_calls):
     subscriber = _make_subscriber(db_session)
-    quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
+    quote = _make_quote(db_session, subscriber)
     sales_service.quote_line_items.create(
         db_session,
         QuoteLineItemCreate(
@@ -699,10 +748,12 @@ def test_installation_amount_falls_back_to_quote_lines(db_session, billing_calls
             unit_price=Decimal("60000.00"),
         ),
     )
-    order = sales_order_service.sales_orders.create(
+    sales_service.quotes.update(
         db_session,
-        SalesOrderCreate(subscriber_id=subscriber.id, quote_id=quote.id),
+        str(quote.id),
+        QuoteUpdate(status=QuoteStatus.accepted),
     )
+    order = db_session.query(SalesOrder).filter_by(quote_id=quote.id).one()
 
     billing_calls.clear()
     sales_order_service.ensure_installation_invoice_for_sales_order(

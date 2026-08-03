@@ -21,7 +21,8 @@ concern, separating observation, decision, and consequence:
 | Effective-dated SLA policy and scores | `customer.service_level` (new) |
 | Planned maintenance lifecycle | `network.maintenance_lifecycle` (new) |
 | Incident ticket and watcher composition | `support.ticket_lifecycle` links (extended) |
-| Outage communications | existing communication policy/intents/receipts owners |
+| Outage communication decisions | `network.outage_communications` (new) |
+| Outage communication delivery | existing communication policy/intents/receipts owners |
 | Compensation remedy (preview/confirm) | separate financial command owner, posting gated |
 
 Topological audience means potentially affected — never automatically
@@ -79,6 +80,49 @@ provider-controlled failure; and no proven alternate path serves it.
   because an incident was rerooted.
 - Manual reroot/merge/split are preview→confirm commands with stale-token
   conflict protection.
+
+## 3a. Customer communications (implemented)
+
+`network.outage_communications` decides whether a customer is owed a message,
+which one, and when. It owns no audience, no impact word, no downtime figure
+and no delivery — those stay with `network.service_impact`,
+`network.outage_lifecycle`, `network.customer_outage_accrual` and
+`communication_intents` respectively.
+
+- Three stages: `opened`, `update` (prolonged outage) and `restored`.
+- Only `confirmed_unavailable` opens a conversation. `potentially_affected`,
+  `unknown`, `degraded` and a `suspected` incident say nothing — exposure is
+  never a message.
+- **The restoration cohort is the set of customers actually told**, read from
+  `outage_customer_notices` rows carrying a communication-intent id. Never the
+  current audience: a mid-incident joiner was promised nothing, and a customer
+  who has since left the audience is still owed the all-clear. A suppressed or
+  unreachable recipient is not in the cohort.
+- One message per distinct customer, not per subscription. Grouping happens
+  before policy evaluation and the body names the affected services.
+- clearing → reopened is one ledger interval but two conversations. Notices
+  carry a per-customer sequence, so a second opening message is possible and
+  the first can never be re-sent.
+- A discarded incident still closes the conversation. Announcing a fault and
+  then going silent reads as an unfixed fault.
+- Partial restoration closes only the customers observed back.
+- A restoration message quotes the ledger's exact measured downtime; when no
+  exact interval exists it states no duration rather than inventing one.
+- Every decision writes an append-only `outage_customer_notices` row —
+  including dry-run plans and blocked recipients, under separate dedupe-key
+  namespaces so neither can mute a later genuine message. The unique dedupe key
+  is the concurrency guard.
+- Gates are database-authoritative (`outage_customer_comms_*`): enabled,
+  dry-run (default on), settling window, minimum affected count, update
+  interval, per-run recipient cap, and a per-customer cross-incident cooldown
+  that stands in for the merge/split commands that do not exist yet.
+
+**Cutover.** This owner supersedes the classifier-bound
+`outage_notifications` / `outage_auto_notify` send paths (ADR 0004). Arming
+`outage_customer_comms_enabled` makes both refuse with
+`superseded_by_outage_communications` — automatic *and* operator — so two
+customer outage senders are never live at once. The legacy paths are removed
+once the new owner has run armed through a full incident cycle.
 
 ## 4. SLA policy and scoring (approved)
 
@@ -145,6 +189,12 @@ in_progress → completed, plus canceled and overrun.
   after a shadow-comparison phase with a discrepancy review, an atomic
   cutover, and retirement of the old derivation. Two displayed scores must
   never coexist.
+- Customer outage sending: moves from `network.outage_notifications` (and its
+  `network.outage_auto_notify` trigger) to `network.outage_communications`.
+  The old path never had a restoration message, resolved its audience from
+  `connection_status.assess` rather than the impact resolver, and messaged per
+  subscription instead of per customer. It stays callable until the new owner
+  is armed, then refuses; it is removed after one full armed incident cycle.
 - `OutageIncident.crm_ticket_id` placeholder: superseded by typed
   incident-ticket links (one canonical infrastructure ticket, many complaint
   tickets). Network recovery never auto-closes tickets or work orders.

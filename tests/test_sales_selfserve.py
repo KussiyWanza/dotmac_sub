@@ -13,6 +13,7 @@ test, same isolation the CRM source used).
 """
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -29,6 +30,8 @@ from app.models.catalog import (
     PriceType,
     ServiceType,
 )
+from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.sales import Lead, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services.sales import selfserve
@@ -54,12 +57,36 @@ def _cfg(**overrides) -> dict:
 
 
 def _subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="Ada Obi",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
         first_name="Ada",
         last_name="Obi",
         email=f"ada-{uuid.uuid4().hex[:10]}@example.com",
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Self-serve sales fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Self-serve quote {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub
@@ -241,7 +268,8 @@ def test_request_quote_captures_map_pin_on_lead_and_quote(db_session):
     meta = quote.metadata_
     assert meta["install"] == install
     assert meta["source"] == "portal_self_serve"
-    assert meta["project_type"] == "fiber_optics_installation"
+    assert quote.project_type == "fiber_optics_installation"
+    assert "project_type" not in meta
     assert meta["feasibility"]["coverage"] == "covered"
     assert meta["feasibility"]["nearest_fap_name"] == "NAP-041"
     assert meta["deposit_percent"] == 50
@@ -363,7 +391,7 @@ def test_accept_with_deposit_is_idempotent(db_session):
         db_session,
         str(sub.id),
         str(quote.id),
-        deposit_reference="ref_1_retry",
+        deposit_reference="ref_1",
         deposit_amount="37500.00",
     )
 
@@ -373,7 +401,7 @@ def test_accept_with_deposit_is_idempotent(db_session):
     assert second["sales_order_id"] == first["sales_order_id"]
     orders = db_session.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).all()
     assert len(orders) == 1
-    # The original deposit stamp survives the retry (no metadata overwrite).
+    # Only the exact evidence is idempotent; the original stamp is unchanged.
     assert second["deposit_reference"] == "ref_1"
 
 

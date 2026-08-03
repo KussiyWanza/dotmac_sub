@@ -74,13 +74,18 @@ test-ci: ## Run the canonical CI unit suite with XML coverage
 
 CI_SHARD ?=
 CI_SHARDS ?= 4
+CI_UNIT_TEST_WORKERS ?= 4
+CI_TEST_TIMEOUT_SECONDS ?= 180
 CI_DURATIONS_FILE ?= .ci-cache/test-durations.json
 CI_DURATIONS_OUTPUT ?= .ci-cache/current-test-durations.json
 
 test-ci-shard: ## Run one duration-balanced CI unit shard
 	@test -n "$(CI_SHARD)" || (echo "CI_SHARD is required" >&2; exit 2)
 	@paths="$$(poetry run python scripts/ci/select_test_shard.py --shard "$(CI_SHARD)" --shards "$(CI_SHARDS)" --durations-file "$(CI_DURATIONS_FILE)")"; \
-	PYTHONPATH="$(CURDIR)" poetry run pytest $$paths -n auto --durations=25 --cov=app --cov-report= -q \
+	PYTHONPATH="$(CURDIR)" poetry run pytest $$paths \
+		-n $(CI_UNIT_TEST_WORKERS) --max-worker-restart=0 \
+		--timeout=$(CI_TEST_TIMEOUT_SECONDS) --timeout-method=signal \
+		--durations=25 --cov=app --cov-report= -q \
 		-p scripts.ci.pytest_durations \
 		--ci-durations-output="$(CI_DURATIONS_OUTPUT)"
 

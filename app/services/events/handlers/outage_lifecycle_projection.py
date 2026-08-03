@@ -61,6 +61,11 @@ class OutageLifecycleProjectionHandler:
         # the accrual owner's receipted consumer (clearing/reopened exist
         # for the recovery-hold continuity rules).
         self._apply_accrual(db, event, incident_id)
+        # ...and then asks the communications owner whether this transition
+        # left any customer owed a message. It runs AFTER accrual so a
+        # restoration message can quote the ledger's measured downtime rather
+        # than recomputing it.
+        self._apply_communications(db, event, incident_id)
 
     def _apply_accrual(self, db: Session, event: Event, incident_id: str) -> None:
         from app.services.common import coerce_uuid
@@ -80,6 +85,31 @@ class OutageLifecycleProjectionHandler:
         )
         with _owner_session(db) as owner_db:
             customer_outage_accrual.consume_accrual_event(
+                owner_db,
+                incident_id=coerce_uuid(incident_id),
+                event_id=event.event_id,
+                event_type=event.event_type.value,
+                context=context,
+            )
+
+    def _apply_communications(
+        self, db: Session, event: Event, incident_id: str
+    ) -> None:
+        from app.services.common import coerce_uuid
+        from app.services.owner_commands import CommandContext
+        from app.services.topology import outage_communications
+
+        context = CommandContext.system(
+            actor=str(event.actor or "system:outage_lifecycle_projection"),
+            scope=str(incident_id),
+            reason=event.event_type.value,
+            command_id=event.event_id,
+            correlation_id=event.event_id,
+            causation_id=event.event_id,
+            idempotency_key=f"event:{event.event_id}:communications",
+        )
+        with _owner_session(db) as owner_db:
+            outage_communications.consume_notice_event(
                 owner_db,
                 incident_id=coerce_uuid(incident_id),
                 event_id=event.event_id,

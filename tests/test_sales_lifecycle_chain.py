@@ -32,9 +32,11 @@ from app.models.customer_experience import (
 )
 from app.models.event_store import EventStatus, EventStore
 from app.models.owner_output import OwnerOutputReceipt
-from app.models.project import Project, ProjectStatus
+from app.models.party import Party
+from app.models.project import Project, ProjectStatus, ProjectTemplate
 from app.models.provisioning import ServiceOrder, ServiceOrderStatus, ServiceOrderType
 from app.models.sales import (
+    QuoteStatus,
     SalesOrder,
     SalesOrderLine,
     SalesOrderPaymentStatus,
@@ -42,7 +44,7 @@ from app.models.sales import (
 )
 from app.models.subscriber import Subscriber
 from app.models.vendor_routes import InstallationProject, InstallationProjectStatus
-from app.schemas.sales import QuoteCreate
+from app.schemas.sales import LeadCreate, QuoteCreate, QuoteLineItemCreate, QuoteUpdate
 from app.schemas.sales_order import (
     SalesOrderCreate,
     SalesOrderLineCreate,
@@ -62,10 +64,21 @@ from app.services.sales import selfserve
 
 
 def _make_subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="Chidi Okoro",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     subscriber = Subscriber(
         first_name="Chidi",
         last_name="Okoro",
         email=f"chidi-{uuid.uuid4().hex}@example.com",
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Sales lifecycle fixture Party binding",
     )
     db.add(subscriber)
     db.commit()
@@ -322,23 +335,41 @@ def test_selfserve_full_deposit_stages_funding_without_order_payment(
     db_session, catalog_offer, chain_billing
 ):
     subscriber = _make_subscriber(db_session)
+    db_session.add(
+        ProjectTemplate(
+            name="Lifecycle chain installation",
+            project_type="fiber_optics_installation",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    lead = sales_service.leads.create(
+        db_session, LeadCreate(subscriber_id=subscriber.id)
+    )
     quote = sales_service.quotes.create(
-        db_session, QuoteCreate(subscriber_id=subscriber.id)
-    )
-    order = sales_order_service.sales_orders.create(
         db_session,
-        SalesOrderCreate(subscriber_id=subscriber.id, quote_id=quote.id),
+        QuoteCreate(
+            subscriber_id=subscriber.id,
+            lead_id=lead.id,
+            project_type="fiber_optics_installation",
+        ),
     )
-    sales_order_service.sales_order_lines.create(
+    sales_service.quote_line_items.create(
         db_session,
-        SalesOrderLineCreate(
-            sales_order_id=order.id,
+        QuoteLineItemCreate(
+            quote_id=quote.id,
             description="Fiber service",
             quantity=Decimal("1"),
             unit_price=Decimal("50000.00"),
             metadata_={"sub_offer_id": str(catalog_offer.id)},
         ),
     )
+    sales_service.quotes.update(
+        db_session,
+        str(quote.id),
+        QuoteUpdate(status=QuoteStatus.accepted),
+    )
+    order = db_session.query(SalesOrder).filter_by(quote_id=quote.id).one()
     chain_billing.clear()
 
     selfserve._record_deposit_on_sales_order(db_session, quote, Decimal("50000.00"))

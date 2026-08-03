@@ -1,0 +1,200 @@
+[
+  {
+    "spec": "tests/playwright/e2e/test_billing.py::TestInvoicesList::test_new_invoice_button",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_billing.py::TestBillingWorkflows::test_create_invoice_workflow",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerServices::test_services_shows_details",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerServices::test_services_change_plan_page_loads",
+    "reason": "Environment-dependent: passes on GitHub runners, fails in container runs",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerSupport::test_create_ticket_flow[mobile]",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_dashboard.py::TestAdminDashboard::test_navigate_to_tickets",
+    "reason": "Environment-dependent: passes on GitHub runners, times out clicking the Support sidebar link in container runs",
+    "issue": "#1895",
+    "category": "retired-routes",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_e2e_workflows.py::TestSubscriptionActivation::test_subscriber_to_active_service_flow",
+    "reason": "Environment-dependent: passes on GitHub runners, fails in container runs",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_e2e_workflows.py::TestSubscriptionActivation::test_phase1_customer_activation_shows_pppoe_and_radius_evidence",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_network.py::TestOLTs::test_new_olt_button",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_network.py::TestONTs::test_new_ont_button",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_ont_device_config.py::test_ont_apply_device_config_save_push_and_actions",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_ont_device_config.py::test_ont_return_to_inventory_ui_posts_and_redirects",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_permissions.py::TestImpersonationPermissions::test_admin_can_impersonate_customer",
+    "reason": "Posts to a web form route with a bearer token and no CSRF token, so the 403 is CSRF rejection, not authorization. Its sibling test_agent_cannot_impersonate_customer passes for that same wrong reason \u2014 both need a real CSRF-bearing session to test the impersonation boundary",
+    "issue": "#1895",
+    "category": "permissions",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_projects.py::test_admin_project_template_dependency_journey",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_sales_leads.py::TestSalesLeads::test_mobile_list_keeps_primary_workflow_usable",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_system.py::TestModuleManager::test_feature_controls_show_tri_state_provenance",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_system.py::TestModuleManager::test_feature_override_persists_and_is_restored",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_system.py::TestSystemNavigation::test_navigate_to_system",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_workqueue.py::TestNativeAgentWorkqueue::test_admin_can_claim_and_complete_through_native_owner",
+    "reason": "Page-object drift under investigation; fails with the harness repaired",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_sales_leads.py::TestSalesLeads::test_admin_can_create_and_open_a_lead",
+    "reason": "Fixture/setup error before the test body runs; xfail cannot suppress setup errors",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "skip"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_customer_portal.py::TestCustomerDashboard::test_dashboard_shows_account_summary",
+    "reason": "Intermittent: the account-summary locator (dashboard_page.py:34) is sometimes not visible on first render; passed and failed across identical back-to-back runs",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_service_teams.py::TestServiceTeamCompositionForms::test_admin_can_register_an_outage_routing_policy",
+    "reason": "Intermittent: passed and failed across identical back-to-back full runs; needs a deterministic wait on the composition form",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30",
+    "action": "flaky"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_subscription_correction.py::test_review_and_apply_exact_subscription_correction",
+    "reason": "Strict-mode violation: get_by_text('Subscription correction applied') resolves to 2 elements on GitHub runners; env-skipped in container runs",
+    "issue": "#1895",
+    "category": "tail",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  },
+  {
+    "spec": "tests/playwright/e2e/test_permissions.py::TestWebPortalAccess::test_agent_can_access_dashboard",
+    "reason": "The support role holds customer:read and billing:invoice:read so the dashboard dependency should pass, but the agent's token-derived storage state does not authenticate the web layer the same way a UI login does; needs the agent fixture reworked before this asserts anything real",
+    "issue": "#1895",
+    "category": "permissions",
+    "owner": "unassigned",
+    "review_by": "2026-09-30"
+  }
+]

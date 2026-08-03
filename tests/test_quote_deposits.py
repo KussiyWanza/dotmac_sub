@@ -7,6 +7,7 @@ ON native accept via ``sales.selfserve``. Both paths are covered here."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,18 +16,46 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.billing import Invoice, InvoiceStatus, Payment
+from app.models.party import Party
+from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror
-from app.models.sales import SalesOrder
+from app.models.sales import Quote, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services import quote_deposits
-from app.services.sales import selfserve
+from app.services.sales import quote_acceptance, selfserve
 
 
 def _subscriber(db) -> Subscriber:
+    party = Party(
+        display_name="C R",
+        party_type="person",
+        status="active",
+    )
+    db.add(party)
+    db.flush()
     sub = Subscriber(
-        first_name="C", last_name="R", email=f"c-{uuid.uuid4().hex[:8]}@example.com"
+        first_name="C",
+        last_name="R",
+        email=f"c-{uuid.uuid4().hex[:8]}@example.com",
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Quote deposit fixture Party binding",
     )
     db.add(sub)
+    if (
+        db.query(ProjectTemplate)
+        .filter_by(project_type="fiber_optics_installation", is_active=True)
+        .first()
+        is None
+    ):
+        db.add(
+            ProjectTemplate(
+                name=f"Quote deposit {uuid.uuid4().hex[:8]}",
+                project_type="fiber_optics_installation",
+                is_active=True,
+            )
+        )
     db.commit()
     db.refresh(sub)
     return sub
@@ -298,12 +327,53 @@ def test_verify_native_flag_retry_is_idempotent(db_session):
             _customer(sub),
             str(sub.id),
             str(quote.id),
-            reference="ref_1_retry",
+            reference="ref_1",
         )
     assert first["quote"]["already_accepted"] is False
     assert second["quote"]["already_accepted"] is True
     assert second["quote"]["sales_order_id"] == first["quote"]["sales_order_id"]
     assert second["quote"]["deposit_reference"] == "ref_1"
+    assert (
+        db_session.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).count()
+        == 1
+    )
+
+
+def test_changed_deposit_retry_cannot_overwrite_sales_order_money(db_session):
+    sub = _subscriber(db_session)
+    quote = _native_quote(db_session, sub)
+    first = selfserve.selfserve_quotes.accept_with_deposit(
+        db_session,
+        str(sub.id),
+        str(quote.id),
+        deposit_reference="ref-original",
+        deposit_amount=Decimal("37500.00"),
+        provider="paystack",
+    )
+    order_id = uuid.UUID(first["sales_order_id"])
+
+    with pytest.raises(quote_acceptance.QuoteAcceptanceError) as exc_info:
+        selfserve.selfserve_quotes.accept_with_deposit(
+            db_session,
+            str(sub.id),
+            str(quote.id),
+            deposit_reference="ref-conflict",
+            deposit_amount=Decimal("1.00"),
+            provider="paystack",
+        )
+
+    assert exc_info.value.code == "sales.quote_acceptance.deposit_evidence_conflict"
+    db_session.expire_all()
+    stored_quote = db_session.get(Quote, quote.id)
+    stored_order = db_session.get(SalesOrder, order_id)
+    assert stored_quote.metadata_["deposit"] == {
+        "reference": "ref-original",
+        "amount": "37500.00",
+        "provider": "paystack",
+        "paid": True,
+    }
+    assert stored_order.amount_paid == Decimal("37500.00")
+    assert stored_order.balance_due == Decimal("37500.00")
     assert (
         db_session.query(SalesOrder).filter(SalesOrder.quote_id == quote.id).count()
         == 1
