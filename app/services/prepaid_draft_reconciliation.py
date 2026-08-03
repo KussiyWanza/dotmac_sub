@@ -75,6 +75,7 @@ from app.services.owner_commands import (
     execute_owner_command,
 )
 from app.services.prepaid_funding_reconstruction import (
+    PrepaidFundingBaselineMissingError,
     verified_prepaid_funding_balance,
 )
 
@@ -259,13 +260,22 @@ def _reviewed_opening_funding_preview(
             PrepaidFundingBaseline.is_active.is_(True),
         )
     )
-    authoritative = round_money(
-        verified_prepaid_funding_balance(
-            db,
-            invoice.account_id,
+    try:
+        authoritative = round_money(
+            verified_prepaid_funding_balance(
+                db,
+                invoice.account_id,
+                currency=currency,
+            )
+        )
+    except PrepaidFundingBaselineMissingError:
+        _error(
+            "opening_funding_unavailable",
+            "Reviewed opening funding is unavailable for this invoice.",
+            invoice_id=str(invoice.id),
+            account_id=str(invoice.account_id),
             currency=currency,
         )
-    )
     if baseline is None or baseline.amount <= Decimal("0.00"):
         return ReviewedOpeningFundingPreview(
             baseline_id=None,

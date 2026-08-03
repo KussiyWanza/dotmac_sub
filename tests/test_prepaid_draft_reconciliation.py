@@ -27,16 +27,21 @@ from app.models.prepaid_funding import (
     PrepaidDraftReconciliationException,
     PrepaidOpeningFundingConsumption,
 )
+from app.services import prepaid_draft_reconciliation as reconciliation_service
 from app.services.customer_financial_position import prepaid_available_balance
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
     PrepaidDraftAction,
     PrepaidDraftDisposition,
+    PrepaidDraftReconciliationError,
     ReconcilePrepaidDraftCommand,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
+)
+from app.services.prepaid_funding_reconstruction import (
+    PrepaidFundingBaselineMissingError,
 )
 from app.services.prepaid_service_renewals import (
     FundingChangeRenewalDisposition,
@@ -207,6 +212,44 @@ def _command(invoice_id, fingerprint: str, *, key: str):
         preview_fingerprint=fingerprint,
         effective_at=datetime(2026, 7, 23, 10, tzinfo=UTC),
     )
+
+
+def test_missing_opening_baseline_is_a_stable_domain_error(
+    db_session,
+    subscriber,
+    subscription,
+    monkeypatch,
+):
+    invoice = _draft(
+        db_session,
+        subscriber,
+        subscription,
+        total=Decimal("18812.50"),
+    )
+
+    def _missing_baseline(*_args, **_kwargs):
+        raise PrepaidFundingBaselineMissingError("raw reconstruction detail")
+
+    monkeypatch.setattr(
+        reconciliation_service,
+        "verified_prepaid_funding_balance",
+        _missing_baseline,
+    )
+
+    with pytest.raises(PrepaidDraftReconciliationError) as exc_info:
+        preview_prepaid_draft_reconciliation(db_session, invoice.id)
+
+    assert exc_info.value.code == (
+        "financial.prepaid_draft_reconciliation.opening_funding_unavailable"
+    )
+    assert exc_info.value.message == (
+        "Reviewed opening funding is unavailable for this invoice."
+    )
+    assert exc_info.value.details == {
+        "invoice_id": str(invoice.id),
+        "account_id": str(subscriber.id),
+        "currency": "NGN",
+    }
 
 
 def test_fifty_kobo_shortfall_stays_draft(
