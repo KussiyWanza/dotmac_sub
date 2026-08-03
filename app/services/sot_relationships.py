@@ -30796,6 +30796,200 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="integration.oauth_tokens",
+                module="app.services.meta_oauth",
+                owns=(
+                    "Meta OAuth refresh candidate selection",
+                    "Meta OAuth access-token refresh persistence",
+                    "OAuth token expiry health projection",
+                ),
+                depends_on=(
+                    "control.settings_spec",
+                    "secrets.reference_store",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "The scheduler is a thin adapter. This owner permits only the "
+                    "Meta long-lived user-token exchange, resolves the client secret "
+                    "from an approved reference, writes encrypted OAuthToken state, "
+                    "and records only redacted failure and event evidence."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="Meta OAuth refresh candidate selection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical OAuth token state",
+                                "Meta refresh protocol",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="Meta OAuth access-token refresh persistence",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "canonical OAuth token state",
+                                "Meta OAuth client configuration",
+                                "approved Meta client secret reference",
+                                "Meta token exchange observation",
+                                "Meta refresh protocol",
+                            ),
+                            canonical_writer="integration.oauth_tokens",
+                        ),
+                        ConcernContract(
+                            name="OAuth token expiry health projection",
+                            role=OwnerRole.RESOLVER,
+                            input_names=("canonical OAuth token state",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical OAuth token state",
+                            owner="integration.oauth_tokens",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Encrypted OAuthToken access token, token class, active "
+                                "state, expiry, refresh time, and sanitized refresh error"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="Meta OAuth client configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "DB-authoritative comms.meta_app_id and "
+                                "comms.meta_graph_api_version settings"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="approved Meta client secret reference",
+                            owner="secrets.reference_store",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "DB-authoritative comms.meta_app_secret OpenBao or "
+                                "approved local secret reference"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="Meta token exchange observation",
+                            owner="external:meta_graph_api",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "Meta OAuth access-token exchange status, new token, "
+                                "token type, and expiry interval"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="Meta refresh protocol",
+                            owner="integration.oauth_tokens",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Closed fb_exchange_token grant and user-token class "
+                                "allowlist plus compare-before-write retry semantics"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "The Celery adapter opens a transaction-free session; one "
+                            "typed refresh command locks one OAuthToken and the owner "
+                            "commits token, expiry, sanitized failure, and event evidence."
+                        ),
+                        locking=(
+                            "Each refresh locks one OAuthToken row and compares its current "
+                            "expiry with the immutable candidate expiry before exchange."
+                        ),
+                        idempotency=(
+                            "Task request, token id, and observed expiry identify an "
+                            "attempt; changed expiry skips stale retries without another "
+                            "provider call."
+                        ),
+                        retries=(
+                            "Provider unavailability is safe to retry as a new bounded "
+                            "attempt; invalid configuration, token class, storage class, "
+                            "or provider rejection remains durable sanitized evidence."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "integration.oauth_tokens.token_not_found",
+                            "integration.oauth_tokens.configuration_missing",
+                            "integration.oauth_tokens.secret_reference_required",
+                            "integration.oauth_tokens.secret_resolution_failed",
+                            "integration.oauth_tokens.invalid_graph_version",
+                            "integration.oauth_tokens.invalid_grant_type",
+                            "integration.oauth_tokens.token_inactive",
+                            "integration.oauth_tokens.token_class_not_permitted",
+                            "integration.oauth_tokens.token_missing",
+                            "integration.oauth_tokens.token_storage_not_permitted",
+                            "integration.oauth_tokens.provider_unavailable",
+                            "integration.oauth_tokens.provider_rejected",
+                            "integration.oauth_tokens.provider_response_invalid",
+                            *owner_command_boundary_error_codes(
+                                "integration.oauth_tokens"
+                            ),
+                        ),
+                        mapping_owner="app.tasks.oauth Celery transport adapter",
+                        retryable_codes=(
+                            "integration.oauth_tokens.provider_unavailable",
+                        ),
+                        fail_closed_on=(
+                            "plaintext or unresolved Meta client secret",
+                            "unsupported grant or token class",
+                            "secret-referenced token without a writable secret owner",
+                            "stale token expiry or ambiguous provider response",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "oauth_token.refreshed",
+                            "oauth_token.refresh_failed",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the OAuthToken, connector, token "
+                            "class, grant, expiry or failure code, and command evidence; "
+                            "it never carries access tokens or client secrets."
+                        ),
+                        replay=(
+                            "Encrypted OAuthToken state plus redacted EventStore evidence "
+                            "reconstructs current expiry, last success, and last failure."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "app.tasks.oauth direct ORM writes and unresolved "
+                            "app.services.meta_oauth import"
+                        ),
+                        new_owner="integration.oauth_tokens",
+                        verification=(
+                            "Focused owner, secret-redaction, provider transport, "
+                            "candidate-class, task-adapter, and manifest tests."
+                        ),
+                        cutover_gate=(
+                            "The task imports this owner, contains no ORM or transaction "
+                            "writes, and targeted refresh tests pass."
+                        ),
+                        fallback_retirement=(
+                            "Task-owned token selection, provider exchange, commit, "
+                            "rollback, and raw exception persistence are removed."
+                        ),
+                    ),
+                    steward="platform integrations",
+                    design_refs=(
+                        "docs/CODING_STANDARD.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_meta_oauth.py",
+                        "tests/test_oauth_tasks.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="integration.installations",
                 module="app.services.integrations.installations",
                 owns=(

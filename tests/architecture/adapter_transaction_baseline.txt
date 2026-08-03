@@ -19,7 +19,6 @@ commit 3 app/tasks/nas.py
 commit 1 app/tasks/network_operations.py
 commit 2 app/tasks/nin_tasks.py
 commit 8 app/tasks/notifications.py
-commit 2 app/tasks/oauth.py
 commit 3 app/tasks/olt_config_backup.py
 commit 6 app/tasks/olt_firmware.py
 commit 2 app/tasks/olt_health_retry.py
@@ -69,7 +68,6 @@ rollback 4 app/tasks/infrastructure_polling.py
 rollback 5 app/tasks/nas.py
 rollback 1 app/tasks/network_operations.py
 rollback 2 app/tasks/nin_tasks.py
-rollback 2 app/tasks/oauth.py
 rollback 2 app/tasks/olt_config_backup.py
 rollback 3 app/tasks/olt_firmware.py
 rollback 2 app/tasks/ont_provisioning.py
