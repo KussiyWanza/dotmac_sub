@@ -32952,19 +32952,25 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "admin payments filter semantics",
                     "admin payments stable sort and default-order semantics",
                     "admin payments list pagination normalization",
+                    "admin payments export scope",
                 ),
-                depends_on=("ui.list_contracts", "financial.payments"),
+                depends_on=(
+                    "ui.list_contracts",
+                    "financial.payments",
+                    "customer.accounts",
+                ),
                 notes=(
                     "PAYMENTS_LIST_DEFINITION declares the list capabilities and "
                     "build_payments_list_query normalizes/validates request state; "
                     "build_payments_list_data remains the read owner that issues the "
                     "SQL, status totals, and enrichment. The route validates through "
-                    "the contract and delegates. The CSV export intentionally reuses "
-                    "the read owner without a page cap (same canonical filter scope, "
-                    "no pagination). Gated by the existing granular "
+                    "the contract and delegates. The streaming CSV export reuses the "
+                    "same filter and stable-sort owner without a page cap or full-body "
+                    "materialization. Its customer_name column uses the customer "
+                    "account's human display identity and does not expose account "
+                    "UUIDs. Gated by the existing granular "
                     "billing:payment:read. Read-only: no admin bulk command declared, "
-                    "so no selection or bulk. Follow-up: decompose the read owner so "
-                    "list and export share a hoisted filter helper."
+                    "so no selection or bulk."
                 ),
             ),
             SOTService(
