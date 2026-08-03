@@ -784,11 +784,7 @@ def add_ticket_comment_from_form(
         entity_type="support_ticket_comment_attachment",
         actor_id=actor_id,
     )
-    mentioned_agent_ids = [
-        value
-        for item in _parse_mentions_payload(mentions)
-        if (value := parse_uuid_or_none(item)) is not None
-    ]
+    mentioned_agent_ids = _parse_mentions_payload(mentions)
     payload = build_ticket_comment_payload(
         body=body,
         is_internal=is_internal,
