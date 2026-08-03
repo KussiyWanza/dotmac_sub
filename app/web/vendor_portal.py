@@ -53,7 +53,7 @@ from app.services.vendor_submission_proposals import (
     ConfirmVendorSubmissionCommand,
 )
 from app.services.vendor_supply_views import project_workspace
-from app.web.auth.dependencies import require_web_auth
+from app.services.web_vendor_auth import require_vendor_web_auth
 
 templates = Jinja2Templates(directory="templates")
 router = APIRouter(prefix="/vendor", tags=["web-vendor-portal"])
@@ -172,7 +172,7 @@ def _route_revision_payload(
 @router.get("", response_class=HTMLResponse)
 def vendor_dashboard(
     request: Request,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.PROJECT_READ)
@@ -197,7 +197,7 @@ def vendor_project_detail(
     request: Request,
     project_id: str,
     message: str | None = None,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.PROJECT_READ)
@@ -263,7 +263,7 @@ def vendor_project_detail(
 def vendor_create_quote(
     project_id: str,
     vat_rate_percent: Decimal = Form(default=Decimal("0")),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
@@ -300,7 +300,7 @@ def vendor_request_material_release(
     item_codes: list[str] = Form(..., alias="item_code"),
     line_notes: list[str] = Form(..., alias="line_notes"),
     notes: str | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.MATERIAL_REQUEST)
@@ -357,7 +357,7 @@ def vendor_request_advance(
     project_id: str,
     amount: Decimal = Form(...),
     reason: str | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.ADVANCE_REQUEST)
@@ -396,7 +396,7 @@ def vendor_request_advance(
 def vendor_start_project(
     request: Request,
     project_id: str,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.PROJECT_EXECUTE)
@@ -423,7 +423,7 @@ def vendor_start_project(
 def vendor_complete_project(
     request: Request,
     project_id: str,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.PROJECT_EXECUTE)
@@ -454,7 +454,7 @@ def vendor_add_quote_line(
     quantity: Decimal = Form(...),
     unit_price: Decimal = Form(...),
     item_type: str | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
@@ -489,7 +489,7 @@ def vendor_submit_quote(
     request: Request,
     project_id: str,
     quote_id: str,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
@@ -517,7 +517,7 @@ def vendor_create_route_revision(
     quote_id: str,
     geojson: str = Form(...),
     length_meters: float | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
@@ -550,7 +550,7 @@ def vendor_create_route_revision(
 def vendor_submit_route_revision(
     project_id: str,
     revision_id: str,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.QUOTE_WRITE)
@@ -582,7 +582,7 @@ def vendor_submit_as_built(
     geojson: str = Form(...),
     actual_length_meters: float | None = Form(default=None),
     variation_reason: str | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.AS_BUILT_WRITE)
@@ -614,7 +614,7 @@ def vendor_create_invoice(
     project_id: str,
     invoice_number: str = Form(...),
     tax_rate_percent: Decimal = Form(default=Decimal("0")),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
@@ -649,7 +649,7 @@ def vendor_add_invoice_line(
     quantity: Decimal = Form(...),
     unit_price: Decimal = Form(...),
     item_type: str | None = Form(default=None),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
@@ -682,7 +682,7 @@ async def vendor_upload_invoice_attachment(
     project_id: str,
     invoice_id: str,
     attachment: UploadFile = File(...),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
@@ -713,7 +713,7 @@ def vendor_submit_invoice(
     request: Request,
     project_id: str,
     invoice_id: str,
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db, vendor_capabilities.INVOICE_WRITE)
@@ -739,7 +739,7 @@ def vendor_submit_invoice(
 def vendor_confirm_submission(
     project_id: str,
     confirmation_token: str = Form(...),
-    auth: dict = Depends(require_web_auth),
+    auth: dict = Depends(require_vendor_web_auth),
     db: Session = Depends(get_db),
 ):
     context = _context(auth, db)

@@ -91,6 +91,7 @@ _DEFERRED_API_ROUTER_SPECS = [
     ("app.web_domains", "router", "web", "none"),
     ("app.web.customer", "router", "web", "none"),
     ("app.web.reseller", "router", "web", "none"),
+    ("app.web.vendor_auth", "router", "web", "none"),
     ("app.web.vendor_portal", "router", "web", "none"),
     ("app.web.public", "router", "web", "none"),
     ("app.web.admin.network_routers", "router", "admin", "none"),
