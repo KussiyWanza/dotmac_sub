@@ -1,0 +1,521 @@
+{% extends "layouts/admin.html" %}
+{% from "components/ui/macros.html" import card %}
+{% block title %}New Lead - Admin{% endblock %}
+
+{% macro field_error(name) %}
+{% if field_errors.get(name) %}
+<p id="{{ name }}-error" class="mt-1 text-xs font-medium text-red-600 dark:text-red-400">{{ field_errors.get(name) }}</p>
+{% endif %}
+{% endmacro %}
+
+{% set input_class = "mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/25 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:focus:border-cyan-400 dark:focus:ring-cyan-400/25" %}
+{% set label_class = "block text-sm font-medium text-slate-700 dark:text-slate-300" %}
+{% set help_class = "mt-1 text-xs text-slate-500 dark:text-slate-400" %}
+
+{% block content %}
+<div class="mx-auto max-w-3xl space-y-5">
+    <header class="space-y-2">
+        <nav aria-label="Breadcrumb" class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <a href="/admin/sales" class="rounded focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:focus:ring-cyan-400">Sales</a>
+            <span aria-hidden="true">/</span>
+            <a href="/admin/sales/leads" class="rounded focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:focus:ring-cyan-400">Leads</a>
+            <span aria-hidden="true">/</span>
+            <span aria-current="page" class="font-medium text-slate-700 dark:text-slate-200">New Lead</span>
+        </nav>
+        <div>
+            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">New Lead</h1>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">Create and qualify a new sales opportunity</p>
+        </div>
+    </header>
+
+    {% if error %}
+    <div class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200" role="alert" tabindex="-1" data-error-banner>
+        <p class="font-semibold">We could not create this Lead.</p>
+        <p class="mt-1">{{ error }}</p>
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ action_url }}" class="space-y-5" data-lead-create-form>
+        {% include "components/forms/csrf_input.html" %}
+        <input type="hidden" name="submission_id" value="{{ lead_form.submission_id }}">
+
+        {% call card("Contact / Lead Information", color="cyan", allow_overflow=True) %}
+        <div class="space-y-5">
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                    <label class="{{ label_class }}" for="display_name">Display Name</label>
+                    <input class="{{ input_class }}" id="display_name" name="display_name" maxlength="120" value="{{ lead_form.display_name }}" autocomplete="name" aria-describedby="display_name-help{% if field_errors.get('display_name') %} display_name-error{% endif %}">
+                    <p id="display_name-help" class="{{ help_class }}">Names are split safely on the server. Empty names use Unknown.</p>
+                    {{ field_error('display_name') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="status">Status</label>
+                    <select class="{{ input_class }}" id="status" name="status" aria-describedby="{% if field_errors.get('status') %}status-error{% endif %}">
+                        {% for item in lead_statuses %}
+                        <option value="{{ item }}" {% if lead_form.status == item %}selected{% endif %}>{{ item | replace('_', ' ') | title }}</option>
+                        {% endfor %}
+                    </select>
+                    {{ field_error('status') }}
+                </div>
+                <div class="md:col-span-2">
+                    <label class="{{ label_class }}" for="owner_agent_id">Owner</label>
+                    <select class="{{ input_class }}" id="owner_agent_id" name="owner_agent_id" aria-describedby="owner-help{% if field_errors.get('owner_agent_id') %} owner_agent_id-error{% endif %}">
+                        <option value="">Unassigned</option>
+                        {% for agent in agents %}
+                        <option value="{{ agent.id }}" {% if lead_form.owner_agent_id == agent.id|string %}selected{% endif %}>{{ agent.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <p id="owner-help" class="{{ help_class }}">Only active eligible sales owners are available.</p>
+                    {{ field_error('owner_agent_id') }}
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-5 md:grid-cols-3">
+                <fieldset class="space-y-3 md:col-span-2" data-repeat-group="emails">
+                    <div class="flex items-center justify-between gap-3">
+                        <legend class="text-sm font-semibold text-slate-800 dark:text-slate-200">Emails</legend>
+                        <button type="button" class="inline-flex min-h-11 items-center rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300 dark:hover:bg-cyan-900/50 dark:focus:ring-cyan-400" data-add-row="emails">Add Email</button>
+                    </div>
+                    <div class="space-y-3" data-rows="emails">
+                        {% for value in lead_form.emails %}
+                        <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60" data-row="emails">
+                            <label class="{{ label_class }}" for="email-{{ loop.index0 }}">Email {{ loop.index }}</label>
+                            <input class="{{ input_class }}" id="email-{{ loop.index0 }}" name="emails" type="email" maxlength="320" value="{{ value }}" autocomplete="email" data-email-input>
+                            <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+                                <label class="inline-flex min-h-11 items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                                    <input type="radio" name="primary_email" value="{{ loop.index0 }}" {% if lead_form.primary_email == loop.index0|string %}checked{% endif %} class="h-4 w-4 border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-cyan-400">
+                                    Primary
+                                </label>
+                                <button type="button" class="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40 dark:focus:ring-red-400" data-remove-row>Remove</button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {{ field_error('emails') }}
+                </fieldset>
+
+                <fieldset class="space-y-3" data-repeat-group="phones">
+                    <div class="flex items-center justify-between gap-3">
+                        <legend class="text-sm font-semibold text-slate-800 dark:text-slate-200">Phones</legend>
+                        <button type="button" class="inline-flex min-h-11 items-center rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-semibold text-cyan-700 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-300 dark:hover:bg-cyan-900/50 dark:focus:ring-cyan-400" data-add-row="phones">Add Phone</button>
+                    </div>
+                    <div class="space-y-3" data-rows="phones">
+                        {% for value in lead_form.phones %}
+                        <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60" data-row="phones">
+                            <label class="{{ label_class }}" for="phone-{{ loop.index0 }}">Phone {{ loop.index }}</label>
+                            <input class="{{ input_class }}" id="phone-{{ loop.index0 }}" name="phones" type="tel" maxlength="40" value="{{ value }}" autocomplete="tel" data-phone-input>
+                            <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+                                <label class="inline-flex min-h-11 items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                                    <input type="radio" name="primary_phone" value="{{ loop.index0 }}" {% if lead_form.primary_phone == loop.index0|string %}checked{% endif %} class="h-4 w-4 border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-cyan-400">
+                                    Primary
+                                </label>
+                                <button type="button" class="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40 dark:focus:ring-red-400" data-remove-row>Remove</button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {{ field_error('phones') }}
+                </fieldset>
+            </div>
+
+            <fieldset class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/60">
+                <legend class="px-1 text-sm font-semibold text-slate-800 dark:text-slate-200">WhatsApp Channels</legend>
+                <p class="{{ help_class }}">Choose which entered phone numbers may be used as separate WhatsApp channels.</p>
+                <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2" data-whatsapp-options data-selected-indices="{{ lead_form.whatsapp_phone_indices | join(',') }}"></div>
+            </fieldset>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                    <label class="{{ label_class }}" for="address_line1">Address Line 1</label>
+                    <input class="{{ input_class }}" id="address_line1" name="address_line1" maxlength="120" value="{{ lead_form.address_line1 }}" autocomplete="address-line1">
+                    {{ field_error('address_line1') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="address_line2">Address Line 2</label>
+                    <input class="{{ input_class }}" id="address_line2" name="address_line2" maxlength="120" value="{{ lead_form.address_line2 }}" autocomplete="address-line2">
+                    {{ field_error('address_line2') }}
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div>
+                    <label class="{{ label_class }}" for="date_of_birth">Date of Birth</label>
+                    <input class="{{ input_class }}" id="date_of_birth" name="date_of_birth" type="date" value="{{ lead_form.date_of_birth }}" autocomplete="bday">
+                    {{ field_error('date_of_birth') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="gender">Gender</label>
+                    <select class="{{ input_class }}" id="gender" name="gender">
+                        {% for value, label in gender_options %}
+                        <option value="{{ value }}" {% if lead_form.gender == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    {{ field_error('gender') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="nin">NIN</label>
+                    <input class="{{ input_class }}" id="nin" name="nin" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" value="{{ lead_form.nin }}" autocomplete="off" aria-describedby="nin-help{% if field_errors.get('nin') %} nin-error{% endif %}">
+                    <p id="nin-help" class="{{ help_class }}">Exactly 11 digits when provided.</p>
+                    {{ field_error('nin') }}
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div>
+                    <label class="{{ label_class }}" for="city">City</label>
+                    <input class="{{ input_class }}" id="city" name="city" maxlength="80" value="{{ lead_form.city }}" autocomplete="address-level2">
+                    {{ field_error('city') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="postal_code">Postal Code</label>
+                    <input class="{{ input_class }}" id="postal_code" name="postal_code" maxlength="20" value="{{ lead_form.postal_code }}" autocomplete="postal-code">
+                    {{ field_error('postal_code') }}
+                </div>
+                <div>
+                    <label class="{{ label_class }}" for="country_code">Country Code</label>
+                    <input class="{{ input_class }} uppercase" id="country_code" name="country_code" maxlength="2" pattern="[A-Za-z]{1,2}" value="{{ lead_form.country_code }}" autocomplete="country" aria-describedby="country-help{% if field_errors.get('country_code') %} country_code-error{% endif %}">
+                    <p id="country-help" class="{{ help_class }}">One or two letters, normalized to uppercase.</p>
+                    {{ field_error('country_code') }}
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div>
+                    <span class="{{ label_class }}">Person</span>
+                    <div class="mt-1 flex min-h-11 items-center rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300">Linked to this Lead</div>
+                </div>
+                <div class="relative">
+                    <label class="{{ label_class }}" for="organization-search">Organization</label>
+                    <input type="hidden" id="organization_id" name="organization_id" value="{{ lead_form.organization_id }}">
+                    <input type="hidden" id="organization_label" name="organization_label" value="{{ lead_form.organization_label }}">
+                    <input class="{{ input_class }}" id="organization-search" value="{{ lead_form.organization_label }}" autocomplete="off" placeholder="Search organizations" aria-autocomplete="list" aria-controls="organization-results" aria-describedby="organization-help{% if field_errors.get('organization_id') %} organization_id-error{% endif %}">
+                    <p id="organization-help" class="{{ help_class }}">Select a result; the server validates its identifier.</p>
+                    {{ field_error('organization_id') }}
+                    <div id="organization-results" class="absolute z-30 mt-1 hidden max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-600 dark:bg-slate-800" role="listbox"></div>
+                </div>
+            </div>
+            <div class="hidden rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200" role="status" data-reseller-warning>
+                Communication for this organization is routed through its reseller. Direct email, phone, and WhatsApp channels will not be stored.
+            </div>
+        </div>
+        {% endcall %}
+
+        {% call card("Pipeline and Value", color="indigo") %}
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div>
+                <label class="{{ label_class }}" for="pipeline_id">Pipeline</label>
+                <select class="{{ input_class }}" id="pipeline_id" name="pipeline_id">
+                    <option value="">No pipeline</option>
+                    {% for pipeline in pipelines %}
+                    <option value="{{ pipeline.id }}" {% if lead_form.pipeline_id == pipeline.id|string %}selected{% endif %}>{{ pipeline.name }}</option>
+                    {% endfor %}
+                </select>
+                {{ field_error('pipeline_id') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="stage_id">Pipeline Stage</label>
+                <select class="{{ input_class }}" id="stage_id" name="stage_id">
+                    <option value="">No stage</option>
+                    {% for stage in stages %}
+                    <option value="{{ stage.id }}" data-pipeline-id="{{ stage.pipeline_id }}" {% if lead_form.stage_id == stage.id|string %}selected{% endif %}>{{ stage.name }}</option>
+                    {% endfor %}
+                </select>
+                {{ field_error('stage_id') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="lead_source">Lead Source</label>
+                <select class="{{ input_class }}" id="lead_source" name="lead_source">
+                    <option value="">Not specified</option>
+                    {% for source in lead_sources %}
+                    <option value="{{ source }}" {% if lead_form.lead_source == source %}selected{% endif %}>{{ source }}</option>
+                    {% endfor %}
+                </select>
+                {{ field_error('lead_source') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="estimated_value">Estimated Value</label>
+                <input class="{{ input_class }}" id="estimated_value" name="estimated_value" type="number" min="0" step="0.01" value="{{ lead_form.estimated_value }}" inputmode="decimal">
+                {{ field_error('estimated_value') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="currency">Currency</label>
+                <input class="{{ input_class }} uppercase" id="currency" name="currency" minlength="3" maxlength="3" pattern="[A-Za-z]{3}" value="{{ lead_form.currency }}" placeholder="NGN">
+                {{ field_error('currency') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="expected_close_date">Expected Close Date</label>
+                <input class="{{ input_class }}" id="expected_close_date" name="expected_close_date" type="date" value="{{ lead_form.expected_close_date }}">
+                {{ field_error('expected_close_date') }}
+            </div>
+            <div class="md:col-span-2 lg:col-span-3">
+                <div class="flex items-center justify-between gap-3">
+                    <label class="{{ label_class }}" for="probability">Win Probability</label>
+                    <output id="probability-value" for="probability" class="text-sm font-semibold tabular-nums text-cyan-700 dark:text-cyan-400">{{ lead_form.probability or 0 }}%</output>
+                </div>
+                <input class="mt-3 min-h-11 w-full accent-cyan-600 dark:accent-cyan-400" id="probability" name="probability" type="range" min="0" max="100" step="1" value="{{ lead_form.probability or 0 }}">
+                {{ field_error('probability') }}
+            </div>
+            <div id="lost-reason-field" class="md:col-span-2 lg:col-span-3" {% if lead_form.status != 'lost' %}hidden{% endif %}>
+                <label class="{{ label_class }}" for="lost_reason">Lost Reason</label>
+                <select class="{{ input_class }}" id="lost_reason" name="lost_reason">
+                    <option value="">Select a reason</option>
+                    {% for reason in lost_reasons %}
+                    <option value="{{ reason }}" {% if lead_form.lost_reason == reason %}selected{% endif %}>{{ reason }}</option>
+                    {% endfor %}
+                </select>
+                {{ field_error('lost_reason') }}
+            </div>
+        </div>
+        {% endcall %}
+
+        {% call card("Additional Information", color="slate") %}
+        <div class="space-y-4">
+            <div>
+                <label class="{{ label_class }}" for="region_zone_id">Region</label>
+                <select class="{{ input_class }}" id="region_zone_id" name="region_zone_id">
+                    <option value="">Select a Region</option>
+                    {% for region in regions %}
+                    <option value="{{ region.id }}" {% if lead_form.region_zone_id == region.id|string %}selected{% endif %}>{{ region.name }}</option>
+                    {% endfor %}
+                </select>
+                {{ field_error('region_zone_id') }}
+            </div>
+            <div>
+                <label class="{{ label_class }}" for="notes">Notes</label>
+                <textarea class="{{ input_class }}" id="notes" name="notes" rows="5">{{ lead_form.notes }}</textarea>
+                {{ field_error('notes') }}
+            </div>
+            <label class="inline-flex min-h-11 items-center gap-3 text-sm font-medium text-slate-700 dark:text-slate-300">
+                <input type="checkbox" name="is_active" value="true" {% if lead_form.is_active %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-cyan-400">
+                Active
+            </label>
+        </div>
+        {% endcall %}
+
+        <div class="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end dark:border-slate-700">
+            <a href="/admin/sales/leads" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:ring-cyan-400">Cancel</a>
+            <button type="submit" data-submit class="inline-flex min-h-11 min-w-36 items-center justify-center rounded-xl bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-cyan-500 dark:hover:bg-cyan-600 dark:focus:ring-cyan-400 dark:focus:ring-offset-slate-900">
+                <span data-submit-label>Create Lead</span>
+                <span data-submitting-label class="hidden">Submitting...</span>
+            </button>
+        </div>
+    </form>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+(() => {
+    const form = document.querySelector("[data-lead-create-form]");
+    if (!form) return;
+    const inputClass = {{ input_class | tojson }};
+    const selectedWhatsapp = new Set((document.querySelector("[data-whatsapp-options]").dataset.selectedIndices || "").split(",").filter(Boolean));
+
+    function reindex(group) {
+        const rows = Array.from(document.querySelectorAll(`[data-row="${group}"]`));
+        rows.forEach((row, index) => {
+            const input = row.querySelector("input:not([type=radio])");
+            const label = row.querySelector("label");
+            const radio = row.querySelector("input[type=radio]");
+            input.id = `${group === "emails" ? "email" : "phone"}-${index}`;
+            label.htmlFor = input.id;
+            label.textContent = `${group === "emails" ? "Email" : "Phone"} ${index + 1}`;
+            radio.value = String(index);
+        });
+        const checked = rows.some(row => row.querySelector("input[type=radio]").checked);
+        if (!checked && rows.length) rows[0].querySelector("input[type=radio]").checked = true;
+        if (group === "phones") renderWhatsapp();
+    }
+
+    function newRow(group) {
+        const row = document.createElement("div");
+        row.className = "rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60";
+        row.dataset.row = group;
+        const label = document.createElement("label");
+        label.className = "block text-sm font-medium text-slate-700 dark:text-slate-300";
+        const input = document.createElement("input");
+        input.className = inputClass;
+        input.name = group;
+        input.type = group === "emails" ? "email" : "tel";
+        input.maxLength = group === "emails" ? 320 : 40;
+        input.dataset[group === "emails" ? "emailInput" : "phoneInput"] = "";
+        const actions = document.createElement("div");
+        actions.className = "mt-2 flex flex-wrap items-center justify-between gap-2";
+        const primaryLabel = document.createElement("label");
+        primaryLabel.className = "inline-flex min-h-11 items-center gap-2 text-sm text-slate-700 dark:text-slate-300";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = group === "emails" ? "primary_email" : "primary_phone";
+        radio.className = "h-4 w-4 border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-cyan-400";
+        primaryLabel.append(radio, document.createTextNode("Primary"));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.dataset.removeRow = "";
+        remove.className = "inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-red-500 dark:text-red-400 dark:hover:bg-red-950/40 dark:focus:ring-red-400";
+        remove.textContent = "Remove";
+        actions.append(primaryLabel, remove);
+        row.append(label, input, actions);
+        return row;
+    }
+
+    document.querySelectorAll("[data-add-row]").forEach(button => {
+        button.addEventListener("click", () => {
+            const group = button.dataset.addRow;
+            const container = document.querySelector(`[data-rows="${group}"]`);
+            const row = newRow(group);
+            container.appendChild(row);
+            reindex(group);
+            row.querySelector("input:not([type=radio])").focus();
+        });
+    });
+
+    form.addEventListener("click", event => {
+        const button = event.target.closest("[data-remove-row]");
+        if (!button) return;
+        const row = button.closest("[data-row]");
+        const group = row.dataset.row;
+        const rows = document.querySelectorAll(`[data-row="${group}"]`);
+        if (rows.length === 1) {
+            row.querySelector("input:not([type=radio])").value = "";
+            row.querySelector("input[type=radio]").checked = true;
+        } else {
+            row.remove();
+        }
+        reindex(group);
+    });
+
+    function renderWhatsapp() {
+        const container = document.querySelector("[data-whatsapp-options]");
+        const previous = new Set(Array.from(container.querySelectorAll("input:checked")).map(input => input.dataset.phoneValue));
+        container.replaceChildren();
+        const phones = Array.from(document.querySelectorAll("[data-phone-input]"));
+        phones.forEach((input, index) => {
+            const value = input.value.trim();
+            if (!value) return;
+            const label = document.createElement("label");
+            label.className = "inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.name = "whatsapp_phone_indices";
+            checkbox.value = String(index);
+            checkbox.dataset.phoneValue = value;
+            checkbox.className = "h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-emerald-400";
+            checkbox.checked = previous.has(value) || selectedWhatsapp.has(String(index));
+            label.append(checkbox, document.createTextNode(value));
+            container.appendChild(label);
+        });
+        if (!container.children.length) {
+            const empty = document.createElement("p");
+            empty.className = "text-sm text-slate-500 dark:text-slate-400";
+            empty.textContent = "Enter a phone number to make it available here.";
+            container.appendChild(empty);
+        }
+    }
+    form.addEventListener("input", event => {
+        if (event.target.matches("[data-phone-input]")) renderWhatsapp();
+    });
+    renderWhatsapp();
+
+    const pipeline = document.getElementById("pipeline_id");
+    const stage = document.getElementById("stage_id");
+    function filterStages() {
+        let selectedVisible = !stage.value;
+        Array.from(stage.options).forEach((option, index) => {
+            if (index === 0) return;
+            const visible = !pipeline.value || option.dataset.pipelineId === pipeline.value;
+            option.hidden = !visible;
+            option.disabled = !visible;
+            if (visible && option.value === stage.value) selectedVisible = true;
+        });
+        if (!selectedVisible) stage.value = "";
+    }
+    pipeline.addEventListener("change", filterStages);
+    filterStages();
+
+    const status = document.getElementById("status");
+    const lostReason = document.getElementById("lost-reason-field");
+    function toggleLostReason() { lostReason.hidden = status.value !== "lost"; }
+    status.addEventListener("change", toggleLostReason);
+    toggleLostReason();
+
+    const probability = document.getElementById("probability");
+    const probabilityValue = document.getElementById("probability-value");
+    probability.addEventListener("input", () => { probabilityValue.textContent = `${probability.value}%`; });
+
+    const orgSearch = document.getElementById("organization-search");
+    const orgId = document.getElementById("organization_id");
+    const orgLabel = document.getElementById("organization_label");
+    const orgResults = document.getElementById("organization-results");
+    const resellerWarning = document.querySelector("[data-reseller-warning]");
+    let selectedLabel = orgSearch.value;
+    let orgTimer = null;
+    let orgController = null;
+    function hideOrgResults() { orgResults.classList.add("hidden"); orgResults.replaceChildren(); }
+    orgSearch.addEventListener("input", () => {
+        const query = orgSearch.value.trim();
+        if (orgSearch.value !== selectedLabel) {
+            orgId.value = "";
+            orgLabel.value = orgSearch.value;
+            resellerWarning.classList.add("hidden");
+        }
+        window.clearTimeout(orgTimer);
+        if (orgController) orgController.abort();
+        if (query.length < 2) { hideOrgResults(); return; }
+        orgTimer = window.setTimeout(async () => {
+            orgController = new AbortController();
+            try {
+                const response = await fetch(`/api/v1/search/organizations?q=${encodeURIComponent(query)}&limit=20`, {headers: {"Accept": "application/json"}, signal: orgController.signal});
+                if (!response.ok) throw new Error("search unavailable");
+                const payload = await response.json();
+                orgResults.replaceChildren();
+                (payload.items || []).forEach(item => {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.role = "option";
+                    button.className = "block min-h-11 w-full px-3 py-2 text-left text-sm text-slate-900 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none dark:text-white dark:hover:bg-slate-700 dark:focus:bg-slate-700";
+                    button.textContent = item.label;
+                    button.addEventListener("click", () => {
+                        orgId.value = item.id;
+                        selectedLabel = item.label;
+                        orgLabel.value = item.label;
+                        orgSearch.value = item.label;
+                        resellerWarning.classList.toggle("hidden", !item.reseller_controlled);
+                        hideOrgResults();
+                    });
+                    orgResults.appendChild(button);
+                });
+                if (!orgResults.children.length) {
+                    const empty = document.createElement("p");
+                    empty.className = "px-3 py-3 text-sm text-slate-500 dark:text-slate-400";
+                    empty.textContent = "No matching organizations found.";
+                    orgResults.appendChild(empty);
+                }
+                orgResults.classList.remove("hidden");
+            } catch (error) {
+                if (error.name !== "AbortError") {
+                    orgResults.textContent = "Organization search is unavailable.";
+                    orgResults.classList.remove("hidden");
+                }
+            }
+        }, 250);
+    });
+    document.addEventListener("click", event => {
+        if (!orgResults.contains(event.target) && event.target !== orgSearch) hideOrgResults();
+    });
+
+    form.addEventListener("submit", event => {
+        const submit = form.querySelector("[data-submit]");
+        if (!form.checkValidity()) {
+            event.preventDefault();
+            submit.disabled = false;
+            form.querySelector("[data-submit-label]").classList.remove("hidden");
+            form.querySelector("[data-submitting-label]").classList.add("hidden");
+            form.reportValidity();
+            return;
+        }
+        submit.disabled = true;
+        form.setAttribute("aria-busy", "true");
+        form.querySelector("[data-submit-label]").classList.add("hidden");
+        form.querySelector("[data-submitting-label]").classList.remove("hidden");
+    });
+})();
+</script>
+{% endblock %}

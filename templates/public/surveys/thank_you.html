@@ -1,1 +1,20 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thank you · Dotmac</title><script src="https://cdn.tailwindcss.com"></script></head><body class="grid min-h-screen place-items-center bg-slate-100 px-4"><main class="max-w-lg rounded-2xl bg-white p-10 text-center shadow-sm"><div class="mx-auto grid h-14 w-14 place-items-center rounded-full bg-emerald-100 text-2xl text-emerald-700">✓</div><h1 class="mt-5 text-3xl font-bold text-slate-900">Thank you</h1><p class="mt-2 text-slate-600">Your response to “{{ survey.name }}” has been recorded.</p></main></body></html>
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Thank you · Dotmac</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="grid min-h-full place-items-center bg-slate-100 px-4 text-slate-900 dark:bg-slate-950 dark:text-white">
+  <main class="max-w-lg rounded-lg border border-slate-200 bg-white p-10 text-center shadow-sm dark:border-slate-700 dark:bg-slate-900">
+    <div class="mx-auto grid h-14 w-14 place-items-center rounded-full bg-emerald-100 text-2xl text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" aria-hidden="true">✓</div>
+    <h1 class="mt-5 text-3xl font-bold">Thank you</h1>
+    {% if thank_you_message %}
+    <p class="mt-2 text-slate-600 dark:text-slate-300">{{ thank_you_message }}</p>
+    {% else %}
+    <p class="mt-2 text-slate-600 dark:text-slate-300">Your response to “{{ survey_name }}” has been recorded.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

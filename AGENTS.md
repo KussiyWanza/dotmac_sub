@@ -61,6 +61,15 @@ authoritative documents in the same change that updates the contract.
   and value objects explicitly at adapter, persistence, or reporting boundaries.
 - Domain services raise domain errors. HTTP responses, redirects, task retries,
   and transport-specific errors are mapped only by adapters.
+- Adapters call owning services with keyword arguments. Passing a long
+  positional list across the route/service boundary lets a mid-signature
+  parameter insertion silently rebind every argument after it — four auth API
+  endpoints answered 400/500 to every request that way. Three positional
+  arguments is the enforced ceiling
+  (`tests/architecture/test_adapter_keyword_service_calls.py`, ratcheted by
+  `adapter_keyword_service_call_baseline.txt`). When you add a parameter to a
+  widely called service, append it last or make it keyword-only, and convert
+  the positional callers in the same change.
 - Never mass-assign untrusted mappings to ORM entities. Update an explicit set
   of fields from a validated command.
 - State-changing commands define locking, idempotency, audit, event, and retry

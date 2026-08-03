@@ -17,3 +17,4 @@ class TypeaheadItem(BaseModel):
     account_status: str | None = None
     plan: str | None = None
     service_address: str | None = None
+    reseller_controlled: bool | None = None

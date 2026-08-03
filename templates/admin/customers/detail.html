@@ -33,7 +33,10 @@
     <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="">
     <style>
-        #customer-mini-map { height: 200px; }
+        #customer-mini-map { height: 400px; }
+        @media (max-width: 640px) {
+            #customer-mini-map { height: 300px; }
+        }
     </style>
     {% endif %}
     {# Hero — flat record header from the subscriber_summary projection (2b) #}
@@ -244,14 +247,15 @@
             </div>
         </div>
 
-        <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            <!-- Left Column: Contact + Login As Customer -->
+        <div class="grid gap-0 md:grid-cols-2 lg:grid-cols-3">
+            <!-- Account and profile work surfaces -->
             <div class="contents">
                 <!-- CRM Sync Status -->
                 {% set crm_status = crm_sync_status|default({}) %}
                 {% set identity = identity_profile|default({}) %}
                 {% set crm_tone = 'negative' if crm_status.status == 'failed' else 'positive' if crm_status.status == 'linked' else 'warning' %}
-                <div class="status-panel status-panel-{{ crm_tone }} order-1 rounded-2xl border shadow-sm lg:col-span-1">
+                {% set identity_tone = 'positive' if identity.complete else 'warning' %}
+                <div class="status-panel status-panel-{{ crm_tone }} order-5 rounded-b-lg border border-t-0 shadow-sm md:col-span-2 lg:col-span-1 lg:rounded-bl-none">
                     <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
                         <h3 class="font-semibold text-slate-900 dark:text-white">CRM Sync</h3>
                         <span class="status-tone status-tone-{{ crm_tone }} inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold">
@@ -291,36 +295,14 @@
                     </div>
                 </div>
 
-                {% set identity_tone = 'positive' if identity.complete else 'warning' %}
-                <div class="status-panel status-panel-{{ identity_tone }} order-2 rounded-2xl border shadow-sm lg:col-span-2">
-                    <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
-                        <h3 class="font-semibold text-slate-900 dark:text-white">Identity Profile</h3>
-                        <span class="status-tone status-tone-{{ identity_tone }} inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold">
-                            {{ identity.completed_count or 0 }}/{{ identity.total_count or 0 }} complete
-                        </span>
-                    </div>
-                    <div class="space-y-3 p-5">
-                        <div class="grid gap-3 sm:grid-cols-2">
-                            <div class="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">NIN</p>
-                                <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ identity.nin_masked or 'Not provided' }}</p>
-                            </div>
-                            <div class="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Verification</p>
-                                <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ 'Verified' if identity.nin_verified else 'Unverified' }}</p>
-                            </div>
+                <!-- Customer Profile and Location -->
+                <section aria-labelledby="customer-profile-location-heading" class="order-1 mb-6 rounded-lg border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800 md:col-span-2 lg:col-span-3">
+                    <div class="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-700 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <h3 id="customer-profile-location-heading" class="font-semibold text-slate-900 dark:text-white">Customer Profile &amp; Location</h3>
+                            <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Contact, identity and service-location details</p>
                         </div>
-                        {% if identity.missing_labels %}
-                        <p class="status-foreground status-tone-warning text-xs">Missing: {{ identity.missing_labels }}</p>
-                        {% endif %}
-                    </div>
-                </div>
-
-                <!-- Contact Information Card -->
-                <div class="order-3 rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800 lg:col-span-1">
-                    <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
-                        <h3 class="font-semibold text-slate-900 dark:text-white">Contact Information</h3>
-                        <div class="flex items-center gap-3">
+                        <div class="flex flex-wrap items-center gap-3">
                             {% if map_data %}
                             <a href="/admin/network/map" class="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">Full Map</a>
                             {% endif %}
@@ -329,7 +311,12 @@
                             <a href="/admin/customers/{{ customer_type }}/{{ customer.id }}/edit" class="text-xs font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400">Edit</a>
                         </div>
                     </div>
-                    <div class="p-5 space-y-4">
+                    <div class="grid lg:grid-cols-5">
+                        <div class="space-y-5 p-5 lg:col-span-2">
+                            <div class="space-y-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <h4 class="text-sm font-semibold text-slate-900 dark:text-white">Contact details</h4>
+                                </div>
                         {% if organization %}
                         <div class="flex items-start gap-3">
                             <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-50 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
@@ -367,15 +354,80 @@
                                 {% endif %}
                             </div>
                         </div>
-                        <div class="flex items-start gap-3">
-                            <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-50 text-violet-600 dark:bg-violet-900/30 dark:text-violet-400">
-                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>
                             </div>
-                            <div>
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">NIN</p>
-                                <p class="text-sm font-medium text-slate-900 dark:text-white">{{ identity.nin_masked or 'Not provided' }}</p>
+
+                            <div class="border-t border-slate-200 pt-5 dark:border-slate-700">
+                                <div class="mb-3 flex items-center justify-between gap-3">
+                                    <h4 class="text-sm font-semibold text-slate-900 dark:text-white">Identity details</h4>
+                                    <span class="status-tone status-tone-{{ identity_tone }} inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold">
+                                        {{ identity.completed_count or 0 }}/{{ identity.total_count or 0 }} complete
+                                    </span>
+                                </div>
+                                <div class="grid gap-3 sm:grid-cols-2">
+                                    <div class="min-w-0 rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <p class="text-xs font-medium text-slate-500 dark:text-slate-400">NIN</p>
+                                        <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ identity.nin_masked or 'Not provided' }}</p>
+                                    </div>
+                                    <div class="min-w-0 rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Verification</p>
+                                        <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ 'Verified' if identity.nin_verified else 'Unverified' }}</p>
+                                    </div>
+                                </div>
+                                {% if identity.missing_labels %}
+                                <p class="status-foreground status-tone-warning mt-2 text-xs">Missing: {{ identity.missing_labels }}</p>
+                                {% endif %}
                             </div>
+
+                            {% if organization %}
+                            <div class="border-t border-slate-200 pt-5 dark:border-slate-700">
+                                <h4 class="mb-3 text-sm font-semibold text-slate-900 dark:text-white">Business details</h4>
+                                <dl class="grid gap-3 sm:grid-cols-2">
+                                    <div class="rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Company Name</dt>
+                                        <dd class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ organization.name }}</dd>
+                                    </div>
+                                    {% if organization.legal_name %}
+                                    <div class="rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Legal Name</dt>
+                                        <dd class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ organization.legal_name }}</dd>
+                                    </div>
+                                    {% endif %}
+                                    {% if organization.tax_id %}
+                                    <div class="rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Tax ID</dt>
+                                        <dd class="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-white">{{ organization.tax_id }}</dd>
+                                    </div>
+                                    {% endif %}
+                                    {% if organization.domain %}
+                                    <div class="rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Domain</dt>
+                                        <dd class="mt-1 font-mono text-sm font-semibold text-slate-900 dark:text-white">{{ organization.domain }}</dd>
+                                    </div>
+                                    {% endif %}
+                                    {% if organization.website %}
+                                    <div class="rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30 sm:col-span-2">
+                                        <dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Website</dt>
+                                        <dd class="mt-1"><a href="{{ organization.website }}" target="_blank" rel="noopener" class="text-sm font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400">{{ organization.website }}</a></dd>
+                                    </div>
+                                    {% endif %}
+                                </dl>
+                                {% if organization.notes %}
+                                <div class="mt-3 rounded-lg border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
+                                    <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Notes</p>
+                                    <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">{{ organization.notes }}</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
                         </div>
+
+                        <div class="space-y-4 border-t border-slate-200 p-5 dark:border-slate-700 lg:col-span-3 lg:border-l lg:border-t-0">
+                            <div class="flex items-center justify-between gap-3">
+                                <h4 class="text-sm font-semibold text-slate-900 dark:text-white">Location</h4>
+                                {% if map_data %}
+                                <span class="text-xs text-slate-500 dark:text-slate-400">Mapped service address</span>
+                                {% endif %}
+                            </div>
                         <div class="flex items-start gap-3">
                             <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-50 text-slate-600 dark:bg-slate-700 dark:text-slate-400">
                                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
@@ -396,8 +448,8 @@
                         </div>
 
                         {% if map_data %}
-                        <div class="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/30">
-                            <div id="customer-mini-map" class="overflow-hidden rounded-xl"></div>
+                        <div class="space-y-3 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/30">
+                            <div id="customer-mini-map" class="overflow-hidden rounded-lg"></div>
                             <div class="flex flex-wrap items-center gap-2">
                                 <button type="button"
                                         id="customer-map-click-toggle"
@@ -435,7 +487,12 @@
                             </div>
                         </div>
                         {% elif geocode_target %}
-                        <div class="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/30">
+                        <div class="min-h-[300px] space-y-3 rounded-lg border border-slate-200/80 bg-slate-50/60 p-4 dark:border-slate-700 dark:bg-slate-900/30 sm:min-h-[400px]">
+                            <div class="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white/70 px-4 text-center dark:border-slate-600 dark:bg-slate-800/50">
+                                <svg class="h-8 w-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                <p class="mt-2 text-sm font-semibold text-slate-900 dark:text-white">Location not set</p>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Find the address to place this customer on the map.</p>
+                            </div>
                             <button type="button"
                                     id="customer-geocode-btn"
                                     data-address-id="{{ geocode_target.id or '' }}"
@@ -470,66 +527,28 @@
                                 Save coordinates
                             </button>
                         </div>
+                        {% else %}
+                        <div class="flex min-h-[300px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50/60 px-5 text-center dark:border-slate-600 dark:bg-slate-900/30 sm:min-h-[400px]">
+                            <svg class="h-10 w-10 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            <p class="mt-3 text-sm font-semibold text-slate-900 dark:text-white">Location not set</p>
+                            <p class="mt-1 max-w-sm text-xs text-slate-500 dark:text-slate-400">Add an address before setting this customer&rsquo;s map location.</p>
+                            <button type="button" @click="showAddressModal = true" class="mt-4 inline-flex items-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700">
+                                Add address
+                            </button>
+                        </div>
                         {% endif %}
                     </div>
                 </div>
+                </section>
 
-                <!-- Business Details (shown when customer belongs to an organization) -->
-                {% if organization %}
-                <div x-data="{ open: true }" class="order-5 rounded-2xl border border-purple-200/60 bg-white shadow-sm dark:border-purple-800/40 dark:bg-slate-800 md:col-span-2 lg:col-span-3">
-                    <button @click="open = !open" class="flex w-full items-center justify-between border-b border-purple-100/60 px-5 py-4 dark:border-purple-800/30 text-left">
-                        <div class="flex items-center gap-2">
-                            <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-50 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
-                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5"/></svg>
-                            </div>
-                            <h3 class="font-semibold text-slate-900 dark:text-white">Business Details</h3>
-                        </div>
-                        <svg :class="open ? 'rotate-180' : ''" class="h-4 w-4 text-slate-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                    </button>
-                    <div x-show="open" x-collapse class="p-5 space-y-3">
-                        <div class="grid gap-3 sm:grid-cols-2">
-                            <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Company Name</p>
-                                <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ organization.name }}</p>
-                            </div>
-                            {% if organization.legal_name %}
-                            <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Legal Name</p>
-                                <p class="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{{ organization.legal_name }}</p>
-                            </div>
-                            {% endif %}
-                            {% if organization.tax_id %}
-                            <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Tax ID</p>
-                                <p class="mt-1 text-sm font-mono font-semibold text-slate-900 dark:text-white">{{ organization.tax_id }}</p>
-                            </div>
-                            {% endif %}
-                            {% if organization.domain %}
-                            <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Domain</p>
-                                <p class="mt-1 text-sm font-mono font-semibold text-slate-900 dark:text-white">{{ organization.domain }}</p>
-                            </div>
-                            {% endif %}
-                            {% if organization.website %}
-                            <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30 sm:col-span-2">
-                                <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Website</p>
-                                <a href="{{ organization.website }}" target="_blank" rel="noopener" class="mt-1 text-sm font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400">{{ organization.website }}</a>
-                            </div>
-                            {% endif %}
-                        </div>
-                        {% if organization.notes %}
-                        <div class="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-900/30">
-                            <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Notes</p>
-                            <p class="mt-1 text-sm text-slate-700 dark:text-slate-300">{{ organization.notes }}</p>
-                        </div>
-                        {% endif %}
-                    </div>
+                <div class="order-2 rounded-t-lg border border-slate-200/60 bg-white px-5 py-4 shadow-sm dark:border-slate-700/60 dark:bg-slate-800 md:col-span-2 lg:col-span-3">
+                    <h3 class="font-semibold text-slate-900 dark:text-white">Account &amp; Access</h3>
+                    <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Subscriber account, portal access and CRM connection</p>
                 </div>
-                {% endif %}
 
                 <!-- Portal Access -->
                 {% set pppoe_access = pppoe_access|default({'has_credential': false, 'credential_id': none, 'login': none, 'has_password': false}) %}
-                <div class="order-4 rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800 lg:col-span-2">
+                <div class="order-4 border border-t-0 border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800 md:col-span-2 lg:col-span-2 lg:rounded-bl-lg lg:border-r-0">
                     <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
                         <h3 class="font-semibold text-slate-900 dark:text-white">Portal Access</h3>
                         <span class="text-xs text-slate-500 dark:text-slate-400">Login, impersonation & PPPoE</span>
@@ -733,10 +752,10 @@
                 </div>
             </div>
 
-            <!-- Center Column: Subscriber Accounts + Addresses -->
-            <div class="order-6 space-y-6 md:col-span-2 lg:col-span-3">
+            <!-- Subscriber account section within Account & Access -->
+            <div class="order-3 md:col-span-2 lg:col-span-3">
                 <!-- Subscriber Accounts -->
-                <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
+                <div class="border border-t-0 border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
                     <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
                         <h3 class="font-semibold text-slate-900 dark:text-white">Subscriber Accounts</h3>
                         {% if not organization %}
@@ -805,63 +824,6 @@
                     </div>
                     {% endif %}
                 </div>
-
-                <!-- Active Subscriptions Preview -->
-                {% if subscriptions %}
-                <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
-                    <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
-                        <h3 class="font-semibold text-slate-900 dark:text-white">Active Subscriptions</h3>
-                        <button @click="activeTab = 'subscriptions'; serviceSubTab = 'subscriptions'" class="text-xs font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400">View all</button>
-                    </div>
-                    <div class="divide-y divide-slate-100 dark:divide-slate-700">
-                        {% for subscription in subscriptions[:3] %}
-                        {% set sub_status = subscription.status.value if subscription.status is not string and subscription.status else (subscription.status | default('pending')) %}
-                        {% set show_service_assignments = sub_status != 'disabled' %}
-                        <div class="px-5 py-4">
-                            <div class="flex items-start justify-between">
-                                <div class="flex items-start gap-3">
-                                    <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">
-                                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
-                                    </div>
-                                    <div>
-                                        <a href="/admin/catalog/subscriptions/{{ subscription.id }}" class="text-sm font-semibold text-slate-900 transition-colors hover:text-amber-600 dark:text-white dark:hover:text-amber-400">{{ subscription.offer.name if subscription.offer else 'Subscription' }}</a>
-                                        {{ status_presentation_badge(subscription_status_presentations.get(subscription.id|string), pulse=(sub_status == 'active'), size="sm") }}
-                                        {% if show_service_assignments %}
-                                        <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                                            {% if subscription.login %}
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                                                {{ subscription.login }}
-                                            </span>
-                                            {% endif %}
-                                            {% if subscription.ipv4_address %}
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
-                                                {{ subscription.ipv4_address }}
-                                            </span>
-                                            {% endif %}
-                                            {% if subscription.ipv6_address %}
-                                            <span class="flex items-center gap-1">
-                                                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
-                                                {{ subscription.ipv6_address }}
-                                            </span>
-                                            {% endif %}
-                                        </div>
-                                        {% endif %}
-                                    </div>
-                                </div>
-                                <div class="text-right">
-                                    {% if subscription.unit_price is not none %}
-                                    <p class="text-sm font-bold text-slate-900 dark:text-white">₦{{ '{:,.0f}'.format(subscription.unit_price) }}</p>
-                                    <p class="text-xs text-slate-400">/month</p>
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
 
             </div>
         </div>

@@ -35,6 +35,9 @@ writers.
 
 - Inbox identity, unread total, realtime connection state, search, and primary
   new-conversation action.
+- Current operator availability with explicit online, away, and offline
+  controls. Only online operators are eligible for automatic Team Inbox
+  conversation assignment.
 - Common status and assignment cohorts with authoritative counts where the
   backend currently exposes them.
 - A paginated conversation queue ordered by the canonical list projection.
@@ -49,6 +52,11 @@ Primary page action: start a conversation.
 Common conversation actions: reply, add private note, assign, change status,
 change priority, snooze, mute, apply labels, retry a failed message, open
 contact context, and start a ticket handoff.
+
+Operator availability action: set my Team Inbox availability to online, away,
+or offline through `communications.team_inbox_commands`. The routing owner uses
+effective availability for automatic conversation assignment; away and offline
+operators remain visible but are not auto-selected.
 
 The UI projection owns the labels for the existing lower-is-more-urgent numeric
 priority: `100` none, `75` low, `50` medium, `25` high, and `0` urgent. Unknown

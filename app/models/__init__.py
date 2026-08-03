@@ -171,6 +171,8 @@ from app.models.comms import (  # noqa: F401
     CustomerNotificationEvent,
     CustomerNotificationStatus,
     Survey,
+    SurveyInvitation,
+    SurveyResponse,
 )
 from app.models.comms_campaign import (  # noqa: F401
     Campaign,

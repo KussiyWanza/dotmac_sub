@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.billing import Invoice
 from app.models.catalog import CatalogOffer, NasDevice, Subscription
 from app.models.network_monitoring import NetworkDevice, PopSite
+from app.models.organization import Organization, OrganizationAccountType
 from app.models.party import Party, PartyContactPoint, PartyContactPointType
 from app.models.subscriber import Reseller, Subscriber, SubscriberCategory, UserType
 from app.schemas.typeahead import TypeaheadItem
@@ -531,6 +532,44 @@ def organizations(db: Session, query: str, limit: int) -> list[dict]:
 
 def business_accounts_response(db: Session, query: str, limit: int) -> dict:
     return list_response(organizations(db, query, limit), limit, 0)
+
+
+def organization_profiles(db: Session, query: str, limit: int) -> list[TypeaheadItem]:
+    """Search active native Organization profiles in one batched query."""
+
+    term = (query or "").strip()
+    if not term:
+        return []
+    like_term = f"%{term}%"
+    rows = (
+        db.query(Organization)
+        .filter(Organization.is_active.is_(True))
+        .filter(
+            or_(
+                Organization.name.ilike(like_term),
+                Organization.legal_name.ilike(like_term),
+                Organization.domain.ilike(like_term),
+            )
+        )
+        .order_by(Organization.name.asc(), Organization.id.asc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        TypeaheadItem(
+            id=organization.id,
+            label=organization.name,
+            type="organization",
+            reseller_controlled=(
+                organization.account_type == OrganizationAccountType.reseller.value
+            ),
+        )
+        for organization in rows
+    ]
+
+
+def organization_profiles_response(db: Session, query: str, limit: int) -> dict:
+    return list_response(organization_profiles(db, query, limit), limit, 0)
 
 
 def catalog_offers(db: Session, query: str, limit: int) -> list[dict]:

@@ -764,3 +764,127 @@ def test_capped_customers_are_reached_on_the_next_pass(db_session, catalog_offer
         if row.status == NoticeStatus.queued.value
     ]
     assert len({row.subscriber_id for row in queued}) == 3
+
+
+# --- dry run must be able to preview the whole conversation ------------------
+
+
+def test_dry_run_reaches_update_and_restoration(db_session, catalog_offer):
+    """Dry run is the only pre-arming observation mode. If its own planned
+    rows did not count as lineage it could never leave the opening stage, and
+    the cutover gate would be blind to the recovery cohort it exists to check.
+    """
+
+    _armed(db_session, dry_run=True)
+    _nas, node, _customers = _node_with_customers(db_session, catalog_offer.id, 3)
+    incident = declare_outage(db_session, node=node)
+    incident.started_at = NOW - timedelta(hours=1)
+    db_session.flush()
+
+    send_incident_notices(db_session, incident, actor="test", now=NOW)
+    assert len(_notices(db_session, incident, stage=NoticeStage.opened)) == 3
+
+    send_incident_notices(
+        db_session, incident, actor="test", now=NOW + timedelta(hours=7)
+    )
+    assert len(_notices(db_session, incident, stage=NoticeStage.update)) == 3
+
+    resolve_outage(db_session, incident.id)
+    db_session.flush()
+    send_incident_notices(
+        db_session, incident, actor="test", now=NOW + timedelta(hours=8)
+    )
+    restored = _notices(db_session, incident, stage=NoticeStage.restored)
+    assert len(restored) == 3
+    assert all(row.status == NoticeStatus.planned_dry_run.value for row in restored)
+    assert all(row.communication_intent_id is None for row in restored)
+
+
+def test_dry_run_restoration_cohort_still_excludes_a_joiner(db_session, catalog_offer):
+    """The simulated cohort must obey the same rule as the real one."""
+
+    _armed(db_session, dry_run=True)
+    nas, node, _customers = _node_with_customers(db_session, catalog_offer.id, 2)
+    incident = declare_outage(db_session, node=node)
+    incident.started_at = NOW - timedelta(hours=1)
+    db_session.flush()
+    send_incident_notices(db_session, incident, actor="test", now=NOW)
+    told = {
+        r.subscriber_id
+        for r in _notices(db_session, incident, stage=NoticeStage.opened)
+    }
+
+    late = Subscriber(first_name="Late", last_name="Dry", email="late-dry@example.test")
+    db_session.add(late)
+    db_session.flush()
+    db_session.add(
+        Subscription(
+            subscriber_id=late.id,
+            offer_id=catalog_offer.id,
+            status=SubscriptionStatus.active,
+            provisioning_nas_device_id=nas.id,
+        )
+    )
+    resolve_outage(db_session, incident.id)
+    db_session.flush()
+    send_incident_notices(
+        db_session, incident, actor="test", now=NOW + timedelta(hours=2)
+    )
+
+    restored = _notices(db_session, incident, stage=NoticeStage.restored)
+    assert {r.subscriber_id for r in restored} == told
+    assert late.id not in {r.subscriber_id for r in restored}
+
+
+def test_simulated_lineage_never_suppresses_a_real_message(db_session, catalog_offer):
+    """Arming after a dry-run period must open with EVERY customer — nobody
+    was actually told, so nobody may be skipped."""
+
+    _armed(db_session, dry_run=True)
+    _nas, node, _customers = _node_with_customers(db_session, catalog_offer.id, 3)
+    incident = declare_outage(db_session, node=node)
+    incident.started_at = NOW - timedelta(hours=1)
+    db_session.flush()
+    send_incident_notices(db_session, incident, actor="test", now=NOW)
+    resolve_outage(db_session, incident.id)
+    db_session.flush()
+    send_incident_notices(
+        db_session, incident, actor="test", now=NOW + timedelta(hours=2)
+    )
+    assert len(_notices(db_session, incident, stage=NoticeStage.restored)) == 3
+
+    # Now arm for real on a fresh incident: dry lineage must not carry over.
+    _gate(db_session, "outage_customer_comms_dry_run", "false")
+    second = declare_outage(db_session, node=node)
+    second.started_at = NOW + timedelta(hours=3)
+    db_session.flush()
+    result = send_incident_notices(
+        db_session, second, actor="test", now=NOW + timedelta(hours=4)
+    )
+
+    assert result.queued == 3
+    opened = _notices(db_session, second, stage=NoticeStage.opened)
+    assert all(row.status == NoticeStatus.queued.value for row in opened)
+
+
+def test_real_run_ignores_dry_rows_on_the_same_incident(db_session, catalog_offer):
+    """Dry and real rows coexist on one incident without interfering."""
+
+    _armed(db_session, dry_run=True)
+    _nas, node, _customers = _node_with_customers(db_session, catalog_offer.id, 2)
+    incident = declare_outage(db_session, node=node)
+    incident.started_at = NOW - timedelta(hours=1)
+    db_session.flush()
+    send_incident_notices(db_session, incident, actor="test", now=NOW)
+    assert len(_notices(db_session, incident, stage=NoticeStage.opened)) == 2
+
+    _gate(db_session, "outage_customer_comms_dry_run", "false")
+    result = send_incident_notices(
+        db_session, incident, actor="test", now=NOW + timedelta(minutes=5)
+    )
+
+    # The real run still owes everyone an opening, and queues it.
+    assert result.queued == 2
+    rows = _notices(db_session, incident, stage=NoticeStage.opened)
+    assert sum(1 for r in rows if r.status == NoticeStatus.planned_dry_run.value) == 2
+    assert sum(1 for r in rows if r.status == NoticeStatus.queued.value) == 2

@@ -36,6 +36,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -60,6 +61,29 @@ logger = logging.getLogger(__name__)
 # ── Result shape ────────────────────────────────────────────────────────────
 
 
+class SweepDisposition(StrEnum):
+    """What happened to one ONT in a sweep pass.
+
+    A tuple of ``(reachable, success)`` could not distinguish "we chose not to
+    touch this device" from "we could not reach it", so a hold discovered at
+    the point of use was counted as unreachable -- reporting a deliberate
+    exclusion as an outage.
+    """
+
+    reconciled = "reconciled"
+    unreachable = "unreachable"
+    held = "held"
+    missing = "missing"
+
+
+@dataclass(frozen=True)
+class SweepOutcome:
+    """Typed result of one ONT's sweep step."""
+
+    disposition: SweepDisposition
+    success: bool = False
+
+
 @dataclass
 class SweepStats:
     """Roll-up of one sweep pass — emitted to logs and metrics."""
@@ -69,6 +93,10 @@ class SweepStats:
     total_onts: int = 0
     reconciled: int = 0
     skipped_unreachable: int = 0
+    #: ONTs excluded by a reviewed per-ONT hold. Reported separately from
+    #: `skipped_unreachable` because "we chose not to" and "we could not" are
+    #: different operational facts.
+    held: int = 0
     succeeded: int = 0
     failed: int = 0
     deferred: int = 0
@@ -92,8 +120,11 @@ def _sweep_one(
     ping_function: PingFunction | None,
     reconcile_fn: Callable = reconcile_ont,
     alert_threshold: int = 0,
-) -> tuple[bool, bool]:
-    """Reconcile one ONT in sweep mode. Returns ``(reachable, success)``.
+) -> SweepOutcome:
+    """Reconcile one ONT in sweep mode.
+
+    Returns a typed ``SweepOutcome`` so a hold is reported as HELD rather than
+    collapsing into "unreachable".
 
     Resolves the desired state to read the mgmt IP for the reachability
     check. If the ONT is unreachable, the per-ONT
@@ -108,9 +139,31 @@ def _sweep_one(
     operator's monitoring stack learns about the unreachable ONT on the
     cycle the threshold is crossed (structured log line).
     """
+    # Point-of-use eligibility, inside THIS transaction and holding the
+    # OntUnit row lock. The pass-level held set is only a pre-filter: a hold
+    # placed after the pass began would be invisible to it, and the sweeper
+    # would touch a device someone had just decided to protect.
+    from app.services.network.ont_reconcile_eligibility import (
+        eligibility_under_lock,
+    )
+
+    verdict = eligibility_under_lock(db, ont_id)
+    if not verdict.eligible:
+        logger.info(
+            "sweep_ont_held",
+            extra={
+                "ont_id": str(ont_id),
+                "scope": verdict.scope,
+                "hold_id": verdict.hold_id,
+                "reason_code": verdict.reason_code,
+                "overdue": verdict.overdue,
+            },
+        )
+        return SweepOutcome(disposition=SweepDisposition.held)
+
     ont = db.execute(select(OntUnit).where(OntUnit.id == ont_id)).scalar_one_or_none()
     if ont is None:
-        return False, False
+        return SweepOutcome(disposition=SweepDisposition.missing)
 
     # Cheap pre-flight: ping the mgmt IP. We resolve desired_state just for
     # the IP — not the full reconcile path.
@@ -130,7 +183,7 @@ def _sweep_one(
                 after=after,
                 threshold=alert_threshold,
             )
-        return False, False
+        return SweepOutcome(disposition=SweepDisposition.unreachable)
 
     result = reconcile_fn(
         db,
@@ -140,7 +193,7 @@ def _sweep_one(
         timeout_sec=timeout_sec,
         ping_function=ping_function,
     )
-    return True, result.success
+    return SweepOutcome(disposition=SweepDisposition.reconciled, success=result.success)
 
 
 def run_sweep_once(
@@ -187,6 +240,12 @@ def run_sweep_once(
         if max_onts is not None:
             stmt = stmt.limit(max(1, int(max_onts)))
         ont_ids = [row[0] for row in catalog_db.execute(stmt).all()]
+        # Read the hold set ONCE per pass rather than per ONT. The per-ONT
+        # verdict remains the authority for a single decision; this is the
+        # bulk read that keeps the sweep to one query.
+        from app.services.network.ont_reconcile_eligibility import held_ont_ids
+
+        held = held_ont_ids(catalog_db)
 
     stats.total_onts = len(ont_ids)
     logger.info(
@@ -195,6 +254,15 @@ def run_sweep_once(
     )
 
     for index, ont_id in enumerate(ont_ids):
+        if ont_id in held:
+            # Checked BEFORE ping, read or write. Contacting a device to
+            # discover it is held would defeat the point of holding it.
+            stats.held += 1
+            logger.info(
+                "sweep_ont_held",
+                extra={"ont_id": str(ont_id), "scope": "automatic_sweep"},
+            )
+            continue
         if max_duration_sec is not None and time.monotonic() - started_monotonic >= max(
             0.0, max_duration_sec
         ):
@@ -209,7 +277,7 @@ def run_sweep_once(
             break
         try:
             with db_factory() as ont_db:
-                reachable, success = _sweep_one(
+                outcome = _sweep_one(
                     ont_db,
                     ont_id,
                     timeout_sec=timeout_sec,
@@ -226,10 +294,18 @@ def run_sweep_once(
             )
             continue
 
-        if not reachable:
+        if outcome.disposition is SweepDisposition.held:
+            # A hold placed AFTER the pass-level snapshot is still honoured,
+            # and is reported as a deliberate exclusion rather than an outage.
+            stats.held += 1
+            continue
+        if outcome.disposition is SweepDisposition.missing:
+            continue
+        if outcome.disposition is SweepDisposition.unreachable:
             stats.skipped_unreachable += 1
             continue
         stats.reconciled += 1
+        success = outcome.success
         if success:
             stats.succeeded += 1
         else:
@@ -242,6 +318,7 @@ def run_sweep_once(
             "total_onts": stats.total_onts,
             "reconciled": stats.reconciled,
             "skipped_unreachable": stats.skipped_unreachable,
+            "held": stats.held,
             "succeeded": stats.succeeded,
             "failed": stats.failed,
             "deferred": stats.deferred,

@@ -735,6 +735,25 @@ Dashboard implementation notes:
 }
 ```
 
+**Account tab presentation contract:** This detail surface supports customer-care
+and provisioning staff verifying customer identity, contactability, service
+location, account linkage, and access readiness. Its authoritative read owner is
+`app.services.web_customer_details`; action eligibility and execution remain with
+their existing customer, access, identity, and CRM owners.
+
+- The first decision layer remains the four-item Active Services, Balance Due,
+  Service Orders, and Monthly Revenue summary.
+- `Customer Profile & Location` groups contact, identity, and applicable business
+  details beside the selected service-location map. The information column comes
+  first in source and mobile order. Desktop uses a large map; missing coordinates
+  retain the same location footprint and show `Location not set` with the existing
+  geocoding or add-address action.
+- `Account & Access` groups Subscriber Accounts (including the existing Convert
+  action), Portal Access, and CRM Sync without changing their status meanings,
+  permissions, confirmations, or command destinations.
+- Subscription records are investigated and managed in the Services tab; the
+  Account tab does not duplicate an Active Subscriptions preview.
+
 The **All Subscriptions** work surface exposes one visible `Restore` row action
 for blocked, suspended, stopped, or disabled services only when the authenticated
 operator has `catalog:write` or `subscription:activate`. The action consumes the

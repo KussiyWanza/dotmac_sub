@@ -238,6 +238,7 @@ def team_inbox_queue(
             "activity_to": projection.activity_to,
             "service_team_options": projection.service_team_options,
             "agent_options": projection.agent_options,
+            "agent_presence": projection.agent_presence,
             "assignment_counts": projection.assignment_counts,
             "status_options": projection.status_options,
             "channel_options": projection.channel_options,
@@ -1147,6 +1148,38 @@ def team_inbox_bulk_action(
         )
     return RedirectResponse(
         url=f"/admin/inbox?status=success&message={quote_plus(outcome.message)}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/presence",
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def team_inbox_presence_action(
+    request: Request,
+    status_value: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    _prepare_mutation(db)
+    try:
+        outcome = team_inbox_commands.set_agent_presence(
+            db,
+            actor_person_id=_actor_id_from_request(request),
+            status=status_value,
+        )
+    except team_inbox_commands.InboxCommandError as exc:
+        return RedirectResponse(
+            url=f"/admin/inbox?status=error&message={quote_plus(str(exc))}",
+            status_code=303,
+        )
+    message = (
+        f"You were already {outcome.status}."
+        if outcome.already_set
+        else f"Availability set to {outcome.status}."
+    )
+    return RedirectResponse(
+        url=f"/admin/inbox?status=success&message={quote_plus(message)}",
         status_code=303,
     )
 

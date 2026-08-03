@@ -3564,6 +3564,124 @@ class OntProfileWanService(Base):
     profile = relationship("OntProvisioningProfile", back_populates="wan_services")
 
 
+class OntReconcileScope(enum.Enum):
+    """Which reconciliation path a hold suppresses.
+
+    Only ``automatic_sweep`` exists initially, and deliberately so: an operator
+    doing reviewed work must still be able to drive a device explicitly. A hold
+    that also blocked operator-initiated repair would leave a held ONT with no
+    legitimate path back to convergence.
+    """
+
+    automatic_sweep = "automatic_sweep"
+
+
+class OntReconcileHoldStatus(enum.Enum):
+    """``active`` suppresses; ``released`` is history and never deleted."""
+
+    active = "active"
+    released = "released"
+
+
+class OntReconcileHold(Base):
+    """A reviewed decision that one ONT is excluded from automatic sweeps.
+
+    Owner: ``network.ont_reconcile_eligibility``. The fleet-wide control
+    ``network.ont_reconcile`` is the blunt instrument this replaces: it stops
+    convergence for every ONT, and it also pauses expired remote-access
+    cleanup and the dialer reconcile, because those run inside the same task
+    after the gate.
+
+    Evidence is mandatory, not decorative. A hold suppresses convergence on a
+    customer device, so it records WHY (``reason_code`` plus a written
+    ``explanation``), WHO asked (``actor``), WHO agreed (``reviewer``, which
+    must differ from the actor), and WHEN it must next be looked at
+    (``review_due_at``).
+
+    There is deliberately NO automatic expiry. An expiring hold would silently
+    hand a device back to the sweeper at an arbitrary moment -- precisely the
+    surprise the hold exists to prevent. An overdue hold stays active and
+    becomes visible for escalation; only an explicit release command ends it.
+    """
+
+    __tablename__ = "ont_reconcile_holds"
+    __table_args__ = (
+        # One ACTIVE hold per ONT and scope. Partial so released holds
+        # accumulate as history without blocking a future hold.
+        Index(
+            "uq_ont_reconcile_holds_active_per_ont_scope",
+            "ont_unit_id",
+            "scope",
+            unique=True,
+            # Both dialects: without sqlite_where the test database gets a FULL
+            # unique constraint, so a RELEASED hold would permanently block
+            # re-holding the same ONT -- turning history into a lockout, and
+            # hiding the difference from every test.
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index("ix_ont_reconcile_holds_status", "status"),
+        Index("ix_ont_reconcile_holds_review_due_at", "review_due_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    ont_unit_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ont_units.id", ondelete="CASCADE"), index=True
+    )
+    scope: Mapped[OntReconcileScope] = mapped_column(
+        Enum(OntReconcileScope, name="ontreconcilescope"),
+        default=OntReconcileScope.automatic_sweep,
+    )
+    status: Mapped[OntReconcileHoldStatus] = mapped_column(
+        Enum(OntReconcileHoldStatus, name="ontreconcileholdstatus"),
+        default=OntReconcileHoldStatus.active,
+    )
+
+    #: Stable machine code; the operator-readable half is ``explanation``.
+    reason_code: Mapped[str] = mapped_column(String(64))
+    explanation: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(160))
+    #: Must differ from ``actor``: a hold on a customer device is a two-person
+    #: decision, and self-review is not review.
+    reviewer: Mapped[str] = mapped_column(String(160))
+    #: Idempotency for the placing command. MANDATORY: without it a retried
+    #: request either creates a second decision or trips the partial unique
+    #: index with an error that looks like a bug rather than a duplicate.
+    idempotency_key: Mapped[str] = mapped_column(
+        String(200), unique=True, nullable=False
+    )
+
+    placed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    #: When a human must look again. NOT an expiry -- see the class docstring.
+    review_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_by: Mapped[str | None] = mapped_column(String(160))
+    release_reason: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    @property
+    def is_overdue(self) -> bool:
+        """Past its review date and still suppressing. Alerts, never releases."""
+        if self.status is not OntReconcileHoldStatus.active:
+            return False
+        due = self.review_due_at
+        if due is not None and due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        return due is not None and due <= datetime.now(UTC)
+
+
 class OntWanServiceLifecycle(enum.Enum):
     """Lifecycle of a declared WAN service intent.
 

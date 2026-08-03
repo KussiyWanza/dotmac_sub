@@ -41,6 +41,7 @@ RETIRED_PATHS = (
 
 CURRENT_INTEGRATION_SERVICES = (
     "integration.registry",
+    "integration.oauth_tokens",
     "integration.installations",
     "integration.runtime",
     "integration.delivery",
@@ -220,6 +221,11 @@ def test_integration_sot_names_the_live_cutover_owners() -> None:
         "integration.registry",
         "integration.installations",
         "scheduler.registry",
+    )
+    assert sot_relationships.dependencies_for("integration.oauth_tokens") == (
+        "control.settings_spec",
+        "secrets.reference_store",
+        "events.dispatcher",
     )
     assert sot_relationships.dependencies_for("integration.installations") == (
         "integration.registry",

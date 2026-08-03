@@ -1,16 +1,276 @@
 {% extends "layouts/admin.html" %}
-{% block title %}{{ "Edit" if survey else "New" }} survey{% endblock %}
+{% import "components/ui/macros.html" as ui %}
+{% block title %}{{ "Edit Survey - Admin" if survey else "New Survey - Admin" }}{% endblock %}
 {% block content %}
 <div class="mx-auto max-w-3xl space-y-6">
-  <div><a href="/admin/surveys" class="text-sm text-teal-600">← Surveys</a><h1 class="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{{ "Edit survey" if survey else "New survey" }}</h1></div>
-  {% if error %}<div class="rounded-lg bg-rose-50 p-4 text-sm text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ error }}</div>{% endif %}
-  <form method="post" action="{{ '/admin/surveys/' ~ survey.id if survey else '/admin/surveys' }}" class="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+  <div>
+    <nav aria-label="Breadcrumb">
+      <ol class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+        <li><a href="/admin/surveys" class="font-medium text-teal-600 hover:text-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:text-teal-400 dark:hover:text-teal-300">Surveys</a></li>
+        <li aria-hidden="true"><svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></li>
+        <li aria-current="page" class="text-slate-700 dark:text-slate-200">{{ "Edit Survey" if survey else "New Survey" }}</li>
+      </ol>
+    </nav>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ "Edit Survey" if survey else "Create Survey" }}</h1>
+  </div>
+
+  {% if errors %}
+  <div role="alert" class="rounded-lg border border-rose-300 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
+    <p class="font-semibold">Please correct the following:</p>
+    <ul class="mt-2 list-disc space-y-1 pl-5">
+      {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post"
+        action="{{ '/admin/surveys/' ~ survey.id if survey else '/admin/surveys' }}"
+        class="space-y-6"
+        x-data='surveyBuilder({{ questions_seed|tojson }})'
+        x-on:submit="guardSubmit($event)"
+        x-on:invalid.capture="submitting = false"
+        x-on:pageshow.window="submitting = false">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Name</span><input required maxlength="160" name="name" value="{{ survey.name if survey else '' }}" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-white"></label>
-    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Description</span><textarea name="description" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-600 dark:bg-slate-900 dark:text-white">{{ survey.description if survey and survey.description else '' }}</textarea></label>
-    <label class="block"><span class="text-sm font-medium text-slate-700 dark:text-slate-200">Questions (JSON)</span><textarea name="questions_json" rows="10" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm dark:border-slate-600 dark:bg-slate-900 dark:text-white">{{ survey.questions|tojson if survey and survey.questions else '[{"key":"feedback","label":"How can we improve?","type":"textarea","required":true}]' }}</textarea><span class="mt-1 block text-xs text-slate-500">Supported types: text, textarea, select, radio and checkbox. Select options use an options array.</span></label>
-    {% if survey %}<label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200"><input type="checkbox" name="is_active" {% if survey.is_active %}checked{% endif %}> Accept responses</label>{% endif %}
-    <div class="flex justify-end gap-3"><a href="/admin/surveys" class="rounded-lg border border-slate-300 px-4 py-2 text-sm dark:border-slate-600 dark:text-slate-200">Cancel</a><button class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">Save survey</button></div>
+    <input type="hidden" name="idempotency_key" value="{{ form.idempotency_key }}">
+    <input type="hidden" name="questions_json" x-bind:value="serializedQuestions">
+
+    {% call ui.card(title="Basic Information", color="teal") %}
+    <div class="space-y-5">
+      <div>
+        <label for="survey-name" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Name <span class="text-rose-600 dark:text-rose-400" aria-hidden="true">*</span></label>
+        <input id="survey-name" type="text" name="name" value="{{ form.name }}" required maxlength="160" aria-describedby="{% if field_errors.name %}survey-name-error{% endif %}" {% if field_errors.name %}aria-invalid="true"{% endif %} class="mt-1.5 w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500 {{ 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/20 dark:border-rose-500' if field_errors.name else 'border-slate-300 focus:border-teal-500 focus:ring-teal-500/20 dark:border-slate-600 dark:focus:border-teal-500' }}">
+        {% if field_errors.name %}<p id="survey-name-error" class="mt-1.5 text-sm text-rose-700 dark:text-rose-300">{{ field_errors.name }}</p>{% endif %}
+      </div>
+
+      <div>
+        <label for="survey-description" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Description</label>
+        <textarea id="survey-description" name="description" rows="2" class="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-teal-500">{{ form.description }}</textarea>
+      </div>
+
+      <div class="grid gap-5 md:grid-cols-2">
+        <div>
+          <label for="survey-trigger-type" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Trigger Type</label>
+          <select id="survey-trigger-type" name="trigger_type" required {% if field_errors.trigger_type %}aria-invalid="true" aria-describedby="survey-trigger-error"{% endif %} class="mt-1.5 w-full rounded-lg border bg-white px-3 py-2.5 text-slate-900 shadow-sm focus:outline-none focus:ring-2 dark:bg-slate-900 dark:text-white {{ 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/20' if field_errors.trigger_type else 'border-slate-300 focus:border-teal-500 focus:ring-teal-500/20 dark:border-slate-600 dark:focus:border-teal-500' }}">
+            <option value="manual" {% if form.trigger_type == 'manual' %}selected{% endif %}>Manual</option>
+            <option value="ticket_closed" {% if form.trigger_type == 'ticket_closed' %}selected{% endif %}>Ticket Closed</option>
+            <option value="work_order_completed" {% if form.trigger_type == 'work_order_completed' %}selected{% endif %}>Work Order Completed</option>
+          </select>
+          {% if field_errors.trigger_type %}<p id="survey-trigger-error" class="mt-1.5 text-sm text-rose-700 dark:text-rose-300">{{ field_errors.trigger_type }}</p>{% endif %}
+        </div>
+
+        <div>
+          <label for="survey-public-slug" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Public Slug</label>
+          <div class="mt-1.5 flex rounded-lg shadow-sm">
+            <span class="inline-flex items-center rounded-l-lg border border-r-0 border-slate-300 bg-slate-50 px-3 text-sm text-slate-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">/s/</span>
+            <input id="survey-public-slug" type="text" name="public_slug" value="{{ form.public_slug }}" maxlength="120" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" aria-describedby="survey-public-slug-help{% if field_errors.public_slug %} survey-public-slug-error{% endif %}" {% if field_errors.public_slug %}aria-invalid="true"{% endif %} class="min-w-0 flex-1 rounded-r-lg border bg-white px-3 py-2.5 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500 {{ 'border-rose-500 focus:border-rose-500 focus:ring-rose-500/20' if field_errors.public_slug else 'border-slate-300 focus:border-teal-500 focus:ring-teal-500/20 dark:border-slate-600 dark:focus:border-teal-500' }}">
+          </div>
+          <p id="survey-public-slug-help" class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Lowercase letters, numbers, and single hyphens.</p>
+          {% if field_errors.public_slug %}<p id="survey-public-slug-error" class="mt-1 text-sm text-rose-700 dark:text-rose-300">{{ field_errors.public_slug }}</p>{% endif %}
+        </div>
+      </div>
+
+      <div>
+        <label for="survey-thank-you" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Thank You Message</label>
+        <textarea id="survey-thank-you" name="thank_you_message" rows="2" placeholder="Your response has been recorded. Thank you!" class="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:placeholder:text-slate-500 dark:focus:border-teal-500">{{ form.thank_you_message }}</textarea>
+      </div>
+    </div>
+    {% endcall %}
+
+    {% set add_question_action %}
+    <button type="button" x-on:click="addQuestion()" class="inline-flex items-center gap-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-sm font-semibold text-teal-700 transition hover:bg-teal-100 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:border-teal-700 dark:bg-teal-950/40 dark:text-teal-300 dark:hover:bg-teal-900/50">
+      {{ ui.icon_plus() }}
+      Add Question
+    </button>
+    {% endset %}
+    {% call ui.card(title="Questions", color="teal", actions=add_question_action) %}
+    <div>
+      {% if field_errors.questions_json %}<p class="mb-4 text-sm text-rose-700 dark:text-rose-300">{{ field_errors.questions_json }}</p>{% endif %}
+      <p x-show="questions.length === 0" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-600 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300">No questions added yet. Click “Add Question” to start building your survey.</p>
+
+      <div class="space-y-5" x-show="questions.length > 0">
+        <template x-for="(question, index) in questions" x-bind:key="question.uid">
+          <section class="rounded-lg border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-900/50">
+            <div class="flex items-center justify-between gap-4">
+              <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-100 text-sm font-bold text-teal-700 dark:bg-teal-950 dark:text-teal-300" x-text="index + 1"></span>
+              <button type="button" x-on:click="deleteQuestion(index)" x-bind:aria-label="`Delete question ${index + 1}`" class="rounded-lg px-2 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 dark:text-rose-300 dark:hover:bg-rose-950/50">Delete</button>
+            </div>
+
+            <div class="mt-4 grid gap-4 lg:grid-cols-3">
+              <div>
+                <label x-bind:for="`${question.uid}-key`" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Key <span class="text-rose-600 dark:text-rose-400" aria-hidden="true">*</span></label>
+                <input x-bind:id="`${question.uid}-key`" type="text" required maxlength="80" pattern="[A-Za-z][A-Za-z0-9_-]*" title="Start with a letter and use only letters, numbers, hyphens, or underscores." x-model="question.key" class="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:focus:border-teal-500">
+              </div>
+              <div>
+                <label x-bind:for="`${question.uid}-type`" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Type <span class="text-rose-600 dark:text-rose-400" aria-hidden="true">*</span></label>
+                <select x-bind:id="`${question.uid}-type`" required x-model="question.type" x-on:change="changeType(question)" class="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:focus:border-teal-500">
+                  <option value="rating">Rating (1–5)</option>
+                  <option value="nps">NPS (0–10)</option>
+                  <option value="multiple_choice">Multiple Choice</option>
+                  <option value="free_text">Free Text</option>
+                </select>
+              </div>
+              <div>
+                <span class="block text-sm font-medium text-slate-700 dark:text-slate-200">Required</span>
+                <label class="mt-3 inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                  <input type="checkbox" x-model="question.required" class="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-900">
+                  Require an answer
+                </label>
+              </div>
+            </div>
+
+            <div class="mt-4">
+              <label x-bind:for="`${question.uid}-label`" class="block text-sm font-medium text-slate-700 dark:text-slate-200">Question Label <span class="text-rose-600 dark:text-rose-400" aria-hidden="true">*</span></label>
+              <input x-bind:id="`${question.uid}-label`" type="text" required maxlength="500" x-model="question.label" class="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:focus:border-teal-500">
+            </div>
+
+            <div class="mt-4" x-show="question.type === 'multiple_choice'" x-cloak>
+              <span class="block text-sm font-medium text-slate-700 dark:text-slate-200">Options</span>
+              <div class="mt-2 space-y-2">
+                <template x-for="(option, optionIndex) in question.options" x-bind:key="`${question.uid}-option-${optionIndex}`">
+                  <div class="flex items-center gap-2">
+                    <label class="sr-only" x-bind:for="`${question.uid}-option-${optionIndex}`" x-text="`Option ${optionIndex + 1} for question ${index + 1}`"></label>
+                    <input x-bind:id="`${question.uid}-option-${optionIndex}`" type="text" required maxlength="200" x-model="question.options[optionIndex]" placeholder="Option" class="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 shadow-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 dark:border-slate-600 dark:bg-slate-900 dark:text-white dark:focus:border-teal-500">
+                    <button type="button" x-on:click="removeOption(question, optionIndex)" x-bind:aria-label="`Remove option ${optionIndex + 1} from question ${index + 1}`" class="rounded-lg p-2 text-slate-500 hover:bg-rose-100 hover:text-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500 dark:text-slate-400 dark:hover:bg-rose-950/50 dark:hover:text-rose-300">
+                      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                </template>
+              </div>
+              <button type="button" x-on:click="addOption(question)" x-bind:disabled="question.options.length >= 50" class="mt-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-semibold text-teal-700 hover:bg-teal-100 focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:cursor-not-allowed disabled:opacity-50 dark:text-teal-300 dark:hover:bg-teal-950/50">
+                {{ ui.icon_plus("h-3.5 w-3.5") }}
+                Add option
+              </button>
+            </div>
+          </section>
+        </template>
+      </div>
+    </div>
+    {% endcall %}
+
+    <div class="flex flex-col-reverse justify-between gap-3 sm:flex-row sm:items-center">
+      <a href="/admin/surveys" class="inline-flex items-center justify-center rounded-lg px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 dark:text-slate-200 dark:hover:bg-slate-800">Cancel</a>
+      {{ ui.submit_button("Create Survey" if not survey else "Save Survey", loading_label="Submitting...", color="teal") }}
+    </div>
   </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  function surveyBuilder(initialQuestions) {
+    return {
+      questions: [],
+      serializedQuestions: '[]',
+      submitting: false,
+      nextUid: 1,
+      init() {
+        const source = Array.isArray(initialQuestions) ? initialQuestions : [];
+        this.questions = source.map((question) => this.normalizeQuestion(question));
+        this.syncQuestions();
+        this.$watch('questions', () => this.syncQuestions());
+      },
+      normalizeQuestion(raw) {
+        const question = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+        const uid = `survey-question-${this.nextUid++}`;
+        const type = ['rating', 'nps', 'multiple_choice', 'free_text'].includes(question.type) ? question.type : 'rating';
+        let options = null;
+        if (type === 'multiple_choice') {
+          options = Array.isArray(question.options) ? question.options.map((option) => String(option ?? '')) : ['', ''];
+          while (options.length < 2) options.push('');
+          options = options.slice(0, 50);
+        }
+        return {
+          uid,
+          key: typeof question.key === 'string' ? question.key : '',
+          type,
+          label: typeof question.label === 'string' ? question.label : '',
+          required: typeof question.required === 'boolean' ? question.required : true,
+          options
+        };
+      },
+      nextQuestionKey() {
+        let highest = 0;
+        this.questions.forEach((question) => {
+          const match = /^q(\d+)$/.exec(question.key);
+          if (match) highest = Math.max(highest, Number(match[1]));
+        });
+        let candidate = highest + 1;
+        const keys = new Set(this.questions.map((question) => question.key));
+        while (keys.has(`q${candidate}`)) candidate += 1;
+        return `q${candidate}`;
+      },
+      addQuestion() {
+        this.questions.push(this.normalizeQuestion({
+          key: this.nextQuestionKey(),
+          type: 'rating',
+          label: '',
+          required: true,
+          options: null
+        }));
+      },
+      deleteQuestion(index) {
+        this.questions.splice(index, 1);
+      },
+      changeType(question) {
+        if (question.type === 'multiple_choice') {
+          if (!Array.isArray(question.options)) question.options = ['', ''];
+          while (question.options.length < 2) question.options.push('');
+        } else {
+          question.options = null;
+        }
+      },
+      addOption(question) {
+        if (!Array.isArray(question.options)) question.options = ['', ''];
+        if (question.options.length < 50) question.options.push('');
+      },
+      removeOption(question, optionIndex) {
+        if (!Array.isArray(question.options)) question.options = ['', ''];
+        if (question.options.length <= 2) {
+          question.options[optionIndex] = '';
+          return;
+        }
+        question.options.splice(optionIndex, 1);
+      },
+      syncQuestions() {
+        this.serializedQuestions = JSON.stringify(this.questions.map((question) => ({
+          key: question.key,
+          type: question.type,
+          label: question.label,
+          required: Boolean(question.required),
+          options: question.type === 'multiple_choice' ? question.options : null
+        })));
+      },
+      validateUniqueKeys() {
+        const seen = new Set();
+        for (const question of this.questions) {
+          const input = document.getElementById(`${question.uid}-key`);
+          if (input) input.setCustomValidity('');
+          if (seen.has(question.key)) {
+            if (input) {
+              input.setCustomValidity('Question keys must be unique.');
+              input.reportValidity();
+            }
+            return false;
+          }
+          seen.add(question.key);
+        }
+        return true;
+      },
+      guardSubmit(event) {
+        if (this.submitting) {
+          event.preventDefault();
+          return;
+        }
+        this.syncQuestions();
+        if (!this.validateUniqueKeys()) {
+          event.preventDefault();
+          this.submitting = false;
+          return;
+        }
+        this.submitting = true;
+      }
+    };
+  }
+</script>
 {% endblock %}

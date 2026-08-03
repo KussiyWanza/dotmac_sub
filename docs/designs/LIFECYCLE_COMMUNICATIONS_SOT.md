@@ -46,6 +46,27 @@ The processing order is:
 
 Disabled and canceled subscribers never receive customer communication. Their active reseller can still receive a transactional event concerning the subscriber. Marketing requires subscriber opt-in and is never sent to an unlinked contact without proven identity/consent.
 
+### Surveys
+
+- `communications.surveys` owns Survey content, lifecycle transitions,
+  invitations, response validation, and aggregate response metrics.
+- Creation always produces a draft. A public slug is routing metadata and does
+  not confer public availability.
+- Public and invitation response access requires both lifecycle `active` and
+  `is_active=true`; expired or questionless Surveys fail closed.
+- Ticket-closed and work-order-completed invitations consume committed owner
+  events through the event dispatcher. Invitation dedupe is persisted before
+  the existing communication-intent owner queues delivery.
+
+## Migration 457
+
+- Adds the native Survey lifecycle, typed trigger, public slug, creator,
+  invitation, idempotency, and response-metric columns.
+- Preserves legacy Surveys as drafts so deployment cannot accidentally expose
+  or automatically distribute old records.
+- Does not create invitations, responses, notifications, tickets, work orders,
+  or projects during migration or initial Survey creation.
+
 ## Migration 411
 
 - Retires scheduler enablement controls for provisioning-compensation retry,

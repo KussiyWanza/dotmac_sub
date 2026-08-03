@@ -9,7 +9,7 @@ from app.models.notification import (
 )
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.system_user import SystemUser
-from app.services import ticket_mentions
+from app.services import ticket_mentions, web_support_tickets
 from app.services.web_support_tickets import _parse_mentions_payload
 from tests.staff_identity_fixtures import add_bound_staff_user
 
@@ -130,3 +130,49 @@ def test_parse_mentions_payload_accepts_strings_and_objects():
     )
 
     assert parsed == ["person:one", "group:two"]
+
+
+def test_comment_form_preserves_person_and_group_mention_tokens(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        web_support_tickets,
+        "upload_ticket_attachments",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        web_support_tickets.db_session_adapter,
+        "release_read_transaction",
+        lambda db: None,
+    )
+
+    def fake_create_comment(
+        db,
+        ticket_id,
+        payload,
+        *,
+        actor_id,
+        request,
+        mentioned_agent_ids,
+    ):
+        captured["mentioned_agent_ids"] = list(mentioned_agent_ids)
+        return object()
+
+    monkeypatch.setattr(
+        web_support_tickets.support_service.tickets,
+        "create_comment",
+        fake_create_comment,
+    )
+
+    web_support_tickets.add_ticket_comment_from_form(
+        None,
+        request=None,
+        ticket_id="ticket-1",
+        actor_id=None,
+        body="Please check this",
+        is_internal=False,
+        attachments=[],
+        mentions='[{"id":"person:one","label":"One"}, "group:two"]',
+    )
+
+    assert captured["mentioned_agent_ids"] == ["person:one", "group:two"]
