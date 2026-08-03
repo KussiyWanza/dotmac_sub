@@ -16208,6 +16208,155 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.ont_reconcile_eligibility",
+                module="app.services.network.ont_reconcile_eligibility",
+                owns=("per-ONT automatic reconciliation eligibility",),
+                depends_on=(),
+                notes=(
+                    "Replaces the fleet-wide network.ont_reconcile control as the "
+                    "way to stop the sweeper touching a device. That control is "
+                    "far too blunt: it halts convergence for every ONT, and "
+                    "because _close_expired_remote_access and "
+                    "_reconcile_dialer_credentials run inside "
+                    "run_ont_reconcile_sweep AFTER the gate, disabling it also "
+                    "silently pauses expired remote-access cleanup and the dialer "
+                    "reconcile."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="per-ONT automatic reconciliation eligibility",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=("reviewed hold decision",),
+                            canonical_writer="network.ont_reconcile_eligibility",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed hold decision",
+                            owner="network.ont_reconcile_eligibility",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "ont_reconcile_holds; operator decision with a "
+                                "distinct reviewer"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Typed place/release commands through "
+                            "execute_owner_command; the eligibility query is a "
+                            "pure read."
+                        ),
+                        locking=(
+                            "SELECT FOR UPDATE on the active hold while placing, "
+                            "so two concurrent placements cannot both pass the "
+                            "one-active-hold check."
+                        ),
+                        idempotency=(
+                            "A retried place command with the same idempotency "
+                            "key returns the existing hold rather than creating a "
+                            "second row or tripping the partial unique index."
+                        ),
+                        retries=(
+                            "Refusals are answers, not transient failures, and "
+                            "are not retried."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "reconcile_hold_missing_ont",
+                            "reconcile_hold_missing_reason",
+                            "reconcile_hold_missing_explanation",
+                            "reconcile_hold_missing_reviewer",
+                            "reconcile_hold_reviewer_is_actor",
+                            "reconcile_hold_missing_review_due",
+                            "reconcile_hold_review_due_in_past",
+                            "reconcile_hold_already_active",
+                            "reconcile_hold_not_found",
+                            "reconcile_hold_already_released",
+                            # Owner-command boundary codes, raised by
+                            # execute_owner_command before this owner's own
+                            # validation runs.
+                            (
+                                "network.ont_reconcile_eligibility."
+                                "active_caller_transaction"
+                            ),
+                            (
+                                "network.ont_reconcile_eligibility."
+                                "command_contract_violation"
+                            ),
+                            (
+                                "network.ont_reconcile_eligibility."
+                                "invalid_command_context"
+                            ),
+                            ("network.ont_reconcile_eligibility.nested_owner_command"),
+                            (
+                                "network.ont_reconcile_eligibility."
+                                "nested_transaction_completion"
+                            ),
+                        ),
+                        mapping_owner=(
+                            "app.services.network.ont_reconcile_eligibility"
+                        ),
+                        fail_closed_on=(
+                            "an absent ONT identity, which yields ineligible",
+                            "a reviewer equal to the actor, because suppressing "
+                            "convergence on a customer device is a two-person "
+                            "decision",
+                            "missing reason code, explanation, reviewer or review date",
+                            "a review date already in the past, which would hide "
+                            "the decision it records",
+                            "a second active hold for the same ONT and scope",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "ont_reconcile_hold.placed",
+                            "ont_reconcile_hold.released",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Additive only; consumers must tolerate unknown fields."
+                        ),
+                        replay=(
+                            "Audit rows are the record of who suppressed what and "
+                            "why; they are never deleted."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.ont_reconcile_eligibility",
+                        old_owner="network.ont_reconcile (fleet-wide control)",
+                        verification=(
+                            "tests/test_ont_reconcile_eligibility.py pins that an "
+                            "OVERDUE hold still suppresses, that the sweeper skips "
+                            "held ONTs before any ping/read/write, and that held "
+                            "is reported separately from skipped_unreachable."
+                        ),
+                        cutover_gate=(
+                            "The fleet-wide hold stays active until reviewed "
+                            "per-ONT holds are placed and their eligibility "
+                            "refusals verified; only then is the global sweep "
+                            "re-enabled."
+                        ),
+                        fallback_retirement=(
+                            "network.ont_reconcile remains as an emergency "
+                            "fleet-wide stop; it is no longer the mechanism for "
+                            "excluding individual devices."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=(
+                        "docs/designs/ONT_RECONCILE_ELIGIBILITY_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=("tests/test_ont_reconcile_eligibility.py",),
+                ),
+            ),
+            SOTService(
                 name="network.ont_wan_service_intent",
                 module="app.services.network.ont_wan_service_intent",
                 owns=(

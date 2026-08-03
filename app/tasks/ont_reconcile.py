@@ -230,6 +230,47 @@ def _reconcile_dialer_credentials() -> dict[str, Any]:
 
 
 @celery_app.task(
+    name="app.tasks.ont_reconcile.alert_overdue_reconcile_holds",
+    time_limit=120,
+)
+def alert_overdue_reconcile_holds() -> dict[str, Any]:
+    """Surface reconciliation holds past their review date.
+
+    Deliberately NOT gated on ``network.ont_reconcile``. The point of a hold is
+    that reconciliation is suppressed, and the fleet-wide control is often off
+    while holds are in force -- gating this on it would silence the alarm
+    exactly when the holds are active and least supervised.
+
+    A hold is never released here. Overdue is a reporting state; only an
+    explicit release command ends a hold.
+    """
+    from app.services.network.ont_reconcile_eligibility import overdue_holds
+
+    with db_session_adapter.session() as db:
+        rows = list(overdue_holds(db))
+        payload = [
+            {
+                "hold_id": str(hold.id),
+                "ont_unit_id": str(hold.ont_unit_id),
+                "reason_code": hold.reason_code,
+                "actor": hold.actor,
+                "reviewer": hold.reviewer,
+                "review_due_at": hold.review_due_at.isoformat()
+                if hold.review_due_at
+                else None,
+            }
+            for hold in rows
+        ]
+
+    if payload:
+        logger.warning(
+            "ont_reconcile_holds_overdue",
+            extra={"overdue": len(payload), "holds": payload},
+        )
+    return {"overdue": len(payload), "holds": payload}
+
+
+@celery_app.task(
     name="app.tasks.ont_reconcile.run_ont_reconcile_sweep",
     soft_time_limit=840,
     time_limit=900,
@@ -260,6 +301,7 @@ def run_ont_reconcile_sweep(max_onts: int = 25) -> dict[str, Any]:
             "succeeded": stats.succeeded,
             "failed": stats.failed,
             "deferred": stats.deferred,
+            "held": stats.held,
             "skipped_unreachable": stats.skipped_unreachable,
             "errors": stats.errors,
             "duration_sec": stats.duration_sec,
