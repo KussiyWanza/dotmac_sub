@@ -177,11 +177,19 @@ def test_assigned_role_identity_and_active_state_are_protected(db_session) -> No
     assert db_session.get(Role, role_id).is_active is True
 
 
-@pytest.mark.parametrize("submitted_name", ["NOC", "noc"])
+@pytest.mark.parametrize(
+    ("stored_name", "submitted_name"),
+    [
+        ("NOC", "NOC"),
+        ("NOC", "noc"),
+        ("NOC Team", "NOC Team"),
+        ("NOC Team", "noc team"),
+    ],
+)
 def test_assigned_legacy_role_can_update_permissions_without_rename(
-    db_session, submitted_name
+    db_session, stored_name, submitted_name
 ) -> None:
-    role = Role(name="NOC", is_active=True)
+    role = Role(name=stored_name, is_active=True)
     permission = Permission(key="network:noc_read", is_active=True)
     user = SystemUser(
         first_name="NOC",
@@ -206,10 +214,10 @@ def test_assigned_legacy_role_can_update_permissions_without_rename(
         ),
     )
 
-    assert result.name == "NOC"
+    assert result.name == stored_name
     assert result.permission_ids == (permission_id,)
     audit = db_session.query(AuditEvent).filter_by(entity_id=str(role_id)).one()
-    assert audit.metadata_["role_name"] == "NOC"
+    assert audit.metadata_["role_name"] == stored_name
 
 
 def test_real_assigned_legacy_role_rename_rolls_back_permission_changes(
@@ -263,7 +271,7 @@ def test_real_assigned_legacy_role_rename_rolls_back_permission_changes(
 def test_unassigned_legacy_role_can_be_renamed_and_normalized_duplicates_fail(
     db_session,
 ) -> None:
-    legacy = Role(name="legacy_noc", is_active=True)
+    legacy = Role(name="Legacy NOC", is_active=True)
     duplicate = Role(name=" network_admin ", is_active=True)
     db_session.add_all((legacy, duplicate))
     db_session.flush()
@@ -286,10 +294,22 @@ def test_unassigned_legacy_role_can_be_renamed_and_normalized_duplicates_fail(
             rbac_catalog.UpdateRoleCommand(
                 context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
                 role_id=legacy_id,
+                name="Network Operations",
+            ),
+        )
+    assert captured.value.code == "auth.rbac_catalog.invalid_role_name"
+
+    with pytest.raises(rbac_catalog.RbacCatalogError) as captured:
+        rbac_catalog.update_role(
+            db_session,
+            rbac_catalog.UpdateRoleCommand(
+                context=_context(rbac_catalog.ROLE_WRITE_SCOPE),
+                role_id=legacy_id,
                 name="NETWORK_ADMIN",
             ),
         )
     assert captured.value.code == "auth.rbac_catalog.role_conflict"
+    assert db_session.get(Role, legacy_id).name == "noc_team"
 
 
 def test_admin_identity_and_non_assignable_permission_policy_are_protected(

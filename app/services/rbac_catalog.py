@@ -178,8 +178,14 @@ def _error(code: str, message: str, **details: object) -> RbacCatalogError:
     )
 
 
+def _role_name_identity(value: str) -> str:
+    """Return the case/whitespace-normalized catalog identity key."""
+
+    return value.strip().lower()
+
+
 def _normalize_role_name(value: str) -> str:
-    name = value.strip().lower()
+    name = _role_name_identity(value)
     if not _ROLE_NAME_PATTERN.fullmatch(name):
         raise _error(
             "invalid_role_name",
@@ -560,10 +566,11 @@ def update_role(db: Session, command: UpdateRoleCommand) -> RoleCatalogOutcome:
         role = _locked_role(db, command.role_id)
         changed = False
         if command.name is not None:
-            submitted_name = _normalize_role_name(command.name)
-            current_name = _normalize_role_name(role.name)
-            if submitted_name != current_name:
-                if current_name == "admin":
+            submitted_identity = _role_name_identity(command.name)
+            current_identity = _role_name_identity(role.name)
+            if submitted_identity != current_identity:
+                submitted_name = _normalize_role_name(command.name)
+                if current_identity == "admin":
                     raise _error(
                         "protected_role",
                         "The canonical admin role cannot be renamed.",
