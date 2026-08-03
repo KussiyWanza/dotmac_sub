@@ -120,6 +120,22 @@ class NoticeStatus(StrEnum):
 #: recovery cohort is built from these and nothing else.
 _DELIVERED_STATUSES = frozenset({NoticeStatus.queued.value})
 
+#: What counts as "told" while planning a dry run. A dry run tells nobody, so
+#: on the live rule below it could never reach the `update` or `restored`
+#: stages — and dry run is the ONLY sanctioned pre-arming observation mode,
+#: which would leave the cutover gate blind to two of the three stages and to
+#: the recovery cohort it exists to check. Inside a dry run the simulated
+#: lineage is therefore its own planned rows. This cannot leak: dry rows live
+#: in their own dedupe-key namespace, and a real run still counts only
+#: `queued`, so arming after a dry-run period correctly re-opens with every
+#: customer rather than assuming they were already told.
+_DRY_LINEAGE_STATUSES = _DELIVERED_STATUSES | {NoticeStatus.planned_dry_run.value}
+
+
+def _lineage_statuses(dry_run: bool) -> frozenset[str]:
+    return _DRY_LINEAGE_STATUSES if dry_run else _DELIVERED_STATUSES
+
+
 #: Dedupe-key namespaces. Only a real send claims the canonical key; a dry-run
 #: plan and a blocked recipient are recorded under their own namespaces so
 #: neither can mute a later genuine message.
@@ -320,8 +336,9 @@ class _History:
     closed: bool
 
 
-def _history(rows: list[OutageCustomerNotice]) -> _History:
-    delivered = [row for row in rows if row.status in _DELIVERED_STATUSES]
+def _history(rows: list[OutageCustomerNotice], *, dry_run: bool) -> _History:
+    accepted = _lineage_statuses(dry_run)
+    delivered = [row for row in rows if row.status in accepted]
     last_restored_at: datetime | None = None
     for row in delivered:
         if row.stage == NoticeStage.restored.value:
@@ -362,7 +379,12 @@ def _history(rows: list[OutageCustomerNotice]) -> _History:
 
 
 def _recent_other_incident_notice(
-    db: Session, subscriber_id: UUID, incident_id, *, since: datetime
+    db: Session,
+    subscriber_id: UUID,
+    incident_id,
+    *,
+    since: datetime,
+    dry_run: bool,
 ) -> bool:
     """True when this customer heard about a *different* incident recently.
 
@@ -378,7 +400,7 @@ def _recent_other_incident_notice(
             OutageCustomerNotice.subscriber_id == subscriber_id,
             OutageCustomerNotice.incident_id != incident_id,
             OutageCustomerNotice.stage == NoticeStage.opened.value,
-            OutageCustomerNotice.status.in_(tuple(_DELIVERED_STATUSES)),
+            OutageCustomerNotice.status.in_(tuple(_lineage_statuses(dry_run))),
             OutageCustomerNotice.created_at >= since,
         )
         .first()
@@ -666,7 +688,7 @@ def plan_incident_notices(
     told_subscribers = {
         subscriber_id
         for subscriber_id, rows in history_rows.items()
-        if _history(rows).told_in_episode
+        if _history(rows, dry_run=dry).told_in_episode
     }
     for rows in history_rows.values():
         for row in rows:
@@ -697,7 +719,7 @@ def plan_incident_notices(
 
     for subscriber_id, (subscription_ids, name, email) in customers.items():
         rows = history_rows.get(subscriber_id, [])
-        history = _history(rows)
+        history = _history(rows, dry_run=dry)
         states = {
             per_subscription[sid] for sid in subscription_ids if sid in per_subscription
         }
@@ -714,7 +736,7 @@ def plan_incident_notices(
         if stage is NoticeStage.opened and not opening_allowed:
             continue
         if stage is NoticeStage.opened and _recent_other_incident_notice(
-            db, subscriber_id, incident.id, since=cooldown_since
+            db, subscriber_id, incident.id, since=cooldown_since, dry_run=dry
         ):
             candidates.append(
                 _blocked(

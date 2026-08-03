@@ -7,17 +7,12 @@ from app.models.comms import (
     CustomerNotificationEvent,
     CustomerNotificationStatus,
     EtaUpdate,
-    Survey,
-    SurveyResponse,
 )
 from app.models.domain_settings import SettingDomain
 from app.schemas.comms import (
     CustomerNotificationCreate,
     CustomerNotificationUpdate,
     EtaUpdateCreate,
-    SurveyCreate,
-    SurveyResponseCreate,
-    SurveyUpdate,
 )
 from app.services import settings_spec
 from app.services.common import (
@@ -137,98 +132,5 @@ class EtaUpdates(ListResponseMixin):
         return apply_pagination(query, limit, offset).all()
 
 
-class Surveys(ListResponseMixin):
-    @staticmethod
-    def create(db: Session, payload: SurveyCreate):
-        survey = Survey(**payload.model_dump())
-        db.add(survey)
-        db.commit()
-        db.refresh(survey)
-        return survey
-
-    @staticmethod
-    def get(db: Session, survey_id: str):
-        survey = db.get(Survey, survey_id)
-        if not survey:
-            raise HTTPException(status_code=404, detail="Survey not found")
-        return survey
-
-    @staticmethod
-    def list(
-        db: Session,
-        is_active: bool | None,
-        order_by: str,
-        order_dir: str,
-        limit: int,
-        offset: int,
-    ):
-        query = db.query(Survey)
-        if is_active is None:
-            query = query.filter(Survey.is_active.is_(True))
-        else:
-            query = query.filter(Survey.is_active == is_active)
-        query = apply_ordering(
-            query, order_by, order_dir, {"created_at": Survey.created_at}
-        )
-        return apply_pagination(query, limit, offset).all()
-
-    @staticmethod
-    def update(db: Session, survey_id: str, payload: SurveyUpdate):
-        survey = db.get(Survey, survey_id)
-        if not survey:
-            raise HTTPException(status_code=404, detail="Survey not found")
-        for key, value in payload.model_dump(exclude_unset=True).items():
-            setattr(survey, key, value)
-        db.commit()
-        db.refresh(survey)
-        return survey
-
-    @staticmethod
-    def delete(db: Session, survey_id: str):
-        survey = db.get(Survey, survey_id)
-        if not survey:
-            raise HTTPException(status_code=404, detail="Survey not found")
-        survey.is_active = False
-        db.commit()
-
-
-class SurveyResponses(ListResponseMixin):
-    @staticmethod
-    def create(db: Session, payload: SurveyResponseCreate):
-        if not db.get(Survey, payload.survey_id):
-            raise HTTPException(status_code=404, detail="Survey not found")
-        response = SurveyResponse(**payload.model_dump())
-        db.add(response)
-        db.commit()
-        db.refresh(response)
-        return response
-
-    @staticmethod
-    def get(db: Session, response_id: str):
-        response = db.get(SurveyResponse, response_id)
-        if not response:
-            raise HTTPException(status_code=404, detail="Survey response not found")
-        return response
-
-    @staticmethod
-    def list(
-        db: Session,
-        survey_id: str | None = None,
-        order_by: str = "created_at",
-        order_dir: str = "desc",
-        limit: int = 50,
-        offset: int = 0,
-    ):
-        query = db.query(SurveyResponse)
-        if survey_id:
-            query = query.filter(SurveyResponse.survey_id == survey_id)
-        query = apply_ordering(
-            query, order_by, order_dir, {"created_at": SurveyResponse.created_at}
-        )
-        return apply_pagination(query, limit, offset).all()
-
-
 customer_notifications = CustomerNotifications()
 eta_updates = EtaUpdates()
-surveys = Surveys()
-survey_responses = SurveyResponses()

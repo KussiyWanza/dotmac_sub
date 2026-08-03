@@ -294,6 +294,11 @@ function ticketFormPage() {
         currentPerson: {},
         init() {
             this.currentPerson = this.selectedPersonSeed || {};
+            this.$nextTick(() => {
+                if (window.initTypeaheadFields) {
+                    window.initTypeaheadFields(this.$root);
+                }
+            });
             this.bindTypeahead(this.$refs.customerTypeahead, 'customer_person_id');
             this.bindTypeahead(this.$refs.subscriberTypeahead, 'subscriber_id');
         },

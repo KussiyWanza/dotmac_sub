@@ -34,6 +34,7 @@ if _e2e_database_url:
     )
 else:
     from app.db import SessionLocal
+from app.csrf import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 from app.models.catalog import (
     CatalogOffer,
     OfferStatus,
@@ -44,7 +45,7 @@ from app.models.subscriber import Reseller, ResellerUser, Subscriber, UserType
 from app.schemas.catalog import SubscriptionCreate
 from app.services import catalog as catalog_service
 from app.services import customer_portal, reseller_portal
-from tests.playwright.helpers.api import api_post_form, bearer_headers
+from tests.playwright.helpers.api import bearer_headers
 from tests.playwright.helpers.auth import (
     ensure_person,
     ensure_person_role,
@@ -661,32 +662,58 @@ def user_page(user_context):
         pass
 
 
-@pytest.fixture()
-def admin_impersonate_response(api_context, admin_token: str, test_identities: dict):
+def _impersonate_with_csrf(page, settings: E2ESettings, test_identities: dict):
+    """POST the impersonation form the way a browser does.
+
+    Impersonation is a web form route behind CSRF protection, so a bearer
+    token alone is rejected before authorization is ever consulted. Loading
+    the customer's page mints the CSRF cookie; posting through the page's own
+    request context reuses that cookie jar and echoes the token in the header
+    the middleware checks. Redirects are not followed so the caller sees the
+    route's own status.
+    """
+
     customer = test_identities["customer"]
     person_id = customer["person"]["id"]
     account_id = customer["account"]["id"]
-    response = api_post_form(
-        api_context,
-        f"/admin/customers/person/{person_id}/impersonate",
-        {"account_id": account_id},
-        headers=bearer_headers(admin_token),
+
+    page.goto(f"{settings.base_url}/admin/customers/person/{person_id}")
+    csrf_token = next(
+        (
+            cookie["value"]
+            for cookie in page.context.cookies()
+            if cookie["name"] == CSRF_COOKIE_NAME
+        ),
+        None,
     )
-    return response
+    assert csrf_token, "no CSRF cookie was issued for the admin customer page"
+
+    return page.request.post(
+        f"{settings.base_url}/admin/customers/person/{person_id}/impersonate",
+        form={"account_id": account_id},
+        headers={CSRF_HEADER_NAME: csrf_token},
+        max_redirects=0,
+    )
 
 
 @pytest.fixture()
-def agent_impersonate_response(api_context, agent_token: str, test_identities: dict):
-    customer = test_identities["customer"]
-    person_id = customer["person"]["id"]
-    account_id = customer["account"]["id"]
-    response = api_post_form(
-        api_context,
-        f"/admin/customers/person/{person_id}/impersonate",
-        {"account_id": account_id},
-        headers=bearer_headers(agent_token),
-    )
-    return response
+def admin_impersonate_response(
+    admin_page, settings: E2ESettings, test_identities: dict
+):
+    """Authorized positive control: admin holds subscriber:impersonate."""
+
+    return _impersonate_with_csrf(admin_page, settings, test_identities)
+
+
+@pytest.fixture()
+def agent_impersonate_response(
+    agent_page, settings: E2ESettings, test_identities: dict
+):
+    """Negative case: the support role lacks subscriber:impersonate. The
+    request carries a valid CSRF token so any rejection is an authorization
+    decision, not a CSRF one."""
+
+    return _impersonate_with_csrf(agent_page, settings, test_identities)
 
 
 def _email_for_username(username: str) -> str:

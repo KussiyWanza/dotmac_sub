@@ -93,6 +93,7 @@ closed before SalesOrder money can be overwritten.
 | --- | --- |
 | Verified provider receipt | `integration.inbox` |
 | Party-first capture and source replay | `sales.capture` |
+| Atomic admin Person and Lead authoring | `sales.lead_authoring` |
 | Immutable origin | `sales.lead_lifecycle` |
 | Atomic Lead-backed New Quote authoring | `sales.quote_authoring` |
 | Atomic Quote acceptance and sales conversion | `sales.quote_acceptance` |

@@ -44,8 +44,10 @@ def test_new_templates_parse_as_jinja() -> None:
         environment.parse(_read(path))
 
 
-def test_public_survey_form_has_csrf_and_rating() -> None:
+def test_public_survey_form_has_csrf_and_typed_question_controls() -> None:
     template = _read("templates/public/surveys/respond.html")
 
     assert 'name="_csrf_token"' in template
-    assert 'name="rating"' in template
+    assert "question.type == 'rating'" in template
+    assert "question.type == 'nps'" in template
+    assert "question.type == 'multiple_choice'" in template

@@ -18441,6 +18441,257 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
         domain="notifications_communications",
         services=(
             SOTService(
+                name="communications.surveys",
+                module="app.services.surveys",
+                owns=(
+                    "survey lifecycle and content",
+                    "survey invitation records",
+                    "survey response records",
+                ),
+                depends_on=(
+                    "party.registry",
+                    "customer.accounts",
+                    "support.ticket_lifecycle",
+                    "operations.field_completion",
+                    "communications.intents",
+                    "events.store",
+                ),
+                notes=(
+                    "Survey creation always records a draft. Public response and "
+                    "automatic trigger eligibility require both active lifecycle "
+                    "status and is_active=true. Ticket and field adapters consume "
+                    "committed owner events; they never poll or infer completion."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="survey lifecycle and content",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "typed Survey command",
+                                "authenticated administrator Person binding",
+                                "persisted Survey aggregate",
+                            ),
+                            canonical_writer="communications.surveys",
+                        ),
+                        ConcernContract(
+                            name="survey invitation records",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "persisted Survey aggregate",
+                                "committed ticket closure outcome",
+                                "committed work-order completion outcome",
+                                "canonical subscriber identity",
+                                "durable communication intent outcome",
+                            ),
+                            canonical_writer="communications.surveys",
+                        ),
+                        ConcernContract(
+                            name="survey response records",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "persisted Survey aggregate",
+                                "typed public Survey response",
+                            ),
+                            canonical_writer="communications.surveys",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="typed Survey command",
+                            owner="communications.surveys",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "SurveyCreate, SurveyUpdate, lifecycle and send command "
+                                "objects validated before explicit field assignment"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="authenticated administrator Person binding",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active SystemUser.person_party_id reviewed Person Party "
+                                "binding resolved inside the create command"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="persisted Survey aggregate",
+                            owner="communications.surveys",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Survey lifecycle, content, trigger, public access, "
+                                "metrics and invitation rows"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="committed ticket closure outcome",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "ticket.resolution_confirmed durable event with "
+                                "canonical subscriber identity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="committed work-order completion outcome",
+                            owner="operations.field_completion",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "work_order.field_outcome_recorded durable event whose "
+                                "outcome is complete"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical subscriber identity",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active Subscriber row addressed by the owner event",
+                        ),
+                        AuthorityInput(
+                            name="durable communication intent outcome",
+                            owner="communications.intents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "deduplicated Survey invitation communication intent and "
+                                "notification outbox rows"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="typed public Survey response",
+                            owner="communications.surveys",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "SubmitSurveyResponseCommand answers validated against "
+                                "the stored typed question contract"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Every create, edit, lifecycle, invitation and response "
+                            "mutation enters execute_owner_command once on a "
+                            "transaction-free adapter session; nested communication "
+                            "helpers only flush."
+                        ),
+                        locking=(
+                            "Lifecycle, send and response commands lock the Survey; "
+                            "tracked responses also lock the invitation. Public slug, "
+                            "creation key and event-recipient unique constraints "
+                            "arbitrate concurrent winners."
+                        ),
+                        idempotency=(
+                            "Creation keys bind to a content fingerprint; automatic "
+                            "invitations are unique per Survey, recipient and source "
+                            "event; tracked invitations admit one response."
+                        ),
+                        retries=(
+                            "Exact creation and trigger retries replay their persisted "
+                            "outcome. Constraint conflicts map to stable domain errors; "
+                            "other transaction failures roll back for caller retry."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "communications.surveys"
+                            ),
+                            "communications.surveys.answer_required",
+                            "communications.surveys.choice_invalid",
+                            "communications.surveys.closed_survey",
+                            "communications.surveys.creator_not_authorized",
+                            "communications.surveys.creator_person_unresolved",
+                            "communications.surveys.duplicate_answer",
+                            "communications.surveys.duplicate_question_key",
+                            "communications.surveys.free_text_too_long",
+                            "communications.surveys.idempotency_conflict",
+                            "communications.surveys.idempotency_key_invalid",
+                            "communications.surveys.idempotency_key_required",
+                            "communications.surveys.invalid_questions",
+                            "communications.surveys.invitation_completed",
+                            "communications.surveys.invitation_unavailable",
+                            "communications.surveys.nps_invalid",
+                            "communications.surveys.pause_requires_active",
+                            "communications.surveys.public_slug_duplicate",
+                            "communications.surveys.questions_required",
+                            "communications.surveys.rating_invalid",
+                            "communications.surveys.recipient_not_found",
+                            "communications.surveys.response_not_found",
+                            "communications.surveys.survey_expired",
+                            "communications.surveys.survey_inactive",
+                            "communications.surveys.survey_not_found",
+                            "communications.surveys.survey_reference_required",
+                            "communications.surveys.survey_unavailable",
+                            "communications.surveys.unknown_answer_key",
+                        ),
+                        mapping_owner="Survey web, API, public and event adapters",
+                        fail_closed_on=(
+                            "unresolved creator Person identity",
+                            "draft paused closed inactive or expired public access",
+                            "invalid or empty questions during activation or send",
+                            "malformed response answers or duplicate invitation use",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=(
+                            "survey.created",
+                            "survey.updated",
+                            "survey.activated",
+                            "survey.paused",
+                            "survey.closed",
+                            "survey.archived",
+                            "survey.sent",
+                            "survey.trigger_invitations_created",
+                            "survey.response_recorded",
+                        ),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 custom-event payloads are identifier-only and "
+                            "additive; customer answers never enter event payloads."
+                        ),
+                        replay=(
+                            "Survey and invitation rows plus audit evidence rebuild "
+                            "current state; source-event uniqueness makes durable event "
+                            "redelivery a no-op."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "app.services.comms Survey CRUD and route-local raw JSON "
+                            "validation"
+                        ),
+                        new_owner="communications.surveys",
+                        verification=(
+                            "Focused owner, form, public safety and trigger tests plus "
+                            "the Survey architecture boundary guard."
+                        ),
+                        cutover_gate=(
+                            "All Survey adapters use typed commands, no old Survey "
+                            "writer remains, and draft/public/trigger guards fail closed."
+                        ),
+                        fallback_retirement=(
+                            "The Surveys and SurveyResponses writers are removed from "
+                            "app.services.comms; rebuild_survey_projections recomputes "
+                            "metrics from canonical invitation and response rows, while "
+                            "invitation repair replays canonical owner events."
+                        ),
+                    ),
+                    steward="customer experience platform",
+                    design_refs=(
+                        "docs/designs/SURVEY_LIFECYCLE_AND_CREATION.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_surveys.py",
+                        "tests/architecture/test_survey_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="communications.channel_policy",
                 module="app.services.notification_channel_policy",
                 owns=(
@@ -19867,12 +20118,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             "app.web.admin.inbox",
             "app.services.team_inbox_*",
             "app.services.conversation_ticket_handoff",
+            "app.web.admin.surveys",
+            "app.web.public.surveys",
+            "app.api.comms",
+            "app.services.events.handlers.surveys",
         ),
         rule=(
             "Domain services request communication outcomes; channel choice, "
             "notification rows, and recipient read state stay inside "
-            "communication services. Admin inbox mutation routes delegate to "
-            "the committed team-inbox command boundary."
+            "communication services. Survey adapters delegate lifecycle, invitation "
+            "and response writes to communications.surveys. Admin inbox mutation "
+            "routes delegate to the committed team-inbox command boundary."
         ),
     ),
     DomainSOT(
@@ -35838,6 +36094,172 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_lead_capture_webhook.py",
                         "tests/test_sales_capture_account_conversion.py",
                         "tests/architecture/test_service_http_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.lead_authoring",
+                module="app.services.sales.lead_authoring",
+                owns=("atomic admin Person and Lead authoring",),
+                depends_on=(
+                    "auth.staff_provisioning",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.lead_lifecycle",
+                    "sales.service",
+                ),
+                notes=(
+                    "The admin adapter submits one typed command. This owner validates "
+                    "the staff actor, eligible owner, Pipeline/Stage, configured Region, "
+                    "Organization, Person profile and contact points, then commits the "
+                    "Person Party, immutable Lead origin, Lead, audit, and event once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="atomic admin Person and Lead authoring",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "Lead authoring command evidence",
+                                "canonical staff actor state",
+                                "canonical Party identity state",
+                                "canonical sales pipeline state",
+                                "configured Region and Organization state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Lead authoring command evidence",
+                            owner="sales.lead_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed submission identity, Person profile, contact rows, "
+                                "owner, Pipeline/Stage, value, Region, and notes"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff actor state",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active authenticated SystemUser and eligible sales owner",
+                        ),
+                        AuthorityInput(
+                            name="canonical Party identity state",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Person Party, prospect role, normalized PartyContactPoints, "
+                                "and optional Organization relationship"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical sales pipeline state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active Pipeline and Stage membership plus Lead status vocabulary",
+                        ),
+                        AuthorityInput(
+                            name="configured Region and Organization state",
+                            owner="sales.lead_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "active RegionZone and active Organization profile resolved "
+                                "by authoritative identifiers"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary=(
+                            "execute_owner_command commits Person Party, contact points, "
+                            "relationship, Lead origin, Lead, audit, and event once"
+                        ),
+                        locking=(
+                            "The actor and selected owner are locked; the deterministic Lead "
+                            "and Person identifiers plus database constraints arbitrate retries."
+                        ),
+                        idempotency=(
+                            "The server-issued submission UUID deterministically identifies "
+                            "the Lead and Person; an exact fingerprint replays and drift conflicts."
+                        ),
+                        retries=(
+                            "Safe exact retries replay the saved outcome; validation and "
+                            "constraint failures roll back the complete command."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "sales.lead_authoring.active_caller_transaction",
+                            "sales.lead_authoring.command_contract_violation",
+                            "sales.lead_authoring.invalid_command_context",
+                            "sales.lead_authoring.nested_owner_command",
+                            "sales.lead_authoring.nested_transaction_completion",
+                            "sales.lead_authoring.actor_not_eligible",
+                            "sales.lead_authoring.display_name_too_long",
+                            "sales.lead_authoring.email_invalid",
+                            "sales.lead_authoring.primary_email_in_use",
+                            "sales.lead_authoring.phone_invalid",
+                            "sales.lead_authoring.owner_not_eligible",
+                            "sales.lead_authoring.pipeline_stage_incomplete",
+                            "sales.lead_authoring.pipeline_not_active",
+                            "sales.lead_authoring.stage_pipeline_mismatch",
+                            "sales.lead_authoring.region_not_active",
+                            "sales.lead_authoring.organization_not_active",
+                            "sales.lead_authoring.organization_party_ineligible",
+                            "sales.lead_authoring.status_not_allowed",
+                            "sales.lead_authoring.submission_conflict",
+                        ),
+                        mapping_owner="admin sales Lead web adapter",
+                        fail_closed_on=(
+                            "inactive or forged actor/owner",
+                            "invalid Pipeline/Stage or configured Region",
+                            "invalid Organization identity",
+                            "contact or private identity validation failure",
+                            "submission fingerprint collision",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("lead.created",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries Lead, Party, status, source and Pipeline "
+                            "identifiers without contact values or NIN."
+                        ),
+                        replay=(
+                            "The stored authoring key and fingerprint reproduce the exact "
+                            "Lead/Party outcome without duplicate contact points."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="admin web form plus per-row sales.service commits",
+                        new_owner="sales.lead_authoring",
+                        verification=(
+                            "Focused authoring tests cover identity derivation, contacts, "
+                            "ownership, Region, Pipeline/Stage, rollback, and replay."
+                        ),
+                        cutover_gate=(
+                            "The New Lead POST invokes only the typed owner command and "
+                            "ordinary validation failures map back to the HTML form."
+                        ),
+                        fallback_retirement=(
+                            "The New Lead adapter no longer accepts a Party/Person identifier "
+                            "or calls the legacy Leads.create path."
+                        ),
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                        "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                    ),
+                    test_refs=(
+                        "tests/test_web_sales_lead_authoring.py",
+                        "tests/test_admin_sales_web.py",
+                        "tests/architecture/test_sales_lifecycle_chain_boundary.py",
                     ),
                 ),
             ),

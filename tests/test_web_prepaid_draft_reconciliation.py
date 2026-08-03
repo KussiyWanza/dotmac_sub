@@ -258,6 +258,20 @@ def test_invoice_action_hint_uses_owner_actionability(monkeypatch):
         is None
     )
 
+    unavailable = PrepaidDraftReconciliationError(
+        code="financial.prepaid_draft_reconciliation.opening_funding_unavailable",
+        message="Reviewed opening funding is unavailable for this invoice.",
+    )
+    monkeypatch.setattr(
+        web_reconciliation,
+        "preview_prepaid_draft_reconciliation",
+        lambda _db, _invoice_id: (_ for _ in ()).throw(unavailable),
+    )
+    assert (
+        web_reconciliation.preview_for_invoice_detail(object(), invoice_id=INVOICE_ID)
+        is None
+    )
+
 
 def test_invoice_page_uses_authoritative_permission_gated_action_form():
     detail = Path("templates/admin/billing/invoice_detail.html").read_text()

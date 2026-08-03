@@ -40,15 +40,35 @@ class TestAPICredentialPermissions:
 
 
 class TestImpersonationPermissions:
-    """Tests for customer impersonation permissions."""
+    """Impersonation is gated on subscriber:impersonate.
+
+    Both cases post a valid CSRF token (see _impersonate_with_csrf), so the
+    outcomes are authorization decisions. Without that, CSRF rejects the
+    request first and the agent case "passes" while proving nothing — the
+    positive control below is what keeps the pair honest: if the route were
+    rejecting everything, admin would fail too.
+    """
+
+    # The CSRF middleware's own 403 renders this page; an authorization 403
+    # never does.
+    _CSRF_REJECTION_MARKERS = ("Session Expired", "security token is invalid")
 
     def test_admin_can_impersonate_customer(self, admin_impersonate_response):
-        """Admin should be able to impersonate customers."""
+        """Positive control: admin holds the permission and is let through."""
         assert admin_impersonate_response.status == 303
+        assert "/portal/" in admin_impersonate_response.headers.get("location", "")
 
     def test_agent_cannot_impersonate_customer(self, agent_impersonate_response):
-        """Support agent should not be able to impersonate customers."""
+        """The support role is refused, and refused *by authorization*."""
         assert agent_impersonate_response.status == 403
+        body = agent_impersonate_response.text()
+        for marker in self._CSRF_REJECTION_MARKERS:
+            assert marker not in body, (
+                "the agent was rejected by CSRF, not authorization: "
+                "this assertion would pass even if impersonation were "
+                "wide open"
+            )
+        assert "permission" in body.lower() or "forbidden" in body.lower()
 
 
 class TestRoleManagementPermissions:

@@ -156,6 +156,7 @@ def test_support_ticket_form_uses_live_typeahead_endpoints() -> None:
 
     assert 'data-typeahead-url="/api/v1/search/people"' in template
     assert 'data-typeahead-url="/api/v1/search/subscribers"' in template
+    assert "window.initTypeaheadFields(this.$root)" in template
     assert 'list="people-options"' not in template
 
 
@@ -178,3 +179,15 @@ def test_support_ticket_templates_use_staff_data_for_assignment_controls() -> No
     assert "Type at least 2 characters to search technicians" in form_template
     assert "if (search.length < 2) return []" in form_template
     assert 'x-show="shouldShowAssigneeResults"' in form_template
+
+
+def test_ticket_detail_mentions_track_person_and_group_tokens() -> None:
+    detail_template = (
+        REPO_ROOT / "templates/admin/support/tickets/detail.html"
+    ).read_text()
+
+    assert "mention.token" in detail_template
+    assert "item.token === person.id" in detail_template
+    assert "selectedMentions.push({id: person.id, token: person.id, label})" in (
+        detail_template
+    )

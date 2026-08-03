@@ -57,6 +57,7 @@ person or organization is; each named domain owner keeps its own lifecycle.
 | Inbox/social interaction | `communications.team_inbox` | Observed conversation and routing, not a sales decision |
 | Native outbound campaign | `communications.campaigns` | Sub campaign, audience, recipients, and delivery state |
 | Lead identity and origin | `sales.lead_lifecycle` | Party-first Lead, immutable origin, reviewed account attachment |
+| Admin Person and Lead authoring | `sales.lead_authoring` | Atomic Person Party, contact points, Organization relationship, Lead, origin, audit, and event |
 | Referral program | `referrals.program` | Capture policy, canonical program and account-attachment records, qualification/reward policy, and atomic transitions |
 | Referral account orchestration | `referrals.account_conversion` | Exact Referral/Party/Lead context into atomic account creation or reviewed attachment |
 | Pipeline and Quote | `sales.service` | Opportunity progress and Lead-backed commercial offer |

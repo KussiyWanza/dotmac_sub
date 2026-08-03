@@ -1,22 +1,43 @@
 {% extends "layouts/admin.html" %}
-{% block title %}Surveys{% endblock %}
+{% import "components/ui/macros.html" as ui %}
+{% block title %}Surveys - Admin{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-center justify-between gap-4">
-    <div><h1 class="text-2xl font-bold text-slate-900 dark:text-white">Surveys</h1><p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Create feedback forms and review customer responses.</p></div>
-    <a href="/admin/surveys/new" class="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700">New survey</a>
+  <div class="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-900 dark:text-white">Surveys</h1>
+      <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">Create feedback forms and review customer responses.</p>
+    </div>
+    {{ ui.action_button("New Survey", "/admin/surveys/new", icon=ui.icon_plus(), color="teal") }}
   </div>
-  <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-    <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-      <thead class="bg-slate-50 dark:bg-slate-800"><tr><th class="px-5 py-3 text-left text-xs uppercase text-slate-500">Survey</th><th class="px-5 py-3 text-left text-xs uppercase text-slate-500">Questions</th><th class="px-5 py-3 text-left text-xs uppercase text-slate-500">Status</th><th></th></tr></thead>
-      <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
-      {% for survey in surveys %}
-        <tr><td class="px-5 py-4"><p class="font-semibold text-slate-900 dark:text-white">{{ survey.name }}</p><p class="text-sm text-slate-500">{{ survey.description or "No description" }}</p></td><td class="px-5 py-4 text-sm text-slate-600 dark:text-slate-300">{{ survey.questions|length if survey.questions else 0 }}</td><td class="px-5 py-4"><span class="rounded-full px-2 py-1 text-xs font-medium {{ 'bg-emerald-100 text-emerald-700' if survey.is_active else 'bg-slate-100 text-slate-600' }}">{{ "Active" if survey.is_active else "Archived" }}</span></td><td class="px-5 py-4 text-right"><a href="/admin/surveys/{{ survey.id }}" class="text-sm font-medium text-teal-600 hover:text-teal-700">View</a></td></tr>
-      {% else %}
-        <tr><td colspan="4" class="px-5 py-12 text-center text-sm text-slate-500">No surveys yet.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+  <div class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+        <thead class="bg-slate-50 dark:bg-slate-900/60">
+          <tr>
+            <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Survey</th>
+            <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Questions</th>
+            <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Status</th>
+            <th class="px-5 py-3"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+        {% for survey in surveys %}
+          <tr>
+            <td class="px-5 py-4">
+              <p class="font-semibold text-slate-900 dark:text-white">{{ survey.name }}</p>
+              <p class="text-sm text-slate-500 dark:text-slate-400">{{ survey.description or "No description" }}</p>
+            </td>
+            <td class="px-5 py-4 text-sm text-slate-600 dark:text-slate-300">{{ survey.questions|length }}</td>
+            <td class="px-5 py-4"><span class="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{{ survey.status.value }}</span></td>
+            <td class="px-5 py-4 text-right"><a href="/admin/surveys/{{ survey.id }}" class="text-sm font-medium text-teal-600 hover:text-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:text-teal-400 dark:hover:text-teal-300">View</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="px-5 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No surveys yet.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 {% endblock %}
