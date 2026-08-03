@@ -33,9 +33,9 @@
     <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="">
     <style>
-        #customer-mini-map { height: 400px; }
+        .customer-location-map { width: 100%; height: 400px; }
         @media (max-width: 640px) {
-            #customer-mini-map { height: 300px; }
+            .customer-location-map { height: 300px; }
         }
     </style>
     {% endif %}
@@ -449,7 +449,7 @@
 
                         {% if map_data %}
                         <div class="space-y-3 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/30">
-                            <div id="customer-mini-map" class="overflow-hidden rounded-lg"></div>
+                            <div id="customer-overview-map" class="customer-location-map w-full overflow-hidden rounded-lg"></div>
                             <div class="flex flex-wrap items-center gap-2">
                                 <button type="button"
                                         id="customer-map-click-toggle"
@@ -2142,7 +2142,7 @@
                     </div>
                     {% if map_data %}
                     <div class="p-2">
-                        <div id="customer-mini-map" class="rounded-xl overflow-hidden"></div>
+                        <div id="customer-mini-map" class="customer-location-map w-full rounded-xl overflow-hidden"></div>
                     </div>
                     <div class="px-5 pb-2">
                         <div class="flex flex-wrap items-center gap-2">
@@ -3407,15 +3407,27 @@ function customerDetail(config = {}) {
             .replace(/'/g, '&#39;');
     }
 
-    const map = L.map('customer-mini-map', {
+    const mapElement = document.getElementById('customer-overview-map');
+    if (!mapElement) return;
+
+    const map = L.map(mapElement, {
         zoomControl: false,
         attributionControl: false
     }).setView(mapData.center, 15);
 
+    let resizeFrame = null;
     function refreshMapLayout() {
-        // The card can finish layout after map init; force Leaflet recalculation.
-        map.invalidateSize();
+        if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+        resizeFrame = requestAnimationFrame(() => {
+            map.invalidateSize({ animate: false, pan: false });
+            resizeFrame = null;
+        });
     }
+
+    const mapResizeObserver = typeof ResizeObserver === 'function'
+        ? new ResizeObserver(refreshMapLayout)
+        : null;
+    if (mapResizeObserver) mapResizeObserver.observe(mapElement);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19
@@ -3480,9 +3492,11 @@ function customerDetail(config = {}) {
     }
 
     map.whenReady(() => {
-        setTimeout(refreshMapLayout, 0);
-        setTimeout(refreshMapLayout, 180);
+        refreshMapLayout();
+        setTimeout(refreshMapLayout, 350);
     });
+    document.addEventListener('alpine:initialized', refreshMapLayout);
+    window.addEventListener('load', refreshMapLayout);
     window.addEventListener('resize', refreshMapLayout);
 
     const clickToggleBtn = document.getElementById('customer-map-click-toggle');

@@ -22788,7 +22788,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         locking="A transaction-current read requires no row lock.",
                         idempotency=(
                             "Re-reading the same committed inputs returns the same normalized "
-                            "values."
+                            "values ordered by region value ascending."
                         ),
                         retries=(
                             "Adapters may retry the complete read after transient database "

@@ -34,6 +34,7 @@ def _query(**overrides):
         "search": None,
         "status": None,
         "ticket_type": None,
+        "region": None,
         "assigned_to_me": False,
         "project_manager_person_id": None,
         "site_coordinator_person_id": None,
@@ -83,6 +84,8 @@ def test_ticket_route_delegates_list_and_export_scope_to_projection_owner():
     assert "support_web_service.render_tickets_csv" in export_calls
     assert list_args["per_page"] == "str | None"
     assert "filters" in export_args
+    assert "region" in list_args
+    assert "region" in export_args
 
 
 def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
@@ -92,6 +95,7 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
         search=" TKT-100 ",
         status=" OPEN ",
         ticket_type=" billing ",
+        region=" north ",
         assigned_to_me=True,
         project_manager_person_id=f" {manager_id} ",
         filters=filters,
@@ -104,6 +108,7 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
     assert query.search == "TKT-100"
     assert query.filter_value("status") == "open"
     assert query.filter_value("ticket_type") == "billing"
+    assert query.filter_value("region") == "north"
     assert query.filter_value("assigned_to_me") == "true"
     assert query.filter_value("project_manager_person_id") == str(manager_id)
     assert query.filter_value("filters") == ('[["Ticket","priority","=","high"]]')
@@ -192,6 +197,35 @@ def test_ticket_query_filters_before_paging_and_uses_stable_id_tie_breaker(
     assert [ticket.id for ticket in context["tickets"]] == [first_id, second_id]
 
 
+def test_ticket_region_filter_aligns_rows_counts_options_and_status_links(
+    db_session,
+):
+    db_session.add_all(
+        [
+            _ticket(title="North open", status="open", region="north"),
+            _ticket(title="South closed", status="closed", region="south"),
+        ]
+    )
+    db_session.commit()
+
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=_query(region="north"),
+        actor_id=None,
+        visible_columns_cookie=None,
+    )
+
+    assert context["region"] == "north"
+    assert context["total"] == 1
+    assert [ticket.title for ticket in context["tickets"]] == ["North open"]
+    assert {"north", "south"}.issubset(set(context["region_options"]))
+    cards = {card["value"]: card for card in context["status_summary_cards"]}
+    assert cards[""]["count"] == 1
+    assert cards["open"]["count"] == 1
+    assert cards["closed"]["count"] == 0
+    assert "region=north" in cards["open"]["href"]
+
+
 def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
     captured = {}
 
@@ -203,12 +237,15 @@ def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
 
     assert (
         web_support_tickets.list_tickets_for_scope(
-            object(), list_query=_query(page=3, per_page=10), actor_id=None
+            object(),
+            list_query=_query(region="north", page=3, per_page=10),
+            actor_id=None,
         )
         == []
     )
     assert captured["limit"] is None
     assert captured["offset"] == 0
+    assert captured["region"] == "north"
 
 
 def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
@@ -227,6 +264,9 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'hx-push-url="true"' in list_partial
     assert 'aria-current="page"' in list_partial
     assert 'x-bind:aria-expanded="open.toString()"' in list_partial
+    assert 'name="region" data-auto-submit' in list_partial
+    assert "All Regions" in list_partial
+    assert "{% for option in region_options %}" in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert "list_query.url('/admin/support/tickets'" in table
     assert 'aria-sort="' in table

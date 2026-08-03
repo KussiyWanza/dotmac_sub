@@ -115,7 +115,8 @@ def test_ticket_region_projection_has_one_typed_owner() -> None:
         in configuration
     )
     assert "configured_regions: tuple[str, ...]" in projection
-    assert "db.query(Ticket.region)" in projection
+    assert 'Ticket.region.label("region")' in projection
+    assert ".order_by(region_sources.c.region.asc())" in projection
     assert "db.query(Ticket.region)" not in configuration
 
 

@@ -266,8 +266,12 @@ def test_customer_360_groups_profile_location_and_account_access() -> None:
     assert "Contact details" in account_tab
     assert "Identity details" in account_tab
     assert "Location not set" in account_tab
-    assert "#customer-mini-map { height: 400px; }" in template
-    assert "#customer-mini-map { height: 300px; }" in template
+    assert ".customer-location-map { width: 100%; height: 400px; }" in template
+    assert ".customer-location-map { height: 300px; }" in template
+    assert account_tab.count('id="customer-overview-map"') == 1
+    assert template.count('id="customer-mini-map"') == 1
+    assert "new ResizeObserver(refreshMapLayout)" in template
+    assert "mapResizeObserver.observe(mapElement)" in template
     assert "Account &amp; Access" in account_tab
     assert "Subscriber Accounts" in account_tab
     assert "Portal Access" in account_tab

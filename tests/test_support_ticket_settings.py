@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.models.support import Ticket, TicketChannel
 from app.models.ticket_workflow import TicketAssignmentRule
 from app.services import support_ticket_settings as support_ticket_settings_service
 from app.services import web_support_tickets as web_support_tickets_service
@@ -142,6 +143,27 @@ def test_portal_region_validation_rejects_noncanonical_values(db_session, submit
 
 
 def test_portal_region_validation_returns_current_canonical_value(db_session):
+    db_session.add_all(
+        [
+            Ticket(
+                title="Zaria ticket",
+                status="open",
+                priority="normal",
+                channel=TicketChannel.web,
+                region="zaria",
+                is_active=True,
+            ),
+            Ticket(
+                title="Inactive Adamawa ticket",
+                status="open",
+                priority="normal",
+                channel=TicketChannel.web,
+                region="adamawa",
+                is_active=False,
+            ),
+        ]
+    )
+    db_session.flush()
     support_ticket_settings_service.update_options(
         db_session,
         statuses=["open"],
@@ -152,7 +174,7 @@ def test_portal_region_validation_returns_current_canonical_value(db_session):
 
     assert support_ticket_settings_service.list_canonical_region_options(
         db_session
-    ) == ["abuja", "lagos"]
+    ) == ["abuja", "lagos", "zaria"]
     assert (
         support_ticket_settings_service.canonical_region_option(db_session, "lagos")
         == "lagos"
