@@ -99,14 +99,6 @@
     "review_by": "2026-09-30"
   },
   {
-    "spec": "tests/playwright/e2e/test_permissions.py::TestImpersonationPermissions::test_admin_can_impersonate_customer",
-    "reason": "Posts to a web form route with a bearer token and no CSRF token, so the 403 is CSRF rejection, not authorization. Its sibling test_agent_cannot_impersonate_customer passes for that same wrong reason \u2014 both need a real CSRF-bearing session to test the impersonation boundary",
-    "issue": "#1895",
-    "category": "permissions",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
     "spec": "tests/playwright/e2e/test_projects.py::test_admin_project_template_dependency_journey",
     "reason": "Page-object drift under investigation; fails with the harness repaired",
     "issue": "#1895",
