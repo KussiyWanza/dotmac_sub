@@ -78,6 +78,15 @@ def _auto_enabled(session: Session) -> bool:
     return bool(_gate(session, "outage_auto_notify_enabled", False))
 
 
+def _superseded(session: Session) -> bool:
+    """True once ``network.outage_communications`` owns customer messaging.
+
+    Read through this module's own gate seam rather than calling into the new
+    owner, so there stays exactly one settings-reading surface per module.
+    """
+    return bool(_gate(session, "outage_customer_comms_enabled", False))
+
+
 def _dry_run(session: Session) -> bool:
     return bool(_gate(session, "outage_auto_notify_dry_run", True))
 
@@ -187,6 +196,17 @@ def _run_auto_dispatch(
 
     if not _auto_enabled(session):
         return {"dispatched": False, "reason": "auto_disabled", "incidents": []}
+
+    # One canonical customer outage sender. Once the spine-driven owner is
+    # armed it decides every customer message (including the restoration this
+    # path never had), so this automation stands down rather than sending a
+    # second opening message from a different audience calculation.
+    if _superseded(session):
+        return {
+            "dispatched": False,
+            "reason": "superseded_by_outage_communications",
+            "incidents": [],
+        }
 
     if subscription_ids_for is None:
         from app.services.topology.outage_targets import incident_subscription_ids

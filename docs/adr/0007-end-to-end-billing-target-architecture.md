@@ -849,6 +849,12 @@ Current prepaid cutover implementation:
   capture, records all semantic lanes, and classifies every observation-window
   money fact as missing, exact, or duplicate posting coverage. Cutover is
   impossible while any blocker is non-zero.
+- Payment parity uses the exact `PaymentSettlement.amount` as customer value
+  whenever structural settlement evidence exists. `Payment.amount` remains the
+  gross gateway charge, and a provider fee never becomes prepaid funding.
+  Historical payments without settlement evidence retain a bounded
+  gross-minus-refund fallback until reviewed reconciliation; the resolver never
+  guesses net value from a fee field alone.
 - The one irreversible authority record is bound to that exact approved parity
   fingerprint. Default position reads then include historical shadow groups and
   new authoritative groups; new postings switch to authoritative without a
