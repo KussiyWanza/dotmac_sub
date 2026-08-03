@@ -5,6 +5,7 @@ from __future__ import annotations
 from playwright.sync_api import Page, expect
 
 from tests.playwright.helpers.api import api_get, api_post_json, bearer_headers
+from tests.playwright.pages.auth import LOGIN_URL_PATTERN
 
 
 class TestAPICredentialPermissions:
@@ -146,7 +147,7 @@ class TestUnauthenticatedAccess:
     def test_unauthenticated_admin_page_redirects(self, anon_page: Page, settings):
         """Unauthenticated access to admin pages should redirect to login."""
         anon_page.goto(f"{settings.base_url}/admin/dashboard")
-        anon_page.wait_for_url("**/auth/login**")
+        anon_page.wait_for_url(LOGIN_URL_PATTERN)
 
 
 class TestWebPortalAccess:

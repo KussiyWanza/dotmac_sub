@@ -24,7 +24,7 @@ class ResetPasswordPage(BasePage):
     def expect_loaded(self) -> None:
         """Assert the reset password page is loaded."""
         expect(
-            self.page.get_by_role("heading", name="Reset Password", exact=True)
+            self.page.get_by_role("heading", name="Set new password", exact=True)
         ).to_be_visible()
 
     def fill_password(self, password: str) -> None:
@@ -50,9 +50,14 @@ class ResetPasswordPage(BasePage):
         error_locator = self.page.locator(".text-red-700, .text-red-200").first
         expect(error_locator).to_contain_text(message)
 
+    def expect_submit_disabled(self) -> None:
+        """Assert the form refuses submission (weak or mismatched password)."""
+        expect(self.page.get_by_role("button", name="Reset password")).to_be_disabled()
+
     def expect_passwords_mismatch_error(self) -> None:
-        """Assert passwords don't match error."""
-        self.expect_error("Passwords do not match")
+        """Assert the live mismatch indicator (rendered beside the confirm
+        field, not in the flash-error container)."""
+        expect(self.page.get_by_text("Passwords do not match")).to_be_visible()
 
     def expect_invalid_token_error(self) -> None:
         """Assert invalid or expired token error."""

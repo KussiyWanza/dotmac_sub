@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page, expect
 
 from tests.playwright.pages.base_page import BasePage
+
+# Unauthenticated admin requests land on /auth/login?next=<path>. Playwright's
+# URL globs do not match that redirect target — "**/auth/login**" times out
+# against a URL carrying a query string — so waits use this regex instead.
+LOGIN_URL_PATTERN = re.compile(r"/auth/login")
 
 
 class LoginPage(BasePage):
