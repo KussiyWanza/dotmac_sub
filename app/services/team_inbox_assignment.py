@@ -28,6 +28,9 @@ from app.services.owner_commands import (
 )
 
 DEFAULT_MAX_CONCURRENT_CONVERSATIONS = 3
+VALID_AGENT_PRESENCE_STATUSES = frozenset(
+    item.value for item in InboxAgentPresenceStatus
+)
 T = TypeVar("T")
 OWNER = "communications.team_inbox_routing"
 _ROUTING_COMMAND = OwnerCommandDefinition(
@@ -82,6 +85,52 @@ def _effective_presence_status(presence: InboxAgentPresence) -> str:
         or presence.status
         or InboxAgentPresenceStatus.offline.value
     )
+
+
+def set_agent_presence(
+    db: Session,
+    *,
+    person_id: str | UUID,
+    status: str,
+    now: datetime | None = None,
+) -> InboxAgentPresence:
+    person_uuid = _coerce_uuid(person_id)
+    if person_uuid is None:
+        raise ValueError("person_id must be a valid UUID")
+    clean_status = str(status or "").strip().lower()
+    if clean_status not in VALID_AGENT_PRESENCE_STATUSES:
+        raise ValueError("Unsupported inbox agent presence status.")
+
+    observed_at = now or datetime.now(UTC)
+    presence = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == person_uuid)
+        .one_or_none()
+    )
+    if presence is None:
+        presence = InboxAgentPresence(person_id=person_uuid)
+        db.add(presence)
+
+    previous_effective_status = _effective_presence_status(presence)
+    presence.status = clean_status
+    presence.manual_override_status = clean_status
+    presence.last_seen_at = observed_at
+    metadata = dict(presence.metadata_ or {})
+    history = metadata.get("manual_status_history")
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "from": previous_effective_status,
+            "to": clean_status,
+            "at": observed_at.isoformat(),
+            "source": "admin_inbox_presence_toggle",
+        }
+    )
+    metadata["manual_status_history"] = history[-50:]
+    presence.metadata_ = metadata
+    db.flush()
+    return presence
 
 
 def list_available_team_agents(

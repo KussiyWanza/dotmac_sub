@@ -20,6 +20,20 @@
                         <span x-text="realtimeConnected ? 'Live' : 'Offline'">Offline</span>
                     </span>
                 </p>
+                {% if actor_person_id %}
+                {% set availability_status = agent_presence.status if agent_presence else 'offline' %}
+                <form method="post" action="/admin/inbox/presence" class="mt-2 flex flex-wrap gap-1" aria-label="Inbox availability">
+                    {% include "components/forms/csrf_input.html" %}
+                    {% for option in ['online', 'away', 'offline'] %}
+                    <button type="submit" name="status_value" value="{{ option }}"
+                            class="min-h-8 rounded-lg border px-2 text-[10px] font-bold uppercase tracking-wide {% if availability_status == option %}border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-200{% else %}border-slate-200 text-slate-500 hover:border-amber-200 hover:bg-amber-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800{% endif %}"
+                            aria-pressed="{{ 'true' if availability_status == option else 'false' }}">
+                        {{ option }}
+                    </button>
+                    {% endfor %}
+                </form>
+                <p class="mt-1 text-[10px] text-slate-400">Only online agents receive auto-assigned inbox conversations.</p>
+                {% endif %}
             </div>
         </div>
         <div class="flex shrink-0 items-center gap-1">

@@ -41,6 +41,7 @@ INBOX_COMMAND_ROUTES = {
     "team_inbox_workflow_action": "update_workflow",
     "team_inbox_saved_filter_create": "save_filter",
     "team_inbox_bulk_action": "bulk_action",
+    "team_inbox_presence_action": "set_agent_presence",
     "team_inbox_contact_link": "link_contact",
     "team_inbox_internal_note": "create_internal_note",
     "team_inbox_comment_create": "create_comment",

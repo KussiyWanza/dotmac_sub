@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
     InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
@@ -111,6 +112,8 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "inbox-sidebar-content" in index
     assert 'role="dialog"' in Path("templates/admin/inbox/_overlays.html").read_text()
     assert "@input.debounce.300ms" in sidebar
+    assert "/admin/inbox/presence" in sidebar
+    assert "Only online agents receive auto-assigned inbox conversations." in sidebar
     assert "conversation_id" in sidebar
     assert "data-reply-composer" in conversation
     assert "idempotency_key" in conversation
@@ -151,8 +154,60 @@ def test_projection_supplies_live_agent_and_assignment_options(db_session):
 
     assert projection.agent_options[0].name == "Ada Agent"
     assert projection.agent_options[0].initials == "AA"
+    assert projection.agent_presence is not None
+    assert projection.agent_presence.status == InboxAgentPresenceStatus.offline.value
     assert projection.assignment_counts.all == 1
     assert projection.assignment_counts.unassigned == 1
+
+
+def test_projection_reads_current_agent_presence(db_session):
+    user, person = add_bound_staff_user(
+        db_session,
+        email="ada-agent-presence@example.test",
+    )
+    user.first_name = "Ada"
+    user.last_name = "Agent"
+    user.display_name = "Ada Agent"
+    team = ServiceTeam(name="Support", team_type=ServiceTeamType.support.value)
+    db_session.add_all([user, team])
+    db_session.flush()
+    db_session.add(ServiceTeamMember(team_id=team.id, person_id=person.id))
+    db_session.add(
+        InboxAgentPresence(
+            person_id=user.id,
+            status=InboxAgentPresenceStatus.online.value,
+            manual_override_status=InboxAgentPresenceStatus.away.value,
+        )
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(actor_person_id=user.id),
+    )
+
+    assert projection.agent_presence is not None
+    assert projection.agent_presence.status == InboxAgentPresenceStatus.away.value
+
+
+def test_set_agent_presence_command_updates_current_operator(db_session):
+    person_id = uuid.uuid4()
+
+    outcome = team_inbox_commands.set_agent_presence(
+        db_session,
+        actor_person_id=person_id,
+        status=InboxAgentPresenceStatus.online.value,
+    )
+
+    presence = (
+        db_session.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == person_id)
+        .one()
+    )
+    assert outcome.status == InboxAgentPresenceStatus.online.value
+    assert outcome.already_set is False
+    assert presence.manual_override_status == InboxAgentPresenceStatus.online.value
+    assert presence.last_seen_at is not None
 
 
 def test_queue_row_projects_real_contact_name_and_unread_message_count(db_session):

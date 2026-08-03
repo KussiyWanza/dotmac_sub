@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
 from app.models.team_inbox import (
     InboxAgentPresence,
@@ -59,6 +61,22 @@ def test_available_team_agents_ignore_offline_members(db_session):
     candidates = team_inbox_assignment.list_available_team_agents(db_session, team.id)
 
     assert [candidate.person_id for candidate in candidates] == [str(online)]
+
+
+def test_available_team_agents_respect_manual_presence_override(db_session):
+    team = _team(db_session)
+    agent = _member(db_session, team, status=InboxAgentPresenceStatus.online.value)
+    presence = (
+        db_session.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == agent)
+        .one()
+    )
+    presence.manual_override_status = InboxAgentPresenceStatus.away.value
+    db_session.commit()
+
+    candidates = team_inbox_assignment.list_available_team_agents(db_session, team.id)
+
+    assert candidates == []
 
 
 def test_available_team_agents_ignore_full_members(db_session):
@@ -124,3 +142,19 @@ def test_assign_conversation_queues_when_no_agent_available(db_session):
         db_session.query(InboxConversationTeam).one().role == InboxTeamRole.owner.value
     )
     assert db_session.query(InboxConversationAssignment).count() == 0
+
+
+def test_set_agent_presence_creates_manual_override(db_session):
+    person_id = uuid4()
+
+    presence = team_inbox_assignment.set_agent_presence(
+        db_session,
+        person_id=person_id,
+        status=InboxAgentPresenceStatus.away.value,
+    )
+    db_session.commit()
+
+    assert presence.person_id == person_id
+    assert presence.status == InboxAgentPresenceStatus.away.value
+    assert presence.manual_override_status == InboxAgentPresenceStatus.away.value
+    assert presence.last_seen_at is not None

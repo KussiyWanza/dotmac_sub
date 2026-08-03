@@ -18,6 +18,7 @@ from app.models.service_team import ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.models.team_inbox import (
     InboxAgentPresence,
+    InboxAgentPresenceStatus,
     InboxChannelType,
     InboxConversation,
     InboxConversationAssignment,
@@ -224,6 +225,13 @@ class InboxManagerDashboardProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class InboxAgentPresenceProjection:
+    person_id: UUID
+    status: str
+    last_seen_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class InboxAssignmentCounts:
     all: int
     assigned_to_me: int
@@ -264,6 +272,7 @@ class InboxQueueProjection:
     activity_to: str | None
     service_team_options: tuple[InboxServiceTeamOption, ...]
     agent_options: tuple[InboxAgentOption, ...]
+    agent_presence: InboxAgentPresenceProjection | None
     assignment_counts: InboxAssignmentCounts
     status_options: tuple[str, ...]
     channel_options: tuple[str, ...]
@@ -352,6 +361,29 @@ def _resolved_today_count(
                 count += 1
             break
     return count
+
+
+def get_agent_presence(
+    db: Session,
+    person_id: UUID | None,
+) -> InboxAgentPresenceProjection | None:
+    if person_id is None:
+        return None
+    presence = (
+        db.query(InboxAgentPresence)
+        .filter(InboxAgentPresence.person_id == person_id)
+        .one_or_none()
+    )
+    status = (
+        presence.manual_override_status or presence.status
+        if presence is not None
+        else InboxAgentPresenceStatus.offline.value
+    )
+    return InboxAgentPresenceProjection(
+        person_id=person_id,
+        status=status,
+        last_seen_at=presence.last_seen_at if presence is not None else None,
+    )
 
 
 def build_manager_dashboard_projection(
@@ -1094,6 +1126,7 @@ def build_queue_projection(
             InboxServiceTeamOption(id=team.id, name=team.name) for team in service_teams
         ),
         agent_options=list_agent_options(db),
+        agent_presence=get_agent_presence(db, request.actor_person_id),
         assignment_counts=_assignment_counts(
             db,
             actor_person_id=request.actor_person_id,

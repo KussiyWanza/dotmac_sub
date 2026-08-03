@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType
 from app.models.team_inbox import (
+    InboxAgentPresence,
     InboxChannelType,
     InboxConversation,
     InboxConversationStatus,
@@ -117,6 +118,13 @@ class BulkActionOutcome:
 @dataclass(frozen=True)
 class StatusOutcome:
     conversation_id: str
+    status: str
+    already_set: bool
+
+
+@dataclass(frozen=True)
+class AgentPresenceOutcome:
+    person_id: str
     status: str
     already_set: bool
 
@@ -772,6 +780,44 @@ def delete_filter(
         team_inbox_operations.delete_saved_filter(db, filter_id=saved_filter.id)
 
     _commit(db, action)
+
+
+def set_agent_presence(
+    db: Session,
+    *,
+    actor_person_id: str | UUID | None,
+    status: str,
+) -> AgentPresenceOutcome:
+    actor_uuid = coerce_uuid(actor_person_id)
+    if actor_uuid is None:
+        raise InboxCommandRejected("Authenticated operator identity is required.")
+    clean_status = str(status or "").strip().lower()
+    if clean_status not in team_inbox_assignment.VALID_AGENT_PRESENCE_STATUSES:
+        raise InboxCommandError("Unsupported inbox availability status.")
+
+    def action() -> AgentPresenceOutcome:
+        existing = (
+            db.query(InboxAgentPresence)
+            .filter(InboxAgentPresence.person_id == actor_uuid)
+            .one_or_none()
+        )
+        previous = (
+            existing.manual_override_status or existing.status
+            if existing is not None
+            else None
+        )
+        presence = team_inbox_assignment.set_agent_presence(
+            db,
+            person_id=actor_uuid,
+            status=clean_status,
+        )
+        return AgentPresenceOutcome(
+            person_id=str(actor_uuid),
+            status=presence.manual_override_status or presence.status,
+            already_set=previous == clean_status,
+        )
+
+    return _commit(db, action)
 
 
 def bulk_action(
