@@ -967,7 +967,7 @@ def _base_subscription_invoice_lines(lines: list[InvoiceLine]) -> list[InvoiceLi
 def _prepaid_invoice_needs_payment_date_anchor(
     subscription: Subscription,
     invoice: Invoice,
-    paid_at_day: datetime,
+    settlement_period_start: datetime,
 ) -> bool:
     period_start = invoice.billing_period_start
     if period_start is None:
@@ -975,7 +975,7 @@ def _prepaid_invoice_needs_payment_date_anchor(
     period_start = (
         period_start if period_start.tzinfo else period_start.replace(tzinfo=UTC)
     )
-    if paid_at_day <= period_start:
+    if settlement_period_start <= period_start:
         return False
 
     lapsed_statuses = {
@@ -991,13 +991,13 @@ def _prepaid_invoice_needs_payment_date_anchor(
         next_billing = (
             next_billing if next_billing.tzinfo else next_billing.replace(tzinfo=UTC)
         )
-        if next_billing <= paid_at_day:
+        if next_billing <= settlement_period_start:
             return True
 
     period_end = invoice.billing_period_end
     if period_end is not None:
         period_end = period_end if period_end.tzinfo else period_end.replace(tzinfo=UTC)
-        if period_end <= paid_at_day:
+        if period_end <= settlement_period_start:
             return True
 
     return False
@@ -1045,17 +1045,30 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
         if payment is not None
         else fallback_effective_at
     ) or datetime.now(UTC)
-    paid_at_utc = (
-        effective_at if effective_at.tzinfo else effective_at.replace(tzinfo=UTC)
-    )
-    paid_at_day = paid_at_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-
     resolved = _invoice_subscription_lines(db, invoice)
     if resolved is None:
         return False
     subscription, lines = resolved
+    cycle = (
+        subscription.offer.billing_cycle
+        if subscription.offer and subscription.offer.billing_cycle
+        else BillingCycle.monthly
+    )
+    from app.services.prepaid_service_renewals import (
+        PrepaidSettlementPeriodQuery,
+        resolve_prepaid_settlement_period,
+    )
+
+    settlement_period = resolve_prepaid_settlement_period(
+        PrepaidSettlementPeriodQuery(
+            effective_at=effective_at,
+            billing_cycle=cycle,
+        )
+    )
     if not _prepaid_invoice_needs_payment_date_anchor(
-        subscription, invoice, paid_at_day
+        subscription,
+        invoice,
+        settlement_period.starts_at,
     ):
         return False
 
@@ -1063,18 +1076,11 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
     if not base_lines:
         return False
 
-    from app.services.billing_automation import _period_end
-
-    cycle = (
-        subscription.offer.billing_cycle
-        if subscription.offer and subscription.offer.billing_cycle
-        else BillingCycle.monthly
-    )
     extension_delta = _prepaid_extension_delta_after_invoice(invoice, subscription)
     old_period_start = invoice.billing_period_start
     old_period_end = invoice.billing_period_end
-    new_period_start = paid_at_day
-    new_period_end = _period_end(new_period_start, cycle)
+    new_period_start = settlement_period.starts_at
+    new_period_end = settlement_period.ends_at
     if old_period_start == new_period_start and old_period_end == new_period_end:
         return False
 
@@ -1088,7 +1094,8 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
         metadata["billing_period_end"] = new_period_end.isoformat()
         line.metadata_ = metadata
         line.description = (
-            f"{offer_name} ({new_period_start.date()} - {new_period_end.date()})"
+            f"{offer_name} ({settlement_period.starts_on} - "
+            f"{settlement_period.ends_on})"
         )
 
     target_next_billing = new_period_end + extension_delta
@@ -1113,6 +1120,9 @@ def _reanchor_paid_prepaid_invoice_if_lapsed(
             "old_period_end": old_period_end.isoformat(),
             "new_period_start": new_period_start.isoformat(),
             "new_period_end": new_period_end.isoformat(),
+            "billing_calendar_timezone": settlement_period.timezone_name,
+            "new_period_start_date": settlement_period.starts_on.isoformat(),
+            "new_period_end_date": settlement_period.ends_on.isoformat(),
             "extension_delta_seconds": extension_delta.total_seconds(),
             "new_next_billing_at": target_next_billing.isoformat(),
         },

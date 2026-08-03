@@ -9874,6 +9874,209 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="financial.prepaid_billing_calendar_reconciliation",
+                module="app.services.prepaid_billing_calendar_reconciliation",
+                owns=("historical prepaid billing calendar reconciliation",),
+                depends_on=(
+                    "access.fup_usage_windows",
+                    "financial.invoices",
+                    "financial.payments",
+                    "financial.prepaid_service_renewals",
+                    "observability.audit_log",
+                ),
+                notes=(
+                    "A reviewed, fingerprint-bound repair owner for the retired "
+                    "UTC-midnight prepaid settlement calculation. It changes only "
+                    "the exact invoice period, base-line period projection, sourced "
+                    "entitlement interval, and matching subscription anchor. Money, "
+                    "allocation, settlement, invoice status, access, and ledger "
+                    "evidence remain unchanged. Ambiguous chains fail closed."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "reviewed calendar correction command",
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                                "rated quota period evidence",
+                            ),
+                            canonical_writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed calendar correction command",
+                            owner="financial.prepaid_billing_calendar_reconciliation",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed invoice identity, signed preview fingerprint, "
+                                "actor, reason, command, correlation, and idempotency "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical paid prepaid invoice chain",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "one active paid invoice, one base-subscription line, "
+                                "one succeeded allocated settlement, one sourced active "
+                                "entitlement, and the unchanged subscription anchor"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="rated quota period evidence",
+                            owner="access.fup_usage_windows",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "persisted subscription QuotaBucket intervals that "
+                                "would require a coordinated usage-owner correction"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical settlement business calendar",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "typed settlement instant and cadence resolved through "
+                                "Africa/Lagos local midnight and persisted as UTC instants"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Reviewed confirmation enters execute_owner_command once on "
+                            "a transaction-free session, rechecks the exact chain under "
+                            "lock, stages calendar projections, audit, outbox event, and "
+                            "idempotency evidence, then commits or rolls back together."
+                        ),
+                        locking=(
+                            "Lock account first, then invoice, subscription, invoice "
+                            "line, entitlement, payment, allocation, and settlement; "
+                            "expire and re-read the full chain before re-running the "
+                            "resolver and reject changed or overlapping evidence."
+                        ),
+                        idempotency=(
+                            "A caller key is reserved per invoice and the invoice stores "
+                            "the exact fingerprint and before/after evidence for stable "
+                            "replay."
+                        ),
+                        retries=(
+                            "Replay a completed identical command. Changed, overlapping, "
+                            "returned, extended, or ambiguous evidence requires a fresh "
+                            "review and is never guessed."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "financial.prepaid_billing_calendar_reconciliation.invoice_not_found",
+                            "financial.prepaid_billing_calendar_reconciliation.missing_idempotency_key",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_reason",
+                            "financial.prepaid_billing_calendar_reconciliation.idempotency_conflict",
+                            "financial.prepaid_billing_calendar_reconciliation.stale_preview",
+                            "financial.prepaid_billing_calendar_reconciliation.not_actionable",
+                            "financial.prepaid_billing_calendar_reconciliation.invalid_command_context",
+                            "financial.prepaid_billing_calendar_reconciliation.command_contract_violation",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_owner_command",
+                            "financial.prepaid_billing_calendar_reconciliation.active_caller_transaction",
+                            "financial.prepaid_billing_calendar_reconciliation.nested_transaction_completion",
+                        ),
+                        mapping_owner="admin billing-date reconciliation adapter",
+                        retryable_codes=(),
+                        fail_closed_on=(
+                            "non-paid or multi-line invoice evidence",
+                            "missing or multiple succeeded settlement allocations",
+                            "refund, reversal, extension, overlap, or moved anchor",
+                            "an overlapping rated quota period",
+                            "any mismatch from the exact retired UTC-period signature",
+                            "stale preview or active caller transaction",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("prepaid_billing_calendar.reconciled",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Invoice, subscription, entitlement, payment, timezone, "
+                            "before/after instants, zero economic delta, and fingerprint "
+                            "retain their meaning; additions are backward compatible."
+                        ),
+                        replay=(
+                            "Consumers may rebuild evidence views but never re-decide "
+                            "or rewrite financial or service state."
+                        ),
+                    ),
+                    projections=(
+                        ProjectionContract(
+                            name="historical prepaid billing calendar reconciliation",
+                            input_names=(
+                                "canonical paid prepaid invoice chain",
+                                "canonical settlement business calendar",
+                            ),
+                            writer=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                            freshness="computed from the current database snapshot",
+                            stale_behavior=(
+                                "Confirmation rejects the changed fingerprint and "
+                                "requires a fresh preview."
+                            ),
+                            drift_signal=(
+                                "An exact retired UTC-period signature remains in the "
+                                "review queue until corrected or quarantined."
+                            ),
+                            rebuild_operation=(
+                                "preview_prepaid_billing_calendar_cohort deterministically "
+                                "reclassifies the bounded paid-invoice cohort."
+                            ),
+                            repair_owner=(
+                                "financial.prepaid_billing_calendar_reconciliation"
+                            ),
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUT_OVER,
+                        old_owner=(
+                            "historical payment settlement path that floored the "
+                            "settlement instant at UTC midnight"
+                        ),
+                        new_owner=("financial.prepaid_billing_calendar_reconciliation"),
+                        verification=(
+                            "Eligible, stale, replay, refund, extension, overlap, "
+                            "moved-anchor, UTC-boundary, UI permission, and signed-review "
+                            "tests."
+                        ),
+                        cutover_gate=(
+                            "Forward settlement periods resolve in Africa/Lagos and the "
+                            "historical admin queue is preview-only until explicit "
+                            "fingerprint-bound confirmation."
+                        ),
+                        fallback_retirement=(
+                            "Retire the queue after the staging-accepted cohort is "
+                            "reconciled and a verification scan reports no exact legacy "
+                            "signatures."
+                        ),
+                    ),
+                    steward="billing operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
+                        "docs/designs/PREPAID_BILLING_CALENDAR_RECONCILIATION.md",
+                    ),
+                    test_refs=(
+                        "tests/test_prepaid_billing_calendar_reconciliation.py",
+                        "tests/test_web_prepaid_billing_calendar_reconciliation.py",
+                        "tests/architecture/test_prepaid_billing_anchor_ownership.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="financial.prepaid_draft_reconciliation",
                 module="app.services.prepaid_draft_reconciliation",
                 owns=(
@@ -10436,6 +10639,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "prepaid service renewal execution",
                     "due prepaid service-cycle funding preview",
                     "settled-payment evidence validation and evaluation outcome",
+                    "WAT lapsed-settlement service-period resolution",
                     "locked and idempotent prepaid renewal debit",
                     "exact debit-to-entitlement evidence",
                     "prepaid subscription paid-through advancement",
@@ -10487,7 +10691,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "anchor policies that previously lived in "
                     "_finalize_invoice_payment_effects and "
                     "finalize_invoice_application_for_owner. The retired inline "
-                    "project_paid_invoice_billing_anchors helper is gone."
+                    "project_paid_invoice_billing_anchors helper is gone. A lapsed "
+                    "settlement period first resolves the payment instant into the "
+                    "Africa/Lagos calendar, starts at local midnight, advances by the "
+                    "typed cadence, and persists the resulting boundaries as UTC "
+                    "instants. Payment participants consume that typed period; they do "
+                    "not derive a UTC calendar date independently."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10517,6 +10726,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "evaluation outcome"
                             ),
                             role=OwnerRole.POLICY,
+                            input_names=(
+                                "settled payment evidence",
+                                "prepaid subscription and renewal terms",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="WAT lapsed-settlement service-period resolution",
+                            role=OwnerRole.RESOLVER,
                             input_names=(
                                 "settled payment evidence",
                                 "prepaid subscription and renewal terms",
@@ -10772,9 +10989,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     design_refs=(
                         "docs/adr/0007-end-to-end-billing-target-architecture.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
                     ),
                     test_refs=(
                         "tests/test_prepaid_service_renewals.py",
+                        "tests/services/billing/test_payment_status_recompute.py",
                         "tests/test_subledger_forward_shadow.py",
                         "tests/architecture/test_prepaid_billing_anchor_ownership.py",
                     ),
