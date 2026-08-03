@@ -20,9 +20,10 @@ CRM-compatible Selfcare adaptations:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
@@ -79,6 +80,8 @@ from app.services.sales import lead_authoring, pipeline_configuration, quote_aut
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
+
+logger = logging.getLogger(__name__)
 
 # The CRM's recommended default stage set, seeded when "create default
 # stages" is ticked on the new-pipeline form (web_sales.py port).
@@ -2067,7 +2070,9 @@ def _quote_lead_options(db: Session) -> list[dict[str, str]]:
     return options
 
 
-def _quote_tax_rate_options(db: Session) -> list[dict[str, str]]:
+def _quote_tax_rate_options(
+    db: Session,
+) -> tuple[list[dict[str, str]], tuple[str, ...]]:
     rates = billing_service.tax_rates.list(
         db,
         is_active=True,
@@ -2076,15 +2081,40 @@ def _quote_tax_rate_options(db: Session) -> list[dict[str, str]]:
         limit=500,
         offset=0,
     )
-    return [
-        {
-            "id": str(rate.id),
-            "name": rate.name,
-            "rate": str(rate.rate),
-            "label": f"{rate.name} ({Decimal(rate.rate):g}%)",
-        }
-        for rate in rates
-    ]
+    options: list[dict[str, str]] = []
+    invalid_ids: list[str] = []
+    for rate in rates:
+        try:
+            value = Decimal(rate.rate)
+        except (InvalidOperation, TypeError, ValueError):
+            invalid_ids.append(str(rate.id))
+            continue
+        if not value.is_finite() or value < 0 or value > 100:
+            invalid_ids.append(str(rate.id))
+            continue
+        options.append(
+            {
+                "id": str(rate.id),
+                "name": rate.name,
+                "rate": str(value),
+                "label": f"{rate.name} ({value:g}%)",
+            }
+        )
+    if invalid_ids:
+        logger.error(
+            "quote_form_invalid_tax_rates",
+            extra={
+                "invalid_tax_rate_ids": tuple(invalid_ids),
+                "invalid_tax_rate_count": len(invalid_ids),
+            },
+        )
+    warnings = (
+        (
+            "Some active Tax Rates are unavailable because their configured "
+            "percentage is invalid. Review Billing Tax Rates before using them."
+        ),
+    ) if invalid_ids else ()
+    return options, warnings
 
 
 def _quote_suggestions(db: Session) -> list[dict[str, str]]:
@@ -2117,14 +2147,16 @@ def _quote_suggestions(db: Session) -> list[dict[str, str]]:
 
 
 def _quote_form_options(db: Session) -> dict[str, Any]:
+    tax_rates, warnings = _quote_tax_rate_options(db)
     return {
         "leads": _quote_lead_options(db),
-        "tax_rates": _quote_tax_rate_options(db),
+        "tax_rates": tax_rates,
         "suggestions": _quote_suggestions(db),
         "project_types": [
             {"value": value, "label": label}
             for value, label in QUOTE_PROJECT_TYPE_OPTIONS
         ],
+        "form_warnings": warnings,
     }
 
 
