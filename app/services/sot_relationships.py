@@ -30949,6 +30949,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 owns=(
                     "relocation charge evidence and settlement admission",
                     "paid relocation fulfillment release",
+                    "remote provisioning price confirmation and failure recovery",
                     "remote reprovision verification",
                     "verified service-change finalization",
                     "interrupted execution-chain reconciliation",
@@ -30961,6 +30962,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "operations.work_order_commands",
                     "operations.provisioning_lifecycle",
                     "access.radius_state",
+                    "financial.prepaid_plan_change",
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -30977,6 +30979,18 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             role=OwnerRole.APPLICATION_COORDINATOR,
                             input_names=(
                                 "canonical invoice and payment allocation evidence",
+                                "canonical subscription-change execution state",
+                            ),
+                        ),
+                        ConcernContract(
+                            name=(
+                                "remote provisioning price confirmation and failure "
+                                "recovery"
+                            ),
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "canonical prepaid plan-change decision",
+                                "canonical RADIUS profile observation",
                                 "canonical subscription-change execution state",
                             ),
                         ),
@@ -31028,6 +31042,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical prepaid plan-change decision",
+                            owner="financial.prepaid_plan_change",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "one frozen-effective-time plan-change decision with "
+                                "required amount, currency, funding, shortfall, "
+                                "eligibility, and exact human-review fingerprint"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="catalog-linked target RADIUS profile",
                             owner="service_intent.subscription_lifecycle_execution",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -31068,9 +31092,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
-                            "Each event admission locks one change request and stages "
-                            "structural evidence plus delegated owner results before the "
-                            "adapter transaction completes."
+                            "Each event admission locks one change request. Remote "
+                            "execution durably records any changed-price review before "
+                            "network I/O; confirmed execution coordinates the RADIUS "
+                            "projection and commercial owner, then compensates the "
+                            "external projection when commercial finalization fails."
                         ),
                         locking="The exact SubscriptionChangeRequest is locked first.",
                         idempotency=(
@@ -31078,8 +31104,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "keys replay the original outcome."
                         ),
                         retries=(
-                            "Unsettled or unverified observations fail closed and retry "
-                            "after their authoritative evidence changes."
+                            "Unsettled, unverified, stale-price, or billing-blocked "
+                            "requests fail closed and remain retryable after their "
+                            "authoritative evidence changes."
                         ),
                     ),
                     errors=ErrorContract(
@@ -31090,6 +31117,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "service_intent.subscription_change_execution.remote_radius_profile_ambiguous",
                             "service_intent.subscription_change_execution.remote_access_credential_ambiguous",
                             "service_intent.subscription_change_execution.remote_reprovision_verification_missing",
+                            "service_intent.subscription_change_execution.remote_reprovision_compensation_failed",
                             "service_intent.subscription_change_execution.service_change_not_finalizable",
                             "service_intent.subscription_change_execution.reconciliation_head_invalid",
                             "service_intent.subscription_change_execution.reconciliation_head_stale",
@@ -31108,11 +31136,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "service_intent.subscription_change_execution.relocation_fee_not_settled",
                             "service_intent.subscription_change_execution.provisioning_verification_missing",
                             "service_intent.subscription_change_execution.remote_reprovision_verification_missing",
+                            "service_intent.subscription_change_execution.remote_reprovision_compensation_failed",
                         ),
                         fail_closed_on=(
                             "missing or mismatched fee, currency, invoice, allocation, or payment",
                             "missing field-work or provisioning verification",
                             "missing, stale, ambiguous, or mismatched RADIUS profile evidence",
+                            "changed or unaffordable upgrade pricing not explicitly reconfirmed",
                             "mismatched service-order scope",
                         ),
                     ),

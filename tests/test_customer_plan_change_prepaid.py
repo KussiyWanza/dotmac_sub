@@ -54,11 +54,13 @@ from app.services.customer_portal_flow_changes import (
     get_plan_change_quote,
 )
 from app.services.subscription_change_execution import (
+    RemoteProvisionActionCommand,
     RemoteProvisionActionStatus,
     SubscriptionChangeExecutionError,
     finalize_verified_remote_reprovision,
     provision_and_verify_remote_change,
     settle_relocation_payment,
+    stage_remote_reprovision,
 )
 
 
@@ -480,6 +482,13 @@ def test_remote_reprovision_finalizes_only_after_exact_fresh_radius_observation(
     )
     request = db_session.get(SubscriptionChangeRequest, result["change_request_id"])
     assert request is not None
+    assert request.remote_reprovision_requested_at is None
+    assert credential.radius_profile_id is None
+    stage_remote_reprovision(db_session, request)
+    db_session.commit()
+    db_session.refresh(request)
+    db_session.refresh(credential)
+    assert credential.radius_profile_id == profile.id
     with pytest.raises(
         SubscriptionChangeExecutionError,
         match="exact target RADIUS profile has not been observed",
@@ -599,12 +608,14 @@ def test_operator_remote_provision_projects_then_verifies_exact_profile(
     )
     outcome = provision_and_verify_remote_change(
         db_session,
-        request_id=change.id,
-        subscription_id=subscription.id,
-        account_id=subscriber.id,
-        actor_id="network-operator",
-        idempotency_key=f"remote-plan-change:{change.id}",
-        reason="Operator requested RADIUS provisioning and verification",
+        RemoteProvisionActionCommand(
+            request_id=change.id,
+            subscription_id=subscription.id,
+            account_id=subscriber.id,
+            actor_id="network-operator",
+            idempotency_key=f"remote-plan-change:{change.id}",
+            reason="Operator requested RADIUS provisioning and verification",
+        ),
     )
 
     db_session.refresh(subscription)
@@ -616,6 +627,216 @@ def test_operator_remote_provision_projects_then_verifies_exact_profile(
     assert change.execution_state == SubscriptionChangeExecutionState.completed
     assert change.reconciliation_actor_id == "network-operator"
     assert change.reconciled_at is not None
+
+
+def test_operator_remote_provision_reprices_before_radius_and_requires_confirmation(
+    db_session, subscriber, monkeypatch
+):
+    _stub_plan_change_side_effects(monkeypatch)
+    frozen = datetime(2026, 5, 16, 12, tzinfo=UTC)
+    _freeze_subscription_now(monkeypatch, frozen)
+
+    class _FrozenExecutionDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is not None else frozen.replace(tzinfo=None)
+
+    execution_module = importlib.import_module(
+        "app.services.subscription_change_execution"
+    )
+    monkeypatch.setattr(execution_module, "datetime", _FrozenExecutionDateTime)
+
+    current_offer = _make_offer(
+        db_session,
+        name="Reprice Basic",
+        amount=Decimal("100.00"),
+        plan_family="unlimited",
+        speed_download_mbps=10,
+    )
+    target_offer = _make_offer(
+        db_session,
+        name="Reprice Elite",
+        amount=Decimal("150.00"),
+        plan_family="unlimited",
+        speed_download_mbps=50,
+    )
+    profile = RadiusProfile(
+        name="Reprice Elite",
+        download_speed=50000,
+        upload_speed=50000,
+    )
+    db_session.add(profile)
+    db_session.flush()
+    db_session.add(OfferRadiusProfile(offer_id=target_offer.id, profile_id=profile.id))
+    subscription = _make_subscription(
+        db_session,
+        subscriber,
+        current_offer,
+        next_billing_at=datetime(2026, 6, 1, tzinfo=UTC),
+        start_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    credential = AccessCredential(
+        subscriber_id=subscriber.id,
+        subscription_id=subscription.id,
+        username=f"operator-reprice-{subscription.id}",
+        is_active=True,
+    )
+    db_session.add(credential)
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.payment,
+            amount=Decimal("1000000.00"),
+            currency="NGN",
+            memo="Fund changed-price provisioning test",
+        )
+    )
+    db_session.commit()
+    confirmation = confirm_service_change(
+        db_session,
+        {"account_id": str(subscriber.id), "subscriber_id": str(subscriber.id)},
+        str(subscription.id),
+        str(target_offer.id),
+        **_confirmation_kwargs(db_session, subscription, target_offer),
+    )
+    change = db_session.get(
+        SubscriptionChangeRequest, confirmation["change_request_id"]
+    )
+    assert change is not None
+    target_price = db_session.scalar(
+        select(OfferPrice).where(
+            OfferPrice.offer_id == target_offer.id,
+            OfferPrice.price_type == PriceType.recurring,
+            OfferPrice.is_active.is_(True),
+        )
+    )
+    assert target_price is not None
+    target_price.amount = Decimal("600.00")
+    db_session.commit()
+
+    projection_calls: list[str] = []
+
+    def _project(_db, subscription_id):
+        projection_calls.append(subscription_id)
+        radius_user = _db.scalar(
+            select(RadiusUser).where(RadiusUser.access_credential_id == credential.id)
+        )
+        if radius_user is None:
+            radius_user = RadiusUser(
+                subscriber_id=subscriber.id,
+                subscription_id=subscription.id,
+                access_credential_id=credential.id,
+                username=credential.username,
+                is_active=True,
+            )
+            _db.add(radius_user)
+        radius_user.radius_profile_id = profile.id
+        radius_user.last_sync_at = change.remote_reprovision_requested_at + timedelta(
+            seconds=1
+        )
+        _db.flush()
+        from app.services.radius import (
+            ConnectivityProjectionDisposition,
+            SubscriptionConnectivityOutcome,
+        )
+
+        return SubscriptionConnectivityOutcome(
+            subscription_id=subscription_id,
+            disposition=ConnectivityProjectionDisposition.projected,
+            projected_logins=1,
+            projection_targets=1,
+        )
+
+    monkeypatch.setattr(
+        "app.services.radius.reconcile_subscription_connectivity", _project
+    )
+    command = RemoteProvisionActionCommand(
+        request_id=change.id,
+        subscription_id=subscription.id,
+        account_id=subscriber.id,
+        actor_id="network-operator",
+        idempotency_key=f"remote-plan-change:{change.id}",
+        reason="Operator requested RADIUS provisioning and verification",
+    )
+
+    review_outcome = provision_and_verify_remote_change(db_session, command)
+
+    db_session.refresh(subscription)
+    db_session.refresh(change)
+    assert review_outcome.status == RemoteProvisionActionStatus.price_review_required
+    assert review_outcome.price_review is not None
+    assert review_outcome.price_review.current_amount > (
+        review_outcome.price_review.previous_amount
+    )
+    assert "The upgrade price changed from ₦" in review_outcome.message
+    assert "Review and confirm the new amount" in review_outcome.message
+    assert projection_calls == []
+    assert subscription.offer_id == current_offer.id
+    assert change.execution_state == SubscriptionChangeExecutionState.provisioning
+
+    # A funding-only change alters the financial fingerprint but not the price
+    # the operator just reviewed. It must produce a billing error, not a second
+    # misleading changed-price prompt, and it must not touch RADIUS.
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.adjustment,
+            amount=Decimal("999900.00"),
+            currency="NGN",
+            memo="Reduce balance after price review",
+        )
+    )
+    db_session.commit()
+
+    blocked = provision_and_verify_remote_change(
+        db_session,
+        RemoteProvisionActionCommand(
+            request_id=command.request_id,
+            subscription_id=command.subscription_id,
+            account_id=command.account_id,
+            actor_id=command.actor_id,
+            idempotency_key=command.idempotency_key,
+            reason=command.reason,
+            confirmed_price_fingerprint=review_outcome.price_review.fingerprint,
+        ),
+    )
+    assert blocked.status == RemoteProvisionActionStatus.billing_blocked
+    assert blocked.price_review is not None
+    assert "available prepaid balance" in blocked.message
+    assert "shortfall" in blocked.message
+    assert projection_calls == []
+
+    db_session.add(
+        LedgerEntry(
+            account_id=subscriber.id,
+            entry_type=LedgerEntryType.credit,
+            source=LedgerSource.payment,
+            amount=Decimal("1000000.00"),
+            currency="NGN",
+            memo="Restore balance after billing review",
+        )
+    )
+    db_session.commit()
+
+    completed = provision_and_verify_remote_change(
+        db_session,
+        RemoteProvisionActionCommand(
+            request_id=command.request_id,
+            subscription_id=command.subscription_id,
+            account_id=command.account_id,
+            actor_id=command.actor_id,
+            idempotency_key=command.idempotency_key,
+            reason=command.reason,
+            confirmed_price_fingerprint=blocked.price_review.fingerprint,
+        ),
+    )
+
+    db_session.refresh(subscription)
+    assert completed.status == RemoteProvisionActionStatus.completed
+    assert projection_calls == [str(subscription.id), str(subscription.id)]
+    assert subscription.offer_id == target_offer.id
 
 
 def test_operator_remote_provision_fails_closed_when_projection_target_unavailable(
@@ -636,8 +857,11 @@ def test_operator_remote_provision_fails_closed_when_projection_target_unavailab
         plan_family="unlimited",
         speed_download_mbps=50,
     )
+    previous_profile = RadiusProfile(
+        name="Current profile", download_speed=10000, upload_speed=10000
+    )
     profile = RadiusProfile(name="Target", download_speed=50000, upload_speed=50000)
-    db_session.add(profile)
+    db_session.add_all([previous_profile, profile])
     db_session.flush()
     db_session.add(OfferRadiusProfile(offer_id=target_offer.id, profile_id=profile.id))
     subscription = _make_subscription(
@@ -647,14 +871,14 @@ def test_operator_remote_provision_fails_closed_when_projection_target_unavailab
         next_billing_at=datetime(2026, 6, 1, tzinfo=UTC),
         start_at=datetime(2026, 5, 1, tzinfo=UTC),
     )
-    db_session.add(
-        AccessCredential(
-            subscriber_id=subscriber.id,
-            subscription_id=subscription.id,
-            username=f"operator-failure-{subscription.id}",
-            is_active=True,
-        )
+    credential = AccessCredential(
+        subscriber_id=subscriber.id,
+        subscription_id=subscription.id,
+        username=f"operator-failure-{subscription.id}",
+        radius_profile_id=previous_profile.id,
+        is_active=True,
     )
+    db_session.add(credential)
     db_session.commit()
     confirmation = confirm_service_change(
         db_session,
@@ -672,12 +896,23 @@ def test_operator_remote_provision_fails_closed_when_projection_target_unavailab
         SubscriptionConnectivityOutcome,
     )
 
+    projection_calls: list[str] = []
+
+    def _project_then_restore(_db, subscription_id):
+        projection_calls.append(subscription_id)
+        disposition = (
+            ConnectivityProjectionDisposition.target_unavailable
+            if len(projection_calls) == 1
+            else ConnectivityProjectionDisposition.projected
+        )
+        return SubscriptionConnectivityOutcome(
+            subscription_id=subscription_id,
+            disposition=disposition,
+        )
+
     monkeypatch.setattr(
         "app.services.radius.reconcile_subscription_connectivity",
-        lambda _db, subscription_id: SubscriptionConnectivityOutcome(
-            subscription_id=subscription_id,
-            disposition=ConnectivityProjectionDisposition.target_unavailable,
-        ),
+        _project_then_restore,
     )
 
     with pytest.raises(
@@ -686,14 +921,23 @@ def test_operator_remote_provision_fails_closed_when_projection_target_unavailab
     ):
         provision_and_verify_remote_change(
             db_session,
-            request_id=change.id,
-            subscription_id=subscription.id,
-            account_id=subscriber.id,
-            actor_id="network-operator",
-            idempotency_key=f"remote-plan-change:{change.id}",
-            reason="Operator requested RADIUS provisioning and verification",
+            RemoteProvisionActionCommand(
+                request_id=change.id,
+                subscription_id=subscription.id,
+                account_id=subscriber.id,
+                actor_id="network-operator",
+                idempotency_key=f"remote-plan-change:{change.id}",
+                reason="Operator requested RADIUS provisioning and verification",
+            ),
         )
+    assert not db_session.in_transaction()
+    db_session.refresh(subscription)
+    db_session.refresh(change)
+    db_session.refresh(credential)
+    assert projection_calls == [str(subscription.id), str(subscription.id)]
     assert subscription.offer_id == current_offer.id
+    assert credential.radius_profile_id == previous_profile.id
+    assert change.execution_state == SubscriptionChangeExecutionState.provisioning
 
 
 def test_wireless_address_relocation_is_qualified_priced_and_awaits_payment(
