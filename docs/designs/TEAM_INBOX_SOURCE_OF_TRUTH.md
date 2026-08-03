@@ -149,7 +149,10 @@ stale. Realtime has no replay authority.
   the priority-ascending, last-message-descending queue order. Page size is
   restricted to the declared options.
 - Actions: routes map permission and domain outcomes only. Templates render
-  owner-provided eligibility and never reconstruct lifecycle rules.
+  owner-provided eligibility and never reconstruct lifecycle rules. Operators
+  may set their own availability to `online`, `away`, or `offline`; automatic
+  conversation assignment selects only effectively-online agents and queues work
+  at the team when no eligible agent is available.
 - States: empty, no-results, permission/error redirect, best-effort realtime
   stale state, and normal loading follow
   `docs/UI_INFORMATION_AND_ACTION_STANDARD.md`.
