@@ -1882,9 +1882,9 @@ def _record_phase3_opening_preview(
         candidate_prepaid_funding_account_ids,
     )
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_incomplete_source_account_ids,
         prepaid_funding_opening_required_account_ids,
-        verified_prepaid_funding_balances,
+        prepaid_funding_opening_source_incomplete_account_ids,
+        preview_prepaid_opening_targets,
     )
 
     if not context.idempotency_key:
@@ -1946,7 +1946,7 @@ def _record_phase3_opening_preview(
     )
     incomplete_source = tuple(
         sorted(
-            prepaid_funding_incomplete_source_account_ids(
+            prepaid_funding_opening_source_incomplete_account_ids(
                 db, cohort, currency=currency
             ),
             key=str,
@@ -1955,7 +1955,10 @@ def _record_phase3_opening_preview(
     if incomplete_source:
         raise _error(
             "source_cohort_incomplete",
-            "Every funding candidate requires a history-derived baseline before preview.",
+            (
+                "Every migrated funding candidate requires reviewed history evidence; "
+                "native-after-handoff accounts require exact native provenance."
+            ),
             account_ids=[str(value) for value in incomplete_source],
         )
     existing_openings = {
@@ -1971,7 +1974,11 @@ def _record_phase3_opening_preview(
         account_id for account_id in cohort if account_id not in existing_openings
     )
 
-    legacy = verified_prepaid_funding_balances(db, capture_ids, currency=currency)
+    opening_targets = preview_prepaid_opening_targets(
+        db,
+        capture_ids,
+        currency=currency,
+    )
     shadow = resolve_positions(
         db,
         account_ids=capture_ids,
@@ -2002,7 +2009,8 @@ def _record_phase3_opening_preview(
         shadow_value = round_money(
             position.unapplied_customer_credit + position.prepaid_funding_reserved
         )
-        legacy_value = round_money(legacy[account_id])
+        target = opening_targets[account_id]
+        legacy_value = round_money(target.amount)
         delta = round_money(legacy_value - shadow_value)
         source: dict[str, object] = {
             "account_id": str(account_id),
@@ -2013,6 +2021,10 @@ def _record_phase3_opening_preview(
             ),
             "baseline_position_at": (
                 _utc(baseline.position_at).isoformat() if baseline is not None else None
+            ),
+            "opening_target_origin": target.origin.value,
+            "opening_target_source_position_at": (
+                _utc(target.source_position_at).isoformat()
             ),
             "legacy_position": str(legacy_value),
             "shadow_lanes": {

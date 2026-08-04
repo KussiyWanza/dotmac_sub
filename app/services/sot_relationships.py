@@ -3090,9 +3090,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "billing.contracts",
                     "billing.obligations",
                     "billing.rating",
+                    "customer.accounts",
                     "events.dispatcher",
                     "events.owner_outputs",
                     "financial.billing_automation",
+                    "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
                     "financial.prepaid_service_renewals",
                 ),
                 notes=(
@@ -3110,7 +3113,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "add-on exclusions as blockers. It never repairs another owner, "
                     "asks a non-owner to repair, or changes authority; operator and "
                     "finance approvals are separate commands and are forbidden while "
-                    "blockers remain."
+                    "blockers remain. Phase 3 may derive an opening target without "
+                    "Splynx only when account provenance proves the customer was "
+                    "created after the fixed legacy handoff with no Splynx identity. "
+                    "The zero history component and canonical native facts are "
+                    "fingerprinted before normal approval and capture."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3134,6 +3141,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "deterministic target rating",
                                 "current postpaid billing preview",
                                 "current prepaid renewal preview",
+                                "verified prepaid opening targets",
+                                "recorded customer postings",
                                 "receipted owner-output deliveries",
                                 "recorded shadow verification evidence",
                             ),
@@ -3204,6 +3213,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "typed current-owner monthly period, taxed base "
                                 "renewal, and explicit recurring-add-on exclusions "
                                 "for each prepaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified prepaid opening targets",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "reviewed reconstruction/opening positions, or a "
+                                "typed native-after-handoff target proven from the "
+                                "account creation instant, absent Splynx identity, "
+                                "fixed handoff, and canonical native financial facts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded customer postings",
+                            owner="financial.customer_subledger",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "currency-typed shadow posting lanes compared with "
+                                "the exact opening target at the verification cutoff"
                             ),
                         ),
                         AuthorityInput(
@@ -3673,8 +3702,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_funding_reconstruction",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source=(
-                                "reviewed active baseline plus canonical native "
-                                "post-baseline money facts"
+                                "reviewed active baseline/opening plus canonical later "
+                                "native facts, or the fingerprinted native-after-"
+                                "handoff zero-history target used only by opening "
+                                "verification"
                             ),
                         ),
                         AuthorityInput(
@@ -4631,8 +4662,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "evidence, never a runtime money source or fallback. The separate "
                     "customer.financial_position verifier owns the post-activation "
                     "composition of an approved subledger opening with later native "
-                    "facts; this reconstruction owner never rewrites an opening or "
-                    "posts money."
+                    "facts. For opening verification only, a customer created after "
+                    "the fixed legacy handoff with no Splynx identity has a typed "
+                    "zero history component plus canonical native facts; runtime "
+                    "money actions remain quarantined until approved immutable "
+                    "opening capture. This reconstruction owner never rewrites an "
+                    "opening or posts money."
                 ),
             ),
             SOTService(
@@ -10617,10 +10652,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_funding_reconstruction",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "active typed opening baseline, signed reviewed "
-                                "manifest, approval evidence, prior immutable "
-                                "invoice consumptions, and current verified prepaid "
-                                "funding position"
+                                "active typed reconstruction baseline or immutable "
+                                "approved subledger opening, its fingerprinted source "
+                                "evidence, prior immutable invoice consumptions, and "
+                                "current verified prepaid funding position"
                             ),
                         ),
                         AuthorityInput(

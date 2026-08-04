@@ -273,7 +273,7 @@ do not hand-edit these rows.
 | `billing.obligations` | immutable obligation rating provenance | `authoritative_record` | recorded billing contract terms ← `billing.contracts`<br>deterministic target rating ← `billing.rating`<br>recorded billing obligations ← `billing.obligations` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_obligations.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.obligations` | billing obligation state transition | `command_writer` | recorded billing obligations ← `billing.obligations` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_obligations.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.shadow_verification` | shadow pipeline delivery evidence | `authoritative_record` | terminal shadow obligation output ← `billing.obligations`<br>receipted owner-output deliveries ← `events.owner_outputs`<br>recorded shadow verification evidence ← `billing.shadow_verification` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/test_billing_phase2_shadow.py`<br>`tests/architecture/test_billing_target_architecture.py` |
-| `billing.shadow_verification` | phase cutover verification evidence | `authoritative_record` | complete active subscription cohort ← `access.subscription_lifecycle`<br>recorded billing contract terms ← `billing.contracts`<br>recorded billing obligations ← `billing.obligations`<br>deterministic target rating ← `billing.rating`<br>current postpaid billing preview ← `financial.billing_automation`<br>current prepaid renewal preview ← `financial.prepaid_service_renewals`<br>receipted owner-output deliveries ← `events.owner_outputs`<br>recorded shadow verification evidence ← `billing.shadow_verification` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/test_billing_phase2_shadow.py`<br>`tests/architecture/test_billing_target_architecture.py` |
+| `billing.shadow_verification` | phase cutover verification evidence | `authoritative_record` | complete active subscription cohort ← `access.subscription_lifecycle`<br>recorded billing contract terms ← `billing.contracts`<br>recorded billing obligations ← `billing.obligations`<br>deterministic target rating ← `billing.rating`<br>current postpaid billing preview ← `financial.billing_automation`<br>current prepaid renewal preview ← `financial.prepaid_service_renewals`<br>verified prepaid opening targets ← `financial.prepaid_funding_reconstruction`<br>recorded customer postings ← `financial.customer_subledger`<br>receipted owner-output deliveries ← `events.owner_outputs`<br>recorded shadow verification evidence ← `billing.shadow_verification` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_shadow_pipeline.py`<br>`tests/test_billing_phase2_shadow.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.rating` | deterministic obligation rating | `resolver` | recorded billing contract terms ← `billing.contracts`<br>effective tax treatment inputs ← `financial.tax_configuration` | `read_only` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_rating.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `financial.customer_subledger` | append-only customer posting groups | `authoritative_record` | deciding owner command evidence ← `customer.accounts`<br>recorded customer postings ← `financial.customer_subledger` | `participant` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_subledger.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `financial.customer_subledger` | customer posting reversal chain | `command_writer` | recorded customer postings ← `financial.customer_subledger` | `participant` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_subledger.py`<br>`tests/architecture/test_billing_target_architecture.py` |
@@ -1104,6 +1104,14 @@ detailed security and delivery boundary is
    malformed history, and an unreconciled transaction net abort the whole
    artifact. Signed partial subsets are rejected; no account receives an
    unknown, a guessed zero, or a permanent quarantine.
+   A baseline-missing customer created after the fixed handoff with no Splynx
+   identity is not a migrated-source gap. For opening verification only, the
+   funding owner derives its typed zero history component plus canonical native
+   facts; the shadow verifier fingerprints and compares that target. Runtime
+   money action remains quarantined until the separately approved immutable
+   opening is captured. Customers created before the handoff, retained Splynx
+   identities, and ambiguous provenance still require signed complete-history
+   evidence.
    Customer statements and scalar funding previews use that reviewed position
    as their opening event. A native fact crosses that boundary when its
    economic timestamp or its Sub `created_at` is later, so late-entered,
@@ -1197,9 +1205,11 @@ detailed security and delivery boundary is
    never guesses a price or suspends the account from incomplete terms.
    The scheduled adapter is permanent and refuses anchors more than two days
    stale; historical cycles require a reviewed hash-bound reconciliation plan.
-   A missing account-level baseline is import-integrity debt that must be
-   completed from the signed history artifact; it is not a permanent renewal
-   disposition. Missing global authority still blocks the complete pass.
+   A missing migrated account-level baseline is import-integrity debt that must
+   be completed from the signed history artifact. A proven native-after-handoff
+   account completes through the fingerprinted opening-verification and capture
+   path above. Neither condition is a permanent renewal disposition. Missing
+   global authority still blocks the complete pass.
 10. `financial.billing_reporting` (`app/services/billing/reporting.py`) owns
    every money figure the admin reports and overview render: overview and
    payments/collections summaries, AR aging and outstanding receivables,

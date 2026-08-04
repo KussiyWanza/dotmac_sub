@@ -33,6 +33,9 @@ from app.services.billing.subledger_opening import (
 )
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
+    LEGACY_FINANCIAL_HANDOFF_AT,
+    prepaid_funding_incomplete_source_account_ids,
+    prepaid_funding_opening_source_incomplete_account_ids,
     verified_prepaid_funding_balance,
     verified_prepaid_funding_balances,
 )
@@ -289,12 +292,12 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     # newly completed account receives another immutable opening.
     original_opening_id = opening.id
     second_account = Subscriber(
-        first_name="Second",
+        first_name="Native",
         last_name="Opening",
-        email="second-opening-completion@example.com",
+        email="native-opening-completion@example.com",
         billing_mode=BillingMode.prepaid,
         reseller_id=subscriber_account.reseller_id,
-        created_at=cutoff - timedelta(days=1),
+        created_at=LEGACY_FINANCIAL_HANDOFF_AT + timedelta(days=1),
     )
     db_session.add(second_account)
     db_session.flush()
@@ -307,11 +310,16 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     db_session.add(second_subscription)
     db_session.flush()
     _candidate(db_session, second_account, second_subscription)
-    materialize_test_prepaid_opening_balance(
+    assert prepaid_funding_incomplete_source_account_ids(
         db_session,
-        second_account.id,
-        Decimal("50.00"),
-        position_at=cutoff + timedelta(seconds=1),
+        [second_account.id],
+    ) == {second_account.id}
+    assert (
+        prepaid_funding_opening_source_incomplete_account_ids(
+            db_session,
+            [second_account.id],
+        )
+        == set()
     )
     native_account = Subscriber(
         first_name="Native",
@@ -349,12 +357,29 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
         key="opening-capture-complete-cohort",
     )
     assert completed.captured_count == 1
-    assert completed.positive_total == Decimal("50.00")
+    assert completed.positive_total == Decimal("0.00")
     openings = db_session.query(CustomerSubledgerOpeningPosition).all()
     assert len(openings) == 2
     assert (
         db_session.get(CustomerSubledgerOpeningPosition, original_opening_id) is opening
     )
+    native_opening = next(
+        row for row in openings if row.account_id == second_account.id
+    )
+    assert native_opening.baseline_id is None
+    assert Decimal(native_opening.legacy_position) == Decimal("0.00")
+    assert Decimal(native_opening.opening_delta) == Decimal("0.00")
+    assert (
+        prepaid_funding_incomplete_source_account_ids(
+            db_session,
+            [second_account.id],
+        )
+        == set()
+    )
+    assert verified_prepaid_funding_balance(
+        db_session,
+        second_account.id,
+    ) == Decimal("0.00")
     assert verified_prepaid_funding_balance(db_session, native_account.id) == Decimal(
         "0.00"
     )

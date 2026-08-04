@@ -31,12 +31,16 @@ from app.services.customer_financial_position import (
     prepaid_available_balances,
 )
 from app.services.prepaid_funding_reconstruction import (
+    LEGACY_FINANCIAL_HANDOFF_AT,
     PrepaidFundingBaselineMissingError,
     PrepaidFundingReconstructionError,
+    PrepaidOpeningTargetOrigin,
     apply_prepaid_funding_reconstruction,
     authority_cutover_batch,
     parse_reconstruction_manifest,
+    prepaid_funding_opening_source_incomplete_account_ids,
     preview_prepaid_funding_reconstruction,
+    preview_prepaid_opening_targets,
 )
 from tests.prepaid_funding_test_support import (
     sealed_reconstruction_payload,
@@ -481,6 +485,74 @@ def test_pre_cutover_account_without_baseline_fails_closed(db_session, subscribe
 
     with pytest.raises(PrepaidFundingBaselineMissingError, match="baseline missing"):
         prepaid_available_balance(db_session, missing.id)
+
+
+def test_native_after_handoff_target_needs_no_splynx_snapshot(
+    db_session,
+    subscriber,
+):
+    position_at = datetime(2026, 7, 20, 7, 58, 22, tzinfo=UTC)
+    _apply(db_session, position_at, {subscriber.id: "100.00"})
+    native = Subscriber(
+        first_name="Native",
+        last_name="Opening",
+        email="native-opening-target@example.com",
+        billing_mode=BillingMode.prepaid,
+        created_at=LEGACY_FINANCIAL_HANDOFF_AT + timedelta(days=28),
+        splynx_customer_id=None,
+    )
+    db_session.add(native)
+    db_session.flush()
+    db_session.add(
+        Payment(
+            account_id=native.id,
+            amount=Decimal("18812.50"),
+            refunded_amount=Decimal("0.00"),
+            currency="NGN",
+            status=PaymentStatus.succeeded,
+            paid_at=position_at + timedelta(days=10),
+        )
+    )
+    db_session.commit()
+
+    assert (
+        prepaid_funding_opening_source_incomplete_account_ids(
+            db_session,
+            [native.id],
+        )
+        == set()
+    )
+    target = preview_prepaid_opening_targets(db_session, [native.id])[native.id]
+    assert target.origin is PrepaidOpeningTargetOrigin.native_after_handoff
+    assert target.source_position_at == LEGACY_FINANCIAL_HANDOFF_AT
+    assert target.amount == Decimal("18812.50")
+    with pytest.raises(PrepaidFundingBaselineMissingError, match="baseline missing"):
+        prepaid_available_balance(db_session, native.id)
+
+
+def test_splynx_identity_cannot_use_native_after_handoff_target(
+    db_session,
+    subscriber,
+):
+    position_at = datetime(2026, 7, 20, 7, 58, 22, tzinfo=UTC)
+    _apply(db_session, position_at, {subscriber.id: "100.00"})
+    migrated = Subscriber(
+        first_name="Late",
+        last_name="Migrated",
+        email="late-migrated-opening@example.com",
+        billing_mode=BillingMode.prepaid,
+        created_at=LEGACY_FINANCIAL_HANDOFF_AT + timedelta(days=28),
+        splynx_customer_id=991122,
+    )
+    db_session.add(migrated)
+    db_session.commit()
+
+    assert prepaid_funding_opening_source_incomplete_account_ids(
+        db_session,
+        [migrated.id],
+    ) == {migrated.id}
+    with pytest.raises(PrepaidFundingBaselineMissingError, match="baseline missing"):
+        preview_prepaid_opening_targets(db_session, [migrated.id])
 
 
 def test_post_cutover_native_account_starts_from_zero(db_session, subscriber):
