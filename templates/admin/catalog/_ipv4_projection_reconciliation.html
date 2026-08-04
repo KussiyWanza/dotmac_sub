@@ -1,0 +1,18 @@
+{% from "components/forms/action_form.html" import action_form with context %}
+{% if ipv4_projection_reconciliation_action and can_correct_subscription %}
+<section id="ipv4-projection-reconciliation"
+         class="space-y-3"
+         aria-labelledby="ipv4-projection-reconciliation-title">
+    <div>
+        <h2 id="ipv4-projection-reconciliation-title"
+            class="text-lg font-semibold text-slate-900 dark:text-white">
+            IPv4 projection alignment
+        </h2>
+        <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            Repair drift between the exact IPAM assignment, served address, RADIUS,
+            and old-address sessions without changing the customer’s commercial service.
+        </p>
+    </div>
+    {{ action_form(ipv4_projection_reconciliation_action) }}
+</section>
+{% endif %}

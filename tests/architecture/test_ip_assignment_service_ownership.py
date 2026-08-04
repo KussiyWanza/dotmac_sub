@@ -19,6 +19,10 @@ WEB_ADAPTER = ROOT / "app/services/web_catalog_subscriptions.py"
 WEB_WORKFLOW = ROOT / "app/services/web_catalog_subscription_workflows.py"
 ADMIN_ROUTE = ROOT / "app/web/admin/catalog.py"
 SUBSCRIPTION_FORM = ROOT / "templates/admin/catalog/subscription_form.html"
+SUBSCRIPTION_DETAIL = ROOT / "templates/admin/catalog/subscription_detail.html"
+PROJECTION_ACTION = (
+    ROOT / "templates/admin/catalog/_ipv4_projection_reconciliation.html"
+)
 
 # The complete set of modules allowed to construct an IPAssignment while the
 # lifecycle owner is in its SHADOWING phase. Everything other than the owner is
@@ -142,6 +146,30 @@ def test_admin_ipv4_replacement_is_owner_backed_and_billing_isolated() -> None:
     assert '"/subscriptions/{subscription_id}/ipv4/replace"' in route_source
     assert "/ipv4/replace" in template_source
     assert "It does not purchase or change an IP add-on" in template_source
+
+
+def test_admin_projection_reconciliation_is_a_thin_confirmed_owner_adapter() -> None:
+    workflow_tree = ast.parse(WEB_WORKFLOW.read_text(encoding="utf-8"))
+    execute = next(
+        node
+        for node in workflow_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "execute_subscription_ipv4_projection_reconciliation"
+    )
+    execute_source = ast.unparse(execute)
+    assert "RepairServiceIPv4ProjectionCommand(" in execute_source
+    assert "repair_service_ipv4_projection(" in execute_source
+    for forbidden in (".commit(", ".rollback(", ".flush(", ".add(", ".delete("):
+        assert forbidden not in execute_source
+
+    route_source = ADMIN_ROUTE.read_text(encoding="utf-8")
+    detail_source = SUBSCRIPTION_DETAIL.read_text(encoding="utf-8")
+    action_source = PROJECTION_ACTION.read_text(encoding="utf-8")
+    assert '"/subscriptions/{subscription_id}/ipv4/reconcile"' in route_source
+    assert 'confirmed != "yes"' in route_source
+    assert "_ipv4_projection_reconciliation.html" in detail_source
+    assert "action_form(ipv4_projection_reconciliation_action)" in action_source
+    assert "preview_service_ipv4_projection_repair(" not in detail_source
 
 
 def test_ip_assignment_writers_are_pinned_during_shadowing() -> None:

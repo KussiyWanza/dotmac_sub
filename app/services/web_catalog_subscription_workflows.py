@@ -6,6 +6,7 @@ import json
 import logging
 from collections import Counter, defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from urllib.parse import quote_plus
@@ -19,6 +20,7 @@ from starlette.datastructures import FormData
 
 from app.models.audit import AuditActorType
 from app.models.catalog import Subscription, SubscriptionStatus
+from app.models.network import IPAssignment, IPv4Address, IPVersion
 from app.models.subscriber import SubscriberCategory
 from app.services import catalog as catalog_service
 from app.services import subscriber as subscriber_service
@@ -32,6 +34,13 @@ from app.services.action_forms import (
 from app.services.audit_helpers import build_audit_activities
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
+from app.services.ip_assignment_lifecycle import (
+    IPv4ServedProjectionDecision,
+    RepairServiceIPv4ProjectionCommand,
+    ServiceIPv4ProjectionOutcome,
+    preview_service_ipv4_projection_repair,
+    repair_service_ipv4_projection,
+)
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -72,6 +81,62 @@ from app.services.subscription_lifecycle_schedules import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionIPv4ProjectionReconciliationCommand:
+    """Typed web command for one owner-reviewed served-IP repair."""
+
+    subscription_id: UUID
+    assignment_id: UUID
+    preview_fingerprint: str
+    idempotency_key: str
+    actor_id: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("preview_fingerprint", self.preview_fingerprint),
+            ("idempotency_key", self.idempotency_key),
+            ("actor_id", self.actor_id),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} is required")
+
+
+_IPV4_PROJECTION_BLOCKERS: dict[IPv4ServedProjectionDecision, str] = {
+    IPv4ServedProjectionDecision.subscription_not_found: (
+        "The subscription no longer exists."
+    ),
+    IPv4ServedProjectionDecision.subscription_not_active: (
+        "Only an active subscription can reconcile its served IPv4."
+    ),
+    IPv4ServedProjectionDecision.missing_exact_assignment: (
+        "No exact active IPAM assignment is linked to this subscription."
+    ),
+    IPv4ServedProjectionDecision.multiple_exact_assignments: (
+        "More than one active IPv4 assignment is linked to this subscription. "
+        "Review IPAM before reconciling."
+    ),
+    IPv4ServedProjectionDecision.assignment_subscriber_mismatch: (
+        "The IPAM assignment belongs to a different subscriber."
+    ),
+    IPv4ServedProjectionDecision.missing_login: (
+        "The subscription has no PPPoE login to project to RADIUS."
+    ),
+    IPv4ServedProjectionDecision.shared_login_not_selected: (
+        "The RADIUS projection owner selected another subscription for this login."
+    ),
+    IPv4ServedProjectionDecision.radius_observation_unavailable: (
+        "Current RADIUS evidence is unavailable. Try again after RADIUS recovers."
+    ),
+    IPv4ServedProjectionDecision.radius_projection_not_aligned: (
+        "RADIUS does not match the currently served IPv4. Repair that evidence "
+        "before changing the served projection."
+    ),
+    IPv4ServedProjectionDecision.session_observation_conflict: (
+        "A live session is using an address other than the current or desired IPv4."
+    ),
+}
 
 
 def prepaid_bill_now_preview_context(
@@ -445,6 +510,12 @@ def subscription_detail_page_context(
         "correction_action_forms": _subscription_correction_action_forms(
             db, subscription_id
         ),
+        "ipv4_projection_reconciliation_action": (
+            _subscription_ipv4_projection_reconciliation_action(
+                db,
+                subscription=subscription,
+            )
+        ),
     }
     context.update(core.subscription_detail_context(db, subscription))
     if (
@@ -457,6 +528,177 @@ def subscription_detail_page_context(
             )
         )
     return context
+
+
+def _disabled_ipv4_projection_action(
+    *,
+    subscription_id: UUID,
+    description: str,
+    reason: str,
+) -> ActionForm:
+    return ActionForm(
+        key="admin.subscription_ipv4_projection_reconciliation",
+        title="Reconcile served IPv4",
+        description=description,
+        action_url=(f"/admin/catalog/subscriptions/{subscription_id}/ipv4/reconcile"),
+        submit_label="Reconcile served IPv4",
+        fields=(),
+        tone=ActionTone.neutral,
+        allowed=False,
+        disabled_reason=reason,
+    )
+
+
+def _subscription_ipv4_projection_reconciliation_action(
+    db: Session,
+    *,
+    subscription: Subscription,
+) -> ActionForm | None:
+    """Project the exact owner preview into one server-owned admin action."""
+
+    rows = list(
+        db.execute(
+            select(IPAssignment, IPv4Address.address)
+            .join(IPv4Address, IPAssignment.ipv4_address_id == IPv4Address.id)
+            .where(
+                IPAssignment.subscription_id == subscription.id,
+                IPAssignment.ip_version == IPVersion.ipv4,
+                IPAssignment.is_active.is_(True),
+            )
+            .order_by(IPAssignment.id)
+        ).all()
+    )
+    served_address = str(subscription.ipv4_address or "").strip() or "not set"
+    if not rows:
+        if served_address == "not set":
+            return None
+        return _disabled_ipv4_projection_action(
+            subscription_id=subscription.id,
+            description=(
+                f"The served IPv4 is {served_address}, but no exact active IPAM "
+                "assignment is linked to this subscription."
+            ),
+            reason=_IPV4_PROJECTION_BLOCKERS[
+                IPv4ServedProjectionDecision.missing_exact_assignment
+            ],
+        )
+    if len(rows) > 1:
+        return _disabled_ipv4_projection_action(
+            subscription_id=subscription.id,
+            description=(
+                f"The served IPv4 is {served_address}; IPAM has {len(rows)} active "
+                "assignments for this subscription."
+            ),
+            reason=_IPV4_PROJECTION_BLOCKERS[
+                IPv4ServedProjectionDecision.multiple_exact_assignments
+            ],
+        )
+
+    assignment, desired_address = rows[0]
+    try:
+        preview = preview_service_ipv4_projection_repair(
+            db,
+            subscription_id=subscription.id,
+            assignment_id=assignment.id,
+        )
+    except Exception:
+        logger.exception(
+            "IPv4 projection preview unavailable for subscription %s",
+            subscription.id,
+        )
+        return _disabled_ipv4_projection_action(
+            subscription_id=subscription.id,
+            description=(
+                f"IPAM owns {desired_address}; the served IPv4 is {served_address}."
+            ),
+            reason="Projection evidence is temporarily unavailable.",
+        )
+
+    if preview.decision is IPv4ServedProjectionDecision.noop:
+        return None
+
+    radius_address = preview.observed_radius_address or "unavailable"
+    description = (
+        f"IPAM owns {preview.desired_address or desired_address}; the served IPv4 "
+        f"is {preview.served_address or 'not set'}, and RADIUS reports "
+        f"{radius_address}."
+    )
+    if not preview.applicable:
+        return _disabled_ipv4_projection_action(
+            subscription_id=subscription.id,
+            description=description,
+            reason=_IPV4_PROJECTION_BLOCKERS.get(
+                preview.decision,
+                f"The owner preview blocked this repair ({preview.decision.value}).",
+            ),
+        )
+
+    session_label = (
+        f"{preview.old_address_session_count} old-address session(s)"
+        if preview.old_address_session_count
+        else "no old-address sessions"
+    )
+    return ActionForm(
+        key="admin.subscription_ipv4_projection_reconciliation",
+        title="Reconcile served IPv4",
+        description=description,
+        action_url=(f"/admin/catalog/subscriptions/{subscription.id}/ipv4/reconcile"),
+        submit_label="Reconcile served IPv4",
+        fields=(),
+        hidden_values=(
+            ActionHiddenValue(key="assignment_id", value=str(assignment.id)),
+            ActionHiddenValue(
+                key="preview_fingerprint",
+                value=preview.fingerprint,
+            ),
+            ActionHiddenValue(
+                key="idempotency_key",
+                value=f"admin-ipv4-projection:{uuid4()}",
+            ),
+        ),
+        tone=ActionTone.neutral,
+        impact=(
+            f"Set the served and RADIUS IPv4 to {preview.desired_address}, then "
+            f"reauthenticate only {session_label}. Billing, plan, add-ons, and "
+            "service period remain unchanged."
+        ),
+        confirmation=ActionConfirmation(
+            title="Confirm this exact IPv4 reconciliation",
+            message=(
+                "I reviewed the IPAM, served-IP, RADIUS, and live-session evidence. "
+                "The customer may reconnect briefly if an old-address session exists."
+            ),
+        ),
+    )
+
+
+def execute_subscription_ipv4_projection_reconciliation(
+    db: Session,
+    *,
+    command: SubscriptionIPv4ProjectionReconciliationCommand,
+) -> ServiceIPv4ProjectionOutcome:
+    """Delegate one confirmed web repair to the canonical projection owner."""
+
+    command_id = uuid4()
+    return repair_service_ipv4_projection(
+        db,
+        RepairServiceIPv4ProjectionCommand(
+            context=CommandContext(
+                command_id=command_id,
+                correlation_id=command_id,
+                actor=f"admin:{command.actor_id}",
+                scope="catalog:subscription:ipv4:reconcile",
+                reason=(
+                    "Reconcile the exact service served IPv4 to its reviewed active "
+                    "IPAM assignment"
+                ),
+                idempotency_key=command.idempotency_key,
+            ),
+            subscription_id=command.subscription_id,
+            assignment_id=command.assignment_id,
+            preview_fingerprint=command.preview_fingerprint,
+        ),
+    )
 
 
 def _subscription_correction_action_forms(

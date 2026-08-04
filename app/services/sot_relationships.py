@@ -17383,7 +17383,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "provisioning writers remain declared migration debt until the "
                     "later runtime cutover. The admin subscription replacement "
                     "adapter is cut over to the two reviewed owner commands and is "
-                    "isolated from recurring add-on and billing writes."
+                    "isolated from recurring add-on and billing writes. The admin "
+                    "subscription detail projects the same fingerprinted served-IP "
+                    "preview through a confirmed ActionForm and delegates repair "
+                    "directly to this owner."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -17558,7 +17561,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "network.ip_assignment_lifecycle.unsafe_repair",
                             "network.ip_assignment_lifecycle.unsafe_cohort",
                         ),
-                        mapping_owner="operator CLI and future administrative adapters",
+                        mapping_owner="operator CLI and administrative web adapters",
                         fail_closed_on=(
                             "ambiguous service ownership",
                             "multiple active services or assignments",
@@ -17687,6 +17690,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_ip_assignment_repair.py",
                         "tests/test_ip_assignment_lifecycle.py",
+                        "tests/test_web_ipv4_projection_reconciliation.py",
                         "tests/architecture/test_ip_assignment_service_ownership.py",
                     ),
                 ),
