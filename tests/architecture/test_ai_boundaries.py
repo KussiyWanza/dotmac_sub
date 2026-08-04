@@ -14,7 +14,10 @@ Two invariants:
 1. No ``app/services/ai*`` module constructs or session-writes a non-AI ORM
    row (it may write AIInsight/AiIntakeConfig — that is its own derived
    state).
-2. ``ai_operations`` is the only writer of ``AIInsight``.
+2. ``ai_operations`` is the only writer of ``AIInsight`` and ``ai_intake`` is
+   the only writer of ``AiIntakeConfig``.
+3. Conversational intake is invoked once from the shared non-email channel
+   receiver and contains no messaging or individual-assignment call.
 """
 
 from __future__ import annotations
@@ -100,3 +103,44 @@ def test_ai_insight_has_a_single_writer():
         "AIInsight rows have one canonical writer (ai_operations.create_insight); "
         "these modules write them directly:\n  " + "\n  ".join(sorted(offenders))
     )
+
+
+def test_ai_intake_config_has_a_single_writer():
+    offenders: list[str] = []
+    for path in python_files(APP):
+        rel = str(path.relative_to(PROJECT_ROOT))
+        if rel in {"app/services/ai_intake.py", "app/models/ai_intake.py"}:
+            continue
+        tree = python_ast(path)
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AiIntakeConfig"
+            for node in ast.walk(tree)
+        ):
+            offenders.append(rel)
+    assert not offenders, (
+        "AiIntakeConfig has one canonical writer (ai_intake.upsert_config):\n  "
+        + "\n  ".join(sorted(offenders))
+    )
+
+
+def test_customer_intake_has_one_non_email_inbound_adapter_and_no_side_effect_port():
+    callers: list[str] = []
+    for path in python_files(APP):
+        rel = str(path.relative_to(PROJECT_ROOT))
+        if rel == "app/services/ai_intake.py":
+            continue
+        if "classify_message(" in source_text(path):
+            callers.append(rel)
+    assert callers == ["app/services/team_inbox_channel_receive.py"]
+
+    tree = python_ast(SERVICES / "ai_intake.py")
+    forbidden_calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"send", "reply", "assign", "enqueue", "dispatch"}
+    }
+    assert forbidden_calls == set()

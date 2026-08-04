@@ -20146,6 +20146,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.team_inbox_processing",
                 owns=("provider observation consequence coordination",),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_observations",
                     "communications.team_inbox_threads",
                     "communications.team_inbox_contact_resolution",
@@ -20190,6 +20191,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="communications.team_inbox_delivery_receipts",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source="Timestamp-monotonic provider delivery state.",
+                        ),
+                        AuthorityInput(
+                            name="validated AI intake result",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Bounded destination-team classification or explicit fallback status.",
                         ),
                     ),
                     transaction_mode=TransactionMode.COORDINATOR_MANAGED,
@@ -20286,6 +20293,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "routing assignment and escalation transitions",
                 ),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_threads",
                     "operations.sla_escalation",
                     "auth.permission_gate",
@@ -20317,6 +20325,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="auth.permission_gate",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source="Granular assignment and escalation permission evidence.",
+                        ),
+                        AuthorityInput(
+                            name="validated AI intake destination metadata",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Approved intent, category, confidence, department, and fallback policy.",
                         ),
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
@@ -20650,9 +20664,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.team_inbox_maintenance",
                 owns=("scheduled Inbox projection maintenance and repair",),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_threads",
                     "communications.team_inbox_outbound_intents",
                     "communications.team_inbox_projection",
+                    "communications.team_inbox_routing",
                 ),
                 contract=_team_inbox_contract(
                     service_name="communications.team_inbox_maintenance",
@@ -20680,6 +20696,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="communications.team_inbox_outbound_intents",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="Retryable failed communication intent and message evidence.",
+                        ),
+                        AuthorityInput(
+                            name="AI intake recovery state",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Bounded classifying or awaiting-follow-up state and configured fallback deadline.",
                         ),
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
@@ -24036,9 +24058,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="ai.generation",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "System prompt plus the caller's owned "
-                                "projection, already redacted to the advisor's "
-                                "declared input sensitivity."
+                                "System prompt plus either the caller's owned "
+                                "advisory projection or ai.intake's bounded "
+                                "redacted classification projection."
                             ),
                         ),
                         AuthorityInput(
@@ -24210,6 +24232,179 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ai.intake",
+                module="app.services.ai_intake",
+                owns=(
+                    "AI conversational intake configuration lifecycle",
+                    "customer-message intake eligibility policy",
+                    "bounded customer-message intent classification",
+                    "customer contact-data cleaning eligibility policy",
+                ),
+                depends_on=(
+                    "ai.gateway",
+                    "communications.team_inbox_observations",
+                    "communications.team_inbox_threads",
+                    "operations.service_team_lifecycle",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "AiIntakeConfig is the only runtime policy source. The owner "
+                    "classifies WhatsApp, Facebook Messenger, and Instagram only, "
+                    "returns validated destination-team metadata and one controlled "
+                    "follow-up candidate; the Team Inbox outbound owner alone delivers "
+                    "it. Intake never writes queue position or chooses an agent. "
+                    "The reserved data-cleaning gate compares exact configured and "
+                    "conversation team UUIDs and performs no customer-data access. Classification "
+                    "is a read-only participant in the Inbox coordinator transaction; "
+                    "configuration writes enter execute_owner_command once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="AI conversational intake configuration lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "reviewed AI intake configuration command",
+                                "active fallback and mapped service teams",
+                            ),
+                            canonical_writer="ai.intake",
+                        ),
+                        ConcernContract(
+                            name="customer-message intake eligibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "normalized inbound conversation state",
+                                "channel AI-routing permission",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="bounded customer-message intent classification",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "bounded redacted inbound message projection",
+                                "observed provider classification response",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer contact-data cleaning eligibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "normalized inbound conversation state",
+                                "channel AI-routing permission",
+                                "active fallback and mapped service teams",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed AI intake configuration command",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="Authenticated system-settings writer and typed policy.",
+                        ),
+                        AuthorityInput(
+                            name="active fallback and mapped service teams",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Active ServiceTeam identifiers referenced by policy.",
+                        ),
+                        AuthorityInput(
+                            name="enabled matching AI intake configuration",
+                            owner="ai.intake",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Most-specific AiIntakeConfig for provider/account/channel scope.",
+                        ),
+                        AuthorityInput(
+                            name="normalized inbound conversation state",
+                            owner="communications.team_inbox_threads",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Conversation lifecycle, ownership, tags, and bounded recent messages.",
+                        ),
+                        AuthorityInput(
+                            name="channel AI-routing permission",
+                            owner="communications.team_inbox_routing",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="Effective TeamInboxChannelRoute allow_ai_routing gate.",
+                        ),
+                        AuthorityInput(
+                            name="bounded redacted inbound message projection",
+                            owner="communications.team_inbox_observations",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="Latest normalized customer message plus at most three relevant messages.",
+                        ),
+                        AuthorityInput(
+                            name="observed provider classification response",
+                            owner="external:llm_provider",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source="Strict JSON candidate returned through ai.gateway.",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Configuration mutation enters execute_owner_command once. "
+                            "Classification is read-only and its typed result is persisted "
+                            "by the Inbox coordinator with the inbound message."
+                        ),
+                        locking=(
+                            "Configuration upsert locks the scope row; classification writes no row. "
+                            "The Inbox coordinator serializes channel/thread intake with a transaction "
+                            "advisory lock and locks an existing conversation row; recovery uses the "
+                            "same conversation row lock."
+                        ),
+                        idempotency=(
+                            "Configuration uses command evidence; provider message deduplication "
+                            "precedes classification so one inbound fact produces at most one attempt. "
+                            "Clarification delivery uses an inbound-message-derived communication-intent "
+                            "dedupe key."
+                        ),
+                        retries="No synchronous retry beyond ai.gateway's configured fallback provider.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes("ai.intake"),
+                            "ai.intake.invalid_configuration",
+                            "ai.intake.invalid_model_output",
+                            "ai.intake.gateway_unavailable",
+                        ),
+                        mapping_owner="Team Inbox processing and AI operations API adapters",
+                        fail_closed_on=(
+                            "invalid or missing configuration",
+                            "invalid provider output",
+                            "provider unavailability",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("ai.intake_config_updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility="Version 1 carries only bounded configuration-change evidence.",
+                        replay="Configuration remains authoritative in AiIntakeConfig.",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="parked ai_operations CRUD with no runtime reader",
+                        new_owner="ai.intake",
+                        verification="Focused classification, routing, deduplication, and architecture tests.",
+                        cutover_gate="All conversational channels call the shared owner after normalization.",
+                        fallback_retirement="Untyped ai_operations AiIntakeConfig writers are removed.",
+                    ),
+                    steward="customer experience platform",
+                    design_refs=(
+                        "docs/designs/AI_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ai_intake.py",
+                        "tests/test_team_inbox_ai_intake_flow.py",
+                        "tests/architecture/test_ai_boundaries.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ai.insights",
                 module="app.services.ai_operations",
                 owns=(
@@ -24220,9 +24415,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "The canonical writer of AIInsight. Generated insights "
                     "land here and nowhere else. AI is advisory: it never "
                     "mutates domain state — acting on a recommendation means "
-                    "calling the domain's declared owner. AiIntakeConfig is a "
-                    "CRM import for an unimplemented conversational-intake "
-                    "feature and gates nothing; see docs/designs/AI_SOT.md."
+                    "calling the domain's declared owner. Customer-facing "
+                    "classification is separately owned by ai.intake."
                 ),
             ),
             SOTService(
@@ -24249,14 +24443,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             "app.tasks.ai_operations",
             "app.web.admin.reports",
             "app.web.admin.inbox",
+            "app.services.team_inbox_channel_receive",
         ),
         rule=(
-            "AI advises ON an owned projection and never re-derives one: the "
+            "Advisory AI advises ON an owned projection and never re-derives one: the "
             "caller hands in what it already computes, so the boundary holds "
             "by construction. AI observes, derives, and recommends; it never "
             "decides domain state. Insight consequences are requested from the "
             "owning domain service, which applies its own guards, events, and "
-            "audit. No app/services/ai* module writes a non-AI ORM row."
+            "audit. ai.intake is the separate bounded customer-message classifier; "
+            "it may select a destination service team but never an agent or queue position."
         ),
     ),
     DomainSOT(

@@ -16,7 +16,8 @@ from app.models.team_inbox import InboxConversation, InboxMessage
 from app.models.workqueue import WorkqueueSnooze
 from app.schemas.ai_operations import AIInsightCreate, AiIntakeConfigUpsert
 from app.schemas.campaigns import CampaignCreate
-from app.services import ai_operations, comms_campaigns, workqueue
+from app.services import ai_intake, ai_operations, comms_campaigns, workqueue
+from app.services.owner_commands import CommandContext
 from app.tasks import notifications as notification_tasks
 from tests.staff_identity_fixtures import add_bound_staff_user
 
@@ -207,14 +208,28 @@ def test_ai_insight_acknowledge_expire_and_intake_config(db_session):
         ),
     )
     expired = ai_operations.expire_stale_insights(db_session)
-    config = ai_operations.upsert_intake_config(
+    fallback = ServiceTeam(name="Helpdesk", team_type="support", is_active=True)
+    db_session.add(fallback)
+    db_session.flush()
+    fallback_id = fallback.id
+    db_session.commit()
+    config = ai_intake.upsert_config(
         db_session,
-        AiIntakeConfigUpsert(
-            scope_key="inbox:default",
-            channel_type="email",
-            is_enabled=True,
-            fallback_team_id=uuid.uuid4(),
-            department_mappings=[{"keyword": "billing", "team": "finance"}],
+        ai_intake.UpsertAiIntakeConfigCommand(
+            context=CommandContext.system(
+                actor="user:test-ai-config",
+                scope=ai_intake.CONFIG_SCOPE,
+                reason="test intake configuration",
+            ),
+            policy=AiIntakeConfigUpsert(
+                scope_key="inbox:default",
+                channel_type="whatsapp",
+                is_enabled=True,
+                fallback_team_id=fallback_id,
+                department_mappings=(
+                    {"intent": "billing_issue", "department": "finance"},
+                ),
+            ),
         ),
     )
 

@@ -28,6 +28,8 @@ class NotificationChannel(enum.Enum):
     sms = "sms"
     push = "push"
     whatsapp = "whatsapp"
+    facebook_messenger = "facebook_messenger"
+    instagram_dm = "instagram_dm"
     facebook_comment = "facebook_comment"
     instagram_comment = "instagram_comment"
     webhook = "webhook"

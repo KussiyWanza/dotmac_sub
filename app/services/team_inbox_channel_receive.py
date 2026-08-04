@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models.subscriber import Reseller, Subscriber, SubscriberStatus
@@ -14,14 +15,26 @@ from app.models.team_inbox import (
     InboxChannelType,
     InboxContactLink,
     InboxConversation,
+    InboxConversationAssignment,
     InboxConversationStatus,
     InboxMessage,
     InboxMessageDirection,
     InboxObservationKind,
 )
+from app.schemas.ai_intake import (
+    AiIntakeContextMessage,
+    AiIntakeOutcome,
+    AiIntakeReason,
+    AiIntakeRequest,
+    AiIntakeStatus,
+    DataCleaningEligibility,
+    DataCleaningEligibilityReason,
+)
 from app.services import (
+    ai_intake,
     team_inbox_media,
     team_inbox_operations,
+    team_inbox_outbound,
     team_inbox_participants,
     team_inbox_realtime,
     team_inbox_routing,
@@ -34,6 +47,8 @@ from app.services.customer_identity_normalization import (
 from app.services.integrations.connectors import whatsapp_runtime
 from app.services.owner_commands import CommandContext
 from app.services.realtime_platform import EventType
+
+logger = logging.getLogger(__name__)
 
 _INACTIVE_SUBSCRIBER_STATUSES = {
     SubscriberStatus.disabled.value,
@@ -341,7 +356,28 @@ def _find_open_conversation(
         .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
         .filter(InboxConversation.is_active.is_(True))
         .order_by(InboxConversation.last_message_at.desc().nullslast())
+        .with_for_update()
         .first()
+    )
+
+
+def _thread_lock_key(channel_type: str, external_thread_id: str) -> int:
+    digest = hashlib.sha256(
+        f"team-inbox-thread:{channel_type}:{external_thread_id}".encode()
+    ).digest()[:8]
+    return int.from_bytes(digest, byteorder="big", signed=True)
+
+
+def _acquire_thread_lock(
+    db: Session, *, channel_type: str, external_thread_id: str
+) -> None:
+    """Serialize conversation lookup, intake state, and message creation."""
+
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": _thread_lock_key(channel_type, external_thread_id)},
     )
 
 
@@ -355,6 +391,145 @@ def _message_body(value: object) -> str:
         body = value.get("body") or value.get("text")
         return str(body or "").strip()
     return str(value or "").strip()
+
+
+def _campaign_attributed(metadata: dict[str, object]) -> bool:
+    return any(
+        metadata.get(key) not in (None, "", False, [], {})
+        for key in (
+            "campaign_id",
+            "campaign_attributed",
+            "campaign_attribution",
+            "campaign_ref",
+            "referral_campaign_id",
+            "referral",
+        )
+    )
+
+
+def _recent_intake_context(
+    db: Session, *, conversation_id: UUID
+) -> tuple[AiIntakeContextMessage, ...]:
+    rows = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation_id)
+        .order_by(InboxMessage.created_at.desc())
+        .limit(ai_intake.MAX_RECENT_MESSAGES)
+        .all()
+    )
+    context: list[AiIntakeContextMessage] = []
+    for row in reversed(rows):
+        body = _message_body(row.body)
+        if not body:
+            continue
+        context.append(
+            AiIntakeContextMessage(
+                direction=(
+                    "inbound"
+                    if row.direction == InboxMessageDirection.inbound.value
+                    else "outbound"
+                ),
+                body=body[: ai_intake.MAX_CONTEXT_CHARS],
+            )
+        )
+    return tuple(context)
+
+
+def _existing_intake_state(conversation: InboxConversation) -> dict[str, object]:
+    metadata = (
+        conversation.metadata_ if isinstance(conversation.metadata_, dict) else {}
+    )
+    value = metadata.get("ai_intake")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _record_data_cleaning_eligibility(
+    conversation: InboxConversation,
+    eligibility: DataCleaningEligibility,
+) -> None:
+    metadata = dict(conversation.metadata_ or {})
+    metadata["ai_data_cleaning"] = {
+        "eligible": eligibility.eligible,
+        "state": eligibility.state.value,
+        "reason": eligibility.reason.value,
+        "config_id": str(eligibility.config_id) if eligibility.config_id else None,
+        "support_team_id": (
+            str(eligibility.support_team_id) if eligibility.support_team_id else None
+        ),
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    conversation.metadata_ = metadata
+
+
+def _classify_inbound(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    created_conversation: bool,
+    payload: InboundChannelPayload,
+    body: str,
+    metadata: dict[str, object],
+) -> tuple[AiIntakeRequest, AiIntakeOutcome]:
+    provider = str(metadata.get("provider") or "default")[:80]
+    account_scope = str(
+        metadata.get("provider_account_scope")
+        or metadata.get("page_or_account_id")
+        or metadata.get("phone_number_id")
+        or "default"
+    )[:160]
+    routing_gate = team_inbox_routing.resolve_channel_routing_decision(
+        db,
+        channel_type=payload.channel_type,
+        provider=provider,
+        account_scope=account_scope,
+        fallback_service_team_id=(
+            payload.fallback_service_team_id
+            or team_inbox_routing.default_service_team_id(db)
+        ),
+        metadata={},
+    )
+    state = _existing_intake_state(conversation)
+    awaiting_follow_up = state.get("status") == "awaiting_follow_up"
+    raw_follow_up_count = state.get("ai_intake_follow_up_count")
+    try:
+        follow_up_count = max(
+            int(str(raw_follow_up_count)) if raw_follow_up_count is not None else 0,
+            0,
+        )
+    except (TypeError, ValueError):
+        follow_up_count = 0
+    has_active_assignment = (
+        db.query(InboxConversationAssignment.id)
+        .filter(InboxConversationAssignment.conversation_id == conversation.id)
+        .filter(InboxConversationAssignment.is_active.is_(True))
+        .first()
+        is not None
+    )
+    tags_value = (conversation.metadata_ or {}).get("tags")
+    tags = (
+        tuple(str(item)[:80] for item in tags_value[:10])
+        if isinstance(tags_value, list)
+        else ()
+    )
+    request = AiIntakeRequest(
+        channel_type=payload.channel_type,
+        provider=provider,
+        account_scope=account_scope,
+        inbound_message_id=str(payload.external_message_id or "local")[:255],
+        body=body[:4000],
+        conversation_id=conversation.id,
+        recent_messages=_recent_intake_context(db, conversation_id=conversation.id),
+        conversation_tags=tags,
+        campaign_attributed=_campaign_attributed(
+            {**dict(conversation.metadata_ or {}), **metadata}
+        ),
+        routing_allows_ai=routing_gate.ai_routing_allowed,
+        created_conversation=created_conversation,
+        has_active_assignment=has_active_assignment,
+        awaiting_follow_up=awaiting_follow_up,
+        follow_up_count=follow_up_count,
+    )
+    return request, ai_intake.classify_message(db, request)
 
 
 def receive_inbound_channel(
@@ -396,6 +571,28 @@ def receive_inbound_channel(
     external_thread_id = payload.external_thread_id or _thread_id(
         channel_type, resolution.normalized_contact, payload.contact_address
     )
+    _acquire_thread_lock(
+        db,
+        channel_type=channel_type,
+        external_thread_id=external_thread_id,
+    )
+    # The fast duplicate check above can race the first delivery. Recheck after
+    # the transaction-scoped thread lock so the database winner is observed.
+    duplicate = _find_duplicate_message(
+        db,
+        channel_type=channel_type,
+        external_message_id=payload.external_message_id,
+    )
+    if duplicate is not None:
+        from app.metrics import record_inbound_dedup_suppressed
+
+        record_inbound_dedup_suppressed(channel_type)
+        return InboundChannelReceiveResult(
+            kind="duplicate",
+            conversation_id=str(duplicate.conversation_id),
+            message_id=str(duplicate.id),
+            duplicate=True,
+        )
     received_at = payload.received_at or datetime.now(UTC)
     conversation = _find_open_conversation(
         db,
@@ -421,15 +618,61 @@ def receive_inbound_channel(
         conversation.last_message_at = received_at
         if resolution.subscriber_id and not conversation.subscriber_id:
             conversation.subscriber_id = resolution.subscriber_id
-        metadata = dict(conversation.metadata_ or {})
-        metadata["contact_resolution"] = resolution.as_metadata()
-        conversation.metadata_ = metadata
+        conversation_metadata = dict(conversation.metadata_ or {})
+        conversation_metadata["contact_resolution"] = resolution.as_metadata()
+        conversation.metadata_ = conversation_metadata
 
-    # A social or WhatsApp message carries no recipient address to route on, so
-    # the plan is fallback-only. The webhooks pass no fallback, which left every
+    # The shared intake owner runs after normalization/idempotency and before
+    # destination-team routing. It returns metadata only: queue position and
+    # individual assignment remain outside this service.
+    metadata: dict[str, object] = dict(payload.metadata or {})
+    intake_request: AiIntakeRequest | None = None
+    try:
+        intake_request, intake_outcome = _classify_inbound(
+            db,
+            conversation=conversation,
+            created_conversation=created_conversation,
+            payload=payload,
+            body=body,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.warning(
+            "AI intake context or classification failed",
+            extra={
+                "event": "ai_intake_context_failure",
+                "channel": channel_type,
+                "error_type": type(exc).__name__,
+            },
+        )
+        intake_outcome = AiIntakeOutcome(
+            status=AiIntakeStatus.failed,
+            reason=AiIntakeReason.context_error,
+        )
+    metadata.update(ai_intake.route_metadata(intake_outcome))
+    if intake_request is not None:
+        conversation_metadata = dict(conversation.metadata_ or {})
+        conversation_metadata["ai_intake"] = ai_intake.conversation_state(
+            intake_request, intake_outcome
+        )
+        conversation.metadata_ = conversation_metadata
+        cleaning_eligibility = ai_intake.evaluate_data_cleaning_eligibility(
+            db,
+            request=intake_request,
+            primary_service_team_id=conversation.primary_service_team_id,
+        )
+        _record_data_cleaning_eligibility(conversation, cleaning_eligibility)
+    else:
+        _record_data_cleaning_eligibility(
+            conversation,
+            DataCleaningEligibility(
+                eligible=False,
+                reason=DataCleaningEligibilityReason.invalid_configuration,
+            ),
+        )
+
     # Resolve push-channel ownership before creating the message so WhatsApp,
-    # Messenger and Instagram threads enter the same team queues as mailboxes.
-    metadata = dict(payload.metadata or {})
+    # Messenger and Instagram threads enter the normal team queue path.
     routing_decision = team_inbox_routing.resolve_channel_routing_decision(
         db,
         channel_type=channel_type,
@@ -446,6 +689,18 @@ def receive_inbound_channel(
             or team_inbox_routing.default_service_team_id(db)
         ),
         metadata=metadata,
+    )
+    logger.info(
+        "AI intake destination resolved",
+        extra={
+            "event": "ai_intake_destination_resolved",
+            "channel": channel_type,
+            "status": intake_outcome.status.value,
+            "reason": intake_outcome.reason.value,
+            "destination_team_id": routing_decision.primary_service_team_id,
+            "routing_reason": routing_decision.reason,
+            "duration_ms": intake_outcome.duration_ms,
+        },
     )
     participant_ids = [
         team_id
@@ -479,6 +734,22 @@ def receive_inbound_channel(
         "ai_confidence": routing_decision.ai_confidence,
         "reason": routing_decision.reason,
     }
+    metadata["ai_intake_destination_team_id"] = routing_decision.primary_service_team_id
+    conversation_metadata = dict(conversation.metadata_ or {})
+    intake_state = conversation_metadata.get("ai_intake")
+    if not isinstance(intake_state, dict):
+        intake_state = ai_intake.route_metadata(intake_outcome)
+        intake_state.update(
+            {
+                "status": intake_outcome.status.value,
+                "reason": intake_outcome.reason.value,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    intake_state["destination_team_id"] = routing_decision.primary_service_team_id
+    intake_state["routing_reason"] = routing_decision.reason
+    conversation_metadata["ai_intake"] = intake_state
+    conversation.metadata_ = conversation_metadata
     message = InboxMessage(
         conversation_id=conversation.id,
         channel_type=channel_type,
@@ -522,6 +793,49 @@ def receive_inbound_channel(
             extra={"sender_type": "visitor", "from_customer": True},
         ),
     )
+    if (
+        intake_outcome.status is AiIntakeStatus.awaiting_follow_up
+        and intake_outcome.config_id is not None
+        and intake_outcome.classification is not None
+        and intake_outcome.classification.follow_up_question is not None
+    ):
+        delivery = team_inbox_outbound.send_ai_intake_follow_up(
+            db,
+            conversation=conversation,
+            payload=team_inbox_outbound.AiIntakeFollowUpPayload(
+                question=intake_outcome.classification.follow_up_question,
+                inbound_message_id=message.id,
+                config_id=intake_outcome.config_id,
+                follow_up_count=intake_outcome.follow_up_count,
+            ),
+        )
+        delivery_status = "queued" if delivery.kind == "queued" else "failed"
+        conversation_metadata = dict(conversation.metadata_ or {})
+        state_value = conversation_metadata.get("ai_intake")
+        state = dict(state_value) if isinstance(state_value, dict) else {}
+        state["follow_up_delivery_status"] = delivery_status
+        state["follow_up_outbound_message_id"] = delivery.message_id
+        state["follow_up_delivery_reason"] = delivery.reason
+        conversation_metadata["ai_intake"] = state
+        conversation.metadata_ = conversation_metadata
+        message_metadata = dict(message.metadata_ or {})
+        message_metadata["ai_intake_follow_up_delivery_status"] = delivery_status
+        message_metadata["ai_intake_follow_up_outbound_message_id"] = (
+            delivery.message_id
+        )
+        message.metadata_ = message_metadata
+        log = logger.info if delivery.kind == "queued" else logger.warning
+        log(
+            "AI intake follow-up delivery recorded",
+            extra={
+                "event": "ai_intake_follow_up_delivery",
+                "conversation_id": str(conversation.id),
+                "channel": channel_type,
+                "delivery_status": delivery_status,
+                "outbound_message_id": delivery.message_id,
+                "reason": delivery.reason,
+            },
+        )
     team_inbox_realtime.publish_queue_event(
         db,
         conversation_id=str(conversation.id),
@@ -652,6 +966,9 @@ def receive_whatsapp_webhook_batch_committed(
                         str(payload["contact_name"])
                         if payload.get("contact_name")
                         else None
+                    ),
+                    campaign_attributed=_campaign_attributed(
+                        {**metadata_data, **payload}
                     ),
                     attachments=tuple(
                         team_inbox_observations.InboundAttachmentObservation(
@@ -864,6 +1181,7 @@ def receive_inbound_channel_batch_committed(
                     fallback_service_team_id=coerce_uuid(
                         payload.fallback_service_team_id
                     ),
+                    campaign_attributed=_campaign_attributed(metadata),
                     attachments=tuple(
                         team_inbox_observations.InboundAttachmentObservation(
                             asset_type=str(item.get("type") or "file"),

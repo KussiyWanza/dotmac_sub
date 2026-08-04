@@ -32,8 +32,9 @@ projection the owner computed does not need grading by us.
 
 ## The ownership shape
 
-AI is **advisory**. It observes, it derives, it recommends. It never decides
-domain state. Three owners:
+AI advisor features are **advisory**. Customer-facing intake is the narrower
+exception described below: it may classify a request and propose a destination
+service team, but it never owns queueing or agent assignment. Four owners:
 
 1. **`ai.gateway` — transport, not a decision system.** Talks to the LLM
    provider, resolves credentials through `secrets` (OpenBao) rather than
@@ -51,6 +52,14 @@ domain state. Three owners:
    (`ai_operations`, the sole writer of `AIInsight`). Owns insight lifecycle:
    create, acknowledge, expire. Every generated insight lands here and nowhere
    else.
+4. **`ai.intake` — the conversational classification owner.**
+   `AiIntakeConfig` is its sole runtime policy source. It resolves the most
+   specific enabled provider/account/channel scope, builds a bounded redacted
+   projection, validates strict JSON against controlled intent and category
+   registries, and returns route-ready metadata. It supports WhatsApp,
+   Facebook Messenger, and Instagram messages only. It also evaluates the
+   exact configured Support-team UUID gate for the reserved contact-data
+   cleaning flow; that skeleton performs no dialogue or customer-data access.
 
 An **advisor** is not an owner; it is a declaration. `AdvisorSpec` binds one
 advisor key to one owned projection, the output contract it must satisfy, the
@@ -60,13 +69,15 @@ to a domain means registering a spec against a projection that already exists
 
 ## The consequence rule (the load-bearing invariant)
 
-**An insight never mutates domain state.** Acting on a recommendation means
+**An advisor insight never mutates domain state.** Acting on a recommendation means
 calling the domain's declared owner — `support.tickets`,
 `operations.work_orders`, `communications.team_inbox` — which applies its own
 guards, events, and audit. AI requests an outcome; the owner decides it.
 
 Concretely: no module under `app/services/ai*` may construct or session-write
 a non-AI ORM row. `tests/architecture/test_ai_boundaries.py` enforces this.
+`ai.intake` returns a typed projection; the Inbox owner alone persists and
+routes from it.
 The failure it prevents is an LLM's suggestion silently becoming a transition
 that bypassed its owner's rules — an unreviewable authority leak, and the
 exact parallel decision path the standard forbids.
@@ -96,29 +107,67 @@ declaration is what turns redaction on.
 The prompt and the projection contents are never audited or logged — only the
 fact of generation, the advisor, the projection key, and provider telemetry.
 
-## What is not implemented
+## Customer-facing conversational intake
 
-`AiIntakeConfig` (`app/models/ai_intake.py`) is a **CRM import for a feature
-Sub does not have**: an AI that answers inbound conversations, routes them to
-departments and escalates to a fallback team. Its fields say so —
-`department_mappings`, `fallback_team_id`, `escalate_after_minutes`,
-`exclude_campaign_attribution`. It has an admin CRUD API and no reader.
+`AiIntakeConfig` (`app/models/ai_intake.py`) is the runtime configuration owner
+for conversational intake. No enabled matching row means classification is
+skipped and the existing channel route remains authoritative. A matching row
+controls channel/scope, confidence, one optional clarification turn, fallback
+deadline and team, department overrides, custom instructions, and campaign
+attribution exclusion. The admin contract refuses email and limits
+clarification to one turn.
 
-It is **not** the gate for advisors and must not be pressed into that role:
-forcing a conversational-intake model into the advisory path would leave most
-of its fields inert while implying they mean something. Advisors are gated by
-the `ai.generation` control, a per-advisor setting key, and a daily token
-budget.
+`app.services.ai_intake` owns classification only. Normalized inbound
+processing calls it after provider/message deduplication and before final team
+routing. It may see the latest inbound message, at most three bounded recent
+messages, bounded tags, and custom instructions; customer content and obvious
+credentials are redacted before `ai.gateway` is called. Raw prompts and
+unredacted content are not stored in intake metadata.
 
-Its `allow_followup_questions` and `max_clarification_turns` fields describe a
-multi-turn agent that fetches more data mid-reasoning. That contradicts this
-design: the moment AI fetches its own data, the boundary stops holding by
-construction. Such an agent would not extend this document — it would replace
-it, and requires its own architecture decision.
+At or above the configured threshold, validated intent/category/department
+metadata is handed to `communications.team_inbox_routing`. Below threshold,
+one approved generic clarification may be recorded when enabled. The
+classifier does **not** send that text; the Team Inbox coordinator submits it
+to `communications.team_inbox_outbound_intents`, which uses the normal durable
+WhatsApp, Facebook Messenger, or Instagram Direct notification path. The
+provider call remains asynchronous to webhook acknowledgement. A dedupe key
+derived from the inbound message prevents a repeated delivery from creating a
+second clarification. A second uncertain result, disabled clarification,
+provider failure, invalid output, or a five-minute timeout takes the configured
+fallback team or normal channel default. The scheduled Team Inbox maintenance
+owner locks each conversation row and repairs stale `classifying` or
+`awaiting_follow_up` state idempotently.
 
-`AiIntakeConfig` therefore stays parked and unread, pending the AI
-chat-support work. If that work does not adopt it, delete the model and its
-API: an unenforced gate with an admin UI reads as protection and is not.
+Inbound processing serializes one channel/thread with a PostgreSQL transaction
+advisory lock, then locks an existing conversation row before reading or
+replacing intake metadata. This prevents concurrent webhooks, or a webhook and
+the recovery task, from losing the follow-up count, fallback deadline, or
+delivery evidence.
+
+The contact-data cleaning scaffold stores only a conversation-level
+`ai_data_cleaning` state. Its enum begins at `idle` and records
+`identify_pending` only when AI intake is enabled for the channel and the
+conversation's existing `primary_service_team_id` exactly equals the configured
+`data_cleaning_support_team_id`. It never infers Support from a team name or
+legacy `team_type`, and it performs no subscriber lookup, contact read/write,
+identity proofing, or AI dialogue.
+
+Schema tension remains unresolved: `uq_ai_intake_configs_scope_key` permits only
+one `AiIntakeConfig` row per `scope_key`, regardless of channel or future flow.
+The classifier and data-cleaning scaffold therefore currently share one row and
+one enablement lifecycle. Before data cleaning gains dialogue or independent
+controls, the configuration identity must be redesigned explicitly rather than
+creating a parallel settings owner.
+
+Destination-team resolution remains owned by Team Inbox routing. The queue
+service remains the only owner of enqueueing and permanent queue numbers, and
+the FIFO dispatcher remains the only owner of individual agent assignment.
+Intake cannot move an actively assigned conversation. Email continues through
+the email receive path and does not use AI intake.
+
+This enablement is separate from advisor controls. `ai.generation`, reply
+draft, polish, voice transcription, and operator approval retain their own
+default-off controls and never send automatically.
 
 ## Implemented extensions
 
