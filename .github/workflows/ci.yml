@@ -460,9 +460,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Run Alembic migrations
-        run: poetry run alembic upgrade head
-
       - name: Run integration tests
         run: make test-integration
 

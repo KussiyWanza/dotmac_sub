@@ -144,3 +144,21 @@ serial execution only when isolating worker-order or shared-state failures.
 
 Also run migration and browser/mobile checks when the changed behavior reaches
 those surfaces. Report any skipped or failed check explicitly.
+
+### Database-test authority
+
+- Alembic owns the deployed schema. Any database-backed test reported as
+  integration, migration, concurrency, constraint, or production-parity
+  evidence must run on PostgreSQL/PostGIS created by the real migration chain.
+- Run `make test-integration` with an explicit disposable
+  `TEST_DATABASE_URL`. The target name must identify it as test/pytest/CI/E2E
+  or migration data; the command refuses other names, migrates once to the
+  exact repository head, and then runs the integration suite.
+- `Base.metadata.create_all()` and SQLite are allowed only in the explicitly
+  non-authoritative fast unit lane. Their results must not be described as
+  deployed-schema acceptance.
+- A missing PostgreSQL target or migration mismatch is a failure, never a
+  skip or an invitation to fall back to metadata.
+- Fresh-baseline and real predecessor-to-head migration rehearsals prove
+  different contracts; run both when a schema change can affect an existing
+  deployment.

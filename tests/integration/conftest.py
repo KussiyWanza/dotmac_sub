@@ -1,11 +1,12 @@
 """Integration flow tests: whole-module journeys on real PostgreSQL.
 
-These reuse the root conftest's ``engine``/``db_session`` fixtures, which run
-on PostgreSQL whenever ``TEST_DATABASE_URL`` points at one (CI's
-Integration Tests job; on seabone export it against a scratch database in the
-``dotmac_sub_db`` container). Under SQLite the whole package skips — flow
-tests exist to exercise the PG-only surface (JSONB operators, FK cascades,
-row locks) the unit suite shims away.
+These reuse the root conftest's ``engine``/``db_session`` fixtures. The
+authoritative integration target is explicit PostgreSQL/PostGIS, created by
+the real Alembic chain through ``make test-integration``. SQLite and
+``Base.metadata.create_all`` are rejected rather than silently skipped: flow
+tests exist to exercise the deployed PG-only surface (JSONB operators, FK
+cascades, row locks, migration-owned constraints, indexes and triggers) the
+fast unit lane does not claim to represent.
 
 Each test drives a migrated module's NATIVE path end-to-end with its Phase 3
 flag ON via ``enable_flags`` — the flag-off write-throughs stay covered by
@@ -24,7 +25,11 @@ from app.services import control_registry
 @pytest.fixture(autouse=True)
 def _require_postgres(engine):
     if engine.dialect.name != "postgresql":
-        pytest.skip("integration flows run on PostgreSQL only")
+        raise pytest.UsageError(
+            "integration flows require migrated PostgreSQL; run "
+            "`make test-integration` with TEST_DATABASE_URL pointing at a "
+            "disposable test database"
+        )
 
 
 @pytest.fixture

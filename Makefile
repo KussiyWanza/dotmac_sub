@@ -93,6 +93,7 @@ test-fast: ## Run the parallel non-integration suite, stopping on first failure
 	poetry run pytest $(UNIT_TEST_ARGS) -x --tb=short -q
 
 test-integration: ## Run the PostgreSQL integration gate
+	poetry run python -m scripts.ci.migrated_test_database
 	poetry run pytest tests/integration/ -v --tb=short -o "addopts="
 
 test-architecture: ## Run architecture guards with the measured four-worker default
