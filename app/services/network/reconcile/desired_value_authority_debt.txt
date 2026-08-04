@@ -1,0 +1,39 @@
+# Desired-value authority debt — SHRINK ONLY.
+#
+# Each field below has a default that a composition layer substitutes when the
+# operator never set the value, and that default still reaches devices with no
+# named owner behind it. That contradicts the control-plane rule in
+# docs/SOT_RELATIONSHIP_MAP.md item 39: only an explicitly declared default may
+# be executable.
+#
+# The list exists so the contradiction is bounded and visible rather than
+# implied by a permissive disposition. tests/architecture/
+# test_control_plane_desired_value_policy.py fails if an entry is added, and
+# fails if a resolved entry is left here.
+#
+# To pay one down, decide with the owning service and then either:
+#   * declare it — authority=declared_default, adjudication=approved,
+#     declared_by=<owner>, and delete the line here; or
+#   * refuse it — authority=inadmissible, add the guard on every delivery path,
+#     and delete the line here.
+#
+# Run scripts/network/ont_sentinel_blast_radius.py first: the affected count is
+# what makes the decision an informed one.
+
+acs_device_id
+acs_username
+cr_password_ref
+cr_username
+dhcp_enabled
+dhcp_pool_max
+dhcp_pool_min
+ipv6_enabled
+mgmt_gateway
+mgmt_subnet_mask
+periodic_inform_interval_sec
+tr069_data_model_root
+tr069_profile_id
+wan_gem_index
+wan_pppoe_instance_index
+wan_pppoe_wcd_index
+wan_vlan

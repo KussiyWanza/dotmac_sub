@@ -94,6 +94,7 @@ from .actions import (
     OltTr069ServerConfig,
 )
 from .planner import Plan
+from .sentinels import DesiredScalar, is_deliverable
 from .state import AppliedAction, ReconcileFailure, ReconcileFailureReason
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -335,6 +336,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
     match action:
         # ── OLT actions ───────────────────────────────────────────────────
         case OltAuthorize():
+            _refuse_unset(
+                action,
+                ("line_profile_id", action.line_profile_id),
+                ("service_profile_id", action.service_profile_id),
+            )
             result = ctx.olt_adapter.authorize_ont(
                 action.fsp,
                 action.serial_number,
@@ -369,6 +375,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltModifyLineProfile():
+            _refuse_unset(action, ("line_profile_id", action.line_profile_id))
             result = ctx.olt_adapter.update_ont_profiles(
                 action.fsp,
                 action.ont_id,
@@ -385,6 +392,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltModifyServiceProfile():
+            _refuse_unset(action, ("service_profile_id", action.service_profile_id))
             result = ctx.olt_adapter.update_ont_profiles(
                 action.fsp,
                 action.ont_id,
@@ -617,6 +625,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_pppoe", None, action.username, started)
 
         case AcsSetWifiSsid():
+            _refuse_unset(action, ("wifi_ssid", action.ssid))
             params = {
                 "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID": (
                     action.ssid
@@ -626,6 +635,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_ssid", None, action.ssid, started)
 
         case AcsSetWifiPassword():
+            _refuse_unset(action, ("wifi_password_ref", action.password_ref))
             password = _resolve_or_fail(ctx, action, action.password_ref)
             params = {
                 "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase": password
@@ -635,6 +645,20 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_wifi_password", None, "[redacted]", started)
 
         case AcsSetWifiConfig():
+            # Whole-action refusal, before any ACS contact. A field carrying a
+            # sentinel is dropped from neither the write nor the outcome: the
+            # batch fails so no part of it is reported converged.
+            _refuse_unset(
+                action,
+                *(
+                    (name, value)
+                    for name, value in (
+                        ("wifi_ssid", action.ssid),
+                        ("wifi_password_ref", action.password_ref),
+                    )
+                    if value is not None
+                ),
+            )
             wifi_params: dict[str, object] = {}
             changed: list[str] = []
             if action.enabled is not None:
@@ -838,6 +862,29 @@ def _split_dns_servers(value: str | None) -> tuple[str | None, str | None]:
     primary = servers[0] if servers else None
     secondary = servers[1] if len(servers) > 1 else None
     return primary, secondary
+
+
+def _refuse_unset(action: Action, *fields: tuple[str, DesiredScalar]) -> None:
+    """Refuse the whole action if any field carries an unset sentinel.
+
+    Defence in depth behind the planner guards: the synchronous UI delivery
+    paths build actions directly, so the applier is the last boundary before a
+    placeholder reaches a customer's device.
+
+    The refusal is deliberately all-or-nothing and happens before any device
+    contact. Applying an action's remaining fields and reporting success would
+    record a converged write the device only partially received — the same
+    false convergence the sentinels exist to prevent. Per-field outcomes are
+    the intent-migration's job, not something to approximate here.
+    """
+    unset = [name for name, value in fields if not is_deliverable(name, value)]
+    if not unset:
+        return
+    raise ApplyError(
+        action,
+        ReconcileFailureReason.INVALID_CHANGE,
+        f"refusing to write unset {', '.join(unset)}",
+    )
 
 
 def _resolve_or_fail(ctx: ApplyContext, action: Action, ref: str) -> str:

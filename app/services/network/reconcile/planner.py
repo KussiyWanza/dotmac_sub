@@ -87,6 +87,7 @@ from .actions import (
     OltReset,
     OltTr069ServerConfig,
 )
+from .sentinels import is_deliverable
 from .state import (
     Drift,
     OntDesiredState,
@@ -317,30 +318,46 @@ def _plan_olt_side(
 
     # 1. Authorize if absent.
     if not olt_obs.olt_present:
-        actions.append(
-            OltAuthorize(
-                fsp=desired.fsp,
-                ont_id=desired.olt_ont_id,
-                line_profile_id=desired.line_profile_id,
-                service_profile_id=desired.service_profile_id,
-                serial_number=desired.serial_number,
-                description=desired.description,
+        # ``ont add`` carries both profile bindings, so an unset profile is
+        # authorized in with the ONT. Unlike the modify path this is not a
+        # silent no-op — it creates a live but wrongly-bound authorization —
+        # so refuse the whole action rather than emit a partial one. The drift
+        # is recorded unrepairable: the ONT genuinely cannot converge until an
+        # owner supplies the profiles, and hiding that would report a blocked
+        # bring-up as merely pending.
+        authorizable = is_deliverable(
+            "line_profile_id", desired.line_profile_id
+        ) and is_deliverable("service_profile_id", desired.service_profile_id)
+        if authorizable:
+            actions.append(
+                OltAuthorize(
+                    fsp=desired.fsp,
+                    ont_id=desired.olt_ont_id,
+                    line_profile_id=desired.line_profile_id,
+                    service_profile_id=desired.service_profile_id,
+                    serial_number=desired.serial_number,
+                    description=desired.description,
+                )
             )
-        )
         drifts.append(
             Drift(
                 field="olt_present",
                 surface="olt",
                 desired=True,
                 observed=False,
-                repairable=True,
+                repairable=authorizable,
             )
         )
         # When we authorize, we provide line/srv profile + description in the
         # same `ont add` — no need to emit separate modify actions.
     else:
         # Present — diff individual fields.
-        if _observed_differs(olt_obs.olt_line_profile_id, desired.line_profile_id):
+        # A non-positive profile id is unset, not intended, and is silently a
+        # no-op on Huawei OLTs — emitting it manufactures a successful write
+        # the OLT never applied. See ``reconcile.sentinels``.
+        if is_deliverable(
+            "line_profile_id", desired.line_profile_id
+        ) and _observed_differs(olt_obs.olt_line_profile_id, desired.line_profile_id):
             actions.append(
                 OltModifyLineProfile(
                     fsp=desired.fsp,
@@ -358,7 +375,9 @@ def _plan_olt_side(
                 )
             )
 
-        if _observed_differs(
+        if is_deliverable(
+            "service_profile_id", desired.service_profile_id
+        ) and _observed_differs(
             olt_obs.olt_service_profile_id, desired.service_profile_id
         ):
             actions.append(
@@ -683,6 +702,7 @@ def _plan_acs_side(
     wifi_changes = _WifiChanges(None, None, None, None, ())
     if not remote_only_change:
         push_password = _should_push_wifi_password(
+            desired,
             mode,
             observed,
             proposed_fields,
@@ -990,6 +1010,13 @@ def _wifi_changes(
     drifts: list[tuple[str, object, object]] = []
     for field, action_key, desired_value, observed_value in candidates:
         if desired_value is None:
+            continue
+        if not is_deliverable(field, desired_value):
+            # The value is unset, not intended — see ``reconcile.sentinels``.
+            # No drift is recorded: an unknown desired value has no target to
+            # converge on, and marking it would strand the ONT out_of_sync
+            # forever. ``scripts/network/ont_sentinel_blast_radius.py`` is
+            # where unmanaged fields become visible.
             continue
         forced = force_proposed_writes and field in proposed_fields
         differs = _observed_differs(observed_value, desired_value)
@@ -1387,6 +1414,7 @@ def _management_server_differs(
 
 
 def _should_push_wifi_password(
+    desired: OntDesiredState,
     mode: ReconcileMode,
     observed: OntObservedState,
     proposed_fields: frozenset[str],
@@ -1398,7 +1426,13 @@ def _should_push_wifi_password(
     In sync mode, an operator-proposed password change is an explicit write
     request and must emit exactly one ACS action on the apply pass. Verification
     calls omit ``proposed_fields`` so the write-only password is not re-emitted.
+
+    An unset PSK is never pushed on any trigger: writing the empty sentinel
+    would clear the pre-shared key and leave the customer's WLAN open. Because
+    the field is write-only, nothing downstream could observe that it happened.
     """
+    if not is_deliverable("wifi_password_ref", desired.wifi_password_ref):
+        return False
     if mode == "bootstrap":
         return True
     if (

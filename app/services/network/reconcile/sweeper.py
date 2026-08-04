@@ -33,6 +33,7 @@ import logging
 import signal
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -197,6 +198,57 @@ def _sweep_one(
     return SweepOutcome(disposition=SweepDisposition.reconciled, success=result.success)
 
 
+@dataclass(frozen=True, slots=True)
+class SweepCandidate:
+    """One ONT the automatic sweep would process, in the order it would."""
+
+    ont_id: uuid.UUID
+    last_reconciled_at: datetime | None
+
+    @property
+    def never_reconciled(self) -> bool:
+        """Head of the sweep queue — ``NULLS FIRST`` puts these first."""
+        return self.last_reconciled_at is None
+
+
+def sweep_candidates(
+    db: Session,
+    *,
+    only_active: bool = True,
+    max_onts: int | None = None,
+) -> tuple[SweepCandidate, ...]:
+    """Return the sweep's population in sweep order.
+
+    Eligibility is not decided here. ``restrict_to_reconcile_candidates`` is
+    the one predicate for "may automatic reconciliation drive this device",
+    and this function adds only what the sweep additionally needs: the
+    staleness ordering, and the observation join that ordering reads.
+
+    That split is the point. Anything reasoning about the sweep — including
+    read-only auditing — consumes this projection, so a risk profile is always
+    reported for the exact devices that will be walked, in the order they will
+    be walked. Restating either half is how the two quietly stop agreeing.
+
+    Holds are deliberately not applied. A hold is a per-ONT decision taken at
+    the point of use, inside the reconcile transaction and under the row lock;
+    pre-filtering here would make an audit under-report a population whose
+    holds can be lifted at any time.
+    """
+    stmt = restrict_to_reconcile_candidates(
+        select(OntUnit.id, OntObservation.last_reconciled_at),
+        only_active=only_active,
+    )
+    stmt = stmt.outerjoin(
+        OntObservation, OntObservation.ont_unit_id == OntUnit.id
+    ).order_by(OntObservation.last_reconciled_at.asc().nullsfirst(), OntUnit.id)
+    if max_onts is not None:
+        stmt = stmt.limit(max(1, int(max_onts)))
+    return tuple(
+        SweepCandidate(ont_id=row[0], last_reconciled_at=row[1])
+        for row in db.execute(stmt).all()
+    )
+
+
 def run_sweep_once(
     db_factory: Callable[[], Session],
     *,
@@ -223,18 +275,12 @@ def run_sweep_once(
 
     # First pass: collect target IDs (with a short-lived session).
     with db_factory() as catalog_db:
-        # Eligibility comes from the one canonical predicate; this function
-        # adds only the ordering the sweep needs (least-recently-reconciled
-        # first, never-reconciled ahead of everything).
-        stmt = restrict_to_reconcile_candidates(
-            select(OntUnit.id), only_active=only_active
-        )
-        stmt = stmt.outerjoin(
-            OntObservation, OntObservation.ont_unit_id == OntUnit.id
-        ).order_by(OntObservation.last_reconciled_at.asc().nullsfirst(), OntUnit.id)
-        if max_onts is not None:
-            stmt = stmt.limit(max(1, int(max_onts)))
-        ont_ids = [row[0] for row in catalog_db.execute(stmt).all()]
+        ont_ids = [
+            candidate.ont_id
+            for candidate in sweep_candidates(
+                catalog_db, only_active=only_active, max_onts=max_onts
+            )
+        ]
         # Read the hold set ONCE per pass rather than per ONT. The per-ONT
         # verdict remains the authority for a single decision; this is the
         # bulk read that keeps the sweep to one query.

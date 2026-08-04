@@ -441,6 +441,10 @@ do not hand-edit these rows.
 | `network.ont_commissioning` | commissioning expiry and assignment reconciliation | `application_coordinator` | canonical ONT inventory identity ← `network.identity`<br>active ONT service assignment ← `network.ont_assignment_commands`<br>durable network operation lifecycle ← `network.operation_ledger`<br>durable network command dispatch ← `network.operation_dispatch` | `coordinator_managed` | `complete` | network operations | `docs/designs/ONT_COMMISSIONING_INTENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/OLT_ONT_ACS_ARCHITECTURE.md`<br>`docs/PROVISIONING_OPERATIONS_GUIDE.md`<br>`tests/test_ont_commissioning.py`<br>`tests/architecture/test_ont_commissioning_boundary.py` |
 | `network.cpe_dialer_credential` | derived CPE PPPoE dialer credential projection | `reconciler` | authoritative subscriber access credential ← `access.radius_projection`<br>active ONT-to-subscriber assignment ← `network.identity`<br>derived CPE dialer projection ← `network.cpe_dialer_credential`<br>credential fingerprint key ← `secrets.credential_crypto` | `participant` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_cpe_dialer_credential_reconcile.py` |
 | `network.cpe_dialer_credential` | CPE dialer credential fingerprint comparison and readback | `resolver` | authoritative subscriber access credential ← `access.radius_projection`<br>derived CPE dialer projection ← `network.cpe_dialer_credential`<br>ACS-reported PPPoE dialer username ← `external:genieacs`<br>credential fingerprint key ← `secrets.credential_crypto` | `participant` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_cpe_dialer_credential_reconcile.py` |
+| `network.control_plane_intent` | shared desired-state delivery lifecycle | `policy` | vendor delivery status ← `network.control_plane_intent` | `not_applicable` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/architecture/test_control_plane_desired_value_policy.py`<br>`tests/test_reconcile_sentinels.py` |
+| `network.control_plane_intent` | control-plane target and revision identity | `policy` | control-plane target identity ← `network.control_plane_intent` | `not_applicable` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/architecture/test_control_plane_desired_value_policy.py`<br>`tests/test_reconcile_sentinels.py` |
+| `network.control_plane_intent` | vendor status projections and transition guards | `policy` | vendor delivery status ← `network.control_plane_intent` | `not_applicable` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/architecture/test_control_plane_desired_value_policy.py`<br>`tests/test_reconcile_sentinels.py` |
+| `network.control_plane_intent` | unset desired-value admissibility policy | `policy` | provider unset-sentinel declaration ← `network.control_plane_intent` | `not_applicable` | `shadowing` | network operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/architecture/test_control_plane_desired_value_policy.py`<br>`tests/test_reconcile_sentinels.py` |
 | `network.ppp_delivery_authorization` | delivery-time PPP termination authorization | `policy` | active ONT WAN service instances ← `network.ont_assignment_identity` | `read_only` | `shadowing` | network | `docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ppp_delivery_authorization.py`<br>`tests/test_cpe_dialer_credential_intent_gate.py` |
 | `network.ppp_delivery_authorization` | PPP delivery action-bundle membership | `policy` | planned reconcile actions ← `network.ont_assignment_commands` | `read_only` | `shadowing` | network | `docs/designs/ONT_WAN_SERVICE_INTENT_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ppp_delivery_authorization.py`<br>`tests/test_cpe_dialer_credential_intent_gate.py` |
 | `network.ont_reconcile_eligibility` | per-ONT automatic reconciliation eligibility | `command_writer` | reviewed hold decision ← `network.ont_reconcile_eligibility` | `owner_managed` | `shadowing` | network | `docs/designs/ONT_RECONCILE_ELIGIBILITY_SOT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_ont_reconcile_eligibility.py` |
@@ -3459,9 +3463,54 @@ writers are retired; historical rows remain readable evidence.
    `connected/trouble/outage` verdict plus headline/message/advice. It does not
    own device operational state or raw online-session observations.
 39. `network.control_plane_intent`: owns the shared desired-state delivery
-   lifecycle, control-plane target/revision identity, and vendor status
-   projections. Vendor adapters project through this one
-   desired-to-readback lifecycle.
+   lifecycle, control-plane target/revision identity, vendor status
+   projections, and unset desired-value admissibility. Vendor adapters project
+   through this one desired-to-readback lifecycle.
+
+   **Unset desired state is not an executable device value.** Missing or
+   provenance-unknown desired state must remain typed as unknown and cannot
+   become an executable device value unless a named owner explicitly declares
+   that default. A value substituted to satisfy a type — `x or ""`, `or 0`,
+   `default=True` — is a placeholder, not intent, and a delivery path that
+   writes it reports a convergence the operator never asked for.
+
+   Each provider registers, per field, the sentinel its composition layers
+   substitute and who authorises executing it. Execution authority is separate
+   from review progress, and review progress never grants execution: an
+   undecided default is not an authorised one. The authorities are
+   `declared_default` (a named owner approved it; executable, and the contract
+   refuses the claim unless the review says approved), `inadmissible` (no owner
+   authorises it; refused), `delegated` (a different named owner already fails
+   closed, so this provider must not add a competing guard), and `undeclared`
+   (executes today with nothing behind it — a recorded debt, not a permission,
+   held on a shrink-only baseline so it can be paid down but never grown).
+   `network.control_plane_intent.is_executable_desired_value` rules; the
+   provider enforces on every delivery path, planning and applying alike,
+   because a legacy caller can construct an action directly.
+
+   Three obligations follow, and all three are guarded:
+
+   - **Audit every layer.** Composition, adaptation, and emission each
+     substitute defaults. Auditing one layer is worse than useless: an upstream
+     default makes a downstream coercion unreachable, so a partial audit
+     reports zero affected devices for a rule that fires on all of them.
+   - **Refuse whole actions.** A batched write that drops an inadmissible field
+     and applies the rest reports partial success as convergence. Until
+     per-field delivery outcomes exist, the action fails before device contact.
+   - **Never fake a zero.** A rule whose input is not stored configuration is
+     reported as unmeasured, not as zero affected devices.
+
+   Suppressing an inadmissible value records no drift — an unknown desired
+   value has no target to converge on, and marking it would strand a fleet
+   permanently out of sync. The exception is a refusal that blocks convergence
+   outright, such as an ONT that cannot be authorized without profile
+   bindings; that is real, per-device, and recorded unrepairable.
+
+   The Huawei ONT instance is `app.services.network.reconcile.sentinels`, its
+   debt baseline is `desired_value_authority_debt.txt` beside it, and
+   `scripts/network/ont_sentinel_blast_radius.py` is the read-only detector
+   whose counts each pending declaration is decided against. RouterOS, NAS,
+   WireGuard, RADIUS, and UISP have not been audited.
 40. `network.huawei_cli_response`: owns Huawei CLI response classification,
    stable error codes, expected-absence predicates, unsupported-command
    detection, and idempotent response semantics. Huawei SSH sessions, protocol

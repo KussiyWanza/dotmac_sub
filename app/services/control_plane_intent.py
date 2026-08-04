@@ -35,6 +35,127 @@ class ControlPlaneHeadConflict(ControlPlaneContractError):
     pass
 
 
+#: The bounded scalar contract for a substituted desired value.
+#:
+#: A default that a composition layer can substitute is always a scalar: a
+#: string, an integer, a boolean, or nothing. Accepting ``Any`` here would let
+#: a provider hand over a structure this module cannot compare, and the
+#: comparison is the whole ruling.
+DesiredScalar = str | int | bool | None
+
+
+class DesiredValueAuthority(enum.StrEnum):
+    """Who, if anyone, authorises executing a substituted default.
+
+    This is execution authority, deliberately separate from review progress.
+    Only :attr:`declared_default` grants execution; nothing about how far a
+    review has got can confer it.
+    """
+
+    #: A named owner explicitly declared this default. Executable.
+    declared_default = "declared_default"
+    #: No owner authorises it. Never executable; the provider refuses.
+    inadmissible = "inadmissible"
+    #: A different named owner rules on this value and already fails closed.
+    #: This provider must not add a competing guard — two owners refusing the
+    #: same value independently is how refusals start disagreeing.
+    delegated = "delegated"
+    #: Executes today with no declaration behind it. A recorded authority debt,
+    #: not a permission: providers must hold these on a shrink-only baseline so
+    #: the set can be paid down but never grown.
+    undeclared = "undeclared"
+
+
+class DesiredValueAdjudication(enum.StrEnum):
+    """How far the review of a default has got. Never grants execution."""
+
+    approved = "approved"
+    undecided = "undecided"
+    refused = "refused"
+
+
+@dataclass(frozen=True, slots=True)
+class DesiredValueDeclaration:
+    """One provider's declaration about one substituted default."""
+
+    field: str
+    sentinel: DesiredScalar
+    authority: DesiredValueAuthority
+    adjudication: DesiredValueAdjudication
+    #: The owner behind ``declared_default`` or ``delegated``. Required for
+    #: both, forbidden otherwise: an authority with no name is not an authority.
+    declared_by: str | None = None
+
+    def __post_init__(self) -> None:
+        named = {
+            DesiredValueAuthority.declared_default,
+            DesiredValueAuthority.delegated,
+        }
+        if self.authority in named and not (self.declared_by or "").strip():
+            raise ControlPlaneContractError(
+                f"{self.field!r} claims {self.authority.value} without naming an owner"
+            )
+        if self.authority not in named and self.declared_by:
+            raise ControlPlaneContractError(
+                f"{self.field!r} names an owner but claims no delegated authority"
+            )
+        if (
+            self.authority is DesiredValueAuthority.declared_default
+            and self.adjudication is not DesiredValueAdjudication.approved
+        ):
+            raise ControlPlaneContractError(
+                f"{self.field!r} is executable but its review is "
+                f"{self.adjudication.value}; only an approved default executes"
+            )
+        if (
+            self.adjudication is DesiredValueAdjudication.refused
+            and self.authority is DesiredValueAuthority.declared_default
+        ):
+            raise ControlPlaneContractError(
+                f"{self.field!r} was refused and cannot also be a declared default"
+            )
+
+
+def is_executable_desired_value(
+    value: DesiredScalar,
+    *,
+    declaration: DesiredValueDeclaration,
+) -> bool:
+    """Apply the control-plane admissibility rule to one desired value.
+
+    The rule: *missing or provenance-unknown desired state must remain typed as
+    unknown and cannot become an executable device value unless a named owner
+    explicitly declares that default.*
+
+    A provider registers, per field, the concrete value its composition layers
+    substitute when the source is absent, and who authorises executing it. This
+    function decides; the provider's delivery path enforces. Vendor adapters
+    therefore share one rule without this module learning any vendor's field
+    names.
+
+    A value that is not the sentinel is always executable — it is real intent,
+    whatever the declaration says about the default.
+
+    Type identity is part of the comparison: ``False == 0`` in Python, so a
+    boolean is never matched against a numeric sentinel and vice versa.
+    """
+    if isinstance(value, bool) is not isinstance(declaration.sentinel, bool):
+        return True
+    if value != declaration.sentinel:
+        return True
+    # The value *is* the substituted default. Only an authority admits it.
+    if declaration.authority is DesiredValueAuthority.declared_default:
+        return True
+    if declaration.authority is DesiredValueAuthority.delegated:
+        # Ruled on elsewhere; refusing here too would double-guard.
+        return True
+    if declaration.authority is DesiredValueAuthority.undeclared:
+        # Honest about the debt: this executes, and the provider's shrink-only
+        # baseline is what stops the set from growing.
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class ControlPlaneTarget:
     """Canonical identity for one desired-state revision."""
