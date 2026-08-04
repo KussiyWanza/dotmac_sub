@@ -1,7 +1,7 @@
 """add Meta direct-message notification channels
 
-Revision ID: 468_meta_direct_message_channels
-Revises: 467_sla_policy_versions
+Revision ID: 469_meta_direct_message_channels
+Revises: 468_immutable_lifecycle_transition_evidence
 Create Date: 2026-08-04
 """
 
@@ -11,8 +11,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "468_meta_direct_message_channels"
-down_revision: str | None = "467_sla_policy_versions"
+revision: str = "469_meta_direct_message_channels"
+down_revision: str | None = "468_immutable_lifecycle_transition_evidence"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
