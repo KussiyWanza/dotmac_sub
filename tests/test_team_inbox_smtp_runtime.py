@@ -81,6 +81,19 @@ def test_runtime_supervises_one_owner_controller(monkeypatch):
     assert stopped == [True]
 
 
+def test_controller_liveness_uses_aiosmtpd_private_thread(monkeypatch):
+    class _Thread:
+        def is_alive(self) -> bool:
+            return True
+
+    class _Controller:
+        _thread = _Thread()
+
+    monkeypatch.setattr(team_inbox_smtp_inbound, "_SMTP_CONTROLLER", _Controller())
+
+    assert team_inbox_smtp_inbound.smtp_inbound_server_running() is True
+
+
 def test_readiness_uses_smtp_noop(monkeypatch):
     calls: list[tuple[str, int, float] | str] = []
 
@@ -286,5 +299,7 @@ def test_deployment_contract_is_profile_gated_and_loopback_only():
     assert "- app.team_inbox_smtp\n    - serve" in smtp_service
     assert "- readiness" in smtp_service
     assert "prod-smtp-inbound-up:" in makefile
+    assert "--no-scale team-inbox-smtp" not in makefile
+    assert "mem_limit: 512m" in smtp_service
     assert "prod-smtp-inbound-probe:" in makefile
     assert "start_smtp_inbound_server" not in main

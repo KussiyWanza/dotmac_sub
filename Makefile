@@ -213,7 +213,7 @@ prod-restart: ## Recreate prod app + worker services from the current image (APP
 	$(PROD_COMPOSE) up -d app celery-worker celery-worker-bandwidth celery-worker-ingestion celery-worker-monitoring celery-worker-billing celery-worker-tr069 celery-beat bandwidth-poller syslog-listener
 
 prod-smtp-inbound-up: ## Start/recreate the opt-in, single-instance SMTP intake
-	$(PROD_COMPOSE) --profile smtp-inbound up -d --no-scale team-inbox-smtp
+	$(PROD_COMPOSE) --profile smtp-inbound up -d team-inbox-smtp
 
 prod-smtp-inbound-probe: ## Prove SMTP intake creates a marked team-inbox message
 	$(PROD_COMPOSE) --profile smtp-inbound exec -T team-inbox-smtp python -m app.team_inbox_smtp e2e-probe
