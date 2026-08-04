@@ -236,9 +236,7 @@ def smtp_inbound_server_running() -> bool:
         return False
     # aiosmtpd 1.4.x exposes its controller thread as ``_thread``. Keep the
     # public-name fallback for compatible alternate controller implementations.
-    thread = getattr(controller, "_thread", None) or getattr(
-        controller, "thread", None
-    )
+    thread = getattr(controller, "_thread", None) or getattr(controller, "thread", None)
     return bool(thread is not None and thread.is_alive())
 
 
