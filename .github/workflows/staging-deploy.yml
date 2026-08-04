@@ -143,12 +143,13 @@ jobs:
           STAGING_DEPLOY_DIR: ${{ vars.STAGING_DEPLOY_DIR }}
         run: |
           set -euo pipefail
-          expected_dir="/home/dotmac/projects/dotmac_sub"
+          expected_dir="/home/dotmac/deploy-worktrees/dotmac-sub-staging"
           if [ "$STAGING_DEPLOY_DIR" != "$expected_dir" ]; then
             echo "STAGING_DEPLOY_DIR must be $expected_dir." >&2
             exit 1
           fi
-          test -d "$STAGING_DEPLOY_DIR/.git"
+          test -e "$STAGING_DEPLOY_DIR/.git"
+          test "$(git -C "$STAGING_DEPLOY_DIR" rev-parse --is-inside-work-tree)" = true
           test -f "$STAGING_DEPLOY_DIR/.env"
           test -f "$STAGING_DEPLOY_DIR/docker-compose.override.yml"
           if [ -n "$(git -C "$STAGING_DEPLOY_DIR" status --porcelain --untracked-files=no)" ]; then

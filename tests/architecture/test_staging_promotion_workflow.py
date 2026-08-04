@@ -46,7 +46,10 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
     assert "Refusing stale staging deploy" in workflow
     assert "runs-on: [self-hosted, linux, x64, dotmac-sub-staging]" in workflow
     assert "environment: staging" in workflow
-    assert 'expected_dir="/home/dotmac/projects/dotmac_sub"' in workflow
+    assert 'expected_dir="/home/dotmac/deploy-worktrees/dotmac-sub-staging"' in workflow
+    assert "/home/dotmac/projects/dotmac_sub" not in workflow
+    assert 'test -e "$STAGING_DEPLOY_DIR/.git"' in workflow
+    assert "rev-parse --is-inside-work-tree" in workflow
     assert 'git -C "$STAGING_DEPLOY_DIR" merge --ff-only' in workflow
     assert "git reset --hard" not in workflow
     assert 'bash scripts/deploy_staging.sh "$IMAGE_TAG"' in workflow
@@ -83,7 +86,11 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
 
     assert "STAGING_AUTO_DEPLOY_ENABLED" in runbook
     assert "dotmac-sub-staging" in runbook
-    assert "STAGING_DEPLOY_DIR=/home/dotmac/projects/dotmac_sub" in runbook
+    assert (
+        "STAGING_DEPLOY_DIR=/home/dotmac/deploy-worktrees/dotmac-sub-staging" in runbook
+    )
+    assert "used only by the staging" in runbook
+    assert "never write into the deployment worktree" in runbook
     assert "updates local `dev` only by fast-forward" in runbook
     assert "scripts/deploy_staging.sh" in runbook
     assert "Production backup behavior remains unchanged" in runbook

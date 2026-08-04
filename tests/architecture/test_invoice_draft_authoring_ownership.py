@@ -44,3 +44,12 @@ def test_admin_proforma_conversion_delegates_to_locked_owner() -> None:
     assert "invoice_draft_authoring.convert_proforma_invoice(" in conversion_adapter
     assert "billing_service.invoices.update(" not in conversion_adapter
     assert "db.commit(" not in conversion_adapter
+
+
+def test_prepaid_proforma_conversion_guard_lives_in_owner() -> None:
+    source = Path("app/services/invoice_draft_authoring.py").read_text()
+    conversion_start = source.index("def _convert_proforma_invoice(")
+    conversion_owner = source[conversion_start:]
+
+    assert "_requires_prepaid_reconciliation(db, invoice)" in conversion_owner
+    assert '"prepaid_reconciliation_required"' in conversion_owner

@@ -16,7 +16,12 @@ from uuid import UUID
 from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
+    AdoptFundedPrepaidProformaCommand,
+    PrepaidDraftReconciliationPreview,
+    PrepaidProformaAdoptionQuery,
     ReconcilePrepaidDraftCommand,
+    adopt_funded_prepaid_proforma,
+    preview_funded_prepaid_proforma_adoption,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
@@ -71,11 +76,50 @@ def _preview_payload(preview) -> dict[str, object]:
     }
 
 
+def _proforma_adoption_preview_payload(preview) -> dict[str, object]:
+    return {
+        "invoice_id": str(preview.invoice_id),
+        "account_id": str(preview.account_id),
+        "invoice_number": preview.invoice_number,
+        "subscription_id": str(preview.subscription_id),
+        "line_id": str(preview.line_id) if preview.line_id else None,
+        "settlement_payment_id": (
+            str(preview.settlement_payment_id)
+            if preview.settlement_payment_id
+            else None
+        ),
+        "settlement_effective_at": (
+            preview.settlement_effective_at.isoformat()
+            if preview.settlement_effective_at
+            else None
+        ),
+        "billing_period_start": (
+            preview.billing_period_start.isoformat()
+            if preview.billing_period_start
+            else None
+        ),
+        "billing_period_end": (
+            preview.billing_period_end.isoformat()
+            if preview.billing_period_end
+            else None
+        ),
+        "disposition": preview.disposition.value,
+        "currency": preview.currency,
+        "invoice_total": str(preview.invoice_total),
+        "payment_backed_credit": str(preview.payment_backed_credit),
+        "actionable": preview.actionable,
+        "reason": preview.reason,
+        "fingerprint": preview.fingerprint,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--invoice-id", type=_uuid)
+    parser.add_argument("--subscription-id", type=_uuid)
     parser.add_argument("--account-id", type=_uuid)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--adopt-proforma", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--fingerprint")
     parser.add_argument("--effective-at", type=_timestamp)
@@ -87,37 +131,73 @@ def main() -> int:
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
     if args.apply:
-        missing = [
-            name
-            for name, value in (
-                ("--invoice-id", args.invoice_id),
-                ("--fingerprint", args.fingerprint),
-                ("--effective-at", args.effective_at),
-                ("--idempotency-key", args.idempotency_key),
-                ("--actor", args.actor),
-                ("--reason", args.reason),
-            )
-            if not value
+        required = [
+            ("--invoice-id", args.invoice_id),
+            ("--fingerprint", args.fingerprint),
+            ("--idempotency-key", args.idempotency_key),
+            ("--actor", args.actor),
+            ("--reason", args.reason),
         ]
+        if args.adopt_proforma:
+            required.append(("--subscription-id", args.subscription_id))
+        else:
+            required.append(("--effective-at", args.effective_at))
+        missing = [name for name, value in required if not value]
         if missing:
             parser.error("--apply requires " + ", ".join(missing))
         if args.account_id is not None or args.limit is not None:
             parser.error("--account-id and --limit are preview-only")
         with db_session_adapter.owner_command_session() as db:
-            result = reconcile_prepaid_draft_invoice(
-                db,
-                ReconcilePrepaidDraftCommand(
-                    context=CommandContext.system(
-                        actor=args.actor,
-                        scope="prepaid_draft_reconciliation",
-                        reason=args.reason,
-                        idempotency_key=args.idempotency_key,
-                    ),
-                    invoice_id=args.invoice_id,
-                    preview_fingerprint=args.fingerprint,
-                    effective_at=args.effective_at,
-                ),
+            context = CommandContext.system(
+                actor=args.actor,
+                scope="prepaid_draft_reconciliation",
+                reason=args.reason,
+                idempotency_key=args.idempotency_key,
             )
+            if args.adopt_proforma:
+                adoption = adopt_funded_prepaid_proforma(
+                    db,
+                    AdoptFundedPrepaidProformaCommand(
+                        context=context,
+                        invoice_id=args.invoice_id,
+                        subscription_id=args.subscription_id,
+                        preview_fingerprint=args.fingerprint,
+                    ),
+                )
+            else:
+                result = reconcile_prepaid_draft_invoice(
+                    db,
+                    ReconcilePrepaidDraftCommand(
+                        context=context,
+                        invoice_id=args.invoice_id,
+                        preview_fingerprint=args.fingerprint,
+                        effective_at=args.effective_at,
+                    ),
+                )
+        if args.adopt_proforma:
+            print(
+                json.dumps(
+                    {
+                        "invoice_id": str(adoption.invoice_id),
+                        "subscription_id": str(adoption.subscription_id),
+                        "line_id": str(adoption.line_id),
+                        "settlement_payment_id": str(adoption.settlement_payment_id),
+                        "settlement_effective_at": (
+                            adoption.settlement_effective_at.isoformat()
+                        ),
+                        "billing_period_start": (
+                            adoption.billing_period_start.isoformat()
+                        ),
+                        "billing_period_end": adoption.billing_period_end.isoformat(),
+                        "preview_fingerprint": adoption.preview_fingerprint,
+                        "replayed": adoption.replayed,
+                        "next_step": "preview and apply the financial draft reconciliation",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         print(
             json.dumps(
                 {
@@ -144,21 +224,52 @@ def main() -> int:
         )
         return 0
 
+    if args.adopt_proforma and (
+        args.invoice_id is None or args.subscription_id is None
+    ):
+        parser.error(
+            "--adopt-proforma preview requires --invoice-id and --subscription-id"
+        )
+    if args.subscription_id is not None and not args.adopt_proforma:
+        parser.error("--subscription-id requires --adopt-proforma")
+    if args.adopt_proforma and (args.account_id is not None or args.limit is not None):
+        parser.error("--account-id and --limit cannot be used with --adopt-proforma")
+
+    previews: tuple[PrepaidDraftReconciliationPreview, ...]
     with db_session_adapter.read_session() as db:
-        if args.invoice_id is not None:
+        if args.adopt_proforma:
+            adoption_preview = preview_funded_prepaid_proforma_adoption(
+                db,
+                PrepaidProformaAdoptionQuery(
+                    invoice_id=args.invoice_id,
+                    subscription_id=args.subscription_id,
+                ),
+            )
+            payload = {
+                "dry_run": True,
+                "operation": "adopt_funded_prepaid_proforma",
+                "item": _proforma_adoption_preview_payload(adoption_preview),
+            }
+        elif args.invoice_id is not None:
             previews = (preview_prepaid_draft_reconciliation(db, args.invoice_id),)
+            payload = {
+                "dry_run": True,
+                "candidate_count": len(previews),
+                "actionable_count": sum(item.actionable for item in previews),
+                "items": [_preview_payload(item) for item in previews],
+            }
         else:
             previews = preview_prepaid_draft_cohort(
                 db,
                 account_id=args.account_id,
                 limit=args.limit,
             )
-        payload = {
-            "dry_run": True,
-            "candidate_count": len(previews),
-            "actionable_count": sum(item.actionable for item in previews),
-            "items": [_preview_payload(item) for item in previews],
-        }
+            payload = {
+                "dry_run": True,
+                "candidate_count": len(previews),
+                "actionable_count": sum(item.actionable for item in previews),
+                "items": [_preview_payload(item) for item in previews],
+            }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 

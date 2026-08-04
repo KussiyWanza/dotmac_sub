@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
@@ -420,6 +421,100 @@ def response_cohort(
     return InboxResponseCohort.needs_attention
 
 
+_NEEDS_ATTENTION_BATCH_SIZE = 500
+
+
+def _valid_agent_reply_clause() -> ColumnElement[bool]:
+    """SQL prefilter twin of :func:`_is_valid_agent_reply`.
+
+    This clause only narrows candidates. The authoritative Python classifier is
+    still applied to every candidate, so JSON differences between supported
+    database engines cannot change the visible cohort.
+    """
+
+    metadata = InboxMessage.metadata_
+
+    def normalized(key: str) -> ColumnElement[str]:
+        return func.lower(func.trim(func.coalesce(metadata[key].as_string(), "")))
+
+    return and_(
+        InboxMessage.direction == InboxMessageDirection.outbound.value,
+        normalized("sent_by_person_id") != "",
+        normalized("delivery_status").in_(_SUCCESSFUL_AGENT_DELIVERY_STATUSES),
+        *(
+            ~normalized(key).in_(("1", "true", "yes"))
+            for key in ("ai_intake", "is_ai_intake", "automated_ai_intake")
+        ),
+        *(
+            ~normalized(key).in_(("0", "false", "no"))
+            for key in ("requires_response", "response_required", "requires_reply")
+        ),
+    )
+
+
+def needs_attention_conversation_ids(
+    db: Session,
+    *,
+    batch_size: int = _NEEDS_ATTENTION_BATCH_SIZE,
+) -> tuple[UUID, ...]:
+    """Return the exact attention cohort without hydrating the whole inbox.
+
+    A conversation needs at least two inbound messages and one valid human
+    reply before it can enter this cohort. PostgreSQL applies those selective
+    predicates first; the existing authoritative classifier then evaluates the
+    remaining rows in fixed-size batches, including ticket and social-comment
+    exclusions. ORM hydration is therefore bounded independently of inbox size.
+    """
+
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+
+    inbound_conversations = (
+        select(InboxMessage.conversation_id)
+        .where(InboxMessage.direction == InboxMessageDirection.inbound.value)
+        .group_by(InboxMessage.conversation_id)
+        .having(func.count(InboxMessage.id) >= 2)
+    )
+    replied_conversations = select(InboxMessage.conversation_id).where(
+        _valid_agent_reply_clause()
+    )
+    candidate_ids = [
+        conversation_id
+        for (conversation_id,) in db.query(InboxConversation.id)
+        .filter(InboxConversation.is_active.is_(True))
+        .filter(InboxConversation.status != InboxConversationStatus.resolved.value)
+        .filter(InboxConversation.status != InboxConversationStatus.snoozed.value)
+        .filter(InboxConversation.snoozed_until.is_(None))
+        .filter(InboxConversation.id.in_(inbound_conversations))
+        .filter(InboxConversation.id.in_(replied_conversations))
+        .order_by(InboxConversation.id.asc())
+        .all()
+    ]
+
+    matches: list[UUID] = []
+
+    def classify(ids: list[UUID]) -> None:
+        conversations = (
+            db.query(InboxConversation).filter(InboxConversation.id.in_(ids)).all()
+        )
+        messages = _messages_by_conversation(db, ids)
+        ticketed = _ticketed_conversation_ids(db, ids)
+        matches.extend(
+            conversation.id
+            for conversation in conversations
+            if response_cohort(
+                conversation,
+                messages.get(conversation.id, ()),
+                has_ticket_handoff=conversation.id in ticketed,
+            )
+            == InboxResponseCohort.needs_attention
+        )
+
+    for offset in range(0, len(candidate_ids), batch_size):
+        classify(candidate_ids[offset : offset + batch_size])
+    return tuple(matches)
+
+
 def _contact_resolution_status(conversation: InboxConversation) -> str | None:
     metadata = conversation.metadata_ or {}
     resolution = metadata.get("contact_resolution")
@@ -713,6 +808,12 @@ def list_conversations(
             else false()
         )
 
+    if needs_attention:
+        attention_ids = needs_attention_conversation_ids(db)
+        query = query.filter(
+            InboxConversation.id.in_(attention_ids) if attention_ids else false()
+        )
+
     # order_by=None (default) or "priority" keeps the urgency composite so the
     # default queue is untouched; last_message_at / created_at sort by that one
     # column with a stable id tie-breaker. Additive change.
@@ -745,13 +846,10 @@ def list_conversations(
     total = query.count()
     # `needs_response` and `contact_resolution_status` are already SQL filters
     # above, so listing them here too would load the whole filtered set before a
-    # page could be sliced — and `needs_response` is the default "Unreplied"
-    # cohort, so that is the ordinary path. Only `needs_attention` genuinely
-    # needs Python: its rule reads ordering across the message sequence and
-    # loose-typed metadata on every message, which has no faithful SQL twin.
-    # The row-level checks below stay as a safety net; they are no-ops whenever
-    # the SQL twin agrees.
-    needs_python_filter = bool(needs_attention)
+    # The Python-only attention classifier now runs on a selective candidate
+    # set in fixed-size batches before this query. Pagination remains in SQL;
+    # the row-level checks below stay as a safety net.
+    needs_python_filter = False
     rows = (
         ordered_query.all()
         if needs_python_filter

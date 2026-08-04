@@ -71,6 +71,48 @@ def _create_command(subscriber) -> invoice_draft_authoring.CreateInvoiceDraftCom
     )
 
 
+def _settle_exact_account_credit(
+    db_session,
+    subscriber,
+    *,
+    reference: str,
+) -> None:
+    intent, _preview, _replayed = AccountCreditDeposits.stage_intent(
+        db_session,
+        account_id=subscriber.id,
+        amount="100.00",
+        currency="NGN",
+        minimum="10.00",
+        maximum="500000.00",
+        reference=reference,
+        provider_type="paystack",
+        provider_id=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        idempotency_key=f"{reference}-intent",
+        channel=TopupIntentChannel.customer_selfcare,
+        created_by="pytest",
+    )
+    intent_id = intent.id
+    db_session.commit()
+    AccountCreditDeposits.settle_verified(
+        db_session,
+        SettleAccountCreditDepositCommand(
+            intent_id=intent_id,
+            provider_type="paystack",
+            external_transaction_id=f"{reference}-payment",
+            amount=Decimal("100.00"),
+            currency="NGN",
+            provider_intent_id=intent_id,
+            source=AccountCreditDepositSettlementSource.customer_gateway_verify,
+        ),
+        context=CommandContext.system(
+            actor="finance-test",
+            scope=SETTLEMENT_SCOPE,
+            reason="Create exact credit for proforma conversion regression",
+        ),
+    )
+
+
 def test_create_draft_commits_complete_aggregate_and_replays(
     db_session, subscriber
 ) -> None:
@@ -131,39 +173,10 @@ def test_proforma_conversion_retry_preserves_credit_derived_paid_status(
         is_proforma=True,
     )
     db_session.commit()
-    intent, _preview, _replayed = AccountCreditDeposits.stage_intent(
+    _settle_exact_account_credit(
         db_session,
-        account_id=subscriber.id,
-        amount="100.00",
-        currency="NGN",
-        minimum="10.00",
-        maximum="500000.00",
+        subscriber,
         reference="proforma-retry-credit",
-        provider_type="paystack",
-        provider_id=None,
-        expires_at=datetime.now(UTC) + timedelta(minutes=30),
-        idempotency_key="proforma-retry-credit-intent",
-        channel=TopupIntentChannel.customer_selfcare,
-        created_by="pytest",
-    )
-    intent_id = intent.id
-    db_session.commit()
-    AccountCreditDeposits.settle_verified(
-        db_session,
-        SettleAccountCreditDepositCommand(
-            intent_id=intent_id,
-            provider_type="paystack",
-            external_transaction_id="proforma-retry-payment",
-            amount=Decimal("100.00"),
-            currency="NGN",
-            provider_intent_id=intent_id,
-            source=AccountCreditDepositSettlementSource.customer_gateway_verify,
-        ),
-        context=CommandContext.system(
-            actor="finance-test",
-            scope=SETTLEMENT_SCOPE,
-            reason="Create exact credit for conversion retry regression",
-        ),
     )
     created = invoice_draft_authoring.create_invoice_draft(
         db_session,
@@ -202,6 +215,57 @@ def test_proforma_conversion_retry_preserves_credit_derived_paid_status(
     assert replayed.status is InvoiceStatus.paid
     assert replayed.replayed is True
     assert len(allocations) == 1
+
+
+def test_funded_prepaid_proforma_requires_reviewed_reconciliation(
+    db_session,
+    subscriber,
+) -> None:
+    subscriber.billing_mode = BillingMode.prepaid
+    proforma_command = replace(
+        _create_command(subscriber),
+        invoice_number="PF-PREPAID-FUNDED",
+        memo="[PROFORMA] Prepaid funded regression",
+        is_proforma=True,
+    )
+    db_session.commit()
+    _settle_exact_account_credit(
+        db_session,
+        subscriber,
+        reference="prepaid-proforma-funded-credit",
+    )
+    created = invoice_draft_authoring.create_invoice_draft(
+        db_session,
+        proforma_command,
+        context=_context("prepaid-proforma-funded-create"),
+    )
+
+    with pytest.raises(invoice_draft_authoring.InvoiceDraftAuthoringError) as rejected:
+        invoice_draft_authoring.convert_proforma_invoice(
+            db_session,
+            invoice_draft_authoring.ConvertProformaInvoiceCommand(
+                invoice_id=created.invoice_id,
+            ),
+            context=CommandContext.system(
+                actor="finance-test",
+                scope="invoice_proforma:convert",
+                reason="Generic conversion must fail closed for prepaid",
+                idempotency_key="prepaid-proforma-funded-convert",
+            ),
+        )
+
+    assert rejected.value.code.endswith(".prepaid_reconciliation_required")
+    invoice = db_session.get(Invoice, created.invoice_id)
+    allocations = db_session.scalars(
+        select(PaymentAllocation)
+        .where(PaymentAllocation.invoice_id == created.invoice_id)
+        .where(PaymentAllocation.is_active.is_(True))
+    ).all()
+    assert invoice is not None
+    assert invoice.status is InvoiceStatus.draft
+    assert invoice.is_proforma is True
+    assert invoice.balance_due == Decimal("100.00")
+    assert allocations == []
 
 
 def test_create_draft_omits_vat_for_exempt_customer(

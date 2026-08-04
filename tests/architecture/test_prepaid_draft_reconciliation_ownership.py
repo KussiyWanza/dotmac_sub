@@ -33,6 +33,13 @@ def test_prepaid_draft_reconciliation_has_one_contracted_owner():
     )
     assert concern.role is OwnerRole.RECONCILER
     assert concern.canonical_writer == service.name
+    adoption = next(
+        item
+        for item in service.contract.concerns
+        if item.name == "funded onboarding proforma documentary adoption"
+    )
+    assert adoption.role is OwnerRole.RECONCILER
+    assert adoption.canonical_writer == service.name
 
 
 def test_funding_change_checks_draft_before_invoice_less_renewal():
@@ -57,6 +64,9 @@ def test_reconciler_has_no_rounding_tolerance_or_raw_money_writes():
     assert "AccountCreditApplications.apply_invoice_fully(" in source
     assert "result.invoice_remaining" in source
     assert "Invoices.void_pristine_draft_for_owner(" in source
+    assert "Invoices.adopt_prepaid_proforma_document_for_owner(" in source
+    assert "invoice.is_proforma = False" not in source
+    assert "line.subscription_id =" not in source
 
 
 def test_opening_consumption_and_exception_have_one_writer_owner():
@@ -99,6 +109,10 @@ def test_reconciliation_cli_is_dry_run_first():
     assert "if args.apply:" in source
     assert "owner_command_session()" in source
     assert "read_session()" in source
+    assert 'parser.add_argument("--adopt-proforma", action="store_true")' in source
+    assert 'parser.add_argument("--subscription-id", type=_uuid)' in source
+    assert "preview_funded_prepaid_proforma_adoption(" in source
+    assert "adopt_funded_prepaid_proforma(" in source
 
 
 def test_admin_invoice_adapter_calls_only_the_authoritative_reconciler():
