@@ -124,7 +124,8 @@ authoritative documents in the same change that updates the contract.
 ## Validation
 
 Run the checks appropriate to the changed surface. Before publication, run the
-full repository-prescribed suite:
+full repository-prescribed suite from a non-deployment development host or the
+GitHub-hosted CI owner:
 
 ```bash
 poetry run ruff check app tests scripts alembic
@@ -144,6 +145,14 @@ serial execution only when isolating worker-order or shared-state failures.
 
 Also run migration and browser/mobile checks when the changed behavior reaches
 those surfaces. Report any skipped or failed check explicitly.
+
+Full-suite execution is forbidden on hosts whose `.env` identifies staging or
+production. Production runs no pytest commands. Staging may run at most ten
+explicitly named Python test files, serially, for focused diagnosis; directory
+selectors, ambiguous/default collection, and parallel workers are refused.
+When development occurs on staging, run focused pre-push checks there and
+require the full GitHub CI suite before merge. This changes the execution
+location, not the required validation gate.
 
 ### Database-test authority
 

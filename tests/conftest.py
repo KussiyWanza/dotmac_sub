@@ -1,9 +1,29 @@
 import os
+import sys
+from pathlib import Path
+
+import pytest
+
+from scripts.testing.host_test_policy import (
+    HostTestPolicyError,
+    enforce_pytest_host_policy,
+)
+
+# Refuse unsafe host/scope combinations before importing the application graph.
+# This protects direct ``pytest`` invocations that bypass the Makefile owner.
+try:
+    enforce_pytest_host_policy(
+        repo_root=Path(__file__).resolve().parents[1],
+        argv=sys.argv[1:],
+        environ=os.environ,
+    )
+except HostTestPolicyError as exc:
+    raise pytest.UsageError(str(exc)) from exc
 
 # The unit suite must never touch live infrastructure: app/config.py calls
-# load_dotenv(), which pulls the deployment .env (this host runs prod), and
-# the Redis-backed SettingsCache then reads/writes PROD's live settings keys —
-# test writes like default_offer_status="inactive" poison prod for the cache
+# load_dotenv(), which may pull a deployment .env, and the Redis-backed
+# SettingsCache could then read/write live settings keys — test writes like
+# default_offer_status="inactive" poison the deployed cache
 # TTL, and leak between test files, failing whole modules ("Offer is not
 # active"). load_dotenv() does not override pre-set env vars, so stomp them
 # before any app import. Port 9 refuses instantly, and the redis client's
@@ -48,7 +68,6 @@ install_brand_jinja_global()
 
 from typing import Any
 
-import pytest
 from geoalchemy2 import Geometry
 from geoalchemy2.admin.dialects import sqlite as geoalchemy_sqlite_admin
 from sqlalchemy import String, TypeDecorator, create_engine, event

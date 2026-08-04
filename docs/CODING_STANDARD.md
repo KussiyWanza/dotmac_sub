@@ -405,6 +405,13 @@ measured four-worker architecture-test default. Use
 confirm an ordering-sensitive diagnosis; parallel success does not replace the
 other required unit, integration, migration, security, or browser/mobile gates.
 
+Full-suite owners run only on a non-deployment development host or in
+GitHub-hosted CI. A host identified by the exact staging markers may run no
+more than ten explicitly named Python test files, serially, for diagnosis. A
+production host runs no pytest command. Unknown or conflicting deployment
+markers fail closed. The pytest and Make adapters enforce this boundary before
+application import, test collection, or integration-database preparation.
+
 A slice is complete only when the new owner is live, existing drift is
 repairable, old authority is retired, the executable registry and documentation
 match implementation, and the applicable validation suite is green.
