@@ -83,6 +83,7 @@ class InboundMessageObservation:
     in_reply_to: str | None = None
     references: str | None = None
     smtp_probe: bool = False
+    campaign_attributed: bool = False
     # Transport-authentication evidence exactly as the sending relay wrote it.
     # Ingestion is the only moment it exists — nothing can recover an SPF or
     # DKIM result for a message already accepted — so it is carried even though

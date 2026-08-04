@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -13,8 +13,10 @@ from app.schemas.ai_operations import (
     AiIntakeConfigUpsert,
 )
 from app.schemas.common import ListResponse
-from app.services import ai_operations
-from app.services.auth_dependencies import require_user_auth
+from app.services import ai_intake, ai_operations
+from app.services.auth_dependencies import require_permission, require_user_auth
+from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from app.services.response import list_response
 
 router = APIRouter(prefix="/ai-operations", tags=["ai-operations"])
@@ -69,7 +71,7 @@ def _config_read(config) -> AiIntakeConfigRead:
         fallback_team_id=config.fallback_team_id,
         instructions=config.instructions,
         department_mappings=config.department_mappings,
-        metadata=config.metadata_,
+        metadata=config.metadata,
         created_at=config.created_at,
         updated_at=config.updated_at,
     )
@@ -128,16 +130,42 @@ def acknowledge_insight(
     return _insight_read(insight)
 
 
-@router.post("/intake-configs", response_model=AiIntakeConfigRead)
+@router.post(
+    "/intake-configs",
+    response_model=AiIntakeConfigRead,
+    dependencies=[Depends(require_permission("system:settings:write"))],
+)
 def upsert_intake_config(
     payload: AiIntakeConfigUpsert,
+    auth=Depends(require_user_auth),
     db: Session = Depends(get_db),
 ):
-    config = ai_operations.upsert_intake_config_committed(db, payload)
+    actor_id = _actor_id(auth)
+    if actor_id is None:
+        raise HTTPException(status_code=403, detail="System user required")
+    try:
+        config = ai_intake.upsert_config(
+            db,
+            ai_intake.UpsertAiIntakeConfigCommand(
+                context=CommandContext.system(
+                    actor=f"user:{actor_id}",
+                    scope=ai_intake.CONFIG_SCOPE,
+                    reason="update AI intake configuration",
+                    idempotency_key=f"ai-intake-config:{payload.scope_key}",
+                ),
+                policy=payload,
+            ),
+        )
+    except DomainError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
     return _config_read(config)
 
 
-@router.get("/intake-configs", response_model=ListResponse[AiIntakeConfigRead])
+@router.get(
+    "/intake-configs",
+    response_model=ListResponse[AiIntakeConfigRead],
+    dependencies=[Depends(require_permission("system:settings:read"))],
+)
 def list_intake_configs(
     channel_type: str | None = None,
     enabled: bool | None = None,
@@ -145,7 +173,7 @@ def list_intake_configs(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    rows = ai_operations.list_intake_configs(
+    rows = ai_intake.list_configs(
         db,
         channel_type=channel_type,
         enabled=enabled,

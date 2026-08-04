@@ -10,6 +10,7 @@ Uses the Meta Graph API.
 """
 
 import asyncio
+import json
 import logging
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ logger = get_logger(__name__)
 
 _PAGE_POST_SCOPES = {"pages_manage_posts"}
 _PAGE_COMMENT_SCOPES = {"pages_read_user_content"}
+_PAGE_MESSAGE_SCOPES = {"pages_messaging"}
 _IG_MESSAGE_SCOPES = {"instagram_manage_messages"}
 _IG_COMMENT_SCOPES = {"instagram_manage_comments"}
 _IG_PUBLISH_SCOPES = {"instagram_content_publish"}
@@ -356,6 +358,43 @@ def reply_to_comment_sync(
         page_id,
         comment_id,
         result.get("id"),
+    )
+    return result
+
+
+def send_facebook_message_sync(
+    db: Session,
+    *,
+    page_id: str,
+    recipient_id: str,
+    message: str,
+) -> dict[str, Any]:
+    """Send one bounded Page Messenger text through the Meta adapter."""
+
+    token = _get_page_token_record(db, page_id)
+    if not token or not token.access_token:
+        raise ValueError(f"No active token found for Page {page_id}")
+    _ensure_token_scopes(token, _PAGE_MESSAGE_SCOPES, "facebook_messenger_reply")
+    url = f"{_get_meta_graph_base_url(db).rstrip('/')}/{page_id}/messages"
+    with httpx.Client(timeout=30.0) as client:
+        response = _request_with_retry_sync(
+            client,
+            "POST",
+            url,
+            data={
+                "recipient": json.dumps({"id": recipient_id}),
+                "message": json.dumps({"text": message}),
+                "messaging_type": "RESPONSE",
+                "access_token": token.access_token,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        result = cast(dict[str, Any], response.json())
+    logger.info(
+        "fb_messenger_reply_created page_id=%s message_id=%s",
+        page_id,
+        result.get("message_id"),
     )
     return result
 
@@ -696,6 +735,42 @@ def reply_to_instagram_comment_sync(
         ig_account_id,
         comment_id,
         result.get("id"),
+    )
+    return result
+
+
+def send_instagram_message_sync(
+    db: Session,
+    *,
+    ig_account_id: str,
+    recipient_id: str,
+    message: str,
+) -> dict[str, Any]:
+    """Send one bounded Instagram Direct text through the Meta adapter."""
+
+    token = _get_instagram_token_record(db, ig_account_id)
+    if not token or not token.access_token:
+        raise ValueError(f"No active token found for Instagram account {ig_account_id}")
+    _ensure_token_scopes(token, _IG_MESSAGE_SCOPES, "instagram_direct_reply")
+    url = f"{_get_meta_graph_base_url(db).rstrip('/')}/{ig_account_id}/messages"
+    with httpx.Client(timeout=30.0) as client:
+        response = _request_with_retry_sync(
+            client,
+            "POST",
+            url,
+            data={
+                "recipient": json.dumps({"id": recipient_id}),
+                "message": json.dumps({"text": message}),
+                "access_token": token.access_token,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        result = cast(dict[str, Any], response.json())
+    logger.info(
+        "ig_direct_reply_created account_id=%s message_id=%s",
+        ig_account_id,
+        result.get("message_id"),
     )
     return result
 

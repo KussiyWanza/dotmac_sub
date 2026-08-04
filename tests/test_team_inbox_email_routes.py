@@ -152,6 +152,43 @@ def test_ai_route_does_not_override_channel_when_disabled(db_session):
     assert decision.reason == "channel_route"
 
 
+def test_ai_route_confidence_threshold_is_not_bypassed_by_department(db_session):
+    default_team_id = _team(db_session, "Customer Experience")
+    technical_team_id = _team(db_session, "Technical Support")
+    team_inbox_commands.create_channel_route(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        service_team_id=default_team_id,
+        allow_ai_routing=True,
+    )
+    team_inbox_commands.create_ai_route(
+        db_session,
+        channel_type="any",
+        intent_key="technical_support",
+        service_team_id=technical_team_id,
+        confidence_threshold=0.95,
+    )
+
+    decision = team_inbox_routing.resolve_channel_routing_decision(
+        db_session,
+        channel_type="whatsapp",
+        provider="meta_cloud_api",
+        account_scope="phone-1",
+        metadata={
+            "ai_intake_status": "classified",
+            "ai_intent": "technical_support",
+            "ai_department": "technical_support",
+            "ai_confidence": 0.9,
+        },
+    )
+
+    assert decision.primary_service_team_id == str(default_team_id)
+    assert decision.ai_service_team_id is None
+    assert decision.reason == "channel_route"
+
+
 def test_a_duplicate_address_for_the_same_team_is_refused(db_session):
     team_id = _team(db_session, "Support")
     team_inbox_commands.create_email_route(

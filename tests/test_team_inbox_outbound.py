@@ -4,7 +4,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.api import support as support_api
-from app.models.notification import CommunicationIntentRecord, Notification
+from app.models.notification import (
+    CommunicationIntentRecord,
+    Notification,
+    NotificationChannel,
+)
 from app.models.service_team import ServiceTeam, ServiceTeamType
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.models.subscription_engine import SettingValueType
@@ -16,6 +20,7 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxTeamRole,
 )
+from app.schemas.ai_intake import GENERIC_FOLLOW_UP_QUESTION
 from app.schemas.settings import DomainSettingUpdate
 from app.schemas.team_inbox import InboxConversationReplyRequest
 from app.services import email as email_service
@@ -332,6 +337,113 @@ def test_social_comment_provider_failure_does_not_create_a_false_reply(
     assert outbound.external_message_id is None
     assert outbound.metadata_["delivery_status"] == "failed"
     assert outbound.metadata_["send_error"] == "meta_comment_provider_failed"
+
+
+def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
+    db_session, monkeypatch
+):
+    from app.services import meta_pages
+
+    calls: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        meta_pages,
+        "send_facebook_message_sync",
+        lambda _db, **kwargs: (
+            calls.append(("facebook", kwargs)) or {"message_id": "mid-facebook"}
+        ),
+    )
+    monkeypatch.setattr(
+        meta_pages,
+        "send_instagram_message_sync",
+        lambda _db, **kwargs: (
+            calls.append(("instagram", kwargs)) or {"message_id": "mid-instagram"}
+        ),
+    )
+
+    expected_channels = (
+        (
+            "facebook_messenger",
+            NotificationChannel.facebook_messenger,
+            "page-123",
+            "customer-fb",
+        ),
+        (
+            "instagram_dm",
+            NotificationChannel.instagram_dm,
+            "ig-123",
+            "customer-ig",
+        ),
+    )
+    for channel_type, _notification_channel, account_id, recipient in expected_channels:
+        conversation = InboxConversation(
+            channel_type=channel_type,
+            contact_address=recipient,
+            external_thread_id=f"{channel_type}:{recipient}",
+            status=InboxConversationStatus.open.value,
+        )
+        db_session.add(conversation)
+        db_session.flush()
+        inbound = InboxMessage(
+            conversation_id=conversation.id,
+            channel_type=channel_type,
+            direction=InboxMessageDirection.inbound.value,
+            body="Please help",
+            external_message_id=f"inbound-{recipient}",
+            metadata_={"provider_account_scope": account_id},
+        )
+        db_session.add(inbound)
+        db_session.flush()
+
+        queued = team_inbox_outbound.send_ai_intake_follow_up(
+            db_session,
+            conversation=conversation,
+            payload=team_inbox_outbound.AiIntakeFollowUpPayload(
+                question=GENERIC_FOLLOW_UP_QUESTION,
+                inbound_message_id=inbound.id,
+                config_id=uuid4(),
+                follow_up_count=1,
+            ),
+        )
+        assert queued.kind == "queued"
+        outbound_message = db_session.get(InboxMessage, queued.message_id)
+        assert outbound_message is not None
+        notification = db_session.get(Notification, outbound_message.notification_id)
+        assert notification is not None
+        assert notification.channel == _notification_channel
+
+    notification_tasks._deliver_notification_queue_stats(db_session)
+
+    assert calls == [
+        (
+            "facebook",
+            {
+                "page_id": "page-123",
+                "recipient_id": "customer-fb",
+                "message": GENERIC_FOLLOW_UP_QUESTION,
+            },
+        ),
+        (
+            "instagram",
+            {
+                "ig_account_id": "ig-123",
+                "recipient_id": "customer-ig",
+                "message": GENERIC_FOLLOW_UP_QUESTION,
+            },
+        ),
+    ]
+    outbound = (
+        db_session.query(InboxMessage)
+        .filter(InboxMessage.direction == InboxMessageDirection.outbound.value)
+        .order_by(InboxMessage.created_at.asc())
+        .all()
+    )
+    assert [message.external_message_id for message in outbound] == [
+        "mid-facebook",
+        "mid-instagram",
+    ]
+    assert all(
+        message.metadata_["delivery_status"] == "delivered" for message in outbound
+    )
 
 
 def test_instagram_comment_limit_is_checked_before_meta(db_session, monkeypatch):

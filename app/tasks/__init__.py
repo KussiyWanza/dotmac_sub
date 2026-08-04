@@ -174,6 +174,9 @@ from app.tasks.team_inbox import (
     promote_message_media_assets as promote_inbox_message_media_assets,
 )
 from app.tasks.team_inbox import (
+    recover_stale_ai_intake as recover_stale_inbox_ai_intake,
+)
+from app.tasks.team_inbox import (
     retry_failed_outbound_messages as retry_failed_inbox_outbound_messages,
 )
 from app.tasks.topology_lldp import run_lldp_topology_poll
@@ -266,6 +269,7 @@ __all__ = [
     "auto_confirm_resolved_tickets",
     "retry_failed_inbox_outbound_messages",
     "promote_inbox_message_media_assets",
+    "recover_stale_inbox_ai_intake",
     "auto_resolve_stale_inbox_conversations",
     "run_scheduled_export",
     "run_export_job",
