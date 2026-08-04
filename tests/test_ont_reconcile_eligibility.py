@@ -454,6 +454,101 @@ def test_a_reused_key_with_a_different_command_is_a_conflict(db_session):
     assert excinfo.value.code == HoldRefusal.idempotency_conflict.value
 
 
+# Every field `_replayable` compares, one case each, as (mutated spec, actor).
+# `scope` is absent on purpose: `OntReconcileScope` has a single member, so it
+# cannot vary yet -- adding a second one must add a case here.
+_ORIGINAL_ACTOR = "operator@dotmac"
+_CONFLICT_AXIS = {
+    "ont_unit_id": lambda ont, other, due: (
+        _spec(other, review_due_at=due),
+        _ORIGINAL_ACTOR,
+    ),
+    "reason_code": lambda ont, other, due: (
+        _spec(ont, review_due_at=due, reason_code="hardware_replacement"),
+        _ORIGINAL_ACTOR,
+    ),
+    "explanation": lambda ont, other, due: (
+        _spec(ont, review_due_at=due, explanation="A different justification."),
+        _ORIGINAL_ACTOR,
+    ),
+    "reviewer": lambda ont, other, due: (
+        _spec(ont, review_due_at=due, reviewer="other-lead@dotmac"),
+        _ORIGINAL_ACTOR,
+    ),
+    "actor": lambda ont, other, due: (
+        _spec(ont, review_due_at=due),
+        "different-operator@dotmac",
+    ),
+    "review_due_at": lambda ont, other, due: (
+        _spec(ont, review_due_at=due + timedelta(seconds=1)),
+        _ORIGINAL_ACTOR,
+    ),
+}
+
+
+@pytest.mark.parametrize("field", sorted(_CONFLICT_AXIS))
+def test_changing_any_compared_field_turns_a_replay_into_a_conflict(db_session, field):
+    """The conflict axis, not just the replay axis.
+
+    A replay contract is only half-proven by showing that an identical command
+    replays. Each field the owner compares must also be shown to break the
+    replay -- otherwise a reused key could silently substitute one decision for
+    another along whichever axis went untested.
+    """
+    key = f"hold-axis-{field}"
+    ont = _ont(db_session, f"HWTC-AXIS-{field}")
+    other = _ont(db_session, f"HWTC-AXIS-OTHER-{field}")
+    due = datetime.now(UTC) + timedelta(days=7)
+    # Both specs are built while the transaction is still open: the owner
+    # refuses a session that already has one, and touching `ont.id` after the
+    # commit would reopen it.
+    original = _spec(ont, review_due_at=due)
+    mutated, mutated_actor = _CONFLICT_AXIS[field](ont, other, due)
+
+    db_session.commit()
+    place_reconcile_hold(
+        db_session, spec=original, context=_ctx(key=key, actor=_ORIGINAL_ACTOR)
+    )
+    db_session.commit()
+
+    with pytest.raises(ReconcileHoldError) as excinfo:
+        place_reconcile_hold(
+            db_session, spec=mutated, context=_ctx(key=key, actor=mutated_actor)
+        )
+
+    assert excinfo.value.code == HoldRefusal.idempotency_conflict.value
+
+
+def test_an_identical_command_replays_across_separate_contexts(db_session):
+    """Replay must not depend on reusing the same context object.
+
+    The operator adapter builds a fresh `CommandContext` per invocation, so the
+    replay path has to survive equal-but-distinct contexts. Pinned because this
+    is the shape a real retry takes.
+    """
+    ont = _ont(db_session, "HWTC-REPLAY-FRESH")
+    due = datetime.now(UTC) + timedelta(days=7)
+    first_spec = _spec(ont, review_due_at=due)
+    second_spec = _spec(ont, review_due_at=due)
+    db_session.commit()
+
+    first = place_reconcile_hold(
+        db_session, spec=first_spec, context=_ctx(key="hold-fresh-ctx")
+    )
+    db_session.commit()
+    second = place_reconcile_hold(
+        db_session, spec=second_spec, context=_ctx(key="hold-fresh-ctx")
+    )
+
+    assert first.id == second.id
+    assert (
+        db_session.query(OntReconcileHold)
+        .filter(OntReconcileHold.ont_unit_id == ont.id)
+        .count()
+        == 1
+    )
+
+
 # ---------------------------------------------------------------------------
 # Point-of-use decision, serialised on OntUnit
 # ---------------------------------------------------------------------------

@@ -38,11 +38,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.network import DeviceStatus, OLTDevice, OntUnit
+from app.models.network import OntUnit
 from app.models.ont_observation import OntObservation
+from app.services.network.reconcile.candidates import restrict_to_reconcile_candidates
 from app.services.network.reconcile.readers.reachability import (
     PingFunction,
     is_pingable,
@@ -222,21 +223,15 @@ def run_sweep_once(
 
     # First pass: collect target IDs (with a short-lived session).
     with db_factory() as catalog_db:
-        stmt = select(OntUnit.id)
-        if only_active:
-            stmt = stmt.where(OntUnit.is_active.is_(True))
-        # This is the Huawei reconciler. Ownership is explicit so UISP-managed
-        # UFiber ONUs and other vendors can never enter Huawei SSH/ACS paths.
-        stmt = (
-            stmt.join(OLTDevice, OLTDevice.id == OntUnit.olt_device_id)
-            .outerjoin(OntObservation, OntObservation.ont_unit_id == OntUnit.id)
-            .where(OntUnit.uisp_device_id.is_(None))
-            .where(OLTDevice.uisp_device_id.is_(None))
-            .where(OLTDevice.is_active.is_(True))
-            .where(OLTDevice.status == DeviceStatus.active)
-            .where(func.lower(OLTDevice.vendor) == "huawei")
-            .order_by(OntObservation.last_reconciled_at.asc().nullsfirst(), OntUnit.id)
+        # Eligibility comes from the one canonical predicate; this function
+        # adds only the ordering the sweep needs (least-recently-reconciled
+        # first, never-reconciled ahead of everything).
+        stmt = restrict_to_reconcile_candidates(
+            select(OntUnit.id), only_active=only_active
         )
+        stmt = stmt.outerjoin(
+            OntObservation, OntObservation.ont_unit_id == OntUnit.id
+        ).order_by(OntObservation.last_reconciled_at.asc().nullsfirst(), OntUnit.id)
         if max_onts is not None:
             stmt = stmt.limit(max(1, int(max_onts)))
         ont_ids = [row[0] for row in catalog_db.execute(stmt).all()]

@@ -240,13 +240,17 @@ Every automatic or manual staging deployment must invoke
 `scripts/deploy_staging.sh`; operators must not call `scripts/deploy.sh`
 directly on staging. The adapter fails closed unless `.env` contains the exact
 staging host contract, then forces `SKIP_BACKUP=1` and the existing staging-only
-proxy opt-out before delegating to `scripts/deploy.sh`.
+proxy opt-out before delegating to `scripts/deploy.sh`. It also owns a fixed
+ten-minute health budget for candidate, primary, and rollback startup. Seabone
+has repeatedly needed more than three minutes to import the application under
+measured disk and swap pressure; the longer staging budget prevents a healthy
+cold start from being rolled back while preserving every health assertion.
 
 Production backup behavior remains unchanged. Production and other deployment
 targets continue to use `scripts/deploy.sh`, whose default remains to take the
-pre-migration backup. The offsite backup jobs under `scripts/backup/` are also
-unchanged. Existing staging backup files are retained until a separately
-approved retention action.
+pre-migration backup and whose health budget remains 180 seconds. The offsite
+backup jobs under `scripts/backup/` are also unchanged. Existing staging backup
+files are retained until a separately approved retention action.
 
 ## Failure behavior
 

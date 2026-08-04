@@ -149,26 +149,21 @@ def reconcile_huawei_ont(
 
 
 def _close_expired_remote_access() -> dict[str, int]:
-    from sqlalchemy import func, select
+    from sqlalchemy import select
 
-    from app.models.network import DeviceStatus, OLTDevice, OntUnit
+    from app.models.network import OntUnit
     from app.services.network.ont_desired_config import desired_config
     from app.services.network.ont_features import OntFeatureService
+    from app.services.network.reconcile.candidates import (
+        restrict_to_reconcile_candidates,
+    )
 
     stats = {"checked": 0, "closed": 0, "failed": 0}
     with db_session_adapter.session() as db:
-        onts = list(
-            db.scalars(
-                select(OntUnit)
-                .join(OLTDevice, OLTDevice.id == OntUnit.olt_device_id)
-                .where(OntUnit.is_active.is_(True))
-                .where(OntUnit.uisp_device_id.is_(None))
-                .where(OLTDevice.uisp_device_id.is_(None))
-                .where(OLTDevice.is_active.is_(True))
-                .where(OLTDevice.status == DeviceStatus.active)
-                .where(func.lower(OLTDevice.vendor) == "huawei")
-            )
-        )
+        # Same population the sweeper walks, from the same predicate: remote
+        # access is granted on devices reconciliation owns, so the two must
+        # never drift apart.
+        onts = list(db.scalars(restrict_to_reconcile_candidates(select(OntUnit))))
         now = datetime.now(UTC)
         for ont in onts:
             access = desired_config(ont).get("access") or {}
