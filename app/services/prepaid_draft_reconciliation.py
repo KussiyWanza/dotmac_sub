@@ -40,11 +40,12 @@ from app.models.billing import (
     LedgerEntry,
     LedgerEntryType,
     LedgerSource,
+    Payment,
     PaymentAllocation,
     ServiceEntitlement,
     ServiceEntitlementStatus,
 )
-from app.models.catalog import BillingMode, Subscription
+from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.idempotency import IdempotencyKey
 from app.models.prepaid_funding import (
     PrepaidDraftReconciliationException,
@@ -61,7 +62,11 @@ from app.services.billing.account_credit import (
     AccountCreditInvoiceFundingPreview,
 )
 from app.services.billing.adjustments import AccountAdjustmentOrigin
-from app.services.billing.invoices import InvoiceOwnerError, Invoices
+from app.services.billing.invoices import (
+    InvoiceOwnerError,
+    Invoices,
+    PrepaidProformaDocumentAdoption,
+)
 from app.services.billing.ledger import LedgerEntries
 from app.services.billing.payments import finalize_invoice_application_for_owner
 from app.services.common import round_money, to_decimal
@@ -86,8 +91,15 @@ _COMMAND = OwnerCommandDefinition(
     concern=_CONCERN,
     name="reconcile_prepaid_draft_invoice",
 )
+_PROFORMA_ADOPTION_COMMAND = OwnerCommandDefinition(
+    owner=_OWNER,
+    concern="funded onboarding proforma documentary adoption",
+    name="adopt_funded_prepaid_proforma",
+)
 _IDEMPOTENCY_SCOPE = "prepaid_draft_reconcile"
+_PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE = "prepaid_proforma_adoption"
 _METADATA_KEY = "prepaid_draft_reconciliation"
+_PROFORMA_ADOPTION_METADATA_KEY = "prepaid_proforma_adoption"
 _RENEWAL_ORIGIN = AccountAdjustmentOrigin.prepaid_service_renewal
 
 
@@ -105,6 +117,12 @@ class PrepaidDraftAction(StrEnum):
     settle_paid = "settle_paid"
     void_duplicate = "void_duplicate"
     none = "none"
+
+
+class PrepaidProformaAdoptionDisposition(StrEnum):
+    exact_funded_onboarding_proforma = "exact_funded_onboarding_proforma"
+    manual_review = "manual_review"
+    already_adopted = "already_adopted"
 
 
 class PrepaidDraftReconciliationError(DomainError):
@@ -182,6 +200,59 @@ class ReviewedOpeningFundingPreview:
     authoritative_funding: Decimal
     approval_evidence_ref: str | None
     approval_actor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidProformaAdoptionQuery:
+    invoice_id: UUID
+    subscription_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidProformaAdoptionPreview:
+    invoice_id: UUID
+    account_id: UUID
+    invoice_number: str | None
+    subscription_id: UUID
+    line_id: UUID | None
+    settlement_payment_id: UUID | None
+    settlement_effective_at: datetime | None
+    billing_period_start: datetime | None
+    billing_period_end: datetime | None
+    disposition: PrepaidProformaAdoptionDisposition
+    currency: str
+    invoice_total: Decimal
+    payment_backed_credit: Decimal
+    reason: str
+    fingerprint: str
+
+    @property
+    def actionable(self) -> bool:
+        return (
+            self.disposition
+            is PrepaidProformaAdoptionDisposition.exact_funded_onboarding_proforma
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AdoptFundedPrepaidProformaCommand:
+    context: CommandContext
+    invoice_id: UUID
+    subscription_id: UUID
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidProformaAdoptionResult:
+    invoice_id: UUID
+    subscription_id: UUID
+    line_id: UUID
+    settlement_payment_id: UUID
+    settlement_effective_at: datetime
+    billing_period_start: datetime
+    billing_period_end: datetime
+    preview_fingerprint: str
+    replayed: bool
 
 
 def _error(suffix: str, message: str, **details: object) -> NoReturn:
@@ -321,6 +392,383 @@ def _reviewed_opening_funding_preview(
         authoritative_funding=authoritative,
         approval_evidence_ref=baseline.batch.evidence_ref,
         approval_actor=baseline.batch.approved_by,
+    )
+
+
+def _build_proforma_adoption_preview(
+    *,
+    invoice: Invoice,
+    subscription_id: UUID,
+    disposition: PrepaidProformaAdoptionDisposition,
+    reason: str,
+    line: InvoiceLine | None = None,
+    payment: Payment | None = None,
+    period_start: datetime | None = None,
+    period_end: datetime | None = None,
+    funding: AccountCreditInvoiceFundingPreview | None = None,
+) -> PrepaidProformaAdoptionPreview:
+    payload = {
+        "invoice_id": invoice.id,
+        "account_id": invoice.account_id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_status": invoice.status.value,
+        "invoice_is_active": invoice.is_active,
+        "invoice_is_proforma": invoice.is_proforma,
+        "invoice_updated_at": invoice.updated_at,
+        "invoice_total": round_money(to_decimal(invoice.total)),
+        "invoice_balance_due": round_money(to_decimal(invoice.balance_due)),
+        "invoice_period_start": invoice.billing_period_start,
+        "invoice_period_end": invoice.billing_period_end,
+        "subscription_id": subscription_id,
+        "line_id": line.id if line is not None else None,
+        "line_subscription_id": line.subscription_id if line is not None else None,
+        "line_quantity": line.quantity if line is not None else None,
+        "line_unit_price": line.unit_price if line is not None else None,
+        "line_amount": line.amount if line is not None else None,
+        "line_updated_at": line.updated_at if line is not None else None,
+        "payment_id": payment.id if payment is not None else None,
+        "payment_paid_at": payment.paid_at if payment is not None else None,
+        "period_start": period_start,
+        "period_end": period_end,
+        "funding_fingerprint": funding.fingerprint if funding is not None else None,
+        "disposition": disposition,
+        "reason": reason,
+    }
+    return PrepaidProformaAdoptionPreview(
+        invoice_id=invoice.id,
+        account_id=invoice.account_id,
+        invoice_number=invoice.invoice_number,
+        subscription_id=subscription_id,
+        line_id=line.id if line is not None else None,
+        settlement_payment_id=payment.id if payment is not None else None,
+        settlement_effective_at=payment.paid_at if payment is not None else None,
+        billing_period_start=period_start,
+        billing_period_end=period_end,
+        disposition=disposition,
+        currency=(invoice.currency or "NGN").upper(),
+        invoice_total=round_money(to_decimal(invoice.total)),
+        payment_backed_credit=(
+            funding.payment_backed_credit if funding is not None else Decimal("0.00")
+        ),
+        reason=reason,
+        fingerprint=_hash(payload),
+    )
+
+
+def _proforma_adoption_ref(invoice_id: UUID, preview_fingerprint: str) -> str:
+    return f"{invoice_id}|{preview_fingerprint}"
+
+
+def _parse_proforma_adoption_ref(ref_id: str | None) -> tuple[UUID, str] | None:
+    if ref_id is None:
+        return None
+    invoice_raw, separator, fingerprint = ref_id.partition("|")
+    if not separator or len(fingerprint) != 64:
+        return None
+    try:
+        invoice_id = UUID(invoice_raw)
+        int(fingerprint, 16)
+    except ValueError:
+        return None
+    return invoice_id, fingerprint
+
+
+def _proforma_adoption_reservation(
+    db: Session,
+    *,
+    invoice: Invoice,
+) -> IdempotencyKey | None:
+    return db.scalar(
+        select(IdempotencyKey)
+        .where(
+            IdempotencyKey.scope == _PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE,
+            IdempotencyKey.account_id == invoice.account_id,
+            IdempotencyKey.ref_id.like(f"{invoice.id}|%"),
+        )
+        .order_by(IdempotencyKey.created_at, IdempotencyKey.id)
+        .limit(1)
+    )
+
+
+def _proforma_adoption_payment(db: Session, invoice: Invoice) -> Payment | None:
+    allocated_payment_ids = tuple(
+        db.scalars(
+            select(PaymentAllocation.payment_id)
+            .where(
+                PaymentAllocation.invoice_id == invoice.id,
+                PaymentAllocation.is_active.is_(True),
+            )
+            .distinct()
+            .order_by(PaymentAllocation.payment_id)
+        ).all()
+    )
+    if len(allocated_payment_ids) == 1:
+        return db.get(Payment, allocated_payment_ids[0])
+    if allocated_payment_ids:
+        return None
+    funding = _funding_preview(db, invoice)
+    if len(funding.source_payment_ids) != 1:
+        return None
+    return db.get(Payment, funding.source_payment_ids[0])
+
+
+def preview_funded_prepaid_proforma_adoption(
+    db: Session,
+    query: PrepaidProformaAdoptionQuery,
+) -> PrepaidProformaAdoptionPreview:
+    """Preview one exact, payment-backed onboarding proforma adoption.
+
+    This resolver does not infer a subscription or date from proximity. The
+    operator supplies the exact subscription identity; the service period is
+    derived from the sole exact native payment source and contracted cadence.
+    """
+
+    invoice = db.get(Invoice, query.invoice_id)
+    if invoice is None:
+        _error(
+            "invoice_not_found",
+            "Invoice was not found.",
+            invoice_id=str(query.invoice_id),
+        )
+    adoption_reservation = _proforma_adoption_reservation(db, invoice=invoice)
+    adoption_ref = (
+        _parse_proforma_adoption_ref(adoption_reservation.ref_id)
+        if adoption_reservation is not None
+        else None
+    )
+    if (
+        adoption_ref is not None
+        and adoption_ref[0] == invoice.id
+        and not invoice.is_proforma
+    ):
+        line = next(
+            (
+                item
+                for item in _active_positive_lines(db, invoice.id)
+                if item.subscription_id == query.subscription_id
+            ),
+            None,
+        )
+        payment = _proforma_adoption_payment(db, invoice)
+        if (
+            line is not None
+            and payment is not None
+            and payment.paid_at is not None
+            and invoice.billing_period_start is not None
+            and invoice.billing_period_end is not None
+        ):
+            return _build_proforma_adoption_preview(
+                invoice=invoice,
+                subscription_id=query.subscription_id,
+                disposition=PrepaidProformaAdoptionDisposition.already_adopted,
+                reason="invoice carries durable prepaid proforma adoption evidence",
+                line=line,
+                payment=payment,
+                period_start=invoice.billing_period_start,
+                period_end=invoice.billing_period_end,
+            )
+
+    if (
+        not invoice.is_active
+        or invoice.status is not InvoiceStatus.draft
+        or not invoice.is_proforma
+        or round_money(to_decimal(invoice.balance_due)) <= Decimal("0.00")
+        or invoice.billing_period_start is not None
+        or invoice.billing_period_end is not None
+    ):
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="invoice is not a pristine active proforma without a period",
+        )
+
+    lines = _active_positive_lines(db, invoice.id)
+    line = lines[0] if len(lines) == 1 else None
+    if line is None or line.subscription_id is not None:
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="adoption requires one exact positive unlinked proforma line",
+            line=line,
+        )
+
+    subscription = db.get(Subscription, query.subscription_id)
+    if (
+        subscription is None
+        or subscription.subscriber_id != invoice.account_id
+        or subscription.billing_mode is not BillingMode.prepaid
+        or subscription.status is not SubscriptionStatus.active
+        or subscription.next_billing_at is not None
+    ):
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason=(
+                "subscription is not the matching active, unanchored prepaid contract"
+            ),
+            line=line,
+        )
+
+    contracted_price = round_money(to_decimal(subscription.unit_price))
+    line_amount = round_money(to_decimal(line.amount))
+    invoice_subtotal = round_money(to_decimal(invoice.subtotal))
+    invoice_tax = round_money(to_decimal(invoice.tax_total))
+    invoice_total = round_money(to_decimal(invoice.total))
+    if (
+        contracted_price <= Decimal("0.00")
+        or round_money(to_decimal(line.quantity)) != Decimal("1.00")
+        or round_money(to_decimal(line.unit_price)) != contracted_price
+        or line_amount != contracted_price
+        or invoice_subtotal != line_amount
+        or invoice_tax < Decimal("0.00")
+        or round_money(invoice_subtotal + invoice_tax) != invoice_total
+        or round_money(to_decimal(invoice.balance_due)) != invoice_total
+    ):
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="proforma charge does not exactly match the contracted base charge",
+            line=line,
+        )
+
+    has_financial_activity = (
+        db.scalar(
+            select(PaymentAllocation.id)
+            .where(PaymentAllocation.invoice_id == invoice.id)
+            .limit(1)
+        )
+        is not None
+        or db.scalar(
+            select(CreditNoteApplication.id)
+            .where(CreditNoteApplication.invoice_id == invoice.id)
+            .limit(1)
+        )
+        is not None
+        or db.scalar(
+            select(LedgerEntry.id).where(LedgerEntry.invoice_id == invoice.id).limit(1)
+        )
+        is not None
+    )
+    has_coverage = (
+        db.scalar(
+            select(ServiceEntitlement.id)
+            .where(
+                ServiceEntitlement.subscription_id == subscription.id,
+                ServiceEntitlement.status == ServiceEntitlementStatus.active,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    has_other_draft = (
+        db.scalar(
+            select(Invoice.id)
+            .join(InvoiceLine, InvoiceLine.invoice_id == Invoice.id)
+            .where(
+                Invoice.id != invoice.id,
+                Invoice.account_id == invoice.account_id,
+                Invoice.is_active.is_(True),
+                Invoice.status == InvoiceStatus.draft,
+                Invoice.is_proforma.is_(False),
+                Invoice.balance_due > Decimal("0.00"),
+                InvoiceLine.subscription_id == subscription.id,
+                InvoiceLine.is_active.is_(True),
+                InvoiceLine.amount > Decimal("0.00"),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    if has_financial_activity or has_coverage or has_other_draft:
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="existing financial, coverage, or draft evidence blocks adoption",
+            line=line,
+        )
+
+    funding = _funding_preview(db, invoice)
+    opening = _reviewed_opening_funding_preview(
+        db,
+        invoice=invoice,
+        payment_funding=funding,
+    )
+    if (
+        not funding.fully_funded
+        or funding.payment_backed_credit != invoice_total
+        or funding.spendable_credit != invoice_total
+        or funding.unbacked_credit != Decimal("0.00")
+        or len(funding.source_payment_ids) != 1
+        or opening.authoritative_funding < invoice_total
+    ):
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="adoption requires one exact native payment-backed funding source",
+            line=line,
+            funding=funding,
+        )
+    payment = db.get(Payment, funding.source_payment_ids[0])
+    if payment is None or payment.paid_at is None:
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="exact payment source has no authoritative settlement timestamp",
+            line=line,
+            funding=funding,
+        )
+
+    cycle = (
+        subscription.billing_cycle
+        or (
+            subscription.offer_version.billing_cycle
+            if subscription.offer_version is not None
+            else None
+        )
+        or (
+            subscription.offer.billing_cycle if subscription.offer is not None else None
+        )
+    )
+    if cycle is None:
+        return _build_proforma_adoption_preview(
+            invoice=invoice,
+            subscription_id=query.subscription_id,
+            disposition=PrepaidProformaAdoptionDisposition.manual_review,
+            reason="subscription has no authoritative billing cadence",
+            line=line,
+            payment=payment,
+            funding=funding,
+        )
+    from app.services.prepaid_service_renewals import (
+        PrepaidSettlementPeriodQuery,
+        resolve_prepaid_settlement_period,
+    )
+
+    period = resolve_prepaid_settlement_period(
+        PrepaidSettlementPeriodQuery(
+            effective_at=payment.paid_at,
+            billing_cycle=cycle,
+        )
+    )
+    return _build_proforma_adoption_preview(
+        invoice=invoice,
+        subscription_id=query.subscription_id,
+        disposition=(
+            PrepaidProformaAdoptionDisposition.exact_funded_onboarding_proforma
+        ),
+        reason=("one exact payment funds the matching unanchored prepaid contract"),
+        line=line,
+        payment=payment,
+        period_start=period.starts_at,
+        period_end=period.ends_at,
+        funding=funding,
     )
 
 
@@ -1305,6 +1753,251 @@ def _replay_result(
     )
 
 
+def _replay_proforma_adoption_result(
+    db: Session,
+    *,
+    command: AdoptFundedPrepaidProformaCommand,
+    reservation: IdempotencyKey,
+) -> PrepaidProformaAdoptionResult:
+    parsed_ref = _parse_proforma_adoption_ref(reservation.ref_id)
+    if parsed_ref is None or parsed_ref[0] != command.invoice_id:
+        _error(
+            "idempotency_conflict",
+            "Idempotency key belongs to another invoice.",
+        )
+    _invoice_id, preview_fingerprint = parsed_ref
+    invoice = db.get(Invoice, command.invoice_id, populate_existing=True)
+    if invoice is None:
+        _error(
+            "idempotency_conflict",
+            "Proforma adoption evidence is incomplete.",
+        )
+    matching_lines = tuple(
+        line
+        for line in _active_positive_lines(db, invoice.id)
+        if command.subscription_id == line.subscription_id
+    )
+    payment = _proforma_adoption_payment(db, invoice)
+    if (
+        len(matching_lines) != 1
+        or payment is None
+        or payment.paid_at is None
+        or invoice.billing_period_start is None
+        or invoice.billing_period_end is None
+    ):
+        _error(
+            "idempotency_conflict",
+            "Proforma adoption structural evidence is incomplete.",
+        )
+    line = matching_lines[0]
+    return PrepaidProformaAdoptionResult(
+        invoice_id=invoice.id,
+        subscription_id=command.subscription_id,
+        line_id=line.id,
+        settlement_payment_id=payment.id,
+        settlement_effective_at=_utc(payment.paid_at),
+        billing_period_start=_utc(invoice.billing_period_start),
+        billing_period_end=_utc(invoice.billing_period_end),
+        preview_fingerprint=preview_fingerprint,
+        replayed=True,
+    )
+
+
+def adopt_funded_prepaid_proforma(
+    db: Session,
+    command: AdoptFundedPrepaidProformaCommand,
+) -> PrepaidProformaAdoptionResult:
+    """Adopt one reviewed onboarding proforma as a financial prepaid draft."""
+
+    def operation() -> PrepaidProformaAdoptionResult:
+        key = (command.context.idempotency_key or "").strip()
+        if not key or len(key) > 120:
+            _error(
+                "missing_idempotency_key",
+                "A bounded idempotency key is required.",
+            )
+        invoice = db.get(Invoice, command.invoice_id)
+        if invoice is None:
+            _error("invoice_not_found", "Invoice was not found.")
+        lock_account(db, str(invoice.account_id))
+        reservation = db.scalar(
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.scope == _PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE,
+                IdempotencyKey.key == key,
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            return _replay_proforma_adoption_result(
+                db,
+                command=command,
+                reservation=reservation,
+            )
+
+        locked_invoice = lock_for_update(db, Invoice, str(command.invoice_id))
+        locked_subscription = lock_for_update(
+            db,
+            Subscription,
+            str(command.subscription_id),
+        )
+        if locked_invoice is None:
+            _error("invoice_not_found", "Invoice was not found.")
+        if locked_subscription is None:
+            _error(
+                "not_actionable",
+                "Subscription was not found for reviewed proforma adoption.",
+            )
+        current = preview_funded_prepaid_proforma_adoption(
+            db,
+            PrepaidProformaAdoptionQuery(
+                invoice_id=command.invoice_id,
+                subscription_id=command.subscription_id,
+            ),
+        )
+        if current.fingerprint != command.preview_fingerprint:
+            _error(
+                "stale_preview",
+                "Proforma evidence changed after preview; preview again.",
+            )
+        if not current.actionable:
+            _error(
+                "not_actionable",
+                "This proforma requires manual evidence review.",
+                disposition=current.disposition.value,
+                reason=current.reason,
+            )
+        if (
+            current.line_id is None
+            or current.settlement_payment_id is None
+            or current.settlement_effective_at is None
+            or current.billing_period_start is None
+            or current.billing_period_end is None
+        ):
+            _error(
+                "not_actionable",
+                "Actionable proforma preview lacks exact documentary evidence.",
+            )
+
+        reservation = IdempotencyKey(
+            scope=_PROFORMA_ADOPTION_IDEMPOTENCY_SCOPE,
+            key=key,
+            account_id=current.account_id,
+            ref_id=_proforma_adoption_ref(
+                current.invoice_id,
+                current.fingerprint,
+            ),
+        )
+        db.add(reservation)
+        try:
+            db.flush()
+        except IntegrityError:
+            _error(
+                "idempotency_conflict",
+                "Idempotency key was concurrently reserved by another command.",
+            )
+
+        offer_name = (
+            locked_subscription.offer.name
+            if locked_subscription.offer is not None
+            else "Prepaid service"
+        )
+        try:
+            changed_invoice = Invoices.adopt_prepaid_proforma_document_for_owner(
+                db,
+                PrepaidProformaDocumentAdoption(
+                    invoice_id=current.invoice_id,
+                    line_id=current.line_id,
+                    subscription_id=current.subscription_id,
+                    billing_period_start=current.billing_period_start,
+                    billing_period_end=current.billing_period_end,
+                    line_description=f"{offer_name} prepaid service",
+                    adoption_evidence_ref=(f"{_OWNER}:{current.fingerprint}"),
+                ),
+            )
+        except InvoiceOwnerError as exc:
+            _error(
+                "participant_rejected",
+                "Invoice owner rejected the reviewed proforma adoption.",
+                participant_error=exc.code,
+            )
+
+        metadata = dict(changed_invoice.metadata_ or {})
+        metadata[_PROFORMA_ADOPTION_METADATA_KEY] = {
+            "subscription_id": str(current.subscription_id),
+            "line_id": str(current.line_id),
+            "settlement_payment_id": str(current.settlement_payment_id),
+            "settlement_effective_at": current.settlement_effective_at.isoformat(),
+            "billing_period_start": current.billing_period_start.isoformat(),
+            "billing_period_end": current.billing_period_end.isoformat(),
+            "preview_fingerprint": current.fingerprint,
+            "idempotency_key": key,
+            "command_id": str(command.context.command_id),
+            "adopted_at": datetime.now(UTC).isoformat(),
+        }
+        changed_invoice.metadata_ = metadata
+        AuditEvents.stage(
+            db,
+            AuditEventCreate(
+                action="adopt_funded_prepaid_proforma",
+                entity_type="invoice",
+                entity_id=str(changed_invoice.id),
+                metadata_={
+                    "subscription_id": str(current.subscription_id),
+                    "line_id": str(current.line_id),
+                    "settlement_payment_id": str(current.settlement_payment_id),
+                    "settlement_effective_at": (
+                        current.settlement_effective_at.isoformat()
+                    ),
+                    "billing_period_start": current.billing_period_start.isoformat(),
+                    "billing_period_end": current.billing_period_end.isoformat(),
+                    "preview_fingerprint": current.fingerprint,
+                    "financial_effect": "documentary_identity_only",
+                },
+            ),
+        )
+        emit_event(
+            db,
+            EventType.prepaid_proforma_adopted,
+            {
+                "invoice_id": str(changed_invoice.id),
+                "invoice_number": changed_invoice.invoice_number,
+                "subscription_id": str(current.subscription_id),
+                "line_id": str(current.line_id),
+                "settlement_payment_id": str(current.settlement_payment_id),
+                "settlement_effective_at": (
+                    current.settlement_effective_at.isoformat()
+                ),
+                "billing_period_start": current.billing_period_start.isoformat(),
+                "billing_period_end": current.billing_period_end.isoformat(),
+                "currency": current.currency,
+                "invoice_total": str(current.invoice_total),
+                "preview_fingerprint": current.fingerprint,
+            },
+            account_id=changed_invoice.account_id,
+            invoice_id=changed_invoice.id,
+        )
+        db.flush()
+        return PrepaidProformaAdoptionResult(
+            invoice_id=changed_invoice.id,
+            subscription_id=current.subscription_id,
+            line_id=current.line_id,
+            settlement_payment_id=current.settlement_payment_id,
+            settlement_effective_at=current.settlement_effective_at,
+            billing_period_start=current.billing_period_start,
+            billing_period_end=current.billing_period_end,
+            preview_fingerprint=current.fingerprint,
+            replayed=False,
+        )
+
+    return execute_owner_command(
+        db,
+        definition=_PROFORMA_ADOPTION_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
 def reconcile_prepaid_draft_invoice(
     db: Session,
     command: ReconcilePrepaidDraftCommand,
@@ -1469,15 +2162,22 @@ def stage_prepaid_draft_after_funding_change(
 
 
 __all__ = [
+    "AdoptFundedPrepaidProformaCommand",
     "FundingChangeDraftResult",
     "PrepaidDraftAction",
     "PrepaidDraftDisposition",
     "PrepaidDraftReconciliationError",
     "PrepaidDraftReconciliationPreview",
     "PrepaidDraftReconciliationResult",
+    "PrepaidProformaAdoptionDisposition",
+    "PrepaidProformaAdoptionPreview",
+    "PrepaidProformaAdoptionQuery",
+    "PrepaidProformaAdoptionResult",
     "ReconcilePrepaidDraftCommand",
+    "adopt_funded_prepaid_proforma",
     "preview_prepaid_draft_cohort",
     "preview_prepaid_draft_reconciliation",
+    "preview_funded_prepaid_proforma_adoption",
     "reconcile_prepaid_draft_invoice",
     "stage_prepaid_draft_after_funding_change",
 ]

@@ -82,7 +82,16 @@
                 </select>
             </div>
             <div class="flex gap-2 xl:col-span-1">
-                <button type="submit" class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700">
+                <button type="submit"
+                        id="ticket-filter-apply"
+                        aria-label="Apply ticket filters"
+                        hx-get="/admin/support/tickets"
+                        hx-include="#ticket-filter-form"
+                        hx-target="#ticket-list"
+                        hx-swap="innerHTML"
+                        hx-push-url="true"
+                        hx-sync="#ticket-filter-form:replace"
+                        class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-primary-700">
                     {{ icon_filter('h-4 w-4') }}
                     <span class="hidden xl:inline">Apply</span>
                 </button>

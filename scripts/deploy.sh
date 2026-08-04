@@ -35,8 +35,8 @@
 # upgrade heads` still leaves the schema half-applied.
 #
 # Procedure:
-#   verify image on GHCR -> DB backup -> pull -> verify OCI revision ->
-#   pin APP_IMAGE + GIT_SHA in .env ->
+#   pull image from GHCR -> verify OCI revision + exact GitHub CI evidence ->
+#   DB backup -> pin APP_IMAGE + GIT_SHA in .env ->
 #   migrate + verify -> warm candidate -> recreate app+workers ->
 #   web + background-runtime health gates.
 #
@@ -63,6 +63,8 @@ env_value() {
 
 IMAGE_REPO="ghcr.io/michaelayoade/dotmac_sub"
 APP_CONTAINER="dotmac_sub_app"
+GITHUB_RELEASE_REPOSITORY="michaelayoade/dotmac_sub"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 # Host-specific, so resolve shell env > .env > default. The default assumes the
 # app publishes on loopback; staging binds its port to a host-internal address
 # instead, and a wrong default here fails the gate rather than passing it.
@@ -452,6 +454,31 @@ PREV_IMAGE_PRESENT="$(grep -q '^APP_IMAGE=' .env && printf 1 || printf 0)"
 PREV_GIT_SHA="$(pinned_git_sha)"
 PREV_GIT_SHA_PRESENT="$(grep -q '^GIT_SHA=' .env && printf 1 || printf 0)"
 
+# The deployment environment determines the only branch whose GitHub-owned
+# decision can authorize this host. An operator cannot point production at a
+# green dev-only build, and an ambiguous host fails before any external query
+# or database backup.
+case "$(env_value APP_ENV):$(env_value SERVER_NAME)" in
+  production:dotmac-sub-prod)
+    GITHUB_RELEASE_BRANCH="main"
+    ;;
+  staging:dotmac-sub-staging)
+    GITHUB_RELEASE_BRANCH="dev"
+    ;;
+  *)
+    echo "GITHUB RELEASE GATE REJECTED: APP_ENV and SERVER_NAME do not identify an approved deployment host." >&2
+    exit 1
+    ;;
+esac
+
+# A public repository needs no token. Private/restricted installations inject
+# a read-only token through the process environment or the host's untracked
+# .env. Never echo it or place it on the command line.
+if [[ -z "${GITHUB_DEPLOY_GATE_TOKEN:-}" ]]; then
+  GITHUB_DEPLOY_GATE_TOKEN="$(env_value GITHUB_DEPLOY_GATE_TOKEN)"
+fi
+export GITHUB_DEPLOY_GATE_TOKEN
+
 if [[ "${IMAGE}" == "${PREV_IMAGE}" ]]; then
   log "Image ${IMAGE} is already pinned — re-running deploy steps idempotently."
 fi
@@ -476,6 +503,31 @@ log "Services this deploy will recreate: ${APP_SERVICES[*]}"
 
 log "Verifying image exists on registry"
 docker manifest inspect "${IMAGE}" >/dev/null
+
+# Pulling changes only the host's local image cache. The release SHA must be
+# known and accepted by GitHub before the backup or any database/application
+# mutation begins.
+log "Pulling image"
+docker pull "${IMAGE}"
+
+log "Verifying image release metadata"
+if ! FULL_SHA="$(image_revision "${IMAGE}")"; then
+  echo "IMAGE INTEGRITY FAILURE: could not inspect ${IMAGE}." >&2
+  exit 1
+fi
+if ! validate_image_revision "${IMAGE}" "${TAG}" "${FULL_SHA}"; then
+  exit 1
+fi
+
+if ! command -v "${PYTHON_BIN}" >/dev/null; then
+  echo "GITHUB RELEASE GATE REJECTED: ${PYTHON_BIN} is unavailable on the deployment host." >&2
+  exit 1
+fi
+log "Verifying exact ${GITHUB_RELEASE_BRANCH} revision passed GitHub-hosted CI"
+"${PYTHON_BIN}" "${REPO_DIR}/scripts/verify_github_release.py" \
+  --repository "${GITHUB_RELEASE_REPOSITORY}" \
+  --revision "${FULL_SHA}" \
+  --branch "${GITHUB_RELEASE_BRANCH}"
 
 # If this script is killed mid-backup -- an SSH session dropping is enough --
 # the pg_dump it started does NOT die with it. It keeps running, and the next
@@ -526,18 +578,6 @@ trap 'restore_prev; echo "Deploy FAILED — APP_IMAGE/GIT_SHA restored to the pr
 # too -- not just terminate the backup child. (Migrations are NOT reverted; new
 # revisions must stay backward-compatible with the previous release.)
 trap 'cleanup_children; restore_prev; echo "Deploy interrupted — previous release restored" >&2; exit 130' INT TERM HUP
-
-log "Pulling image"
-docker pull "${IMAGE}"
-
-log "Verifying image release metadata"
-if ! FULL_SHA="$(image_revision "${IMAGE}")"; then
-  echo "IMAGE INTEGRITY FAILURE: could not inspect ${IMAGE}." >&2
-  exit 1
-fi
-if ! validate_image_revision "${IMAGE}" "${TAG}" "${FULL_SHA}"; then
-  exit 1
-fi
 
 log "Verifying pre-migration service-extension identity state"
 APP_IMAGE="${IMAGE}" GIT_SHA="${FULL_SHA}" \

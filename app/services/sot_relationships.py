@@ -6985,8 +6985,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.invoice_draft_authoring",
                 module="app.services.invoice_draft_authoring",
-                owns=("administrative invoice draft authoring coordination",),
+                owns=(
+                    "administrative invoice draft authoring coordination",
+                    "administrative proforma conversion coordination",
+                ),
                 depends_on=(
+                    "control.settings_spec",
                     "customer.accounts",
                     "financial.invoices",
                     "financial.tax_configuration",
@@ -6997,8 +7001,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "complete draft invoice aggregate. It admits a typed header and "
                     "line set, locks the account before the invoice, and commits the "
                     "document, totals, audit, idempotency evidence, and outbox event "
-                    "once. Issue, void, write-off, settlement, and repair remain with "
-                    "their named financial owners."
+                    "once. It also owns locked, idempotent administrative proforma "
+                    "conversion and derives the final status only after canonical "
+                    "account credit is applied. Generic conversion fails closed for "
+                    "prepaid accounts or prepaid-linked lines so that the reviewed "
+                    "prepaid reconciliation owner retains documentary adoption, "
+                    "settlement, entitlement, and billing-anchor decisions. Void, "
+                    "write-off, settlement, and repair remain with their named "
+                    "financial owners."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -7012,6 +7022,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical invoice tax rates",
                             ),
                         ),
+                        ConcernContract(
+                            name="administrative proforma conversion coordination",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated administrative proforma conversion command",
+                                "canonical customer account",
+                                "canonical invoice draft aggregate",
+                                "canonical invoice numbering policy",
+                            ),
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -7021,6 +7041,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "typed header, complete line set, actor, scope, "
                                 "reason, correlation, and idempotency context"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name=(
+                                "authenticated administrative proforma conversion command"
+                            ),
+                            owner="financial.invoice_draft_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed invoice identity plus actor, scope, reason, "
+                                "correlation, and idempotency context"
                             ),
                         ),
                         AuthorityInput(
@@ -7044,25 +7075,34 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="referenced TaxRate rows",
                         ),
+                        AuthorityInput(
+                            name="canonical invoice numbering policy",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="billing invoice number settings and sequence",
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
-                            "Create or update enters execute_owner_command once on a "
-                            "transaction-free session; header, active lines, totals, "
-                            "idempotency reservation, audit, and outbox event commit or "
-                            "roll back together."
+                            "Create, update, or convert enters execute_owner_command "
+                            "once on a transaction-free session; header, active lines, "
+                            "totals or credit allocation, idempotency reservation, "
+                            "audit, and outbox event commit or roll back together."
                         ),
                         locking=(
                             "The customer account is locked first, followed by the "
                             "invoice and its active lines. New drafts reserve the "
-                            "account-scoped idempotency result in the same transaction."
+                            "account-scoped idempotency result in the same transaction. "
+                            "Conversion uses the same account-then-invoice order before "
+                            "deriving its final status from current allocation evidence."
                         ),
                         idempotency=(
                             "Create hashes the caller key and replays the same invoice "
                             "identifier. Update replaces the complete desired draft "
                             "state under locks, so an identical retry converges without "
-                            "duplicating lines."
+                            "duplicating lines. Conversion durably binds its deterministic "
+                            "key to one invoice and replays without another transition."
                         ),
                         retries=(
                             "Adapters retry only the whole command after rollback. "
@@ -7083,6 +7123,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.invoice_draft_authoring.invoice_not_found",
                             "financial.invoice_draft_authoring.account_mismatch",
                             "financial.invoice_draft_authoring.invoice_not_editable",
+                            "financial.invoice_draft_authoring.invoice_not_proforma",
+                            "financial.invoice_draft_authoring.prepaid_reconciliation_required",
+                            "financial.invoice_draft_authoring.conversion_rejected",
                             "financial.invoice_draft_authoring.currency_mismatch",
                             "financial.invoice_draft_authoring.invalid_command_context",
                             "financial.invoice_draft_authoring.command_contract_violation",
@@ -7096,11 +7139,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "missing account, tax rate, or line evidence",
                             "empty draft or duplicate invoice number",
                             "non-draft, cross-account, or changed-currency update",
+                            "non-proforma or concurrently changed conversion target",
+                            "prepaid account or prepaid-linked proforma conversion",
                             "active caller transaction or manifest mismatch",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("invoice_created",),
+                        event_types=("invoice_created", "invoice_sent"),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -7108,30 +7153,34 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "amount, due-date, currency, and proforma evidence."
                         ),
                         replay=(
-                            "Draft-created events rebuild projections and audit views; "
-                            "notification policy suppresses customer delivery until "
-                            "explicit issue or send."
+                            "Draft-created and conversion events rebuild projections "
+                            "and audit views; notification policy suppresses customer "
+                            "delivery until explicit issue or send."
                         ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.COMPLETE,
                         old_owner=(
                             "administrative web form header commit followed by "
-                            "independent invoice-line commits"
+                            "independent invoice-line commits, plus unlocked web "
+                            "proforma conversion from a stale invoice snapshot"
                         ),
                         new_owner="financial.invoice_draft_authoring",
                         verification=(
-                            "Atomic rollback, create replay, draft-only update, "
-                            "proforma, event payload, adapter, manifest, and "
-                            "architecture tests."
+                            "Atomic rollback, create and conversion replay, concurrent "
+                            "payment/conversion status preservation, draft-only update, "
+                            "proforma, event payload, adapter, manifest, and architecture "
+                            "tests."
                         ),
                         cutover_gate=(
-                            "Administrative create and edit adapters invoke only the "
-                            "typed owner command on a transaction-free session."
+                            "Administrative create, edit, and proforma conversion "
+                            "adapters invoke only the typed owner command on a "
+                            "transaction-free session."
                         ),
                         fallback_retirement=(
                             "The web adapter no longer commits invoice headers or "
-                            "iterates independent line create/update/delete writers."
+                            "iterates independent line create/update/delete writers, "
+                            "and no longer converts from an unlocked stale snapshot."
                         ),
                     ),
                     steward="finance operations",
@@ -7142,6 +7191,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_invoice_draft_authoring.py",
                         "tests/test_web_billing_invoice_forms.py",
+                        "tests/integration/test_proforma_conversion_concurrency.py",
                         "tests/architecture/test_invoice_draft_authoring_ownership.py",
                     ),
                 ),
@@ -10353,6 +10403,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 name="financial.prepaid_draft_reconciliation",
                 module="app.services.prepaid_draft_reconciliation",
                 owns=(
+                    "funded onboarding proforma documentary adoption",
                     "stranded prepaid draft classification",
                     "stranded prepaid draft invoice reconciliation",
                     "reviewed opening funding invoice consumption",
@@ -10387,10 +10438,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "to this owner; it does not maintain a second settlement path. "
                     "Every existing draft blocks the parallel invoice-less renewal "
                     "path, and generic Restore cannot bypass an unresolved prepaid "
-                    "financial lock."
+                    "financial lock. A separate dry-run-first adoption concern can "
+                    "restore the documentary identity of one pristine onboarding "
+                    "proforma only when an operator names the matching active, "
+                    "unanchored prepaid subscription, its contracted base charge "
+                    "matches exactly, one native payment funds the full gross "
+                    "document, and the reviewed funding baseline is available. The "
+                    "sole payment timestamp and contracted cadence resolve the WAT "
+                    "service period; adoption has no economic effect and hands the "
+                    "resulting financial draft back to the ordinary reconciler."
                 ),
                 contract=ServiceContract(
                     concerns=(
+                        ConcernContract(
+                            name="funded onboarding proforma documentary adoption",
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "reviewed reconciliation command",
+                                "canonical funded onboarding proforma",
+                                "canonical prepaid subscription contract",
+                                "canonical payment-backed account credit",
+                                "reviewed opening funding",
+                                "canonical settlement business calendar",
+                                "invoice and payment participant protocols",
+                            ),
+                            canonical_writer="financial.prepaid_draft_reconciliation",
+                        ),
                         ConcernContract(
                             name="stranded prepaid draft classification",
                             role=OwnerRole.RESOLVER,
@@ -10462,6 +10535,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical funded onboarding proforma",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked pristine active proforma, one positive "
+                                "unlinked line, currency, exact subtotal, tax, gross "
+                                "balance, and absence of financial activity"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical prepaid subscription contract",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "operator-named matching account subscription, active "
+                                "prepaid state, frozen unit price, contracted cadence, "
+                                "unanchored billing state, and absence of coverage"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="canonical payment-backed account credit",
                             owner="financial.account_credit_applications",
                             kind=AuthorityKind.DERIVED_PROJECTION,
@@ -10503,6 +10596,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical settlement business calendar",
+                            owner="financial.prepaid_service_renewals",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "sole exact source payment paid-at instant resolved "
+                                "through the contracted cadence in Africa/Lagos"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="invoice and payment participant protocols",
                             owner="financial.invoices",
                             kind=AuthorityKind.CONTROL_INPUT,
@@ -10522,18 +10624,25 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "opening-funding consumption and structural ledger link, "
                             "entitlement, billing anchor, access restoration, audit, "
                             "event, exception resolution, and idempotency evidence "
-                            "together. The funding-change caller uses the same "
-                            "flush-only classifier inside its existing transaction."
+                            "together. The proforma-adoption command is a separate "
+                            "owner root that commits only documentary identity, audit, "
+                            "event, and idempotency evidence; it posts no money and "
+                            "creates no entitlement. Its resulting valid prepaid draft "
+                            "then enters the existing reviewed settlement command. The "
+                            "funding-change caller uses the same flush-only classifier "
+                            "inside its existing transaction."
                         ),
                         locking=(
-                            "Lock account first, then invoice, eligible payment and "
+                            "Lock account first, then invoice, subscription when "
+                            "adopting a proforma, eligible payment and "
                             "settlement records, and the opening-funding baseline; "
                             "re-read consumption, entitlement, adjustment, and "
                             "allocation evidence before writing. A multiple-draft "
                             "account is not automatically repaired."
                         ),
                         idempotency=(
-                            "A caller-supplied key is reserved per invoice; invoice "
+                            "A caller-supplied key is reserved per invoice and concern; "
+                            "invoice "
                             "metadata, one-per-invoice opening-consumption uniqueness, "
                             "and participant idempotency keys replay the same paid or "
                             "void result and reject changed evidence."
@@ -10574,19 +10683,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "opening-position boundary, or any unbacked account "
                             "credit when no active baseline exists",
                             "multiple drafts or positive lines",
+                            "a proforma with a period, linked or multiple lines, "
+                            "contract mismatch, existing coverage, multiple payment "
+                            "sources, missing payment timestamp, or anchored subscription",
                             "partial or ambiguous entitlement overlap",
                             "stale preview, changed payment capacity, participant "
                             "remainder mismatch, or already consumed opening funding",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("prepaid_draft.reconciled",),
+                        event_types=(
+                            "prepaid_proforma.adopted",
+                            "prepaid_draft.reconciled",
+                        ),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Additive payload fields are permitted; invoice, action, "
-                            "source disposition, final status, amount, currency, and "
-                            "preview fingerprint retain their meaning."
+                            "Additive payload fields are permitted. Adoption retains "
+                            "invoice, subscription, sole payment, period, currency, "
+                            "amount, and preview identity; settlement retains invoice, "
+                            "action, source disposition, final status, amount, "
+                            "currency, and preview fingerprint meaning."
                         ),
                         replay=(
                             "The event records the committed reconciliation outcome. "
@@ -10595,6 +10712,32 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     projections=(
+                        ProjectionContract(
+                            name="funded onboarding proforma documentary adoption",
+                            input_names=(
+                                "canonical funded onboarding proforma",
+                                "canonical prepaid subscription contract",
+                                "canonical payment-backed account credit",
+                                "reviewed opening funding",
+                                "canonical settlement business calendar",
+                            ),
+                            writer="financial.prepaid_draft_reconciliation",
+                            freshness="computed from the current database snapshot",
+                            stale_behavior=(
+                                "Confirmation rejects a changed fingerprint and "
+                                "requires a fresh preview."
+                            ),
+                            drift_signal=(
+                                "An exact funded onboarding proforma remains "
+                                "classified but unadopted, or an adopted financial "
+                                "draft remains unreconciled."
+                            ),
+                            rebuild_operation=(
+                                "preview_funded_prepaid_proforma_adoption reclassifies "
+                                "one operator-named invoice and subscription pair."
+                            ),
+                            repair_owner="financial.prepaid_draft_reconciliation",
+                        ),
                         ProjectionContract(
                             name="stranded prepaid draft classification",
                             input_names=(
@@ -10632,7 +10775,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner="financial.prepaid_draft_reconciliation",
                         verification=(
-                            "Exact fee-inclusive mixed funding, partial funding, exact "
+                            "Exact funded onboarding proforma adoption, contract and "
+                            "baseline mismatch rejection, replay, documentary-only "
+                            "intermediate state, subsequent draft settlement, exact "
+                            "fee-inclusive mixed funding, partial funding, exact "
                             "nonzero shortfall, pre-boundary residue absorption, post-boundary "
                             "unbacked or reversed payment evidence, "
                             "direct-renewal overlap, multiple drafts, stale preview, "

@@ -124,6 +124,30 @@ class InvoiceLifecycleTransitionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProformaConversionInput:
+    """Locked documentary values for one proforma-to-invoice transition."""
+
+    invoice_id: UUID
+    invoice_number: str | None
+    memo: str | None
+    issued_at: datetime
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidProformaDocumentAdoption:
+    """Exact documentary identity approved by the prepaid reconciler."""
+
+    invoice_id: UUID
+    line_id: UUID
+    subscription_id: UUID
+    billing_period_start: datetime
+    billing_period_end: datetime
+    line_description: str
+    adoption_evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class DraftInvoiceLineReplacement:
     """One line in a complete admin-draft replacement request."""
 
@@ -1553,6 +1577,131 @@ class Invoices(ListResponseMixin):
             changed=True,
             event_emitted=announce,
         )
+
+    @staticmethod
+    def convert_proforma_for_owner(
+        db: Session,
+        conversion: ProformaConversionInput,
+    ) -> InvoiceLifecycleTransitionResult:
+        """Convert one locked proforma inside its coordinator transaction."""
+
+        invoice = lock_for_update(db, Invoice, conversion.invoice_id)
+        if invoice is None or not invoice.is_active:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_not_found",
+                message="Proforma invoice was not found.",
+                details={"invoice_id": str(conversion.invoice_id)},
+            )
+        if invoice.status != InvoiceStatus.draft:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_not_draft",
+                message="Only a draft proforma can be converted.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "status": invoice.status.value,
+                },
+            )
+
+        invoice.invoice_number = conversion.invoice_number
+        invoice.memo = conversion.memo
+        invoice.is_proforma = False
+        invoice.status = InvoiceStatus.issued
+        invoice.issued_at = conversion.issued_at
+        emit_event(
+            db,
+            EventType.invoice_sent,
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": invoice.invoice_number,
+                "amount": str(invoice.total),
+                "total": str(invoice.total),
+                "due_date": invoice.due_at.date().isoformat()
+                if invoice.due_at
+                else None,
+                "currency": invoice.currency,
+                "from_status": InvoiceStatus.draft.value,
+                "to_status": InvoiceStatus.issued.value,
+                "reason": conversion.reason,
+            },
+            account_id=invoice.account_id,
+            invoice_id=invoice.id,
+        )
+        _apply_available_account_credit(db, invoice)
+        db.flush()
+        return InvoiceLifecycleTransitionResult(
+            invoice=invoice,
+            changed=True,
+            event_emitted=True,
+        )
+
+    @staticmethod
+    def adopt_prepaid_proforma_document_for_owner(
+        db: Session,
+        adoption: PrepaidProformaDocumentAdoption,
+    ) -> Invoice:
+        """Apply a reconciler-approved identity to one pristine proforma.
+
+        This is a flush-only participant. The prepaid reconciliation owner
+        decides whether the evidence is sufficient and owns the surrounding
+        transaction, audit trail, event, and idempotency reservation.
+        """
+
+        invoice = lock_for_update(db, Invoice, str(adoption.invoice_id))
+        if (
+            invoice is None
+            or not invoice.is_active
+            or invoice.status is not InvoiceStatus.draft
+            or not invoice.is_proforma
+            or invoice.billing_period_start is not None
+            or invoice.billing_period_end is not None
+        ):
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Invoice is not a pristine active proforma draft.",
+                details={"invoice_id": str(adoption.invoice_id)},
+            )
+        if adoption.billing_period_end <= adoption.billing_period_start:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Adopted billing period must be positive.",
+                details={"invoice_id": str(adoption.invoice_id)},
+            )
+        line = db.scalar(
+            select(InvoiceLine)
+            .where(
+                InvoiceLine.id == adoption.line_id,
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        if line is None or line.subscription_id is not None:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Proforma line identity changed after review.",
+                details={
+                    "invoice_id": str(adoption.invoice_id),
+                    "line_id": str(adoption.line_id),
+                },
+            )
+
+        invoice.is_proforma = False
+        invoice.billing_period_start = adoption.billing_period_start
+        invoice.billing_period_end = adoption.billing_period_end
+        line.subscription_id = adoption.subscription_id
+        line.description = adoption.line_description
+        line_metadata = dict(line.metadata_ or {})
+        line_metadata.update(
+            {
+                "kind": "base_subscription",
+                "billing_period_start": adoption.billing_period_start.isoformat(),
+                "billing_period_end": adoption.billing_period_end.isoformat(),
+                "prepaid_proforma_adoption_ref": adoption.adoption_evidence_ref,
+            }
+        )
+        line.metadata_ = line_metadata
+        db.flush()
+        return invoice
 
     @staticmethod
     def issue_draft_for_owner(

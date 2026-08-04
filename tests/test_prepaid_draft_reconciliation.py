@@ -32,10 +32,15 @@ from app.services.customer_financial_position import prepaid_available_balance
 from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
+    AdoptFundedPrepaidProformaCommand,
     PrepaidDraftAction,
     PrepaidDraftDisposition,
     PrepaidDraftReconciliationError,
+    PrepaidProformaAdoptionDisposition,
+    PrepaidProformaAdoptionQuery,
     ReconcilePrepaidDraftCommand,
+    adopt_funded_prepaid_proforma,
+    preview_funded_prepaid_proforma_adoption,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
@@ -49,7 +54,10 @@ from app.services.prepaid_service_renewals import (
     confirm_prepaid_service_renewal,
     preview_prepaid_service_renewal,
 )
-from tests.prepaid_funding_helpers import materialize_test_prepaid_opening_balance
+from tests.prepaid_funding_helpers import (
+    ensure_test_prepaid_contract,
+    materialize_test_prepaid_opening_balance,
+)
 
 START = datetime(2026, 7, 17, tzinfo=UTC)
 END = datetime(2026, 8, 17, tzinfo=UTC)
@@ -141,6 +149,238 @@ def _payment(
     )
     db.commit()
     return payment
+
+
+def _onboarding_proforma(db, account, subscription) -> Invoice:
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.status = SubscriptionStatus.active
+    subscription.next_billing_at = None
+    ensure_test_prepaid_contract(db, subscription, Decimal("17500.00"))
+    invoice = Invoice(
+        account_id=account.id,
+        invoice_number=f"PRO-{uuid4().hex[:8]}",
+        status=InvoiceStatus.draft,
+        currency="NGN",
+        subtotal=Decimal("17500.00"),
+        tax_total=Decimal("1312.50"),
+        total=Decimal("18812.50"),
+        balance_due=Decimal("18812.50"),
+        billing_period_start=None,
+        billing_period_end=None,
+        is_proforma=True,
+        is_active=True,
+    )
+    db.add(invoice)
+    db.flush()
+    db.add(
+        InvoiceLine(
+            invoice_id=invoice.id,
+            subscription_id=None,
+            description="Unlimited Basic",
+            quantity=Decimal("1.000"),
+            unit_price=Decimal("17500.00"),
+            amount=Decimal("17500.00"),
+            is_active=True,
+        )
+    )
+    db.commit()
+    return invoice
+
+
+def test_exact_funded_onboarding_proforma_adopts_then_reconciles(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _onboarding_proforma(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("0.00"),
+    )
+    payment = _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("18812.50"),
+        paid_at=datetime(2026, 7, 30, 13, 26, tzinfo=UTC),
+    )
+
+    adoption_preview = preview_funded_prepaid_proforma_adoption(
+        db_session,
+        PrepaidProformaAdoptionQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert adoption_preview.disposition is (
+        PrepaidProformaAdoptionDisposition.exact_funded_onboarding_proforma
+    )
+    assert adoption_preview.actionable is True
+    assert adoption_preview.settlement_payment_id == payment.id
+    assert adoption_preview.settlement_effective_at == payment.paid_at
+    assert adoption_preview.payment_backed_credit == Decimal("18812.50")
+    assert adoption_preview.billing_period_start == datetime(
+        2026,
+        7,
+        29,
+        23,
+        tzinfo=UTC,
+    )
+    assert adoption_preview.billing_period_end == datetime(
+        2026,
+        8,
+        29,
+        23,
+        tzinfo=UTC,
+    )
+    invoice_id = invoice.id
+    subscription_id = subscription.id
+    settlement_effective_at = payment.paid_at
+    adoption_fingerprint = adoption_preview.fingerprint
+    db_session.commit()
+
+    adoption_command = AdoptFundedPrepaidProformaCommand(
+        context=CommandContext.system(
+            actor="pytest:billing-operator",
+            scope="prepaid_draft_reconciliation",
+            reason="Reviewed exact onboarding proforma evidence",
+            idempotency_key=f"pytest-proforma-adoption-{invoice_id}",
+        ),
+        invoice_id=invoice_id,
+        subscription_id=subscription_id,
+        preview_fingerprint=adoption_fingerprint,
+    )
+    adopted = adopt_funded_prepaid_proforma(db_session, adoption_command)
+    replay = adopt_funded_prepaid_proforma(db_session, adoption_command)
+
+    db_session.refresh(invoice)
+    line = db_session.query(InvoiceLine).filter_by(invoice_id=invoice.id).one()
+    assert adopted.replayed is False
+    assert replay.replayed is True
+    assert invoice.is_proforma is False
+    assert invoice.status is InvoiceStatus.draft
+    assert invoice.billing_period_start is not None
+    assert invoice.billing_period_end is not None
+    assert invoice.billing_period_start.replace(tzinfo=UTC) == (
+        adopted.billing_period_start
+    )
+    assert invoice.billing_period_end.replace(tzinfo=UTC) == adopted.billing_period_end
+    assert line.subscription_id == subscription.id
+    assert line.metadata_["kind"] == "base_subscription"
+    assert db_session.query(PaymentAllocation).count() == 0
+    assert db_session.query(ServiceEntitlement).count() == 0
+
+    financial_preview = preview_prepaid_draft_reconciliation(db_session, invoice_id)
+    assert (
+        financial_preview.disposition is PrepaidDraftDisposition.exact_payment_fundable
+    )
+    financial_fingerprint = financial_preview.fingerprint
+    db_session.commit()
+
+    financial_result = reconcile_prepaid_draft_invoice(
+        db_session,
+        ReconcilePrepaidDraftCommand(
+            context=CommandContext.system(
+                actor="pytest:billing-operator",
+                scope="prepaid_draft_reconciliation",
+                reason="Settle adopted onboarding proforma",
+                idempotency_key=f"pytest-proforma-settlement-{invoice_id}",
+            ),
+            invoice_id=invoice_id,
+            preview_fingerprint=financial_fingerprint,
+            effective_at=settlement_effective_at,
+        ),
+    )
+    post_settlement_replay = adopt_funded_prepaid_proforma(
+        db_session,
+        adoption_command,
+    )
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    entitlement = db_session.query(ServiceEntitlement).one()
+    assert financial_result.final_status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert entitlement.source_invoice_id == invoice.id
+    assert entitlement.subscription_id == subscription.id
+    assert subscription.next_billing_at == entitlement.ends_at
+    assert post_settlement_replay.replayed is True
+    assert post_settlement_replay.settlement_payment_id == payment.id
+    assert post_settlement_replay.preview_fingerprint == adoption_fingerprint
+
+
+def test_proforma_adoption_fails_closed_without_reviewed_baseline(
+    db_session,
+    subscriber,
+    subscription,
+    monkeypatch,
+):
+    invoice = _onboarding_proforma(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    _payment(
+        db_session,
+        subscriber,
+        amount=Decimal("18812.50"),
+        paid_at=datetime(2026, 7, 30, 13, 26, tzinfo=UTC),
+    )
+
+    def _missing_baseline(*_args, **_kwargs):
+        raise PrepaidFundingBaselineMissingError("raw reconstruction detail")
+
+    monkeypatch.setattr(
+        reconciliation_service,
+        "verified_prepaid_funding_balance",
+        _missing_baseline,
+    )
+
+    with pytest.raises(PrepaidDraftReconciliationError) as exc_info:
+        preview_funded_prepaid_proforma_adoption(
+            db_session,
+            PrepaidProformaAdoptionQuery(
+                invoice_id=invoice.id,
+                subscription_id=subscription.id,
+            ),
+        )
+
+    assert exc_info.value.code == (
+        "financial.prepaid_draft_reconciliation.opening_funding_unavailable"
+    )
+
+
+def test_proforma_adoption_rejects_contract_price_mismatch(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice = _onboarding_proforma(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    subscription.unit_price = Decimal("18000.00")
+    db_session.commit()
+
+    preview = preview_funded_prepaid_proforma_adoption(
+        db_session,
+        PrepaidProformaAdoptionQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert preview.disposition is PrepaidProformaAdoptionDisposition.manual_review
+    assert preview.actionable is False
+    assert preview.reason == (
+        "proforma charge does not exactly match the contracted base charge"
+    )
 
 
 def test_fee_inclusive_mixed_source_uses_participant_remainder(

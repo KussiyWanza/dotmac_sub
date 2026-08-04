@@ -62,3 +62,19 @@ def test_bypass_deploy_targets_require_explicit_opt_in() -> None:
     # The supported path still exists and still delegates to the owner script.
     deploy_recipe = makefile[makefile.index("\ndeploy:") :].split("\n\n")[0]
     assert 'bash scripts/deploy.sh "$(TAG)"' in deploy_recipe
+
+
+def test_deploy_requires_exact_branch_github_evidence_before_database_work() -> None:
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+
+    assert "production:dotmac-sub-prod)" in deploy
+    assert 'GITHUB_RELEASE_BRANCH="main"' in deploy
+    assert "staging:dotmac-sub-staging)" in deploy
+    assert 'GITHUB_RELEASE_BRANCH="dev"' in deploy
+    assert '"${REPO_DIR}/scripts/verify_github_release.py"' in deploy
+    assert deploy.index('scripts/verify_github_release.py"') < deploy.index(
+        "Backing up database before migrations"
+    )
+    assert deploy.index('scripts/verify_github_release.py"') < deploy.index(
+        'log "Applying migrations (alembic upgrade heads)"'
+    )

@@ -63,6 +63,7 @@ def test_staging_deploy_is_disabled_and_pinned_to_the_staging_host() -> None:
     )
     assert "export SKIP_BACKUP=1" in staging_adapter
     assert "export REQUIRE_PROXY_HANDOFF=0" in staging_adapter
+    assert "export HEALTH_TIMEOUT_SECONDS=600" in staging_adapter
     assert 'exec bash "${ROOT_DIR}/scripts/deploy.sh" "$@"' in staging_adapter
 
 
@@ -86,6 +87,7 @@ def test_staging_promotion_runbook_records_activation_and_failure_contracts() ->
     assert "updates local `dev` only by fast-forward" in runbook
     assert "scripts/deploy_staging.sh" in runbook
     assert "Production backup behavior remains unchanged" in runbook
+    assert "ten-minute health budget" in runbook
     assert "Do not edit `VERSION` in the source pull request" in runbook
     assert (
         "A failed staging deployment never authorizes promotion to `main`." in runbook

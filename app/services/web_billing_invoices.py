@@ -15,7 +15,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoiceStatus
-from app.models.domain_settings import SettingDomain
 from app.models.subscriber import Subscriber
 from app.schemas.billing import (
     CreditNoteApplicationPreviewRequest,
@@ -23,13 +22,12 @@ from app.schemas.billing import (
     InvoiceClosureConfirm,
     InvoiceLineCreate,
     InvoiceLineUpdate,
-    InvoiceUpdate,
 )
 from app.services import audit as audit_service
 from app.services import billing as billing_service
 from app.services import billing_invoice_pdf as billing_invoice_pdf_service
 from app.services import invoice_bank_details as invoice_bank_details_service
-from app.services import invoice_draft_authoring, numbering
+from app.services import invoice_draft_authoring
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import (
     web_prepaid_draft_reconciliation as web_prepaid_draft_reconciliation_service,
@@ -45,8 +43,9 @@ from app.services.status_presentation import invoice_status_presentation
 from app.validators.forms import parse_datetime, parse_decimal, parse_uuid
 
 logger = logging.getLogger(__name__)
-PROFORMA_TAG = "[PROFORMA]"
-PROFORMA_PREFIX = "PF-"
+PROFORMA_TAG = invoice_draft_authoring.PROFORMA_TAG
+PROFORMA_PREFIX = invoice_draft_authoring.PROFORMA_PREFIX
+apply_proforma_form_values = invoice_draft_authoring.apply_proforma_form_values
 
 
 class InvoiceLineItem(TypedDict):
@@ -69,31 +68,6 @@ def is_proforma_invoice(invoice: Invoice | None) -> bool:
     return number.upper().startswith(PROFORMA_PREFIX)
 
 
-def apply_proforma_form_values(
-    *,
-    invoice_number: str | None,
-    memo: str | None,
-    proforma_invoice: bool,
-) -> tuple[str | None, str | None]:
-    clean_number = (invoice_number or "").strip() or None
-    clean_memo = (memo or "").strip() or None
-    if proforma_invoice:
-        if clean_number and not clean_number.upper().startswith(PROFORMA_PREFIX):
-            clean_number = f"{PROFORMA_PREFIX}{clean_number}"
-        if clean_memo:
-            if PROFORMA_TAG not in clean_memo:
-                clean_memo = f"{PROFORMA_TAG} {clean_memo}".strip()
-        else:
-            clean_memo = PROFORMA_TAG
-        return clean_number, clean_memo
-
-    if clean_number and clean_number.upper().startswith(PROFORMA_PREFIX):
-        clean_number = clean_number[len(PROFORMA_PREFIX) :].strip() or None
-    if clean_memo and PROFORMA_TAG in clean_memo:
-        clean_memo = clean_memo.replace(PROFORMA_TAG, "").strip() or None
-    return clean_number, clean_memo
-
-
 def build_proforma_summary(invoices: list[Invoice]) -> dict[str, int]:
     proforma_rows = [item for item in invoices if is_proforma_invoice(item)]
     paid = 0
@@ -111,40 +85,32 @@ def build_proforma_summary(invoices: list[Invoice]) -> dict[str, int]:
     }
 
 
-def convert_proforma_to_final(db: Session, *, invoice_id: str) -> Invoice:
-    invoice = billing_service.invoices.get(db=db, invoice_id=invoice_id)
-    if not is_proforma_invoice(invoice):
-        raise HTTPException(status_code=400, detail="Invoice is not a proforma invoice")
+def convert_proforma_to_final(
+    db: Session,
+    *,
+    invoice_id: str,
+    actor_id: str | None = None,
+) -> Invoice:
+    """Map the admin action to the locked, idempotent conversion owner."""
 
-    invoice_number = (invoice.invoice_number or "").strip() or None
-    if invoice_number and invoice_number.upper().startswith(PROFORMA_PREFIX):
-        generated = numbering.generate_required_number(
+    db_session_adapter.release_read_transaction(db)
+    try:
+        result = invoice_draft_authoring.convert_proforma_invoice(
             db,
-            SettingDomain.billing,
-            "invoice_number",
-            "invoice_number_prefix",
-            "invoice_number_padding",
-            "invoice_number_start",
+            invoice_draft_authoring.ConvertProformaInvoiceCommand(
+                invoice_id=UUID(invoice_id),
+            ),
+            context=CommandContext.system(
+                actor=actor_id or "admin-billing",
+                scope="invoice_proforma:convert",
+                reason="Convert administrative proforma to final invoice",
+                idempotency_key=f"invoice-proforma-conversion:{invoice_id}",
+            ),
         )
-        invoice_number = generated or None
-
-    _, cleaned_memo = apply_proforma_form_values(
-        invoice_number=invoice_number,
-        memo=invoice.memo,
-        proforma_invoice=False,
-    )
-
-    payload = InvoiceUpdate(
-        invoice_number=invoice_number,
-        memo=cleaned_memo,
-        is_proforma=False,
-        status=InvoiceStatus.issued
-        if invoice.status == InvoiceStatus.draft
-        else invoice.status,
-        issued_at=invoice.issued_at or datetime.now(UTC),
-    )
-    billing_service.invoices.update(db=db, invoice_id=invoice_id, payload=payload)
-    return billing_service.invoices.get(db=db, invoice_id=invoice_id)
+    except invoice_draft_authoring.InvoiceDraftAuthoringError as exc:
+        status_code = 404 if exc.code.endswith("invoice_not_found") else 409
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+    return billing_service.invoices.get(db=db, invoice_id=str(result.invoice_id))
 
 
 def build_invoice_payload_data(
@@ -804,21 +770,11 @@ def convert_proforma_to_final_web(
     actor_id: str | None,
     invoice_id: str,
 ) -> Invoice:
-    converted = convert_proforma_to_final(db, invoice_id=invoice_id)
-    log_audit_event(
-        db=db,
-        request=request,
-        action="convert",
-        entity_type="invoice",
-        entity_id=invoice_id,
+    return convert_proforma_to_final(
+        db,
+        invoice_id=invoice_id,
         actor_id=actor_id,
-        metadata={
-            "from": "proforma",
-            "to": "final",
-            "invoice_number": converted.invoice_number,
-        },
     )
-    return converted
 
 
 def apply_credit_note_to_invoice_web(
