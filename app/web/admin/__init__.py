@@ -47,6 +47,7 @@ from app.web.admin.help_center import router as help_center_router
 from app.web.admin.inbox import router as inbox_router
 from app.web.admin.inbox import settings_router as inbox_settings_router
 from app.web.admin.integrations import router as integrations_router
+from app.web.admin.lead_intake import router as lead_intake_router
 from app.web.admin.legal import router as legal_router
 from app.web.admin.meta_connection import router as meta_connection_router
 from app.web.admin.nas import router as nas_router
@@ -432,6 +433,7 @@ router.include_router(
 )
 router.include_router(support_tickets_router)
 router.include_router(sales_router)
+router.include_router(lead_intake_router)
 router.include_router(support_automation_router)
 router.include_router(support_assignment_rules_router)
 router.include_router(projects_router)

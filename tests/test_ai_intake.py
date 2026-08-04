@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.models.ai_intake import AiIntakeConfig
 from app.schemas.ai_intake import (
+    CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
     AiIntakeContextMessage,
     AiIntakeReason,
     AiIntakeRequest,
@@ -76,6 +77,8 @@ def _classification(
     intent: str = "technical_support",
     category: str = "slow_internet",
     confidence: float = 0.94,
+    party_type: str = "unknown",
+    party_type_confidence: float = 0.0,
 ) -> str:
     return json.dumps(
         {
@@ -86,6 +89,8 @@ def _classification(
             "requires_follow_up": False,
             "follow_up_question": None,
             "summary": "Customer reports a service issue.",
+            "party_type": party_type,
+            "party_type_confidence": party_type_confidence,
         }
     )
 
@@ -189,6 +194,54 @@ def test_department_mapping_overrides_default(db_session, monkeypatch):
 
     assert outcome.classification is not None
     assert outcome.classification.department == "finance"
+
+
+def test_sales_customer_type_uses_one_controlled_follow_up_then_fallback(
+    db_session, monkeypatch
+):
+    _config(db_session, confidence_threshold=0.8, max_clarification_turns=1)
+    gateway = _Gateway(
+        _classification(
+            intent="new_connection",
+            category="new_connection",
+            confidence=0.95,
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    first = ai_intake.classify_message(db_session, _request())
+    second = ai_intake.classify_message(
+        db_session,
+        _request(awaiting_follow_up=True, follow_up_count=1),
+    )
+
+    assert first.status is AiIntakeStatus.awaiting_follow_up
+    assert first.classification is not None
+    assert first.classification.follow_up_question == CUSTOMER_TYPE_FOLLOW_UP_QUESTION
+    assert first.follow_up_count == 1
+    assert second.status is AiIntakeStatus.fallback
+    assert second.reason is AiIntakeReason.follow_up_limit_reached
+
+
+def test_sales_customer_type_is_route_ready_metadata(db_session, monkeypatch):
+    _config(db_session, confidence_threshold=0.8)
+    gateway = _Gateway(
+        _classification(
+            intent="coverage_request",
+            category="coverage_request",
+            confidence=0.96,
+            party_type="organization",
+            party_type_confidence=0.91,
+        )
+    )
+    monkeypatch.setattr(ai_intake, "_gateway", lambda: gateway)
+
+    outcome = ai_intake.classify_message(db_session, _request())
+    metadata = ai_intake.route_metadata(outcome)
+
+    assert outcome.status is AiIntakeStatus.classified
+    assert metadata["ai_party_type"] == "organization"
+    assert metadata["ai_party_type_confidence"] == 0.91
 
 
 def test_unknown_intent_malformed_json_and_invalid_confidence_fail_closed(

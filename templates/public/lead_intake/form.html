@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>{{ form.heading }} · Dotmac</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-full bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-white">
+  <main class="mx-auto max-w-2xl px-4 py-8 sm:py-12">
+    <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900 sm:p-8">
+      <p class="text-sm font-semibold uppercase tracking-wide text-teal-600 dark:text-teal-400">Dotmac Lead Intake</p>
+      <h1 class="mt-2 text-3xl font-bold">{{ form.heading }}</h1>
+      {% if form.introduction %}<p class="mt-3 text-slate-600 dark:text-slate-300">{{ form.introduction }}</p>{% endif %}
+      {% if error %}<div role="alert" class="mt-6 rounded-lg border border-rose-300 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">{{ error }}</div>{% endif %}
+      <form method="post" class="mt-8 space-y-6" id="lead-intake-form">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        {% if form.party_type.value == 'individual' %}
+        <label class="block text-sm font-semibold">Full name <input name="full_name" required maxlength="200" value="{{ values.get('full_name','') }}" autocomplete="name" class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+        <div class="grid gap-5 sm:grid-cols-2">
+          <label class="block text-sm font-semibold">Gender <select name="gender" required class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"><option value="">Select…</option>{% for value,label in [('female','Female'),('male','Male'),('non_binary','Non-binary'),('other','Other')] %}<option value="{{ value }}" {% if values.get('gender') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <label class="block text-sm font-semibold">Date of birth <input type="date" name="date_of_birth" required value="{{ values.get('date_of_birth','') }}" autocomplete="bday" class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+        </div>
+        {% else %}
+        <label class="block text-sm font-semibold">Organization name <input name="organization_name" required maxlength="200" value="{{ values.get('organization_name','') }}" autocomplete="organization" class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+        <div class="grid gap-5 sm:grid-cols-2">
+          <label class="block text-sm font-semibold">Representative name <input name="representative_name" required maxlength="200" value="{{ values.get('representative_name','') }}" autocomplete="name" class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+          <label class="block text-sm font-semibold">Representative role <input name="representative_role" required maxlength="120" value="{{ values.get('representative_role','') }}" autocomplete="organization-title" class="mt-2 h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950"></label>
+        </div>
+        {% endif %}
+
+        <fieldset>
+          <legend class="text-sm font-semibold">Service address</legend>
+          <p class="mt-1 text-xs text-slate-500">Search and select the exact location where service is required.</p>
+          <div class="relative mt-2">
+            <input id="address-query" type="search" minlength="3" maxlength="160" autocomplete="street-address" placeholder="Start typing an address" class="h-11 w-full rounded-lg border-slate-300 dark:border-slate-700 dark:bg-slate-950">
+            <div id="address-results" class="absolute z-10 mt-1 hidden w-full rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900" role="listbox"></div>
+          </div>
+          <p id="address-selected" class="mt-2 text-sm font-medium text-teal-700 dark:text-teal-300" aria-live="polite"></p>
+          <input type="hidden" id="latitude" name="latitude" value="{{ values.get('latitude','') }}">
+          <input type="hidden" id="longitude" name="longitude" value="{{ values.get('longitude','') }}">
+          <label class="mt-3 flex items-start gap-3 text-sm"><input type="checkbox" name="address_confirmation" required {% if values.get('address_confirmation') %}checked{% endif %} class="mt-1 h-4 w-4 rounded text-teal-600"> <span>I confirm this is the correct service address.</span></label>
+        </fieldset>
+
+        <div class="rounded-lg bg-slate-50 p-4 text-sm text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          <p>{{ form.privacy_notice }}</p>
+          <label class="mt-3 flex items-start gap-3 font-medium text-slate-800 dark:text-slate-100"><input type="checkbox" name="privacy_acknowledged" required {% if values.get('privacy_acknowledged') %}checked{% endif %} class="mt-1 h-4 w-4 rounded text-teal-600"> <span>I understand and agree to the use of these details to process this service enquiry.</span></label>
+        </div>
+        <button type="submit" class="w-full rounded-lg bg-teal-600 px-4 py-3 font-semibold text-white hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2">Save</button>
+      </form>
+    </div>
+  </main>
+  <script>
+    (() => {
+      const input = document.getElementById('address-query');
+      const results = document.getElementById('address-results');
+      const selected = document.getElementById('address-selected');
+      let timer;
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        document.getElementById('latitude').value = '';
+        document.getElementById('longitude').value = '';
+        selected.textContent = '';
+        const q = input.value.trim();
+        if (q.length < 3) { results.classList.add('hidden'); return; }
+        timer = setTimeout(async () => {
+          const response = await fetch(`${location.pathname}/address-search?q=${encodeURIComponent(q)}`);
+          if (!response.ok) return;
+          const data = await response.json();
+          results.replaceChildren(...data.items.map(item => {
+            const button = document.createElement('button');
+            button.type = 'button'; button.role = 'option'; button.textContent = item.display_name;
+            button.className = 'block min-h-11 w-full px-3 py-2 text-left text-sm hover:bg-teal-50 dark:hover:bg-slate-800';
+            button.addEventListener('click', () => {
+              document.getElementById('latitude').value = item.latitude;
+              document.getElementById('longitude').value = item.longitude;
+              selected.textContent = item.display_name; input.value = item.display_name;
+              results.classList.add('hidden');
+            });
+            return button;
+          }));
+          results.classList.toggle('hidden', !data.items.length);
+        }, 300);
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -109,6 +109,33 @@ class ContactResolution:
         }
 
 
+def _run_sales_lead_intake_after_commit(
+    db: Session, *, conversation_id: UUID | None, message_id: UUID | None
+) -> None:
+    """Run the optional sales consequence after Inbox has committed the message."""
+
+    if conversation_id is None or message_id is None:
+        return
+    try:
+        from app.services import lead_intake_ai
+
+        lead_intake_ai.apply_inbox_intake_handoff(
+            db, conversation_id=conversation_id, message_id=message_id
+        )
+    except Exception as exc:
+        # Inbox persistence and routing are authoritative and already committed.
+        # A Sales consequence must never make the transport retry that work.
+        logger.warning(
+            "sales lead intake consequence failed",
+            extra={
+                "event": "sales_lead_intake_consequence_failed",
+                "conversation_id": str(conversation_id),
+                "message_id": str(message_id),
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
 def _status_value(subscriber: Subscriber) -> str:
     return str(getattr(subscriber.status, "value", subscriber.status) or "")
 
@@ -1007,6 +1034,11 @@ def receive_whatsapp_webhook_batch_committed(
                 idempotency_key=str(recorded.observation_id),
             ),
         )
+        _run_sales_lead_intake_after_commit(
+            db,
+            conversation_id=processed.conversation_id,
+            message_id=processed.message_id,
+        )
         message_results.append(
             {
                 "kind": processed.consequence_kind
@@ -1218,6 +1250,11 @@ def receive_inbound_channel_batch_committed(
                 reason="resolve committed inbound channel observation",
                 idempotency_key=str(recorded.observation_id),
             ),
+        )
+        _run_sales_lead_intake_after_commit(
+            db,
+            conversation_id=processed.conversation_id,
+            message_id=processed.message_id,
         )
         results.append(
             {

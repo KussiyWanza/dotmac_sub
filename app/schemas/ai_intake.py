@@ -13,7 +13,12 @@ GENERIC_FOLLOW_UP_QUESTION = (
     "Please tell us whether your request is about your internet connection, "
     "payment, subscription, account, or a new installation."
 )
-APPROVED_FOLLOW_UP_QUESTIONS = frozenset({GENERIC_FOLLOW_UP_QUESTION})
+CUSTOMER_TYPE_FOLLOW_UP_QUESTION = (
+    "Is this new internet request for you personally or for an organization?"
+)
+APPROVED_FOLLOW_UP_QUESTIONS = frozenset(
+    {GENERIC_FOLLOW_UP_QUESTION, CUSTOMER_TYPE_FOLLOW_UP_QUESTION}
+)
 
 
 class AiIntakeIntent(StrEnum):
@@ -27,6 +32,12 @@ class AiIntakeIntent(StrEnum):
     account_access = "account_access"
     complaint = "complaint"
     general_enquiry = "general_enquiry"
+    unknown = "unknown"
+
+
+class AiIntakePartyType(StrEnum):
+    individual = "individual"
+    organization = "organization"
     unknown = "unknown"
 
 
@@ -144,6 +155,8 @@ class AiProviderClassification(BaseModel):
     requires_follow_up: StrictBool
     follow_up_question: str | None = Field(default=None, max_length=300)
     summary: str | None = Field(default=None, max_length=500)
+    party_type: AiIntakePartyType = AiIntakePartyType.unknown
+    party_type_confidence: Annotated[float, Field(strict=True, ge=0.0, le=1.0)] = 0.0
 
     @model_validator(mode="after")
     def validate_follow_up_shape(self) -> AiProviderClassification:
@@ -163,6 +176,8 @@ class AiIntakeClassification(BaseModel):
     requires_follow_up: bool
     follow_up_question: str | None = Field(default=None, max_length=300)
     summary: str | None = Field(default=None, max_length=500)
+    party_type: AiIntakePartyType = AiIntakePartyType.unknown
+    party_type_confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
 
     @model_validator(mode="after")
     def validate_follow_up_shape(self) -> AiIntakeClassification:

@@ -833,6 +833,7 @@ _CSRF_PROTECTED_PATHS = [
     "/reseller/",
     "/vendor/",
     "/auth/",
+    "/lead-intake/",
 ]
 _CSRF_EXEMPT_PATHS = ["/api/", "/health", "/metrics", "/static/"]
 _CSRF_EXEMPT_EXACT_PATHS = {"/portal/auth/logout"}

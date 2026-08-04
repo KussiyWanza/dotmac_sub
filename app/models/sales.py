@@ -78,6 +78,7 @@ class LeadCaptureMethod(enum.StrEnum):
     campaign_response = "campaign_response"
     referral = "referral"
     reviewed_import = "reviewed_import"
+    inbox_form = "inbox_form"
 
 
 class LeadSourcePlatform(enum.StrEnum):
@@ -89,6 +90,7 @@ class LeadSourcePlatform(enum.StrEnum):
     referral = "referral"
     sub_campaign = "sub_campaign"
     legacy_import = "legacy_import"
+    team_inbox = "team_inbox"
 
 
 class QuoteStatus(enum.Enum):
@@ -325,12 +327,12 @@ class LeadOriginCapture(Base):
         CheckConstraint(
             "capture_method IN ('ad_lead_form_webhook', 'landing_page', 'portal', "
             "'agent_declared', 'campaign_response', 'referral', "
-            "'reviewed_import')",
+            "'reviewed_import', 'inbox_form')",
             name="ck_lead_origin_captures_method",
         ),
         CheckConstraint(
             "source_platform IN ('meta', 'google', 'website', 'portal', 'agent', "
-            "'referral', 'sub_campaign', 'legacy_import')",
+            "'referral', 'sub_campaign', 'legacy_import', 'team_inbox')",
             name="ck_lead_origin_captures_platform",
         ),
         CheckConstraint(
@@ -356,7 +358,8 @@ class LeadOriginCapture(Base):
             "(capture_method <> 'agent_declared' OR source_platform = 'agent') AND "
             "(capture_method <> 'referral' OR source_platform = 'referral') AND "
             "(capture_method <> 'reviewed_import' OR "
-            "source_platform = 'legacy_import')",
+            "source_platform = 'legacy_import') AND "
+            "(capture_method <> 'inbox_form' OR source_platform = 'team_inbox')",
             name="ck_lead_origin_captures_method_platform",
         ),
         CheckConstraint(
@@ -365,7 +368,9 @@ class LeadOriginCapture(Base):
             "(source_platform <> 'google' OR lead_source = 'Google') AND "
             "(source_platform <> 'website' OR lead_source = 'Website') AND "
             "(source_platform <> 'portal' OR lead_source = 'Portal') AND "
-            "(source_platform <> 'referral' OR lead_source = 'Referrer')",
+            "(source_platform <> 'referral' OR lead_source = 'Referrer') AND "
+            "(source_platform <> 'team_inbox' OR lead_source IN "
+            "('Whatsapp', 'Facebook', 'Instagram'))",
             name="ck_lead_origin_captures_platform_source",
         ),
         CheckConstraint(

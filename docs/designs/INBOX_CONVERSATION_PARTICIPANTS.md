@@ -143,3 +143,12 @@ behaviour on that field alone would overstate how often operators send outside
 the conversation, and a restriction policy judged on it would be judged on the
 wrong number. Read `recipient_seen_on_thread` first, and report the sample size
 rather than a bare percentage.
+
+## Lead-intake binding
+
+`sales.lead_intake` may bind a participant only after the customer completes
+the single-use form sent to that exact endpoint. The participant owner remains
+the only writer of `party_contact_point_id` and binding provenance. It verifies
+conversation, channel, normalized endpoint, provider account scope, and Party
+contact point before applying the flush-only participant consequence. No other
+endpoint for the new Party is inferred or linked.

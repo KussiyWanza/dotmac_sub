@@ -417,6 +417,8 @@ def test_reply_idempotency_key_replays_without_duplicate_message(
 
     assert first.replayed is False
     assert second.replayed is True
+    assert first.message_id is not None
+    assert second.message_id == first.message_id
     assert calls == 1
     assert db_session.query(InboxMessage).count() == 1
 

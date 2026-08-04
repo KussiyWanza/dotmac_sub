@@ -100,6 +100,7 @@ class ReplyOutcome:
     conversation_id: str
     kind: str
     sender: str
+    message_id: str | None = None
     replayed: bool = False
 
 
@@ -396,6 +397,7 @@ def reply(
                         (previous.metadata_ or {}).get("delivery_status") or "queued"
                     ),
                     sender=previous.from_address or "team sender",
+                    message_id=str(previous.id),
                     replayed=True,
                 )
         template = None
@@ -485,6 +487,7 @@ def reply(
                 conversation_id=str(conversation.id),
                 kind="scheduled",
                 sender="scheduled",
+                message_id=str(scheduled.id),
             )
         result = team_inbox_outbound.send_inbox_reply(
             db,
@@ -534,6 +537,7 @@ def reply(
             conversation_id=str(conversation.id),
             kind=result.kind,
             sender=result.from_address or result.sender_key or "team sender",
+            message_id=result.message_id,
         )
 
     return _commit(db, action)

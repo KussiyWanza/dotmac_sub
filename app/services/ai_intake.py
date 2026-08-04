@@ -24,11 +24,13 @@ from app.models.ai_intake import AiIntakeConfig
 from app.models.audit import AuditActorType
 from app.models.service_team import ServiceTeam
 from app.schemas.ai_intake import (
+    CUSTOMER_TYPE_FOLLOW_UP_QUESTION,
     GENERIC_FOLLOW_UP_QUESTION,
     AiIntakeCategory,
     AiIntakeClassification,
     AiIntakeIntent,
     AiIntakeOutcome,
+    AiIntakePartyType,
     AiIntakeReason,
     AiIntakeRequest,
     AiIntakeStatus,
@@ -699,9 +701,12 @@ def _system_prompt(config: ResolvedAiIntakeConfig) -> str:
         "fault conclusively, confirm payment, or answer the customer. Return one "
         "JSON object and no prose or code fence. Use exactly these keys: intent, "
         "category, confidence, department, requires_follow_up, "
-        "follow_up_question, summary. confidence must be a JSON number from 0 to "
+        "follow_up_question, summary, party_type, party_type_confidence. "
+        "confidence and party_type_confidence must be JSON numbers from 0 to "
         "1. requires_follow_up must be a JSON boolean. Optional values must be "
-        "null when absent. intent must be one of: "
+        "null when absent. party_type must be one of: individual, organization, "
+        "unknown. Use unknown unless the customer clearly indicates whether a "
+        "new installation is personal or for an organization. intent must be one of: "
         f"{intents}. category must be one of: {categories}. The department is "
         "advisory and may be null; policy derives the actual department. Never "
         "ask for passwords, tokens, card details, PINs, OTPs, or authentication "
@@ -746,6 +751,7 @@ def _safe_classification(
     config: ResolvedAiIntakeConfig,
     *,
     requires_follow_up: bool,
+    follow_up_question: str | None = None,
 ) -> AiIntakeClassification:
     category = parsed.category
     if category not in _CATEGORIES_BY_INTENT[parsed.intent]:
@@ -758,10 +764,24 @@ def _safe_classification(
         department=department,
         department_team_id=team_id,
         requires_follow_up=requires_follow_up,
-        follow_up_question=(GENERIC_FOLLOW_UP_QUESTION if requires_follow_up else None),
+        follow_up_question=(follow_up_question if requires_follow_up else None),
         summary=(
             redact_text(parsed.summary, max_chars=500) if parsed.summary else None
         ),
+        party_type=parsed.party_type,
+        party_type_confidence=parsed.party_type_confidence,
+    )
+
+
+def _sales_party_type_unclear(
+    parsed: AiProviderClassification, *, confidence_threshold: float
+) -> bool:
+    return parsed.intent in {
+        AiIntakeIntent.coverage_request,
+        AiIntakeIntent.new_connection,
+    } and (
+        parsed.party_type is AiIntakePartyType.unknown
+        or parsed.party_type_confidence < confidence_threshold
     )
 
 
@@ -941,7 +961,11 @@ def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
 
     provider = str(response.provider or "")[:80] or None
     model = str(response.model or "")[:160] or None
-    if parsed.confidence >= config.confidence_threshold:
+    intent_confident = parsed.confidence >= config.confidence_threshold
+    party_type_unclear = _sales_party_type_unclear(
+        parsed, confidence_threshold=config.confidence_threshold
+    )
+    if intent_confident and not party_type_unclear:
         classification = _safe_classification(parsed, config, requires_follow_up=False)
         outcome = _outcome(
             started=started,
@@ -974,7 +998,17 @@ def classify_message(db: Session, request: AiIntakeRequest) -> AiIntakeOutcome:
     )
     if can_follow_up:
         next_count = request.follow_up_count + 1
-        classification = _safe_classification(parsed, config, requires_follow_up=True)
+        question = (
+            CUSTOMER_TYPE_FOLLOW_UP_QUESTION
+            if intent_confident and party_type_unclear
+            else GENERIC_FOLLOW_UP_QUESTION
+        )
+        classification = _safe_classification(
+            parsed,
+            config,
+            requires_follow_up=True,
+            follow_up_question=question,
+        )
         due_at = datetime.now(UTC) + timedelta(minutes=config.escalate_after_minutes)
         outcome = _outcome(
             started=started,
@@ -1068,6 +1102,8 @@ def route_metadata(outcome: AiIntakeOutcome) -> dict[str, object]:
                 "ai_intake_requires_follow_up": classification.requires_follow_up,
                 "ai_intake_follow_up_question": classification.follow_up_question,
                 "ai_intake_summary": classification.summary,
+                "ai_party_type": classification.party_type.value,
+                "ai_party_type_confidence": classification.party_type_confidence,
             }
         )
     return metadata

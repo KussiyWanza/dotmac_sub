@@ -418,6 +418,11 @@ from app.models.integration_platform import (  # noqa: F401
     IntegrationInstallationState,
     IntegrationValidationStatus,
 )
+from app.models.lead_intake import (  # noqa: F401
+    LeadIntakeAssessment,
+    LeadIntakeInvitation,
+    LeadIntakeTemplate,
+)
 from app.models.legal import (  # noqa: F401
     LegalDocument,
     LegalDocumentType,
