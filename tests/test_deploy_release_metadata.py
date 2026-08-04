@@ -35,6 +35,7 @@ def _run_deploy(
     migration_lock_failures: int = 0,
     manifest_pins_ready: bool = True,
     crm_ticket_ready: bool = True,
+    github_checks_ready: bool = True,
     background_runtime_ready: bool = True,
     declared_services: tuple[str, ...] = FULL_SERVICES,
     write_override: bool = False,
@@ -51,6 +52,8 @@ def _run_deploy(
     (deploy_dir / ".env").write_text(
         "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000\n"
         "GIT_SHA=old0000000000000000000000000000000000000\n"
+        "APP_ENV=production\n"
+        "SERVER_NAME=dotmac-sub-prod\n"
     )
     declared_services_literal = " ".join(
         f"'{service}'" for service in declared_services
@@ -121,6 +124,21 @@ printf '%s\\n' "{nginx_config}"
     )
     curl_exit_code = 0 if health_success else 1
     _write_executable(bin_dir / "curl", f"#!/usr/bin/env bash\nexit {curl_exit_code}\n")
+    _write_executable(
+        bin_dir / "python3",
+        f"""#!/usr/bin/env bash
+set -eu
+printf 'host-python %s\\n' "$*" >> "$DOCKER_LOG"
+if [[ "$*" == *"scripts/verify_github_release.py"* ]]; then
+  if [[ "{int(github_checks_ready)}" != "1" ]]; then
+    echo "GITHUB RELEASE GATE REJECTED: CI=failure" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 0
+""",
+    )
     _write_executable(bin_dir / "pgrep", "#!/usr/bin/env bash\nexit 1\n")
     _write_executable(bin_dir / "flock", "#!/usr/bin/env bash\nexit 0\n")
 
@@ -160,6 +178,32 @@ def test_deploy_pins_git_sha_from_image_revision(tmp_path: Path) -> None:
     env_text = env_file.read_text()
     assert "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-32eebc1" in env_text
     assert f"GIT_SHA={REVISION}" in env_text
+
+
+def test_deploy_rejects_non_green_github_revision_before_database_work(
+    tmp_path: Path,
+) -> None:
+    result, env_file, docker_log = _run_deploy(
+        tmp_path,
+        github_checks_ready=False,
+    )
+
+    assert result.returncode != 0
+    assert "GITHUB RELEASE GATE REJECTED" in result.stderr
+    env_text = env_file.read_text()
+    assert "APP_IMAGE=ghcr.io/michaelayoade/dotmac_sub:sha-old0000" in env_text
+    assert "GIT_SHA=old0000000000000000000000000000000000000" in env_text
+    commands = docker_log.read_text().splitlines()
+    gate = next(
+        index
+        for index, command in enumerate(commands)
+        if "scripts/verify_github_release.py" in command
+    )
+    assert not any(
+        "scripts.migration.reconcile_service_extension_duplicates" in command
+        or "alembic upgrade heads" in command
+        for command in commands[gate + 1 :]
+    )
 
 
 def test_deploy_rejects_tag_revision_mismatch_without_changing_env(

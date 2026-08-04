@@ -85,6 +85,13 @@ direct pytest collection both evaluate the non-secret `APP_ENV` and
 required checks without allowing validation load to starve the deployed app,
 workers, or database.
 
+The deployment owner independently verifies the exact immutable image revision
+before mutating a host. `scripts/deploy.sh` requires successful `CI` and
+`Mobile CI` push workflow runs for that full SHA on `main` in production or
+`dev` in staging. It performs this GitHub API check before the database backup,
+migrations, or service replacement. The on-host schema, integration-readiness,
+web-health, and worker-health gates are runtime acceptance checks, not pytest.
+
 Each unit-test shard and the architecture job also has a 30-minute job timeout.
 The per-test watchdog catches a blocked unit test first; the job timeout remains
 the outer guard for collection, environment, plugin, and architecture-suite

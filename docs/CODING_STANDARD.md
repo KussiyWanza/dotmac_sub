@@ -398,6 +398,12 @@ Each ownership slice includes:
 - architecture tests for forbidden writers/imports;
 - migration and compatibility tests when schema or contracts change.
 
+Template/context boundaries require a composed render or route-response test;
+source-string checks and context-builder tests do not prove the boundary works.
+Jinja mapping keys that overlap Python mapping attributes (`items`, `keys`,
+`values`, or `get`) use bracket lookup, because dotted lookup may resolve the
+method instead of the supplied value.
+
 During development, run the smallest focused test set that proves the changed
 boundary. Before accepting a slice, run `make test-architecture`, which uses the
 measured four-worker architecture-test default. Use
