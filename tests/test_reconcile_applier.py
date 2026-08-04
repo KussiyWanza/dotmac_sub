@@ -961,8 +961,13 @@ def test_resolver_failure_during_cr_password_push_halts_acs_management_server():
 
 
 def test_resolver_empty_ref_does_not_call_resolver():
-    """An empty password_ref shouldn't crash the resolver — it just
-    resolves to empty plaintext and the action proceeds."""
+    """An empty password_ref never reaches the resolver.
+
+    It used to resolve to empty plaintext and let the action proceed, which
+    wrote an empty pre-shared key to the device and left the customer's WLAN
+    open. The unset sentinel is now refused before secret resolution, so the
+    resolver is still not called — for a better reason.
+    """
     acs = _StubAcsClient()
     calls: list[str] = []
 
@@ -973,10 +978,10 @@ def test_resolver_empty_ref_does_not_call_resolver():
     ctx = _ctx(acs_client=acs, resolve_secret=_tracking_resolver)
     plan = _plan(AcsSetWifiPassword(device_id="dev", password_ref=""))
     result = apply_plan(plan, ctx)
-    assert result.success is True
-    # _resolve_or_fail short-circuits empty refs without invoking the
-    # resolver at all.
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
     assert calls == []
+    assert not acs.calls
 
 
 # ── ACS action dispatch (failure paths) ─────────────────────────────────────
@@ -1320,3 +1325,142 @@ def test_acs_add_object_skips_discovery_for_non_wan_ppp_targets():
     assert not any(c[0] == "refresh_object" for c in acs.calls)
     assert not any(c[0] == "list_devices" for c in acs.calls)
     assert ctx.wan_ppp_instances == {}
+
+
+# ── Unset-sentinel refusals ─────────────────────────────────────────────────
+#
+# Defence in depth. The planner already drops unset values (see
+# tests/test_reconcile_sentinels.py); these pin the applier's own refusal so a
+# legacy caller that builds an action directly — the synchronous UI delivery
+# paths still do — cannot blank a customer's WiFi.
+
+
+def _wifi_paths() -> Tr069WifiParameterPaths:
+    return Tr069WifiParameterPaths(
+        enabled="Device.WiFi.SSID.1.Enable",
+        ssid="Device.WiFi.SSID.1.SSID",
+        psk_path="Device.WiFi.AccessPoint.1.Security.KeyPassphrase",
+        channel="Device.WiFi.Radio.1.Channel",
+        security_mode="Device.WiFi.AccessPoint.1.Security.ModeEnabled",
+    )
+
+
+def test_acs_set_wifi_ssid_refuses_an_unset_ssid():
+    acs = _StubAcsClient()
+    result = apply_plan(
+        _plan(AcsSetWifiSsid(device_id="dev", ssid="")), _ctx(acs_client=acs)
+    )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert "wifi_ssid" in result.halted_by.message
+    assert not acs.calls
+
+
+def test_acs_set_wifi_password_refuses_an_unset_psk():
+    acs = _StubAcsClient()
+    result = apply_plan(
+        _plan(AcsSetWifiPassword(device_id="dev", password_ref="")),
+        _ctx(acs_client=acs),
+    )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not acs.calls
+
+
+def test_acs_set_wifi_config_fails_the_whole_batch_on_an_unset_field():
+    """No partial application, and no ACS contact at all.
+
+    Applying the co-changed fields and returning success would record a
+    converged write the device only partially received — the same false
+    convergence the sentinels exist to prevent. Per-field outcomes belong to
+    the intent migration, not to a best-effort batch here.
+    """
+    acs = _StubAcsClient()
+    paths = _wifi_paths()
+    result = apply_plan(
+        _plan(
+            AcsSetWifiConfig(
+                device_id="dev",
+                paths=paths,
+                enabled=None,
+                ssid="",
+                password_ref=None,
+                channel=6,
+                security_mode=None,
+            )
+        ),
+        _ctx(acs_client=acs),
+    )
+
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert "wifi_ssid" in result.halted_by.message
+    assert not acs.calls
+
+
+def test_acs_set_wifi_config_applies_a_batch_with_no_unset_fields():
+    acs = _StubAcsClient()
+    paths = _wifi_paths()
+    result = apply_plan(
+        _plan(
+            AcsSetWifiConfig(
+                device_id="dev",
+                paths=paths,
+                enabled=None,
+                ssid="DOTMAC",
+                password_ref=None,
+                channel=6,
+                security_mode=None,
+            )
+        ),
+        _ctx(acs_client=acs),
+    )
+
+    assert result.success is True
+    assert acs.calls[0][1][1] == {paths.ssid: "DOTMAC", paths.channel: 6}
+
+
+def test_olt_authorize_refuses_unset_profiles():
+    """``ont add`` carries both bindings — this would authorize a live ONT
+    with no usable profile, which is worse than the modify path's no-op."""
+    olt = _StubOltAdapter()
+    result = apply_plan(
+        _plan(
+            OltAuthorize(
+                fsp="0/1/3",
+                ont_id=11,
+                line_profile_id=0,
+                service_profile_id=0,
+                serial_number="HWTC8535819A",
+                description="desc",
+            )
+        ),
+        _ctx(olt_adapter=olt),
+    )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert "line_profile_id" in result.halted_by.message
+    assert "service_profile_id" in result.halted_by.message
+    assert not olt.calls
+
+
+def test_olt_modify_line_profile_refuses_an_unset_profile():
+    olt = _StubOltAdapter()
+    result = apply_plan(
+        _plan(OltModifyLineProfile(fsp="0/1/3", ont_id=11, line_profile_id=0)),
+        _ctx(olt_adapter=olt),
+    )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not olt.calls
+
+
+def test_olt_modify_service_profile_refuses_an_unset_profile():
+    olt = _StubOltAdapter()
+    result = apply_plan(
+        _plan(OltModifyServiceProfile(fsp="0/1/3", ont_id=11, service_profile_id=0)),
+        _ctx(olt_adapter=olt),
+    )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not olt.calls

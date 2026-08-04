@@ -16265,12 +16265,156 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "shared desired-state delivery lifecycle",
                     "control-plane target and revision identity",
                     "vendor status projections and transition guards",
+                    "unset desired-value admissibility policy",
                 ),
                 depends_on=("network.identity",),
                 notes=(
                     "Vendor adapters retain native persistence models but project "
                     "through one desired-to-readback lifecycle. Verified always "
-                    "requires device evidence for the current intent revision."
+                    "requires device evidence for the current intent revision. "
+                    "Missing or provenance-unknown desired state stays typed as "
+                    "unknown and cannot become an executable device value unless "
+                    "a named owner explicitly declares that default. Execution "
+                    "authority is separate from review progress and review "
+                    "progress never grants it; providers register their own "
+                    "sentinel tables, enforce the ruling on every delivery "
+                    "path, and hold any default that still executes without a "
+                    "declaration on a shrink-only debt baseline."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="shared desired-state delivery lifecycle",
+                            role=OwnerRole.POLICY,
+                            input_names=("vendor delivery status",),
+                        ),
+                        ConcernContract(
+                            name="control-plane target and revision identity",
+                            role=OwnerRole.POLICY,
+                            input_names=("control-plane target identity",),
+                        ),
+                        ConcernContract(
+                            name="vendor status projections and transition guards",
+                            role=OwnerRole.POLICY,
+                            input_names=("vendor delivery status",),
+                        ),
+                        ConcernContract(
+                            name="unset desired-value admissibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=("provider unset-sentinel declaration",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="vendor delivery status",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "Native vendor states passed in by their owning "
+                                "adapter: NetworkOperation, UISP intent, Huawei "
+                                "reconcile sync_status, RouterOS push and push "
+                                "result, ProvisioningRun."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="control-plane target identity",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Provider, target type, target id, and desired "
+                                "revision supplied by the calling owner; the "
+                                "correlation key is derived, never stored here."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="provider unset-sentinel declaration",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Per-field sentinel value, execution authority, "
+                                "and review status declared by the provider's "
+                                "table, e.g. "
+                                "app.services.network.reconcile.sentinels.RULES "
+                                "for Huawei ONTs."
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Pure semantic policy. The module opens no session, "
+                            "reads no table, and writes no state; callers apply "
+                            "its rulings inside their own transactions."
+                        ),
+                        locking=(
+                            "None. Revision conflicts are detected by "
+                            "assert_intent_head against a current revision the "
+                            "caller has already locked."
+                        ),
+                        idempotency=(
+                            "Every function is a pure function of its "
+                            "arguments. Same-phase transitions are explicitly "
+                            "allowed so a retried write re-derives the same "
+                            "ruling."
+                        ),
+                        retries=(
+                            "Safe to re-evaluate without side effects; a retry "
+                            "that carries a superseded revision is rejected by "
+                            "assert_intent_head rather than silently applied."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.control_plane_intent.contract_error",
+                            "network.control_plane_intent.transition_error",
+                            "network.control_plane_intent.head_conflict",
+                        ),
+                        mapping_owner=(
+                            "Calling delivery owners translate these to their own "
+                            "transport outcomes; this module raises typed errors "
+                            "and never HTTP."
+                        ),
+                        fail_closed_on=(
+                            "unknown vendor status",
+                            "impossible phase transition",
+                            "superseded intent revision",
+                            "undeclared unset desired value",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.control_plane_intent",
+                        old_owner=(
+                            "Per-vendor delivery status vocabularies and, for "
+                            "unset desired values, undeclared per-call defaults "
+                            "scattered across composer, adapter, and planner "
+                            "emission sites."
+                        ),
+                        verification=(
+                            "Providers register every substitution and an audit "
+                            "fails when a new default is added without one; the "
+                            "read-only blast-radius detector reports the live "
+                            "population per rule before any disposition changes."
+                        ),
+                        cutover_gate=(
+                            "The provider authority-debt baselines are empty: "
+                            "every substituted default is either a declared "
+                            "owner default, refused here, or delegated to a "
+                            "named refusing owner, with the detector reporting "
+                            "a measured count behind each decision."
+                        ),
+                        fallback_retirement=(
+                            "Provider-local default substitution is retired as "
+                            "each field's disposition is declared; the registry "
+                            "remains the only place a default may be named."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/architecture/test_control_plane_desired_value_policy.py",
+                        "tests/test_reconcile_sentinels.py",
+                    ),
                 ),
             ),
             SOTService(
