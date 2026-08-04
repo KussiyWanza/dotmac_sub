@@ -168,7 +168,9 @@ publishes its listener on host loopback only. A host MTA owns public SMTP
 security and relays only the configured
 `TEAM_INBOX_SMTP_INBOUND_RECIPIENTS` to that port. The runtime refuses to start
 unless the listener is explicitly enabled and the recipient allowlist is
-non-empty.
+non-empty. Its cold-start memory allowance covers importing the complete Inbox
+owner graph; steady-state usage is expected to remain materially below that
+limit.
 
 Deployment has two separate gates:
 
