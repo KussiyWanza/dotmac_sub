@@ -10404,13 +10404,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.prepaid_draft_reconciliation",
                 owns=(
                     "funded onboarding proforma documentary adoption",
+                    "historical paid prepaid invoice identity and coverage repair",
                     "stranded prepaid draft classification",
                     "stranded prepaid draft invoice reconciliation",
                     "reviewed opening funding invoice consumption",
                     "prepaid draft reconciliation exceptions and operator alerts",
                 ),
                 depends_on=(
+                    "access.subscription_lifecycle",
                     "financial.account_credit_applications",
+                    "financial.dunning",
                     "financial.invoices",
                     "financial.ledger",
                     "financial.payments",
@@ -10446,7 +10449,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "document, and the reviewed funding baseline is available. The "
                     "sole payment timestamp and contracted cadence resolve the WAT "
                     "service period; adoption has no economic effect and hands the "
-                    "resulting financial draft back to the ordinary reconciler."
+                    "resulting financial draft back to the ordinary reconciler. "
+                    "A separate reviewed historical repair accepts only one already-"
+                    "paid, periodless document whose sole active allocation is fully "
+                    "backed by a successful unreturned settlement and whose charge "
+                    "matches the current canonical prepaid renewal terms. It writes "
+                    "only missing document identity, entitlement, billing anchor, and "
+                    "the canonical access-restoration consequence with zero economic "
+                    "delta."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -10461,6 +10471,22 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "reviewed opening funding",
                                 "canonical settlement business calendar",
                                 "invoice and payment participant protocols",
+                            ),
+                            canonical_writer="financial.prepaid_draft_reconciliation",
+                        ),
+                        ConcernContract(
+                            name=(
+                                "historical paid prepaid invoice identity and "
+                                "coverage repair"
+                            ),
+                            role=OwnerRole.RECONCILER,
+                            input_names=(
+                                "reviewed reconciliation command",
+                                "canonical paid prepaid document gap",
+                                "canonical prepaid subscription contract",
+                                "canonical paid invoice allocation evidence",
+                                "canonical settlement business calendar",
+                                "financial access restoration protocol",
                             ),
                             canonical_writer="financial.prepaid_draft_reconciliation",
                         ),
@@ -10545,6 +10571,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                         ),
                         AuthorityInput(
+                            name="canonical paid prepaid document gap",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active paid non-proforma invoice with zero balance, "
+                                "one positive unlinked line, missing period identity, "
+                                "exact totals, and no credit-note funding"
+                            ),
+                        ),
+                        AuthorityInput(
                             name="canonical prepaid subscription contract",
                             owner="access.subscription_lifecycle",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
@@ -10564,6 +10600,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "opening-position boundary when present, source "
                                 "payments, and shortfall; pre-boundary mirror residue "
                                 "is excluded"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical paid invoice allocation evidence",
+                            owner="financial.payments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "one active full-value invoice allocation, matching "
+                                "active succeeded Payment and settlement, currency, "
+                                "paid-at instant, and absence of refund or reversal"
                             ),
                         ),
                         AuthorityInput(
@@ -10614,6 +10660,15 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "authoritative post-allocation invoice remainder"
                             ),
                         ),
+                        AuthorityInput(
+                            name="financial access restoration protocol",
+                            owner="financial.dunning",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "fingerprint-bound prepaid restoration preview and "
+                                "confirmation through the subscription lifecycle owner"
+                            ),
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
@@ -10629,6 +10684,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "event, and idempotency evidence; it posts no money and "
                             "creates no entitlement. Its resulting valid prepaid draft "
                             "then enters the existing reviewed settlement command. The "
+                            "historical paid-invoice repair locks and recomputes exact "
+                            "allocation and settlement evidence, then commits document "
+                            "identity, entitlement, reviewed anchor projection, access "
+                            "consequence, audit, event, and idempotency evidence with "
+                            "zero economic delta. The "
                             "funding-change caller uses the same flush-only classifier "
                             "inside its existing transaction."
                         ),
@@ -10686,6 +10746,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "a proforma with a period, linked or multiple lines, "
                             "contract mismatch, existing coverage, multiple payment "
                             "sources, missing payment timestamp, or anchored subscription",
+                            "an already-paid invoice without one exact active full-value "
+                            "allocation and successful unreturned settlement, or whose "
+                            "charge differs from canonical renewal terms",
                             "partial or ambiguous entitlement overlap",
                             "stale preview, changed payment capacity, participant "
                             "remainder mismatch, or already consumed opening funding",
@@ -10694,6 +10757,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     events=EventContract(
                         event_types=(
                             "prepaid_proforma.adopted",
+                            "prepaid_paid_invoice.repaired",
                             "prepaid_draft.reconciled",
                         ),
                         schema_version=1,
@@ -10778,6 +10842,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "Exact funded onboarding proforma adoption, contract and "
                             "baseline mismatch rejection, replay, documentary-only "
                             "intermediate state, subsequent draft settlement, exact "
+                            "already-paid invoice identity/coverage repair, settlement "
+                            "ambiguity rejection, zero economic delta, access consequence, "
                             "fee-inclusive mixed funding, partial funding, exact "
                             "nonzero shortfall, pre-boundary residue absorption, post-boundary "
                             "unbacked or reversed payment evidence, "

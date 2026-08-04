@@ -77,6 +77,7 @@ from app.services.common import (
     to_decimal,
     validate_enum,
 )
+from app.services.domain_errors import DomainError
 from app.services.events import emit_event
 from app.services.events.types import EventType
 from app.services.invoice_classification import collectible_ar_invoice_filter
@@ -133,6 +134,21 @@ class FinancialAccessConsequenceResult:
             for item in self.restoration_outcomes
             if item.get("financially_settled_but_access_blocked")
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FinancialAccessRestorationParticipantCommand:
+    """Typed flush-only restoration request from another deciding owner."""
+
+    account_id: UUID
+    origin: FinancialAccessOrigin
+    idempotency_key: str
+    invoice_id: UUID | None
+    resolved_by: str
+
+
+class FinancialAccessRestorationParticipantError(DomainError):
+    """Stable rejection raised to an owning coordinator."""
 
 
 class DunningStaffAction(StrEnum):
@@ -1576,6 +1592,38 @@ def confirm_financial_access_restoration(
         subscriptions_changed=restored_subscriptions,
         restoration_outcomes=tuple(restoration_outcomes),
     )
+
+
+def confirm_financial_access_restoration_for_owner(
+    db: Session,
+    command: FinancialAccessRestorationParticipantCommand,
+) -> FinancialAccessConsequenceResult:
+    """Apply one typed, flush-only restoration participant request."""
+
+    preview = preview_financial_access_restoration(
+        db,
+        str(command.account_id),
+        origin=command.origin,
+    )
+    try:
+        return confirm_financial_access_restoration(
+            db,
+            str(command.account_id),
+            preview_fingerprint=preview.fingerprint,
+            idempotency_key=command.idempotency_key,
+            origin=command.origin,
+            invoice_id=str(command.invoice_id) if command.invoice_id else None,
+            resolved_by=command.resolved_by,
+        )
+    except HTTPException as exc:
+        raise FinancialAccessRestorationParticipantError(
+            code="financial.dunning.restoration_participant_rejected",
+            message="Financial access restoration evidence was rejected.",
+            details={
+                "account_id": str(command.account_id),
+                "reason": str(exc.detail),
+            },
+        ) from exc
 
 
 def _get_account_email(db: Session, account_id: str) -> str | None:

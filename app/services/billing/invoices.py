@@ -148,6 +148,19 @@ class PrepaidProformaDocumentAdoption:
 
 
 @dataclass(frozen=True, slots=True)
+class PaidPrepaidInvoiceDocumentRepair:
+    """Exact missing identity approved for one historical paid invoice."""
+
+    invoice_id: UUID
+    line_id: UUID
+    subscription_id: UUID
+    billing_period_start: datetime
+    billing_period_end: datetime
+    line_description: str
+    repair_evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class DraftInvoiceLineReplacement:
     """One line in a complete admin-draft replacement request."""
 
@@ -1697,6 +1710,77 @@ class Invoices(ListResponseMixin):
                 "billing_period_start": adoption.billing_period_start.isoformat(),
                 "billing_period_end": adoption.billing_period_end.isoformat(),
                 "prepaid_proforma_adoption_ref": adoption.adoption_evidence_ref,
+            }
+        )
+        line.metadata_ = line_metadata
+        db.flush()
+        return invoice
+
+    @staticmethod
+    def repair_paid_prepaid_document_for_owner(
+        db: Session,
+        repair: PaidPrepaidInvoiceDocumentRepair,
+    ) -> Invoice:
+        """Apply reviewed identity to one already-paid historical invoice.
+
+        This flush-only participant changes no invoice status, balance, total,
+        allocation, or ledger fact. The prepaid reconciliation owner proves the
+        exact settlement and owns the surrounding transaction and consequences.
+        """
+
+        invoice = lock_for_update(db, Invoice, str(repair.invoice_id))
+        if (
+            invoice is None
+            or not invoice.is_active
+            or invoice.status is not InvoiceStatus.paid
+            or invoice.is_proforma
+            or invoice.balance_due != Decimal("0.00")
+            or invoice.billing_period_start is not None
+            or invoice.billing_period_end is not None
+        ):
+            raise InvoiceOwnerError(
+                code="financial.invoice.paid_prepaid_document_repair_rejected",
+                message=(
+                    "Invoice is not an active paid document with missing period identity."
+                ),
+                details={"invoice_id": str(repair.invoice_id)},
+            )
+        if repair.billing_period_end <= repair.billing_period_start:
+            raise InvoiceOwnerError(
+                code="financial.invoice.paid_prepaid_document_repair_rejected",
+                message="Repaired billing period must be positive.",
+                details={"invoice_id": str(repair.invoice_id)},
+            )
+        line = db.scalar(
+            select(InvoiceLine)
+            .where(
+                InvoiceLine.id == repair.line_id,
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        if line is None or line.subscription_id is not None:
+            raise InvoiceOwnerError(
+                code="financial.invoice.paid_prepaid_document_repair_rejected",
+                message="Paid invoice line identity changed after review.",
+                details={
+                    "invoice_id": str(repair.invoice_id),
+                    "line_id": str(repair.line_id),
+                },
+            )
+
+        invoice.billing_period_start = repair.billing_period_start
+        invoice.billing_period_end = repair.billing_period_end
+        line.subscription_id = repair.subscription_id
+        line.description = repair.line_description
+        line_metadata = dict(line.metadata_ or {})
+        line_metadata.update(
+            {
+                "kind": "base_subscription",
+                "billing_period_start": repair.billing_period_start.isoformat(),
+                "billing_period_end": repair.billing_period_end.isoformat(),
+                "paid_prepaid_invoice_repair_ref": repair.repair_evidence_ref,
             }
         )
         line.metadata_ = line_metadata

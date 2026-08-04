@@ -31,6 +31,12 @@ has no service period, and its line has no subscription identity. Generic
 proforma conversion is insufficient: issuing such a document would settle the
 receivable without creating authoritative entitlement or a billing anchor.
 
+A fifth case is the already-converted form of that defect: generic conversion
+made the invoice final, a later exact Payment allocation made it `paid`, but the
+line and period remained unlinked. Ordinary draft adoption cannot reopen a paid
+financial document, and coverage reconciliation cannot infer a subscription
+from customer or timing proximity.
+
 ## Canonical policy
 
 - `financial.invoices` owns invoice lifecycle and document state.
@@ -68,6 +74,21 @@ financial draft is then previewed and settled by the ordinary fingerprint-bound
 draft reconciliation command. A failure between the commands leaves a valid,
 visible prepaid draft that can be safely replayed; it never leaves an issued or
 partially settled invoice.
+
+The owner separately repairs an already-paid unlinked document only when the
+operator supplies the exact invoice/subscription pair and the current snapshot
+proves one positive line, one active full-value allocation, one successful
+unreturned settlement, canonical taxed contract-charge equality, no credit-note
+funding, no entitlement, and no billing anchor. The Payment may fund other
+invoices; the selected allocation alone must exactly equal this invoice total.
+The settlement instant determines the WAT service period.
+
+Confirmation posts no money and never changes invoice status, balance, total,
+or allocation. A flush-only invoice participant writes missing line and period
+identity; the owner creates the exact entitlement, invokes the renewal owner's
+reviewed anchor projection, and submits a typed flush-only restoration command
+to the financial-access owner. Those projections, their consequence evidence,
+audit, event, metadata, and idempotency reservation commit atomically.
 
 An existing prepaid draft has first claim on the service-period document
 boundary. A funding-change consequence checks it before an invoice-less direct
@@ -177,6 +198,27 @@ poetry run python -m scripts.billing.reconcile_prepaid_drafts \
 After adoption, run the ordinary invoice preview and apply shown below, using
 the previewed settlement payment timestamp as `--effective-at`.
 
+For an already-paid historical document, use the separate operation. It
+repairs identity and projections in one reviewed command and never accepts an
+operator-chosen service date:
+
+```bash
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-paid-invoice \
+  --invoice-id INVOICE_UUID \
+  --subscription-id SUBSCRIPTION_UUID
+
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --repair-paid-invoice \
+  --apply \
+  --invoice-id INVOICE_UUID \
+  --subscription-id SUBSCRIPTION_UUID \
+  --fingerprint REVIEWED_SHA256 \
+  --idempotency-key paid-prepaid-invoice-INVOICE_UUID-v1 \
+  --actor operator@example.com \
+  --reason "Reviewed exact paid invoice, allocation, and settlement evidence"
+```
+
 Apply is limited to one reviewed invoice and requires:
 
 - the exact preview fingerprint;
@@ -222,16 +264,19 @@ which approved path created it.
    time; adopt one canary and verify that only documentary identity changed.
 4. Preview the adopted financial draft and settle it through the ordinary
    reconciler; verify entitlement and billing anchor before continuing.
-5. Apply exact payment-backed cases in small canary batches, one invoice per
+5. Preview already-paid unlinked documents one exact invoice/subscription pair
+   at a time; repair one canary and verify zero economic delta, entitlement,
+   anchor, access consequence, and unchanged allocation before continuing.
+6. Apply exact payment-backed cases in small canary batches, one invoice per
    command.
-6. Apply mixed settlement/opening cases only where the signed baseline and
+7. Apply mixed settlement/opening cases only where the signed baseline and
    approval evidence are verified.
-7. Apply exact direct-renewal overlap closures separately.
-8. Reconstruct legacy/unbacked funding only through its evidence owner; then
+8. Apply exact direct-renewal overlap closures separately.
+9. Reconstruct legacy/unbacked funding only through its evidence owner; then
    re-preview.
-9. Leave insufficient, multiple-draft, reversed/refunded, and ambiguous cases
+10. Leave insufficient, multiple-draft, reversed/refunded, and ambiguous cases
    unchanged.
-10. After every canary, verify invoice and ledger facts, opening consumption,
+11. After every canary, verify invoice and ledger facts, opening consumption,
    entitlement and billing anchor, enforcement locks, billing events, and
    RADIUS access. Stop on any mismatch.
 
