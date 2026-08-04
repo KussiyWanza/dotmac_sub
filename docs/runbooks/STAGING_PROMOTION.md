@@ -227,7 +227,9 @@ for the exact same commit, rejects stale or failed candidates, verifies that
 Celery Beat is absent, verifies the private `10.120.121.20:8001` binding, and
 then invokes `scripts/deploy_staging.sh`. That staging-only adapter proves the
 exact environment, server name, and private health endpoint before delegating
-to the hardened deployment owner.
+to the hardened deployment owner. The deployment owner independently repeats
+the GitHub API decision for the image's full OCI revision and requires green
+`CI` and `Mobile CI` push runs on `dev` before any database or service change.
 
 ## Staging database-backup policy
 

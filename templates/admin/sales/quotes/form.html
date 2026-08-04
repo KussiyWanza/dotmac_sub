@@ -41,7 +41,7 @@
     {% endfor %}
 
     <form method="post" action="{{ action_url }}"
-          x-data="quoteAuthoringForm({{ quote_form.items|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default('0.00')|tojson }})"
+          x-data='quoteAuthoringForm({{ quote_form["items"]|tojson }}, {{ suggestions|tojson }}, {{ tax_rates|tojson }}, {{ quote_form.tax_rate_id|tojson }}, {{ quote_form.manual_tax_total|tojson }}, {{ quote_form.initial_subtotal|default("0.00")|tojson }})'
           @submit="handleSubmit($event)"
           class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
         {% include "components/forms/csrf_input.html" %}
