@@ -811,10 +811,16 @@ coherent reviewable slice with its own forward-fix plan.
   Existing money owners stage shadow posting groups in their current atomic
   transactions.
 - Backfill:
-  - convert reviewed opening positions into opening posting groups;
+  - derive every migrated prepaid opening from the complete frozen Splynx
+    transaction set, where credits minus debits is the target and a complete
+    empty set is zero;
+  - advance that source position with canonical Sub-native facts after the
+    fixed handoff, then convert only the residual not already represented in
+    the subledger into an opening posting group;
   - map current invoices, settlements, applications, credit notes, write-offs,
     adjustments, prepaid consumption, refunds, and reversals;
-  - quarantine ambiguity for finance review.
+  - fail the whole opening batch on missing customer coverage, duplicate or
+    mismatched identity, malformed history, or an unreconciled transaction net.
 - Shadow: compare current customer financial position and new subledger position
   per account/currency and semantic lane.
 - Gate:
@@ -836,11 +842,25 @@ Current prepaid cutover implementation:
   hourly runner and funding-change event consumer enter that boundary on clean
   sessions, and exact command replay cannot manufacture a posting for a
   pre-shadow renewal.
+- `billing.splynx_history_opening` is the cutover-only resolver over the frozen,
+  isolated final Splynx audit restore. For every migrated account it requires
+  one matching source row and proves the active transaction net equals the
+  final source position. A complete empty transaction set is exactly zero. A
+  native account created after the handoff has an explicit zero history
+  component and advances only from canonical native facts. The complete result
+  is fingerprinted; it has no per-account unknown, guessed-zero, or quarantine
+  outcome.
+- The signed reconstruction artifact covers the exact current prepaid funding
+  cohort. Missing, duplicate, mismatched, malformed, or unreconciled evidence
+  aborts the entire artifact. The materializer rejects signed partial-subset
+  manifests. After materialization, Splynx remains retired as authority and the
+  evidence reader is not a runtime balance path.
 - `billing.shadow_verification` records an exhaustive, fingerprinted opening
-  proposal for the prepaid funding cohort. It excludes the evidence-quarantined
-  accounts, records their exact identities, and calculates each eligible
-  residual as the verified legacy position minus already-recorded shadow
-  position. Operator and finance approvals are separate immutable facts.
+  proposal for the prepaid funding cohort. A completion run fingerprints and
+  preserves existing immutable openings and proposes only accounts still
+  missing an opening. Each new residual is the verified history-derived target
+  minus the shadow value already represented at the cutoff. Operator and
+  finance approvals are separate immutable facts.
 - `financial.customer_subledger_opening_positions` is the sole migration writer.
   It converts only the approved residuals into immutable opening evidence and
   posting groups. Zero residuals still receive an explicit zero-effect group;
@@ -855,12 +875,23 @@ Current prepaid cutover implementation:
   Historical payments without settlement evidence retain a bounded
   gross-minus-refund fallback until reviewed reconciliation; the resolver never
   guesses net value from a fee field alone.
-- The one irreversible authority record is bound to that exact approved parity
-  fingerprint. Default position reads then include historical shadow groups and
-  new authoritative groups; new postings switch to authoritative without a
-  race gap. The evidence-quarantined cohort remains outside the opening capture,
-  must retain open finance-owned work items, and is rejected fail-closed by the
-  prepaid target policy instead of being evaluated from a partial position.
+- Once customer-subledger authority is active, the immutable, finance-approved
+  `CustomerSubledgerOpeningPosition.legacy_position` and `occurred_at` become
+  the legacy verifier's temporal baseline. Facts at or before that opening keep
+  the exact financial meaning approved during cutover; only facts crossing the
+  opening instant adopt current native-event semantics. This verifier rule is
+  read-only: it never rewrites an opening, changes authority, or manufactures a
+  posting.
+- The one irreversible authority record is bound to its approved parity
+  fingerprint. Default position reads include historical shadow groups and new
+  authoritative groups. Because production authority is already active, the
+  complete-history completion does not reactivate or rewrite it: it appends the
+  missing reviewed residual openings and then proves full-cohort parity. There
+  is no permanent excluded cohort. Accounts created after authority activation
+  start at authoritative zero and accumulate native postings without a
+  migration opening. A later source error is corrected forward
+  through typed, reviewed reversal/adjustment owners; immutable openings and
+  historical postings are never edited.
 - This cutover is limited to the operational prepaid position cohort. The
   legacy formulas and sweeps named in later phases are not retired merely by
   creating the Phase 3 authority record.

@@ -1,109 +1,129 @@
-# Customer subledger prepaid cutover
+# Customer subledger prepaid opening completion
 
-This runbook operates the ADR 0007 Phase 3 prepaid-position cutover. The
-checked-in command owners, not this document or the shell, decide eligibility,
-write openings, and activate authority.
+This runbook operates ADR 0007 Phase 3 for the exact prepaid funding cohort.
+The checked-in resolver and command owners, not shell arithmetic, own every
+target, residual, posting, and approval.
 
-## Preconditions
+## Invariants
 
-- Run only the immutable production image that passed the complete promotion
-  train and schema verification.
-- Confirm schema revision 457 is at head and all workers and Beat are healthy.
-- Use one release-engineering session. Do not run a second copy of these
-  commands in parallel.
-- Keep the existing `prepaid-funding:opening-debt:` work items open for every
-  evidence-quarantined account. Never assign zero or infer an opening from a
-  catalog price.
-- Choose a timezone-aware cutoff and an observation window beginning no earlier
-  than the deployment of the owner-wrapped producer code being approved.
+- Run only the immutable image that completed the prescribed promotion train.
+- Use one release-engineering session and stable, purpose-specific idempotency
+  keys. Never run a second copy of the commands in parallel.
+- The source opening for each migrated account is the mathematical net of its
+  complete frozen Splynx transaction set. A complete empty set is zero.
+- A customer created natively after the fixed handoff has an explicit zero
+  history component and is advanced only by canonical Sub-native facts.
+- Missing cohort coverage, duplicate or mismatched identity, malformed rows,
+  and an unreconciled transaction net abort the whole artifact. There is no
+  per-account unknown, default-zero fallback, or partial-subset materialization.
+- The target at the reviewed instant is the frozen source position plus
+  canonical native facts crossing the handoff. The opening posting is only the
+  residual target minus the value already present in the subledger, so forward
+  postings are not counted twice.
+- Existing immutable openings and the irreversible authority record are never
+  rewritten. A later mistake is corrected forward through a typed, reviewed
+  reversal or adjustment owner.
 
-All examples use:
+All command examples use the deployed application container. The subledger
+commands are under:
 
 ```text
 python -m scripts.billing.billing_target_shadow
 ```
 
-inside the deployed application container. Supply stable, unique idempotency
-keys; never reuse a key for a different run or approval.
+## 1. Build and review the complete source artifact
 
-## 1. Record and review the opening proposal
+In the isolated audit restore, load the retained final Splynx snapshot and run
+the checked-in reconstruction. Confirm that `audit_splynx_final_balances` was
+produced from the complete source transaction set and that the fixed handoff is
+`2026-06-18T00:00:00Z`.
 
-Run `preview-subledger-openings` with the exact code SHA and schema revision.
-Review the durable run's source/result fingerprints, cohort counts, per-currency
-totals, every non-zero residual, and the complete quarantine set. The command
-creates no posting and moves no authority.
+Run `export_prepaid_funding_snapshot.py` with a timezone-aware review instant,
+source label, output path, and OpenBao signing-key reference. The command must
+return one signed target for every current prepaid funding candidate. Review:
 
-Record operator approval, then finance approval, with
-`approve-verification --role operator` and `--role finance`. Finance approval
-fails until the operator approval exists. Neither approval can be replaced.
+- candidate count equals account-row count;
+- blocker count is zero;
+- the candidate and source-history fingerprints are stable;
+- every migrated row is source-identity matched and transaction-reconciled;
+- every empty history has zero transactions, null transaction net, and zero
+  final position;
+- all native-after-handoff components and total targets are plausible.
 
-## 2. Capture only the approved fingerprint
+Any source-integrity error means stop and correct/rebuild the isolated source
+snapshot. Do not create a partial manifest or edit a generated balance.
 
-Run `capture-subledger-openings` with the opening run ID, exact result
-fingerprint, durable finance review reference, actor, and idempotency key. The
-owner atomically writes one immutable opening row and one posting group per
-eligible account. A staging failure rolls back the entire cohort.
+## 2. Materialize the exact reviewed targets
 
-Confirm:
+Dry-run `materialize_prepaid_funding_reconstruction.py` against the live cohort.
+The live cohort hash must equal the signed hash. Review create, replace, and
+unchanged counts, then apply with the exact normalized manifest hash, a
+non-secret finance evidence reference, approving actor, and the required final
+cutover acknowledgement.
 
-- captured count equals the eligible count;
-- positive, negative, and zero totals agree with the reviewed proposal;
-- quarantined accounts received no opening;
-- `authority_moved` remains false.
+This supersedes the active reconstruction baseline for the complete cohort.
+For accounts that already have immutable subledger openings, verifier reads
+continue from those openings; the new baseline does not rewrite historical
+money. For a missing-opening account, the new baseline supplies its exact
+history-derived target.
 
-## 3. Record the post-opening parity gate
+## 3. Preview and capture only missing openings
 
-Run `verify-subledger-parity` with the approved observation window, current code
-SHA, schema revision, and currency. Review the durable detail rows, not only the
-aggregate counts.
+Run `preview-subledger-openings` with the exact deployed code SHA, schema
+revision, and reviewed cutoff. The durable result contract must prove:
 
-The activation gate requires all of the following:
+- the opening-required cohort contains exactly accounts that existed at
+  subledger authority activation;
+- `cohort_count = existing_opening_count + capture_eligible_count`;
+- `covered_count = cohort_count`;
+- source-incomplete and quarantined counts are zero;
+- every existing opening is fingerprinted unchanged;
+- each proposed residual equals verified target minus shadow position at the
+  cutoff;
+- `postings_manufactured=false` and `authority_moved=false`.
 
-- `variance_count = 0` for every eligible account/currency;
-- `unwrapped_fact_count = 0`;
-- no missing or duplicate opening;
-- no duplicate posting for an observation-window fact;
-- `blocker_count = 0`;
-- every quarantined account is still named and owns an open
-  `prepaid-funding:opening-debt:` finance work item.
+Review every non-zero residual and the aggregate positive/negative/zero totals.
+Record separate operator and finance approvals on that exact fingerprint, then
+run `capture-subledger-openings`. The owner atomically writes one immutable
+opening row and one typed posting group per missing account. A failure rolls
+back the complete capture.
 
-Any failure means stop, fix the owning producer or evidence, deploy the forward
-fix through the complete train, and record a new run. Do not waive or edit the
-run.
+## 4. Prove full-cohort parity
 
-## 4. Approve and activate once
+Run `verify-subledger-parity` for the approved window. The completion gate is:
 
-Record operator and finance approval on the exact parity run. Then run
-`activate-subledger-authority` with its run ID, result fingerprint, durable
-review reference, actor, and a fresh idempotency key.
+- every opening-required account has exactly one opening, while later native
+  accounts start from authoritative zero without a migration opening;
+- per-account/currency/lane variance is zero;
+- missing and duplicate openings are zero;
+- every observation-window money fact has exactly one posting group;
+- unwrapped and duplicate fact counts are zero;
+- blocker and expected-difference counts are zero.
 
-Activation is irreversible. Exact replay returns the existing cutover; a
-different run or fingerprint fails closed. After activation:
+Any failure is fixed at its named owner and replayed through a new immutable
+run. Do not waive or edit evidence.
 
-- default subledger reads combine historical shadow groups with new
-  authoritative groups;
-- every newly staged group is authoritative;
-- explicit migration reads may still select one authority for forensic work;
-- prepaid target-policy evaluation of an opening-quarantined account raises
-  `collections.prepaid_policy.opening_position_quarantined` and names its work
-  item fingerprint.
+## 5. Authority handling and post-completion proof
 
-## 5. Verify after activation
+Production customer-subledger authority is already active. Do not call
+`activate-subledger-authority` again; the existing irreversible record must be
+unchanged. A fresh installation may activate only from an approved, zero-
+blocker, complete-cohort parity run. An older run containing excluded accounts
+is rejected even if it has work items.
 
-Immediately verify the cutover record, a known eligible account, a quarantined
-account, and the next real money transition. The eligible default position must
-equal the verified legacy position; the quarantined account must fail closed;
-the new posting must have authoritative authority and the correct typed source,
-producer, effects, and instant.
+Immediately prove:
 
-For a provider settlement, compare the posting against the structural
-`PaymentSettlement.amount`, not the gross `Payment.amount`. The gross charge may
-include a provider fee that is cash/accounting evidence but is not customer
-funding. Require scalar and bounded-cohort position parity after the first live
-settlement, including a non-zero-fee settlement when the active gateway charges
-one; a zero-fact or fee-free window alone does not close this semantic gate.
+- the authority record ID and activation instant are unchanged;
+- opening-required count equals opening count, source-incomplete count is zero,
+  and no candidate is blocked from billing functions;
+- a known former opening-debt account resolves through the authoritative
+  subledger and billing functions without a quarantine error;
+- scalar and bounded-cohort positions equal the verified target;
+- the next real money transition produces one authoritative typed posting;
+- provider settlement value uses `PaymentSettlement.amount`, never gross
+  gateway charge including provider fee.
 
-Continue monitoring posting coverage and per-lane parity. Recovery after
-activation is a forward owner correction or code fix. Never delete the cutover,
-rewrite an opening, restore a fallback balance reader, or manufacture a missing
-posting from an unreviewed historical fact.
+Continue normal posting-coverage and per-lane monitoring. After the complete
+proof, resolve the obsolete opening-debt work items and retire the one-time
+Splynx history reader and partial-blocker workflow. Splynx remains historical
+evidence, not runtime authority.

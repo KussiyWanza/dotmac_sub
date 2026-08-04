@@ -365,6 +365,27 @@ security gate.
 
 ## 15. Tests and Definition of Done
 
+Alembic is the source of truth for the deployed database schema. A test may
+claim integration, migration, database-constraint, concurrency, transaction,
+or production-parity evidence only when it runs on PostgreSQL/PostGIS whose
+schema was created by the real checked-in migration chain and verified at the
+exact candidate head. `Base.metadata.create_all()`, SQLite substitutes, and
+hand-created tables are useful only for explicitly non-authoritative fast unit
+tests; they cannot satisfy deployed-schema acceptance.
+
+The canonical integration command migrates one explicitly disposable test
+database once per environment before pytest starts. Tests then isolate their
+state with transactions/savepoints. Replaying the complete chain before every
+test is unnecessary, while silently accepting an unmigrated target is
+forbidden. Integration fixtures fail rather than skip when PostgreSQL or the
+expected Alembic head is absent. Reports name the engine, migration starting
+point and ending head instead of saying only "PostgreSQL".
+
+Fresh-baseline and incremental upgrade tests answer different questions. When
+schema behavior changes, retain the fresh deployable-baseline-to-head gate and
+also exercise the real predecessor-to-head boundary. A squashed bootstrap that
+constructs current model metadata cannot substitute for the latter.
+
 Each ownership slice includes:
 
 - command/query contract tests;

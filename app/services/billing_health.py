@@ -63,7 +63,7 @@ from app.services.prepaid_enforcement_planner import (
 )
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
-    prepaid_funding_quarantined_account_ids,
+    prepaid_funding_incomplete_source_account_ids,
 )
 
 # Alert thresholds. Conservative defaults; tune via ops experience.
@@ -634,15 +634,15 @@ def negative_prepaid_balance_exposure(
 ) -> tuple[int | None, Decimal | None, int]:
     """Negative prepaid wallet exposure over the cohort enforcement acts on.
 
-    Returns ``(negative count, absolute total, funding-quarantined count)``.
+    Returns ``(negative count, absolute total, incomplete-source count)``.
 
     This is a monitoring signal only; the permanent prepaid sweep owns warning,
     suspension, and restoration consequences. It must therefore measure the
-    same cohort the sweep acts on: the sweep excludes funding-quarantined
-    accounts BEFORE resolving any balance, so measuring them here would report
+    same cohort the sweep acts on: the sweep excludes incomplete-source
+    accounts before resolving any balance, so measuring them here would report
     exposure for accounts that can never be enforced -- and would hit the
     fail-closed resolver on accounts the sweep deliberately never asks about.
-    Quarantined accounts are reported as their own count instead of being
+    Incomplete-source accounts are reported as their own count instead of being
     silently folded into (or silently dropped from) the exposure figure.
     """
     account_ids = set(
@@ -657,10 +657,10 @@ def negative_prepaid_balance_exposure(
     )
     # Same two owning helpers, same order, as collections.prepaid_balance_sweep:
     # one cohort definition, not two.
-    quarantined_ids = prepaid_funding_quarantined_account_ids(
+    incomplete_source_ids = prepaid_funding_incomplete_source_account_ids(
         db, account_ids & candidate_prepaid_funding_account_ids(db)
     )
-    measurable_ids = account_ids - quarantined_ids
+    measurable_ids = account_ids - incomplete_source_ids
     count = 0
     total = Decimal("0.00")
     try:
@@ -676,22 +676,22 @@ def negative_prepaid_balance_exposure(
         # Degrade this one signal instead. Returning None marks it unavailable
         # so the gauge is omitted rather than reported as a false zero, and the
         # rest of the snapshot still publishes.
-        # Retained as a backstop. Quarantine filtering above removes the known
+        # Retained as a backstop. Source filtering above removes the known
         # un-baselined cohort, so reaching here means an account outside that
         # cohort cannot be resolved -- unexpected, and worth an anomaly, but
         # still never a reason to take the whole snapshot down.
         logger.exception(
             "billing_negative_prepaid_exposure_unavailable: prepaid funding "
-            "baseline missing outside the quarantined cohort; reporting this "
+            "baseline missing outside the source-incomplete cohort; reporting this "
             "signal as unavailable and publishing the rest of the snapshot"
         )
-        return None, None, len(quarantined_ids)
+        return None, None, len(incomplete_source_ids)
     for account_id in measurable_ids:
         balance = balances[account_id]
         if balance < Decimal("0.00"):
             count += 1
             total += abs(balance)
-    return count, total, len(quarantined_ids)
+    return count, total, len(incomplete_source_ids)
 
 
 def billing_profile_integrity(db: Session) -> tuple[int, int]:

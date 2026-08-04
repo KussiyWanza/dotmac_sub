@@ -246,9 +246,9 @@ do not hand-edit these rows.
 | `customer.name_remediation` | July 20 CRM name remediation manifest execution | `command_writer` | CRM identity-change audit evidence ← `observability.audit_log`<br>legacy Subscriber name state ← `customer.accounts` | `owner_managed` | `complete` | customer operations | `docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`tests/test_crm_customer_name_repair.py` |
 | `customer.name_remediation` | PII-free CRM name repair manifest generation | `command_writer` | CRM identity-change audit evidence ← `observability.audit_log`<br>legacy Subscriber name state ← `customer.accounts` | `owner_managed` | `complete` | customer operations | `docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`tests/test_crm_customer_name_repair.py` |
 | `customer.name_repairs` | evidence-bound legacy Subscriber name repair | `command_writer` | approved customer-name repair manifest ← `customer.name_repairs`<br>canonical legacy Subscriber name state ← `customer.accounts`<br>immutable CRM overwrite audit evidence ← `observability.audit_log`<br>canonical Party identity binding ← `party.registry` | `owner_managed` | `complete` | customer operations | `docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_restore_crm_placeholder_identity.py`<br>`tests/architecture/test_crm_customer_boundary.py` |
-| `customer.financial_position` | distinct invoice-receivable and prepaid-funding summaries | `resolver` | reviewed prepaid opening position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
-| `customer.financial_position` | customer-visible financial position | `resolver` | reviewed prepaid opening position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
-| `customer.financial_position` | bounded cohort financial projections | `resolver` | reviewed prepaid opening position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
+| `customer.financial_position` | distinct invoice-receivable and prepaid-funding summaries | `resolver` | reviewed prepaid reconstruction position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
+| `customer.financial_position` | customer-visible financial position | `resolver` | reviewed prepaid reconstruction position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
+| `customer.financial_position` | bounded cohort financial projections | `resolver` | reviewed prepaid reconstruction position ← `financial.prepaid_funding_reconstruction`<br>canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical renewal debit evidence ← `financial.ledger`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
 | `customer.financial_position` | currency-typed complete billing headline projection | `resolver` | canonical payment and refund documents ← `financial.payments`<br>canonical collectible invoice documents ← `financial.invoices`<br>canonical paid prepaid consumption documents ← `financial.invoices`<br>canonical credit and adjustment evidence ← `financial.ledger` | `read_only` | `complete` | finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/FINANCIAL_ACCESS_ENFORCEMENT.md`<br>`tests/test_customer_financial_ledger.py`<br>`tests/architecture/test_prepaid_funding_reconstruction_ownership.py` |
 | `customer.account_status_actions` | administrative account-status impact preview | `resolver` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/test_web_customer_details.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
 | `customer.account_status_actions` | administrative account-bound idempotent status confirmation | `application_coordinator` | authenticated administrative status context ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>signed account-status preview evidence ← `customer.account_status_actions`<br>account-bound status idempotency evidence ← `customer.account_status_actions`<br>account-status action protocol ← `customer.account_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_account_status_commands.py`<br>`tests/test_web_customer_details.py`<br>`tests/architecture/test_generic_lifecycle_edit_boundary.py` |
@@ -258,6 +258,7 @@ do not hand-edit these rows.
 | `customer.reseller_status_actions` | account-bound idempotent status confirmation | `application_coordinator` | authenticated reseller status command context ← `customer.identity_scope`<br>canonical reseller account scope ← `customer.identity_scope`<br>canonical account and subscription lifecycle state ← `access.subscription_lifecycle`<br>canonical enforcement lock and login-conflict state ← `access.subscription_lifecycle`<br>signed status preview evidence ← `customer.reseller_status_actions`<br>account-bound status idempotency evidence ← `customer.reseller_status_actions`<br>reseller account-status action protocol ← `customer.reseller_status_actions` | `coordinator_managed` | `complete` | customer operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/adr/0002-owner-command-transaction-boundary.md`<br>`tests/test_reseller_gaps.py`<br>`tests/test_reseller_portal_services.py`<br>`tests/architecture/test_reseller_status_action_boundary.py` |
 | `customer.service_level` | per-subscription SLA policy resolution and period score | `resolver` | qualifying downtime intervals ← `network.customer_outage_accrual`<br>offer SLA policy inputs ← `service_intent.catalog_policy` | `read_only` | `shadowing` | customer operations | `docs/designs/OUTAGE_SLA_SPINE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_customer_service_level.py` |
 | `customer.field_job_chat` | subscriber-scoped job chat read and send | `transport` | authenticated subscriber identity ← `customer.identity_scope`<br>canonical job chat conversation ← `communications.team_inbox_field_job`<br>canonical work order ownership ← `operations.work_orders` | `not_applicable` | `native` | customer experience platform | `docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_field_job_chat.py` |
+| `billing.splynx_history_opening` | complete Splynx-history customer opening target | `resolver` | frozen Splynx transaction-net evidence ← `external:splynx_final_snapshot`<br>canonical post-handoff native financial facts ← `financial.ledger`<br>canonical migrated customer identity ← `customer.accounts` | `read_only` | `cutover_ready` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/designs/SPLYNX_RETIREMENT.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_splynx_history_opening.py`<br>`tests/test_billing_alignment_audit.py`<br>`tests/test_subledger_opening_positions.py` |
 | `billing.addon_contract_backfill` | recurring add-on contract migration snapshot | `observation_collector` | legacy recurring add-on facts ← `financial.addon_purchases`<br>recorded billing contract boundary ← `billing.contracts` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.contracts` | versioned billing contract terms | `authoritative_record` | accepted commercial order line ← `sales.orders`<br>canonical subscription projection ← `access.subscription_lifecycle`<br>effective tax treatment inputs ← `financial.tax_configuration`<br>recurring add-on migration output ← `billing.addon_contract_backfill`<br>live recurring add-on purchase output ← `financial.addon_purchases`<br>recorded billing contract terms ← `billing.contracts`<br>receipted owner-output deliveries ← `events.owner_outputs`<br>exact pending-terms time trigger ← `runtime.durable_timers` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_contracts.py`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/test_api_me_addons.py`<br>`tests/architecture/test_billing_target_architecture.py` |
 | `billing.contracts` | billing contract version supersession | `command_writer` | recorded billing contract terms ← `billing.contracts`<br>exact pending-terms time trigger ← `runtime.durable_timers`<br>receipted owner-output deliveries ← `events.owner_outputs` | `owner_managed` | `shadowing` | billing and finance operations | `docs/adr/0007-end-to-end-billing-target-architecture.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`tests/test_billing_contracts.py`<br>`tests/test_billing_addon_contract_backfill.py`<br>`tests/test_api_me_addons.py`<br>`tests/architecture/test_billing_target_architecture.py` |
@@ -1072,17 +1073,20 @@ detailed security and delivery boundary is
    receivables and prepaid service funding as separate values; it does not net
    them into a generic balance or absorb payment lifecycle or service-access
    state. Prepaid funding delegates to
-   `financial.prepaid_funding_reconstruction`: one reviewed opening position at
-   the final authority-cutover timestamp plus canonical native events strictly
-   after that timestamp. There is no Splynx/legacy fallback or authority toggle.
-   The opening-position manifest covers the exact funding cohort and is
-   Ed25519 sealed against an OpenBao-owned public trust reference before
-   materialization. Its default is blocker-free. An explicitly approved partial
-   cutover binds verified rows and every quarantined account/reason under the
-   same signature; quarantined accounts receive neither a guessed balance nor a
-   money-based access consequence.
-   A pre-cutover account without an approved opening balance fails closed; an
-   account created after cutover starts at zero and accumulates native events.
+   `financial.prepaid_funding_reconstruction`: one reviewed opening target at
+   the review timestamp. `billing.splynx_history_opening` derives the migrated
+   component from credits minus debits over the complete frozen Splynx
+   transaction set and then adds canonical Sub-native facts strictly after the
+   fixed handoff. A complete empty source set is mathematically zero. A native
+   account created after the handoff has an explicit zero history component and
+   accumulates only canonical native facts. There is no Splynx/legacy runtime
+   fallback or authority toggle.
+   The opening-position manifest covers the exact funding cohort and is Ed25519
+   sealed against an OpenBao-owned public trust reference before
+   materialization. Missing customer coverage, duplicate or mismatched identity,
+   malformed history, and an unreconciled transaction net abort the whole
+   artifact. Signed partial subsets are rejected; no account receives an
+   unknown, a guessed zero, or a permanent quarantine.
    Customer statements and scalar funding previews use that reviewed position
    as their opening event. A native fact crosses that boundary when its
    economic timestamp or its Sub `created_at` is later, so late-entered,
@@ -1092,8 +1096,9 @@ detailed security and delivery boundary is
    combines payment-backed account credit with reviewed opening funding:
    pre-boundary payment and ledger rows are absorbed by the signed opening and
    cannot be reused or reclassified as current unbacked credit. Unbacked facts
-   crossing the boundary still fail closed, and accounts without an active
-   baseline retain the generic all-history account-credit classification.
+   crossing the boundary still fail closed. A missing active baseline is a
+   source-cohort defect and blocks complete-history preview/parity; it never
+   selects a second all-history money formula.
    Portal outstanding-balance views consume its collection-blocking
    value; a capped invoice display list never caps or redefines the amount.
    Billing reporting applies the same collectible/non-proforma boundary and
@@ -1125,9 +1130,7 @@ detailed security and delivery boundary is
    Activation does not reset an older low-balance timer. A resolved zero-day
    grace policy is actionable on the first eligible sweep; an explicit nonzero
    account or policy-set grace remains authoritative. Supplied snapshots are
-   complete-or-error by default. A partial cutover must cryptographically
-   partition the exact funding cohort into materialized and quarantined IDs and
-   never fill either set from a different balance source. The broader repair
+   complete-or-error. Partial-subset materialization is forbidden. The broader repair
    cohort may clear stale prepaid timers/locks on non-prepaid or service-less
    accounts without creating a funding baseline. Lock repair remains
    reason-scoped: it resolves only the obsolete prepaid lock, preserves every
@@ -1177,9 +1180,9 @@ detailed security and delivery boundary is
    never guesses a price or suspends the account from incomplete terms.
    The scheduled adapter is permanent and refuses anchors more than two days
    stale; historical cycles require a reviewed hash-bound reconciliation plan.
-   Reconstruction-quarantined subscriptions and unexpected account-level
-   missing baselines are reported and left untouched without aborting unrelated
-   verified renewals. Missing global authority still blocks the complete pass.
+   A missing account-level baseline is import-integrity debt that must be
+   completed from the signed history artifact; it is not a permanent renewal
+   disposition. Missing global authority still blocks the complete pass.
 10. `financial.billing_reporting` (`app/services/billing/reporting.py`) owns
    every money figure the admin reports and overview render: overview and
    payments/collections summaries, AR aging and outstanding receivables,

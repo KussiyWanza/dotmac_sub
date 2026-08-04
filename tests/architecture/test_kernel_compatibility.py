@@ -304,29 +304,43 @@ def test_app_import_graph_is_kernel_free() -> None:
 def test_app_middleware_and_routes_are_kernel_free_and_prefixes_unchanged() -> None:
     """The unchanged Sub app: no kernel middleware, no kernel endpoints, and
     the top-level route prefix set is exactly the reviewed pin."""
-    from app.main import app
-
-    for middleware in app.user_middleware:
-        assert not middleware.cls.__module__.startswith("dotmac_kernel"), middleware
-        dispatch = middleware.kwargs.get("dispatch")
-        if dispatch is not None:
-            assert not dispatch.__module__.startswith("dotmac_kernel"), middleware
-
-    prefixes = set()
-    for route in app.routes:
-        path = getattr(route, "path", "")
-        segments = path.split("/")
-        prefixes.add("/" + segments[1] if len(segments) > 1 else path)
-        endpoint = getattr(route, "endpoint", None)
-        if endpoint is not None:
-            module = getattr(endpoint, "__module__", "")
-            assert not module.startswith("dotmac_kernel"), (
-                f"kernel endpoint mounted at {path}"
-            )
-
-    assert prefixes == EXPECTED_ROUTE_PREFIXES, (
-        "top-level route prefixes changed with the kernel installed — a new "
-        "prefix must be a reviewed change to this pin:\n"
-        f"added: {sorted(prefixes - EXPECTED_ROUTE_PREFIXES)}\n"
-        f"removed: {sorted(EXPECTED_ROUTE_PREFIXES - prefixes)}"
+    expected = repr(set(EXPECTED_ROUTE_PREFIXES))
+    result = subprocess.run(  # noqa: S603 — fixed argv, our own interpreter
+        [
+            sys.executable,
+            "-c",
+            (
+                "from app.main import app\n"
+                f"expected = {expected}\n"
+                "for middleware in app.user_middleware:\n"
+                "    module = middleware.cls.__module__\n"
+                "    assert not module.startswith('dotmac_kernel'), middleware\n"
+                "    dispatch = middleware.kwargs.get('dispatch')\n"
+                "    if dispatch is not None:\n"
+                "        module = dispatch.__module__\n"
+                "        assert not module.startswith('dotmac_kernel'), middleware\n"
+                "prefixes = set()\n"
+                "for route in app.routes:\n"
+                "    path = getattr(route, 'path', '')\n"
+                "    segments = path.split('/')\n"
+                "    prefixes.add('/' + segments[1] if len(segments) > 1 else path)\n"
+                "    endpoint = getattr(route, 'endpoint', None)\n"
+                "    if endpoint is not None:\n"
+                "        module = getattr(endpoint, '__module__', '')\n"
+                "        assert not module.startswith('dotmac_kernel'), (\n"
+                "            f'kernel endpoint mounted at {path}'\n"
+                "        )\n"
+                "assert prefixes == expected, (\n"
+                "    'top-level route prefixes changed with the kernel installed — '"
+                "    'a new prefix must be a reviewed change to this pin:\\n'\n"
+                "    f'added: {sorted(prefixes - expected)}\\n'\n"
+                "    f'removed: {sorted(expected - prefixes)}'\n"
+                ")\n"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
+    assert result.returncode == 0, result.stderr

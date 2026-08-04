@@ -12,18 +12,13 @@ consequence follows:
 * enforcement services apply profile, activation, shield, health, and lifecycle
   policy from config-owned inputs.
 
-The default export is complete-or-error. An explicitly requested cohort-scoped
-cutover may instead seal only accounts with complete replay evidence and bind
-the excluded account IDs and reason codes into the same signed blocker
-manifest. Those accounts remain funding-quarantined at runtime: they are not
-assigned a guessed balance and cannot receive a new money-based access action.
-
-A reviewed action packet may resolve only the
-exact ``source_service_without_paid_through_period`` blocker set as "never
-paid; due immediately". The packet hash is bound into the signed source label,
-opening funding remains unchanged, and every other blocker still prevents an
-artifact. An optional blocker manifest contains UUIDs and reason codes only—no
-customer identity, credentials, free text, or delivery coordinates.
+The export is complete-or-error. Every migrated candidate must have one frozen
+source row whose active transaction net reconciles to the final Splynx
+position; a complete empty transaction set is zero. A native account created
+after the fixed handoff has an explicit zero history component plus canonical
+native facts. Missing, duplicated, malformed, or unreconciled source evidence
+aborts the whole artifact; there is no customer-level unknown or quarantine
+result.
 
 Safety: this command has no apply mode, sets its PostgreSQL transaction read
 only, requires an explicitly approved primary override for an ephemeral restore,
@@ -41,12 +36,17 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.services import display_format
+from app.services.billing.splynx_history_opening import (
+    SplynxHistoryOpeningQuery,
+    resolve_splynx_history_opening_targets,
+)
 from app.services.prepaid_enforcement_planner import (
     candidate_prepaid_funding_account_ids,
 )
@@ -64,7 +64,6 @@ from scripts.one_off.adjudicate_prepaid_funding_gaps import (
 )
 from scripts.one_off.billing_alignment_audit import (
     LEGACY_FINANCIAL_REPLAY_AT,
-    _batch_reconstructed_positions,
     _configure_read_only_session,
 )
 
@@ -134,21 +133,12 @@ class FundingSnapshotExport:
             if account_id not in quarantined
         )
 
-    @property
-    def subset_ready(self) -> bool:
-        return bool(self.enforceable_ids) and all(
-            account_id in self.positions for account_id in self.enforceable_ids
-        )
-
-    def funding_payload(
-        self, *, allow_quarantined_subset: bool = False
-    ) -> dict[str, Any]:
-        if not self.ready and not (allow_quarantined_subset and self.subset_ready):
+    def funding_payload(self) -> dict[str, Any]:
+        if not self.ready:
             raise ValueError(
                 "funding reconstruction is blocked by incomplete provenance"
             )
         blocker_manifest = self.blocker_manifest_payload()
-        account_ids = self.candidate_ids if self.ready else self.enforceable_ids
         return {
             "schema": RECONSTRUCTION_MANIFEST_SCHEMA,
             "source": self.source,
@@ -164,7 +154,7 @@ class FundingSnapshotExport:
                     "account_id": account_id,
                     "available_balance": _money(self.positions[account_id]),
                 }
-                for account_id in account_ids
+                for account_id in self.candidate_ids
             ],
         }
 
@@ -173,10 +163,9 @@ class FundingSnapshotExport:
         *,
         private_key_pem: str,
         signed_at: datetime | None = None,
-        allow_quarantined_subset: bool = False,
     ) -> dict[str, Any]:
         return sign_prepaid_funding_manifest(
-            self.funding_payload(allow_quarantined_subset=allow_quarantined_subset),
+            self.funding_payload(),
             private_key_pem=private_key_pem,
             signed_at=signed_at,
         )
@@ -221,7 +210,6 @@ class FundingSnapshotExport:
             "captured_at": self.captured_at.isoformat().replace("+00:00", "Z"),
             "currency": self.currency,
             "ready": self.ready,
-            "subset_ready": self.subset_ready,
             "candidate_accounts": len(self.candidate_ids),
             "reconstructed_accounts": len(self.positions),
             "enforceable_accounts": len(self.enforceable_ids),
@@ -250,7 +238,13 @@ def build_prepaid_funding_snapshot(
     snapshot_at: datetime,
     source: str,
 ) -> FundingSnapshotExport:
-    """Build a complete candidate snapshot without consulting mutable outputs."""
+    """Build one complete history-derived candidate snapshot.
+
+    The frozen Splynx transaction net is the source opening at the legacy
+    handoff. Canonical Sub-native facts advance it to ``snapshot_at``. Any
+    source-integrity defect raises and prevents an artifact; no customer is
+    classified as unknown or silently assigned a fallback.
+    """
     captured_at = _as_utc(snapshot_at)
     source_label = source.strip()
     if not source_label:
@@ -262,36 +256,30 @@ def build_prepaid_funding_snapshot(
             key=str,
         )
     )
-    replay = _batch_reconstructed_positions(
+    snapshot = resolve_splynx_history_opening_targets(
         db,
-        list(candidate_ids),
-        snapshot_at=captured_at,
+        SplynxHistoryOpeningQuery(
+            account_ids=tuple(UUID(value) for value in candidate_ids),
+            currency=display_format.default_currency(db),
+            native_after=LEGACY_FINANCIAL_REPLAY_AT,
+            position_at=captured_at,
+        ),
     )
-    candidate_set = set(candidate_ids)
-    positions = {
-        account_id: amount
-        for account_id, amount in replay.positions.items()
-        if account_id in candidate_set
-    }
-    incomplete = {
-        account_id: tuple(sorted(reasons))
-        for account_id, reasons in replay.incomplete.items()
-        if account_id in candidate_set
-    }
-    missing_baseline = tuple(
-        account_id for account_id in candidate_ids if account_id not in positions
+    positions = {str(row.account_id): row.target_position for row in snapshot.rows}
+    effective_source = (
+        f"{source_label};splynx-history-sha256={snapshot.source_fingerprint}"
     )
+    if len(effective_source) > 240:
+        raise ValueError("history-derived reconstruction source exceeds 240 characters")
     return FundingSnapshotExport(
         captured_at=captured_at,
-        source=source_label,
-        currency=display_format.default_currency(db),
+        source=effective_source,
+        currency=snapshot.currency,
         candidate_ids=candidate_ids,
         positions=positions,
-        incomplete=incomplete,
-        missing_baseline=missing_baseline,
-        service_cycle_gaps=tuple(
-            gap for gap in replay.service_cycle_gaps if gap.account_id in candidate_set
-        ),
+        incomplete={},
+        missing_baseline=(),
+        service_cycle_gaps=(),
     )
 
 
@@ -432,26 +420,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--blockers-out", type=Path)
     parser.add_argument(
-        "--gap-actions",
-        type=Path,
-        help=(
-            "hash-bound action plan resolving only the exact never-paid / "
-            "due-immediately blocker cohort"
-        ),
-    )
-    parser.add_argument(
         "--signing-key-ref",
         help="OpenBao reference to the Ed25519 private signing key",
     )
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
-        "--allow-quarantined-subset",
-        action="store_true",
-        help=(
-            "seal only accounts with complete replay evidence and bind the "
-            "excluded cohort into the signed blocker manifest"
-        ),
-    )
     parser.add_argument(
         "--statement-timeout-ms",
         type=int,
@@ -480,11 +452,6 @@ def main() -> int:
             snapshot_at=args.snapshot_at,
             source=args.source,
         )
-        if args.gap_actions is not None:
-            export = apply_reviewed_no_paid_through_actions(
-                export,
-                _read_json(args.gap_actions),
-            )
         diagnostics = export.diagnostics_payload()
         print(
             json.dumps(
@@ -499,14 +466,11 @@ def main() -> int:
         )
         if args.blockers_out is not None:
             _write_json(args.blockers_out, diagnostics, overwrite=args.overwrite)
-        if not export.ready and not (
-            args.allow_quarantined_subset and export.subset_ready
-        ):
+        if not export.ready:
             print("BLOCKED - no sealed funding reconstruction was written")
             return 2
         sealed = export.sealed_funding_payload(
             private_key_pem=_resolve_signing_key(args.signing_key_ref),
-            allow_quarantined_subset=args.allow_quarantined_subset,
         )
         _write_json(args.out, sealed, overwrite=args.overwrite)
         print(f"Sealed funding reconstruction written: {args.out}")

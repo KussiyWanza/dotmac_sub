@@ -180,6 +180,23 @@ Dropping the table would remove the schema those retained backups load into, and
 with it the ability to adjudicate pre-cutover money. It retires when that
 reconciliation is confirmed closed — the view is gone, the evidence path is not.
 
+ADR 0007 Phase 3 has one additional bounded evidence reader:
+`billing.splynx_history_opening`. It runs only in the isolated audit restore and
+consumes `audit_splynx_final_balances`, which is generated from the retained
+final Splynx customer-billing and complete active-transaction snapshot. It
+requires one reconciled row for every migrated account; a complete empty
+transaction set is zero, while a missing, duplicate, malformed, or mismatched
+row aborts the whole artifact. A native account created after the fixed handoff
+has an explicit zero history component plus canonical Sub-native facts.
+
+This is a one-time authority migration, not a live Splynx integration. The
+resolver cannot contact Splynx or write money, its complete result is sealed and
+reviewed before materialization, and no runtime balance read consults its table.
+After every prepaid funding candidate has an immutable opening and full-cohort
+parity is proven, remove this reader and the obsolete partial-blocker workflow;
+retain only the approved immutable Sub openings and the underlying historical
+evidence according to the separate retention decision.
+
 ## Out of scope: the orphan tables
 
 Production holds roughly 28 further `splynx_*` tables (`splynx_customers`,

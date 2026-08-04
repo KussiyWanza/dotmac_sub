@@ -221,7 +221,7 @@ def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None
     subledger = (root / "app/services/billing/customer_subledger.py").read_text(
         encoding="utf-8"
     )
-    policy = (root / "app/services/collections/prepaid_policy.py").read_text(
+    history = (root / "app/services/billing/splynx_history_opening.py").read_text(
         encoding="utf-8"
     )
     operator = (root / "scripts/billing/billing_target_shadow.py").read_text(
@@ -238,7 +238,8 @@ def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None
     assert 'run.phase != "phase_3_opening_preview"' in opening
     assert 'run.phase != "phase_3_subledger_parity"' in opening
     assert "if not run.approved" in opening
-    assert "quarantine_ownership_incomplete" in opening
+    assert "opening_result_contract" in verifier
+    assert "source_cohort_incomplete" in verifier
     assert "CustomerPostingGroup(" not in opening
     assert "CustomerSubledgerAuthorityCutover(" in opening
 
@@ -248,7 +249,8 @@ def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None
     assert "resolve_positions(" in verifier
     assert "authority_cutover(db)" in subledger
     assert "BillingRecordAuthority.authoritative" in subledger
-    assert "opening_position_quarantined" in policy
+    assert "active_transaction_net" in history
+    assert "complete customer cohort" in history
 
     for command in (
         "preview-subledger-openings",

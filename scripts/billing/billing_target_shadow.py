@@ -563,13 +563,13 @@ def _cmd_position_compare(db, args) -> int:
     from app.models.billing_contract import BillingRecordAuthority
     from app.services.billing.customer_subledger import resolve_position
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
         verified_prepaid_funding_balance,
     )
 
     account = UUID(args.account)
     currency = args.currency
-    quarantined = prepaid_funding_quarantined_account_ids(db, [account])
+    incomplete_source = prepaid_funding_incomplete_source_account_ids(db, [account])
     subledger = resolve_position(
         db,
         account_id=account,
@@ -579,12 +579,12 @@ def _cmd_position_compare(db, args) -> int:
     subledger_total = (
         subledger.prepaid_funding_reserved + subledger.unapplied_customer_credit
     )
-    if account in quarantined:
+    if account in incomplete_source:
         _emit(
             {
                 "account_id": account,
                 "currency": currency,
-                "classification": "quarantined_no_baseline",
+                "classification": "source_cohort_incomplete",
                 "legacy": None,
                 "subledger": subledger_total,
                 "lanes": {

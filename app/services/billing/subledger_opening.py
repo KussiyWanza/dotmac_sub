@@ -3,8 +3,8 @@
 The verifier records an immutable cohort proposal first. This migration owner
 may capture only that exact, separately operator- and finance-approved result.
 Each account/currency residual and its posting group share one owner command;
-quarantined accounts are absent and remain fail-closed with their owned work
-items.
+the complete cohort must be source-valid before capture. Existing immutable
+openings are preserved while a later completion run adds only missing rows.
 """
 
 from __future__ import annotations
@@ -193,10 +193,12 @@ def _capture(
         )
     details = _object_dict((run.cohort_classification or {}).get("_details"))
     rows = _object_dict_rows(details.get("opening_rows"))
-    if _digest(rows) != run.result_fingerprint:
+    result_contract = _object_dict(details.get("opening_result_contract"))
+    fingerprint_payload: object = result_contract or rows
+    if _digest(fingerprint_payload) != run.result_fingerprint:
         raise _error(
             "corrupt_reviewed_preview",
-            "Stored opening rows no longer match their immutable fingerprint.",
+            "Stored opening evidence no longer matches its immutable fingerprint.",
             run_id=str(run.id),
         )
     currency = str((run.currency_totals or {}).get("currency") or "").upper()
@@ -378,8 +380,6 @@ def _activate_authority(
     db: Session,
     command: ActivateCustomerSubledgerAuthorityCommand,
 ) -> CustomerSubledgerAuthorityResult:
-    from app.models.admin_alert import AdminAlert
-
     if not command.context.idempotency_key:
         raise _error(
             "missing_idempotency_key",
@@ -443,32 +443,11 @@ def _activate_authority(
         else set()
     )
     if quarantined:
-        alerts = list(
-            db.scalars(
-                select(AdminAlert).where(
-                    AdminAlert.fingerprint.in_(
-                        [
-                            f"prepaid-funding:opening-debt:{account_id}"
-                            for account_id in quarantined
-                        ]
-                    )
-                )
-            ).all()
+        raise _error(
+            "source_cohort_incomplete",
+            "Customer-subledger authority cannot activate with excluded accounts.",
+            excluded_count=len(quarantined),
         )
-        owned: set[str] = set()
-        for alert in alerts:
-            alert_details = alert.details or {}
-            if (
-                alert.status.value == "open"
-                and alert_details.get("owner") == "finance-billing"
-            ):
-                owned.add(str(alert_details.get("account_id")))
-        if quarantined - owned:
-            raise _error(
-                "quarantine_ownership_incomplete",
-                "Every excluded account must retain an open finance work item.",
-                unowned_count=len(quarantined - owned),
-            )
     cutover = CustomerSubledgerAuthorityCutover(
         verification_run_id=run.id,
         result_fingerprint=run.result_fingerprint,

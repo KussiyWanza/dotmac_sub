@@ -1559,7 +1559,7 @@ def _record_phase3_forward_run(
         candidate_prepaid_funding_account_ids,
     )
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
     )
     from app.services.prepaid_threshold import resolve_prepaid_threshold_decisions
 
@@ -1583,7 +1583,9 @@ def _record_phase3_forward_run(
         return _phase3_result(existing, replayed=True)
 
     cohort = sorted(candidate_prepaid_funding_account_ids(db), key=str)
-    quarantined = sorted(prepaid_funding_quarantined_account_ids(db, cohort), key=str)
+    opening_source_debt = sorted(
+        prepaid_funding_incomplete_source_account_ids(db, cohort), key=str
+    )
     decisions = resolve_prepaid_threshold_decisions(db, cohort)
     entitlement_debt: dict[str, list[str]] = {}
     for account_id in cohort:
@@ -1652,7 +1654,7 @@ def _record_phase3_forward_run(
     )
 
     work_items = 0
-    for account_id in quarantined:
+    for account_id in opening_source_debt:
         record_finding(
             db,
             Finding(
@@ -1660,12 +1662,11 @@ def _record_phase3_forward_run(
                 domain="prepaid_enforcement",
                 source="billing.shadow_verification",
                 severity=AlertSeverity.warning,
-                title="Prepaid opening position needs reviewed evidence",
+                title="Prepaid opening source batch is incomplete",
                 summary=(
-                    "Legacy account without an active reviewed funding "
-                    "baseline: opening-position evidence debt. Resolve via "
-                    "the reconstruction pipeline; never assign zero or a "
-                    "legacy fallback."
+                    "The complete-history artifact has not yet materialized "
+                    "this account's explicit history seed. Resolve the source "
+                    "batch; never invent a per-account fallback."
                 ),
                 details={
                     "owner": "finance-billing",
@@ -1682,7 +1683,7 @@ def _record_phase3_forward_run(
         db,
         managed_prefix=_OPENING_DEBT_PREFIX,
         active_fingerprints={
-            f"{_OPENING_DEBT_PREFIX}{account_id}" for account_id in quarantined
+            f"{_OPENING_DEBT_PREFIX}{account_id}" for account_id in opening_source_debt
         },
     )
     for debt_account, subscription_ids in sorted(entitlement_debt.items()):
@@ -1728,12 +1729,12 @@ def _record_phase3_forward_run(
         "duplicate": [],
         "shadow_variance": [],
         "expected_difference": sorted(
-            {str(a) for a in quarantined} | set(entitlement_debt)
+            {str(a) for a in opening_source_debt} | set(entitlement_debt)
         ),
         "gap": [],
         "overlap": [],
         "_details": {
-            "opening_position_debt": [str(a) for a in quarantined],
+            "opening_position_debt": [str(a) for a in opening_source_debt],
             "entitlement_evidence_debt": entitlement_debt,
             "producer_not_owner_wrapped": unwrapped,
             "work_item_count": work_items,
@@ -1810,8 +1811,8 @@ class RecordPhase3OpeningPreviewCommand:
     database_schema_version: str
     currency: str = "NGN"
     cohort_name: str = "prepaid_funding_candidates"
-    policy_version: str = "adr-0007-phase-3-opening-v1"
-    evidence_schema_version: int = 4
+    policy_version: str = "adr-0007-phase-3-opening-v2-complete-history"
+    evidence_schema_version: int = 5
 
 
 @dataclass(frozen=True)
@@ -1881,7 +1882,8 @@ def _record_phase3_opening_preview(
         candidate_prepaid_funding_account_ids,
     )
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
+        prepaid_funding_opening_required_account_ids,
         verified_prepaid_funding_balances,
     )
 
@@ -1935,33 +1937,44 @@ def _record_phase3_opening_preview(
             )
         return _phase3_opening_result(existing, replayed=True)
 
-    cohort = tuple(sorted(candidate_prepaid_funding_account_ids(db), key=str))
-    quarantined = tuple(
+    candidate_cohort = candidate_prepaid_funding_account_ids(db)
+    cohort = tuple(
         sorted(
-            prepaid_funding_quarantined_account_ids(db, cohort, currency=currency),
+            prepaid_funding_opening_required_account_ids(db, candidate_cohort),
             key=str,
         )
     )
-    eligible = tuple(account for account in cohort if account not in quarantined)
-    already_opened = set(
-        db.scalars(
-            select(CustomerSubledgerOpeningPosition.account_id).where(
-                CustomerSubledgerOpeningPosition.account_id.in_(eligible),
+    incomplete_source = tuple(
+        sorted(
+            prepaid_funding_incomplete_source_account_ids(
+                db, cohort, currency=currency
+            ),
+            key=str,
+        )
+    )
+    if incomplete_source:
+        raise _error(
+            "source_cohort_incomplete",
+            "Every funding candidate requires a history-derived baseline before preview.",
+            account_ids=[str(value) for value in incomplete_source],
+        )
+    existing_openings = {
+        row.account_id: row
+        for row in db.scalars(
+            select(CustomerSubledgerOpeningPosition).where(
+                CustomerSubledgerOpeningPosition.account_id.in_(cohort),
                 CustomerSubledgerOpeningPosition.currency == currency,
             )
         ).all()
+    }
+    capture_ids = tuple(
+        account_id for account_id in cohort if account_id not in existing_openings
     )
-    if already_opened:
-        raise _error(
-            "opening_position_already_captured",
-            "Opening preview cannot replace an existing immutable opening position.",
-            account_count=len(already_opened),
-        )
 
-    legacy = verified_prepaid_funding_balances(db, eligible, currency=currency)
+    legacy = verified_prepaid_funding_balances(db, capture_ids, currency=currency)
     shadow = resolve_positions(
         db,
-        account_ids=eligible,
+        account_ids=capture_ids,
         currency=currency,
         authority=BillingRecordAuthority.shadow,
     )
@@ -1969,7 +1982,7 @@ def _record_phase3_opening_preview(
         row.account_id: row
         for row in db.scalars(
             select(PrepaidFundingBaseline).where(
-                PrepaidFundingBaseline.account_id.in_(eligible),
+                PrepaidFundingBaseline.account_id.in_(capture_ids),
                 PrepaidFundingBaseline.currency == currency,
                 PrepaidFundingBaseline.is_active.is_(True),
             )
@@ -1983,7 +1996,7 @@ def _record_phase3_opening_preview(
     opening_total = Decimal("0")
     opening_positive = Decimal("0")
     opening_negative = Decimal("0")
-    for account_id in eligible:
+    for account_id in capture_ids:
         baseline = baselines.get(account_id)
         position = shadow[account_id]
         shadow_value = round_money(
@@ -2026,13 +2039,31 @@ def _record_phase3_opening_preview(
         elif delta < 0:
             opening_negative += abs(delta)
 
-    expected_differences = [str(account_id) for account_id in quarantined] + [
+    existing_evidence = [
+        {
+            "account_id": str(account_id),
+            "currency": currency,
+            "opening_id": str(opening.id),
+            "legacy_position": str(opening.legacy_position),
+            "occurred_at": _utc(opening.occurred_at).isoformat(),
+            "evidence_fingerprint": opening.evidence_fingerprint,
+        }
+        for account_id, opening in sorted(
+            existing_openings.items(), key=lambda item: str(item[0])
+        )
+    ]
+    expected_differences = [
         str(row["account_id"])
         for row in result_rows
         if Decimal(str(row["opening_delta"])) != Decimal("0")
     ]
+    result_contract = {
+        "cohort": [str(account_id) for account_id in cohort],
+        "existing_openings": existing_evidence,
+        "opening_rows": result_rows,
+    }
     classification = {
-        "covered": [str(account_id) for account_id in eligible],
+        "covered": [str(account_id) for account_id in cohort],
         "unresolved": [],
         "ambiguous": [],
         "unexpected_unlinked": [],
@@ -2043,7 +2074,12 @@ def _record_phase3_opening_preview(
         "overlap": [],
         "_details": {
             "opening_rows": result_rows,
-            "quarantined_accounts": [str(account_id) for account_id in quarantined],
+            "opening_result_contract": result_contract,
+            "existing_openings": existing_evidence,
+            "post_cutover_native_accounts": sorted(
+                str(account_id) for account_id in candidate_cohort - set(cohort)
+            ),
+            "quarantined_accounts": [],
             "postings_manufactured": False,
             "authority_moved": False,
         },
@@ -2057,7 +2093,7 @@ def _record_phase3_opening_preview(
         observation_started_at=_utc(command.cutoff_at),
         observation_ended_at=_utc(command.cutoff_at),
         cohort_count=len(cohort),
-        covered_count=len(eligible),
+        covered_count=len(cohort),
         unresolved_count=0,
         ambiguous_count=0,
         unexpected_unlinked_count=0,
@@ -2066,8 +2102,14 @@ def _record_phase3_opening_preview(
         expected_difference_count=len(expected_differences),
         gap_count=0,
         overlap_count=0,
-        source_fingerprint=_digest(source_rows),
-        result_fingerprint=_digest(result_rows),
+        source_fingerprint=_digest(
+            {
+                "cohort": [str(account_id) for account_id in cohort],
+                "existing_openings": existing_evidence,
+                "new_opening_sources": source_rows,
+            }
+        ),
+        result_fingerprint=_digest(result_contract),
         currency_totals={
             "currency": currency,
             "legacy_position": str(round_money(legacy_total)),
@@ -2100,8 +2142,9 @@ def _record_phase3_opening_preview(
             "run_id": str(run.id),
             "phase": run.phase,
             "cohort_count": run.cohort_count,
-            "capture_eligible_count": len(eligible),
-            "quarantined_count": len(quarantined),
+            "capture_eligible_count": len(capture_ids),
+            "existing_opening_count": len(existing_openings),
+            "quarantined_count": 0,
             "source_fingerprint": run.source_fingerprint,
             "result_fingerprint": run.result_fingerprint,
             "authority_moved": False,
@@ -2133,8 +2176,8 @@ class RecordPhase3SubledgerParityCommand:
     database_schema_version: str
     currency: str = "NGN"
     cohort_name: str = "prepaid_funding_candidates"
-    policy_version: str = "adr-0007-phase-3-parity-v1"
-    evidence_schema_version: int = 5
+    policy_version: str = "adr-0007-phase-3-parity-v2-complete-cohort"
+    evidence_schema_version: int = 6
 
 
 @dataclass(frozen=True)
@@ -2226,7 +2269,8 @@ def _record_phase3_subledger_parity(
         candidate_prepaid_funding_account_ids,
     )
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
+        prepaid_funding_opening_required_account_ids,
         verified_prepaid_funding_balances,
     )
 
@@ -2284,16 +2328,29 @@ def _record_phase3_subledger_parity(
             )
         return _phase3_parity_result(existing, replayed=True)
 
-    cohort = tuple(sorted(candidate_prepaid_funding_account_ids(db), key=str))
-    quarantined = tuple(
+    cohort = tuple(
         sorted(
-            prepaid_funding_quarantined_account_ids(db, cohort, currency=currency),
+            prepaid_funding_opening_required_account_ids(
+                db, candidate_prepaid_funding_account_ids(db)
+            ),
             key=str,
         )
     )
-    eligible = tuple(
-        account_id for account_id in cohort if account_id not in quarantined
+    incomplete_source = tuple(
+        sorted(
+            prepaid_funding_incomplete_source_account_ids(
+                db, cohort, currency=currency
+            ),
+            key=str,
+        )
     )
+    if incomplete_source:
+        raise _error(
+            "source_cohort_incomplete",
+            "Subledger parity requires a history-derived baseline for every candidate.",
+            account_ids=[str(value) for value in incomplete_source],
+        )
+    eligible = cohort
     openings = list(
         db.scalars(
             select(CustomerSubledgerOpeningPosition).where(
@@ -2427,12 +2484,12 @@ def _record_phase3_subledger_parity(
         "unexpected_unlinked": [str(value) for value in missing_opening],
         "duplicate": [str(value) for value in duplicate_opening] + duplicate_facts,
         "shadow_variance": variances,
-        "expected_difference": [str(value) for value in quarantined],
+        "expected_difference": [],
         "gap": [],
         "overlap": [],
         "_details": {
             "position_rows": position_rows,
-            "quarantined_accounts": [str(value) for value in quarantined],
+            "quarantined_accounts": [],
             "covered_facts": covered_facts,
             "producer_not_owner_wrapped": unwrapped_facts,
             "duplicate_fact_postings": duplicate_facts,
@@ -2462,7 +2519,7 @@ def _record_phase3_subledger_parity(
         unexpected_unlinked_count=len(missing_opening),
         duplicate_count=len(duplicate_opening) + len(duplicate_facts),
         shadow_variance_count=len(variances),
-        expected_difference_count=len(quarantined),
+        expected_difference_count=0,
         gap_count=0,
         overlap_count=0,
         source_fingerprint=_digest(source_rows),
@@ -2500,7 +2557,7 @@ def _record_phase3_subledger_parity(
             "phase": run.phase,
             "cohort_count": run.cohort_count,
             "parity_count": len(parity),
-            "quarantined_count": len(quarantined),
+            "quarantined_count": 0,
             "variance_count": len(variances),
             "unwrapped_fact_count": len(unwrapped_facts),
             "source_fingerprint": run.source_fingerprint,

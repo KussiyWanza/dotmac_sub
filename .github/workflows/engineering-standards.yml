@@ -1,0 +1,25 @@
+name: Engineering standards
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    name: Dotmac engineering standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the evaluated product revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enforce the accepted Dotmac engineering standards
+        uses: michaelayoade/dotmac_governance/.github/actions/standards-check@1f5f1372238ef37eff71154694d5620008de0959
+        with:
+          default-branch: ${{ github.event.repository.default_branch }}

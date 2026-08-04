@@ -777,6 +777,7 @@ def customer_financial_balances_by_currency(
     account_ids: Iterable[str | UUID],
     *,
     start: datetime | None = None,
+    end: datetime | None = None,
 ) -> dict[UUID, dict[str, Decimal]]:
     """Aggregate native balances without materializing events."""
     account_uuids = sorted(
@@ -834,6 +835,11 @@ def customer_financial_balances_by_currency(
                 func.coalesce(Payment.paid_at, Payment.created_at) > start,
             )
         )
+    if end is not None:
+        payment_query = payment_query.filter(
+            Payment.created_at <= end,
+            func.coalesce(Payment.paid_at, Payment.created_at) <= end,
+        )
     add(payment_query.group_by(Payment.account_id, payment_currency).all())
 
     allocation_currency = func.coalesce(Payment.currency, Invoice.currency, "NGN")
@@ -863,6 +869,8 @@ def customer_financial_balances_by_currency(
     )
     if start is not None:
         allocation_query = allocation_query.filter(PaymentAllocation.created_at > start)
+    if end is not None:
+        allocation_query = allocation_query.filter(PaymentAllocation.created_at <= end)
     add(allocation_query.group_by(Invoice.account_id, allocation_currency).all())
 
     invoice_currency = func.coalesce(Invoice.currency, "NGN")
@@ -903,6 +911,11 @@ def customer_financial_balances_by_currency(
                 func.coalesce(Invoice.issued_at, Invoice.created_at) > start,
             )
         )
+    if end is not None:
+        invoice_query = invoice_query.filter(
+            Invoice.created_at <= end,
+            func.coalesce(Invoice.issued_at, Invoice.created_at) <= end,
+        )
     add(invoice_query.group_by(Invoice.account_id, invoice_currency).all())
 
     prepaid_consumption_query = (
@@ -928,6 +941,16 @@ def customer_financial_balances_by_currency(
                 > start,
             )
         )
+    if end is not None:
+        prepaid_consumption_query = prepaid_consumption_query.filter(
+            Invoice.created_at <= end,
+            func.coalesce(
+                Invoice.paid_at,
+                Invoice.issued_at,
+                Invoice.created_at,
+            )
+            <= end,
+        )
     add(prepaid_consumption_query.group_by(Invoice.account_id, invoice_currency).all())
 
     writeoff_currency = func.coalesce(InvoiceClosure.currency, "NGN")
@@ -945,6 +968,8 @@ def customer_financial_balances_by_currency(
     )
     if start is not None:
         writeoff_query = writeoff_query.filter(InvoiceClosure.created_at > start)
+    if end is not None:
+        writeoff_query = writeoff_query.filter(InvoiceClosure.created_at <= end)
     add(writeoff_query.group_by(Invoice.account_id, writeoff_currency).all())
 
     note_currency = func.coalesce(CreditNote.currency, "NGN")
@@ -968,6 +993,8 @@ def customer_financial_balances_by_currency(
     )
     if start is not None:
         note_query = note_query.filter(CreditNote.created_at > start)
+    if end is not None:
+        note_query = note_query.filter(CreditNote.created_at <= end)
     add(note_query.group_by(CreditNote.account_id, note_currency).all())
 
     ledger_currency = func.coalesce(LedgerEntry.currency, "NGN")
@@ -1013,6 +1040,11 @@ def customer_financial_balances_by_currency(
                 > start,
             )
         )
+    if end is not None:
+        ledger_query = ledger_query.filter(
+            LedgerEntry.created_at <= end,
+            func.coalesce(LedgerEntry.effective_date, LedgerEntry.created_at) <= end,
+        )
     add(ledger_query.group_by(LedgerEntry.account_id, ledger_currency).all())
 
     return balances
@@ -1023,6 +1055,7 @@ def native_customer_financial_balances_by_currency(
     account_ids: Iterable[str | UUID],
     *,
     after: datetime,
+    before: datetime | None = None,
 ) -> dict[UUID, dict[str, Decimal]]:
     """Aggregate native events crossing a reviewed opening-position boundary.
 
@@ -1035,6 +1068,7 @@ def native_customer_financial_balances_by_currency(
         db,
         account_ids,
         start=_event_date(after),
+        end=_event_date(before) if before is not None else None,
     )
 
 

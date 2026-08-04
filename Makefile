@@ -93,6 +93,7 @@ test-fast: ## Run the parallel non-integration suite, stopping on first failure
 	poetry run pytest $(UNIT_TEST_ARGS) -x --tb=short -q
 
 test-integration: ## Run the PostgreSQL integration gate
+	poetry run python -m scripts.ci.migrated_test_database
 	poetry run pytest tests/integration/ -v --tb=short -o "addopts="
 
 test-architecture: ## Run architecture guards with the measured four-worker default
@@ -213,7 +214,7 @@ prod-restart: ## Recreate prod app + worker services from the current image (APP
 	$(PROD_COMPOSE) up -d app celery-worker celery-worker-bandwidth celery-worker-ingestion celery-worker-monitoring celery-worker-billing celery-worker-tr069 celery-beat bandwidth-poller syslog-listener
 
 prod-smtp-inbound-up: ## Start/recreate the opt-in, single-instance SMTP intake
-	$(PROD_COMPOSE) --profile smtp-inbound up -d --no-scale team-inbox-smtp
+	$(PROD_COMPOSE) --profile smtp-inbound up -d team-inbox-smtp
 
 prod-smtp-inbound-probe: ## Prove SMTP intake creates a marked team-inbox message
 	$(PROD_COMPOSE) --profile smtp-inbound exec -T team-inbox-smtp python -m app.team_inbox_smtp e2e-probe

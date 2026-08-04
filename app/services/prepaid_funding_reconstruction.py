@@ -20,6 +20,10 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.models.customer_subledger import (
+    CustomerSubledgerAuthorityCutover,
+    CustomerSubledgerOpeningPosition,
+)
 from app.models.prepaid_funding import (
     PrepaidFundingBaseline,
     PrepaidFundingReconstructionBatch,
@@ -420,6 +424,8 @@ def preview_prepaid_funding_reconstruction(
     row_ids = {row.account_id for row in manifest.rows}
     manifest_account_ids = row_ids | set(manifest.quarantined_account_ids)
     blockers: list[str] = []
+    if manifest.quarantined_account_ids:
+        blockers.append("reconstruction_source_cohort_incomplete")
     expected = {coerce_uuid(value) for value in expected_account_ids}
     if not expected:
         blockers.append("reconstruction_expected_cohort_empty")
@@ -611,18 +617,20 @@ def authority_cutover_batch(
     )
 
 
-def prepaid_funding_quarantined_account_ids(
+def prepaid_funding_incomplete_source_account_ids(
     db: Session,
     account_ids: Iterable[object],
     *,
     currency: str | None = None,
 ) -> set[UUID]:
-    """Return legacy accounts deliberately excluded from funding enforcement.
+    """Return accounts whose one-time history seed is not yet materialized.
 
-    A post-cutover account legitimately starts from zero and therefore needs no
-    opening baseline. A legacy account without an active reviewed baseline is
-    never assigned zero or a legacy fallback: it remains visible as funding
-    unavailable and receives no new money-based access consequence.
+    A migrated account without a baseline represents an incomplete all-or-
+    nothing source capture, not an unknown customer balance. Complete-history
+    preview and parity commands reject the whole cohort while this set is
+    non-empty. Native accounts created after the handoff are seeded by the
+    complete-history artifact with an explicit zero history component plus
+    their canonical native facts.
     """
     ids = {coerce_uuid(value) for value in account_ids}
     if not ids:
@@ -630,23 +638,64 @@ def prepaid_funding_quarantined_account_ids(
     cutover = authority_cutover_batch(db)
     if cutover is None:
         return set(ids)
+    required_ids = prepaid_funding_opening_required_account_ids(db, ids)
     unit = _currency(currency or default_prepaid_funding_currency(db))
-    baseline_ids = set(_active_baselines(db, ids, unit))
-    accounts = {
-        account.id: account.created_at
-        for account in db.scalars(
-            select(Subscriber).where(Subscriber.id.in_(ids))
+    baseline_ids = set(_active_baselines(db, required_ids, unit))
+    return required_ids - baseline_ids
+
+
+def prepaid_funding_opening_required_account_ids(
+    db: Session,
+    account_ids: Iterable[object],
+) -> set[UUID]:
+    """Return accounts that existed when subledger authority activated.
+
+    Before activation every requested account requires an opening. After
+    activation, accounts created later begin from the authoritative subledger's
+    mathematical zero and accumulate only native postings; giving them a
+    migration baseline would create a permanent dependency on a retired source.
+    Unknown account IDs remain in the required set so callers fail closed.
+    """
+    ids = {coerce_uuid(value) for value in account_ids}
+    if not ids:
+        return set()
+    cutover_at = db.scalar(
+        select(CustomerSubledgerAuthorityCutover.cutover_at).limit(1)
+    )
+    if cutover_at is None:
+        return ids
+    boundary = _stored_utc(cutover_at)
+    required_account_ids = {
+        coerce_uuid(value)
+        for value in db.scalars(
+            select(Subscriber.id).where(
+                Subscriber.id.in_(ids),
+                Subscriber.created_at <= boundary,
+            )
         ).all()
     }
-    cutover_position = _stored_utc(cutover.position_at)
-    quarantined = set(ids) - set(accounts)
-    for account_id, created_at in accounts.items():
-        if account_id in baseline_ids:
-            continue
-        account_start = _stored_utc(created_at)
-        if account_start <= cutover_position:
-            quarantined.add(account_id)
-    return quarantined
+    known_ids = {
+        coerce_uuid(value)
+        for value in db.scalars(
+            select(Subscriber.id).where(Subscriber.id.in_(ids))
+        ).all()
+    }
+    return required_account_ids | (ids - known_ids)
+
+
+def prepaid_funding_quarantined_account_ids(
+    db: Session,
+    account_ids: Iterable[object],
+    *,
+    currency: str | None = None,
+) -> set[UUID]:
+    """Compatibility name for the pre-completion enforcement guard."""
+
+    return prepaid_funding_incomplete_source_account_ids(
+        db,
+        account_ids,
+        currency=currency,
+    )
 
 
 def verified_prepaid_funding_balances(
@@ -655,7 +704,17 @@ def verified_prepaid_funding_balances(
     *,
     currency: str | None = None,
 ) -> dict[UUID, Decimal]:
-    """Resolve baseline plus post-baseline native events; never use Splynx rows."""
+    """Resolve the active reviewed opening plus later native events.
+
+    The reconstruction baseline remains active until customer-subledger
+    authority is irreversibly activated. After that activation, each captured
+    subledger opening's finance-approved ``legacy_position`` supersedes the
+    older reconstruction amount and time for verifier reads. This freezes all
+    pre-opening financial meaning exactly as reviewed while allowing newer
+    native facts to use their current structural semantics.
+
+    Splynx rows are never runtime inputs and no posting is manufactured here.
+    """
     from app.services.customer_financial_ledger import (
         native_customer_financial_balances_by_currency,
     )
@@ -670,6 +729,22 @@ def verified_prepaid_funding_balances(
         raise PrepaidFundingBaselineMissingError(
             "prepaid funding authority cutover has not been materialized"
         )
+    subledger_authority_active = (
+        db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
+    )
+    subledger_openings = (
+        {
+            opening.account_id: opening
+            for opening in db.scalars(
+                select(CustomerSubledgerOpeningPosition).where(
+                    CustomerSubledgerOpeningPosition.account_id.in_(ids),
+                    CustomerSubledgerOpeningPosition.currency == unit,
+                )
+            ).all()
+        }
+        if subledger_authority_active
+        else {}
+    )
     accounts = {
         account.id: account
         for account in db.scalars(
@@ -686,8 +761,12 @@ def verified_prepaid_funding_balances(
     opening_amounts: dict[UUID, Decimal] = {}
     accounts_by_position: dict[datetime, list[UUID]] = {}
     for account_id in sorted(ids, key=str):
+        subledger_opening = subledger_openings.get(account_id)
         baseline = baselines.get(account_id)
-        if baseline is None:
+        if subledger_opening is not None:
+            opening_amount = round_money(Decimal(subledger_opening.legacy_position))
+            position_at = _stored_utc(subledger_opening.occurred_at)
+        elif baseline is None:
             created_at = accounts[account_id].created_at
             account_start = (
                 created_at.replace(tzinfo=UTC)

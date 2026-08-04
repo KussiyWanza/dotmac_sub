@@ -57,6 +57,12 @@ authoritative documents in the same change that updates the contract.
 - New and materially changed owner interfaces use precise identifier,
   collection, optional, enum, value-object, and provenance types. Do not expose
   `Any` containers or free-form primitive bags as domain contracts.
+- Cross-repository engineering governance is pinned and required.
+  `.dotmac/standards-profile.json` declares the enrolled authority and fully
+  typed contract surface against one accepted Governance commit, and the
+  `Dotmac engineering standards` CI job must execute that exact revision.
+  Mutable tags/branches, copied rules, candidate mode, or a missing required
+  check are not substitutes.
 - Keep domain values typed internally. Serialize UUIDs, enums, decimals, dates,
   and value objects explicitly at adapter, persistence, or reporting boundaries.
 - Domain services raise domain errors. HTTP responses, redirects, task retries,
@@ -138,3 +144,21 @@ serial execution only when isolating worker-order or shared-state failures.
 
 Also run migration and browser/mobile checks when the changed behavior reaches
 those surfaces. Report any skipped or failed check explicitly.
+
+### Database-test authority
+
+- Alembic owns the deployed schema. Any database-backed test reported as
+  integration, migration, concurrency, constraint, or production-parity
+  evidence must run on PostgreSQL/PostGIS created by the real migration chain.
+- Run `make test-integration` with an explicit disposable
+  `TEST_DATABASE_URL`. The target name must identify it as test/pytest/CI/E2E
+  or migration data; the command refuses other names, migrates once to the
+  exact repository head, and then runs the integration suite.
+- `Base.metadata.create_all()` and SQLite are allowed only in the explicitly
+  non-authoritative fast unit lane. Their results must not be described as
+  deployed-schema acceptance.
+- A missing PostgreSQL target or migration mismatch is a failure, never a
+  skip or an invitation to fall back to metadata.
+- Fresh-baseline and real predecessor-to-head migration rehearsals prove
+  different contracts; run both when a schema change can affect an existing
+  deployment.

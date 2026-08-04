@@ -603,17 +603,18 @@ def run_prepaid_balance_sweep(
     }
     account_ids = candidate_prepaid_account_ids(db)
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
     )
 
     funding_candidate_ids = candidate_prepaid_funding_account_ids(db)
-    quarantined_ids = prepaid_funding_quarantined_account_ids(
+    incomplete_source_ids = prepaid_funding_incomplete_source_account_ids(
         db, set(account_ids) & funding_candidate_ids
     )
-    enforceable_ids = set(account_ids) - quarantined_ids
+    enforceable_ids = set(account_ids) - incomplete_source_ids
     notice_reasons = prepaid_notice_suppression_reasons(db, enforceable_ids)
     stats["accounts_scanned"] = len(account_ids)
-    stats["funding_quarantined"] = len(quarantined_ids)
+    # Compatibility metric name; complete-history materialization drives it to zero.
+    stats["funding_quarantined"] = len(incomplete_source_ids)
     no_contact_account_ids: set[str] = set()
     ordered = sorted(enforceable_ids, key=str)
     cursor = _load_cycle_state(db).cursor_key

@@ -505,7 +505,7 @@ def test_scheduled_owner_isolates_unexpected_missing_baseline(
     _add_due_account_without_baseline(db_session, subscriber, subscription)
     monkeypatch.setattr(
         "app.services.prepaid_funding_reconstruction."
-        "prepaid_funding_quarantined_account_ids",
+        "prepaid_funding_incomplete_source_account_ids",
         lambda _db, _account_ids: set(),
     )
 

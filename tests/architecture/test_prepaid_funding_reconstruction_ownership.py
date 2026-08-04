@@ -150,15 +150,39 @@ def test_materializer_owner_requires_a_config_trusted_clean_replay_seal() -> Non
     assert "resolve_prepaid_thresholds" not in exporter
     assert "verify_prepaid_funding_manifest" in owner
     assert "reconstruction_existing_attestation_mismatch" in owner
-    assert "quarantined_account_ids" in owner
-    assert "both materialized and quarantined" in owner
-    assert "row_ids | quarantined" in owner
+    assert "reconstruction_source_cohort_incomplete" in owner
     assert "expected_candidate_hash = candidate_cohort_sha256" in owner
-    assert "--allow-quarantined-subset" in exporter
+    assert "resolve_splynx_history_opening_targets" in exporter
+    assert "--allow-quarantined-subset" not in exporter
+    assert "source_cohort_incomplete" in _read(
+        "app/services/billing/splynx_history_opening.py"
+    )
     assert "apply_prepaid_funding_reconstruction" in materializer
     assert "Ed25519PublicKey" in attestation
     assert "is_openbao_ref" in attestation
     assert "prepaid_reconstruction_attestation_public_key_ref" in settings
+
+
+def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home() -> (
+    None
+):
+    root = Path(__file__).resolve().parents[2]
+    app_files = tuple((root / "app").rglob("*.py"))
+
+    history_readers = [
+        path.relative_to(root).as_posix()
+        for path in app_files
+        if "audit_splynx_final_balances" in path.read_text(encoding="utf-8")
+        and path.name != "sot_relationships.py"
+    ]
+    quarantine_name_homes = [
+        path.relative_to(root).as_posix()
+        for path in app_files
+        if "prepaid_funding_quarantined_account_ids" in path.read_text(encoding="utf-8")
+    ]
+
+    assert history_readers == ["app/services/billing/splynx_history_opening.py"]
+    assert quarantine_name_homes == ["app/services/prepaid_funding_reconstruction.py"]
 
 
 def test_gap_adjudication_cannot_write_money_or_override_replay() -> None:
@@ -205,12 +229,11 @@ def test_audit_restore_is_isolated_and_cannot_reach_the_live_database() -> None:
     assert "--confirm-final-cutover" not in script
 
 
-def test_audit_restore_runbook_documents_the_exit_two_survey_path() -> None:
+def test_audit_restore_runbook_documents_complete_history_completion() -> None:
     runbook = _read("docs/runbooks/PREPAID_FUNDING_AUDIT_RESTORE.md")
 
-    # Exit 2 is the expected outcome of a survey run; a reader who treats it as
-    # a failure will assume the tooling is broken and stop.
-    assert "Exit 2 is the expected outcome" in runbook
+    assert "complete empty transaction set is zero" in runbook
+    assert "There is no partial-subset option" in runbook
     assert "BILLING_AUDIT_EPHEMERAL" in runbook
     assert "_audit" in runbook
     # The two constraints that most often derail a first attempt.

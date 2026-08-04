@@ -83,20 +83,20 @@ def _psycopg_url(url: URL) -> str:
 
 @pytest.fixture
 def engine() -> Iterator[Engine]:
-    """Satisfy the integration-package guard without creating current schema.
+    """Satisfy the integration-package guard without mutating current schema.
 
     This module owns a separate disposable database and drives it exclusively
-    through Alembic. The package engine fixture calls ``create_all()``, which
-    would bypass the migration path under test and require PostGIS before the
-    isolated database exists.
+    through Alembic. The package engine fixture verifies the canonical migrated
+    database at head; this override avoids involving it in the independently
+    created predecessor-to-head database exercised below.
     """
 
     configured_url = os.getenv("TEST_DATABASE_URL")
     if not configured_url:
-        pytest.skip("migration-path test requires TEST_DATABASE_URL")
+        raise pytest.UsageError("migration-path test requires TEST_DATABASE_URL")
     database_url = make_url(configured_url)
     if not database_url.drivername.startswith("postgresql"):
-        pytest.skip("migration-path test requires PostgreSQL")
+        raise pytest.UsageError("migration-path test requires PostgreSQL")
     test_engine = create_engine(database_url)
     try:
         yield test_engine
@@ -108,10 +108,10 @@ def engine() -> Iterator[Engine]:
 def isolated_migration_database() -> Iterator[URL]:
     configured_url = os.getenv("TEST_DATABASE_URL")
     if not configured_url:
-        pytest.skip("migration-path test requires TEST_DATABASE_URL")
+        raise pytest.UsageError("migration-path test requires TEST_DATABASE_URL")
     base_url = make_url(configured_url)
     if not base_url.drivername.startswith("postgresql"):
-        pytest.skip("migration-path test requires PostgreSQL")
+        raise pytest.UsageError("migration-path test requires PostgreSQL")
 
     database_name = f"dotmac_migration_{uuid4().hex}"
     maintenance_url = base_url.set(database="postgres")

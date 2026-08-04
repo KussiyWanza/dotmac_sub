@@ -52,6 +52,7 @@ import pytest
 from geoalchemy2 import Geometry
 from geoalchemy2.admin.dialects import sqlite as geoalchemy_sqlite_admin
 from sqlalchemy import String, TypeDecorator, create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -247,16 +248,30 @@ from app.services import network as network_service
 from app.services import network_monitoring as network_monitoring_service
 from app.services import radius as radius_service
 from app.services import tr069 as tr069_service
+from scripts.ci.migrated_test_database import (
+    DatabaseContractError,
+    parse_test_database_target,
+    require_migrated_schema,
+)
 
 
 @pytest.fixture(scope="session")
-def engine():
+def engine() -> Engine:
     database_url = os.getenv("TEST_DATABASE_URL")
     if database_url:
-        # Use PostgreSQL for tests (recommended)
-        engine = create_engine(database_url)
+        # PostgreSQL is the authoritative database-test lane.  Never repair or
+        # synthesize it from current ORM metadata: doing so silently omits
+        # migration-only constraints, indexes, triggers, defaults and history.
+        target = parse_test_database_target(database_url)
+        engine = create_engine(target.url)
+        try:
+            require_migrated_schema(engine)
+        except DatabaseContractError:
+            engine.dispose()
+            raise
     else:
-        # Fall back to SQLite with Spatialite
+        # Fast non-authoritative unit lane.  SQLite/model metadata is useful for
+        # service logic but is never integration or deployed-schema evidence.
         engine = create_engine(
             "sqlite+pysqlite://",
             connect_args={
@@ -302,8 +317,7 @@ def engine():
         # Create a connection first to initialize spatialite
         with engine.connect() as conn:
             pass
-
-    Base.metadata.create_all(engine)
+        Base.metadata.create_all(engine)
 
     return engine
 
