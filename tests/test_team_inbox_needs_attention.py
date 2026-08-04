@@ -313,3 +313,34 @@ def test_projection_count_matches_needs_attention_filter(db_session):
     assert projection.assignment_counts.needs_attention == 1
     assert projection.needs_attention is True
     assert projection.list_query.filter_value("needs_attention") == "true"
+
+
+def test_attention_classification_hydrates_candidates_in_bounded_batches(
+    db_session,
+    monkeypatch,
+):
+    conversations = [_conversation(db_session) for _ in range(5)]
+    for conversation in conversations:
+        _add_completed_exchange_with_follow_up(db_session, conversation)
+    db_session.commit()
+
+    hydrated_batch_sizes: list[int] = []
+    original = team_inbox_read._messages_by_conversation
+
+    def record_batch(db, conversation_ids):
+        hydrated_batch_sizes.append(len(conversation_ids))
+        return original(db, conversation_ids)
+
+    monkeypatch.setattr(
+        team_inbox_read,
+        "_messages_by_conversation",
+        record_batch,
+    )
+
+    result = team_inbox_read.needs_attention_conversation_ids(
+        db_session,
+        batch_size=2,
+    )
+
+    assert set(result) == {conversation.id for conversation in conversations}
+    assert hydrated_batch_sizes == [2, 2, 1]
