@@ -234,7 +234,12 @@ configuration. Changing one requires a migration/versioned contract and tests.
    delivery occurs only after commit. The accepted Quote and its line items are
    then an immutable commercial snapshot matching the copied SalesOrder;
    revised terms require a new Quote rather than editing or deactivating the
-   accepted evidence.
+   accepted evidence. `sales.orders` allocates the copied SalesOrder number
+   under the locked `sales_order_number` document sequence. Existing canonical
+   `SO-<digits>` SalesOrders are issued-number evidence: if import, restore, or
+   operator drift leaves the cursor behind the highest issued number, the
+   allocator advances it before reservation so acceptance repairs the drift
+   without weakening the unique-number constraint.
 4. Acceptance replay is idempotent by Quote identity. Structural unique keys
    and deterministic ProjectTask WorkOrder keys return the canonical account,
    SalesOrder, Project, Tasks, and WorkOrders without duplicates. Each created

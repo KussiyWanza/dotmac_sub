@@ -17,9 +17,12 @@ from app.services.collections._core import (
     DunningWorkflow,
     FinancialAccessConsequencePreview,
     FinancialAccessConsequenceResult,
+    FinancialAccessRestorationParticipantCommand,
+    FinancialAccessRestorationParticipantError,
     billing_enforcement_reconciler,
     confirm_financial_access_consequence,
     confirm_financial_access_restoration,
+    confirm_financial_access_restoration_for_owner,
     dunning_action_logs,
     # Service instances
     dunning_cases,
@@ -42,6 +45,8 @@ __all__ = [
     "DunningWorkflow",
     "FinancialAccessConsequencePreview",
     "FinancialAccessConsequenceResult",
+    "FinancialAccessRestorationParticipantCommand",
+    "FinancialAccessRestorationParticipantError",
     # Service instances
     "dunning_cases",
     "dunning_action_logs",
@@ -55,6 +60,7 @@ __all__ = [
     "confirm_financial_access_consequence",
     "preview_financial_access_restoration",
     "confirm_financial_access_restoration",
+    "confirm_financial_access_restoration_for_owner",
     "restore_account_services",
     "restore_account_services_detailed",
 ]

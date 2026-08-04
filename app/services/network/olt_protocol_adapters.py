@@ -41,7 +41,10 @@ class OltConnectionConfig:
     name: str
     hostname: str | None
     mgmt_ip: str | None
+    vendor: str | None
     model: str | None
+    firmware_version: str | None
+    software_version: str | None
     ssh_username: str | None
     ssh_password: str | None
     ssh_port: int | None
@@ -53,7 +56,10 @@ class OltConnectionConfig:
             name=olt.name,
             hostname=olt.hostname,
             mgmt_ip=olt.mgmt_ip,
+            vendor=olt.vendor,
             model=olt.model,
+            firmware_version=olt.firmware_version,
+            software_version=olt.software_version,
             ssh_username=olt.ssh_username,
             ssh_password=olt.ssh_password,
             ssh_port=olt.ssh_port,

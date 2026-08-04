@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, cast
 from urllib.parse import quote_plus
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -957,6 +957,57 @@ def catalog_subscription_replace_ipv4(
         )
     )
     return RedirectResponse(redirect_url, status_code=303)
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/ipv4/reconcile",
+    dependencies=[Depends(require_permission("catalog:write"))],
+)
+def catalog_subscription_reconcile_ipv4(
+    request: Request,
+    subscription_id: str,
+    assignment_id: str = Form(...),
+    preview_fingerprint: str = Form(...),
+    idempotency_key: str = Form(...),
+    confirmed: str | None = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Apply one confirmed, owner-reviewed served-IPv4 reconciliation."""
+
+    base_url = f"/admin/catalog/subscriptions/{subscription_id}"
+    if confirmed != "yes":
+        message = "Confirm the reviewed IPv4 reconciliation before continuing."
+        return RedirectResponse(
+            f"{base_url}?error={quote_plus(message)}#ipv4-projection-reconciliation",
+            status_code=303,
+        )
+    actor_id = str(_get_actor_id(request) or "").strip()
+    try:
+        command = web_catalog_subscription_workflows_service.SubscriptionIPv4ProjectionReconciliationCommand(
+            subscription_id=UUID(subscription_id),
+            assignment_id=UUID(assignment_id),
+            preview_fingerprint=preview_fingerprint,
+            idempotency_key=idempotency_key,
+            actor_id=actor_id,
+        )
+        outcome = web_catalog_subscription_workflows_service.execute_subscription_ipv4_projection_reconciliation(
+            db,
+            command=command,
+        )
+    except (DomainError, ValueError) as exc:
+        message = str(getattr(exc, "message", None) or str(exc))
+        return RedirectResponse(
+            f"{base_url}?error={quote_plus(message)}#ipv4-projection-reconciliation",
+            status_code=303,
+        )
+    message = (
+        f"Served IPv4 reconciliation committed for {outcome.desired_address}; "
+        "RADIUS and old-address session convergence requested."
+    )
+    return RedirectResponse(
+        f"{base_url}?notice={quote_plus(message)}#ipv4-projection-reconciliation",
+        status_code=303,
+    )
 
 
 @router.post(

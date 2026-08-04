@@ -64,8 +64,8 @@ from app.models.sales import (
     SalesOrderPaymentStatus,
     SalesOrderStatus,
 )
-from app.models.sequence import DocumentSequence
 from app.models.subscriber import Subscriber
+from app.services import numbering
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -249,28 +249,47 @@ def _parse_datetime(value: str | None) -> datetime | None:
         raise HTTPException(status_code=400, detail="Invalid datetime value") from exc
 
 
-def _next_sequence_value(db: Session, key: str, start_value: int = 1) -> int:
-    sequence = (
-        db.query(DocumentSequence)
-        .filter(DocumentSequence.key == key)
-        .with_for_update()
-        .first()
+_SALES_ORDER_SEQUENCE_KEY = "sales_order_number"
+_SALES_ORDER_NUMBER_PREFIX = "SO-"
+
+
+def _parse_order_number(order_number: str | None) -> int | None:
+    value = str(order_number or "").strip()
+    if not value.startswith(_SALES_ORDER_NUMBER_PREFIX):
+        return None
+    digits = value[len(_SALES_ORDER_NUMBER_PREFIX) :]
+    return int(digits) if digits.isdigit() else None
+
+
+def _highest_existing_order_number(db: Session) -> int:
+    highest = 0
+    existing_numbers = db.scalars(
+        select(SalesOrder.order_number).where(
+            SalesOrder.order_number.like(f"{_SALES_ORDER_NUMBER_PREFIX}%")
+        )
     )
-    if not sequence:
-        sequence = DocumentSequence(key=key, next_value=start_value)
-        db.add(sequence)
-        db.flush()
-    value = sequence.next_value
-    sequence.next_value = value + 1
-    db.flush()
-    return value
+    for order_number in existing_numbers:
+        parsed = _parse_order_number(order_number)
+        if parsed is not None:
+            highest = max(highest, parsed)
+    return highest
 
 
 def _generate_order_number(db: Session) -> str:
-    # Continues the CRM sequence: the backfill imports the CRM row's
-    # next_value under the same key.
-    value = _next_sequence_value(db, "sales_order_number", 1)
-    return f"SO-{value:06d}"
+    """Reserve a collision-free number and repair stale sequence state.
+
+    Existing SalesOrders are authoritative issued-number evidence. The locked
+    document sequence serializes allocators, but imported or manually restored
+    data can leave its cursor behind that evidence. Advance the cursor before
+    reserving so Quote acceptance repairs that drift instead of failing its
+    atomic conversion on the unique order-number constraint.
+    """
+
+    sequence = numbering.lock_sequence(db, _SALES_ORDER_SEQUENCE_KEY, 1)
+    value = max(sequence.next_value, _highest_existing_order_number(db) + 1)
+    sequence.next_value = value + 1
+    db.flush()
+    return f"{_SALES_ORDER_NUMBER_PREFIX}{value:06d}"
 
 
 # ---------------------------------------------------------------------------

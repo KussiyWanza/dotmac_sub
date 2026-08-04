@@ -7,7 +7,6 @@ from app.models.domain_settings import SettingDomain
 from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
 from app.schemas.lifecycle import (
     SubscriptionLifecycleEventCreate,
-    SubscriptionLifecycleEventUpdate,
 )
 from app.services import settings_spec
 from app.services.common import (
@@ -77,24 +76,13 @@ class SubscriptionLifecycleEvents(ListResponseMixin):
         )
         return apply_pagination(query, limit, offset).all()
 
-    @staticmethod
-    def update(db: Session, event_id: str, payload: SubscriptionLifecycleEventUpdate):
-        event = db.get(SubscriptionLifecycleEvent, event_id)
-        if not event:
-            raise HTTPException(status_code=404, detail="Lifecycle event not found")
-        for key, value in payload.model_dump(exclude_unset=True).items():
-            setattr(event, key, value)
-        db.commit()
-        db.refresh(event)
-        return event
-
-    @staticmethod
-    def delete(db: Session, event_id: str):
-        event = db.get(SubscriptionLifecycleEvent, event_id)
-        if not event:
-            raise HTTPException(status_code=404, detail="Lifecycle event not found")
-        db.delete(event)
-        db.commit()
+    # `update` and `delete` are deliberately absent. They set any attribute
+    # from a partial payload — including to_status and created_at — and hard
+    # deleted rows, so a customer's entitlement history could be rewritten
+    # after a contractual period had been scored against it. Migration 468
+    # enforces append-only in the database, because a service can be re-added
+    # and a migration cannot be argued with. Corrections are new transitions,
+    # never edits to old ones.
 
 
 subscription_lifecycle_events = SubscriptionLifecycleEvents()

@@ -21,6 +21,7 @@ from app.models.billing import (
     PaymentSettlementOrigin,
     PaymentStatus,
     ServiceEntitlement,
+    TaxRate,
 )
 from app.models.catalog import BillingMode, SubscriptionStatus
 from app.models.prepaid_funding import (
@@ -33,17 +34,22 @@ from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
     AdoptFundedPrepaidProformaCommand,
+    PaidPrepaidInvoiceRepairDisposition,
+    PaidPrepaidInvoiceRepairQuery,
     PrepaidDraftAction,
     PrepaidDraftDisposition,
     PrepaidDraftReconciliationError,
     PrepaidProformaAdoptionDisposition,
     PrepaidProformaAdoptionQuery,
     ReconcilePrepaidDraftCommand,
+    RepairHistoricalPaidPrepaidInvoiceCommand,
     adopt_funded_prepaid_proforma,
     preview_funded_prepaid_proforma_adoption,
+    preview_historical_paid_prepaid_invoice_repair,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
+    repair_historical_paid_prepaid_invoice,
 )
 from app.services.prepaid_funding_reconstruction import (
     PrepaidFundingBaselineMissingError,
@@ -185,6 +191,140 @@ def _onboarding_proforma(db, account, subscription) -> Invoice:
     )
     db.commit()
     return invoice
+
+
+def _historical_paid_unlinked_invoice(db, account, subscription):
+    invoice = _onboarding_proforma(db, account, subscription)
+    account.billing_mode = BillingMode.prepaid
+    tax_rate = TaxRate(name=f"VAT-{uuid4().hex[:8]}", rate=Decimal("7.5000"))
+    db.add(tax_rate)
+    db.flush()
+    account.tax_rate_id = tax_rate.id
+    payment = _payment(
+        db,
+        account,
+        amount=Decimal("233812.50"),
+        paid_at=datetime(2026, 8, 3, 17, 24, tzinfo=UTC),
+    )
+    invoice.status = InvoiceStatus.paid
+    invoice.balance_due = Decimal("0.00")
+    invoice.is_proforma = False
+    invoice.issued_at = payment.paid_at
+    allocation = PaymentAllocation(
+        payment_id=payment.id,
+        invoice_id=invoice.id,
+        amount=Decimal("18812.50"),
+        memo="Historical generic proforma conversion allocation",
+        is_active=True,
+    )
+    db.add(allocation)
+    payment.settlement.unallocated_amount = Decimal("0.00")
+    db.commit()
+    return invoice, payment, allocation
+
+
+def test_historical_paid_unlinked_invoice_repairs_coverage_and_requests_access(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, payment, allocation = _historical_paid_unlinked_invoice(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    materialize_test_prepaid_opening_balance(
+        db_session,
+        subscriber.id,
+        Decimal("0.00"),
+    )
+    preview = preview_historical_paid_prepaid_invoice_repair(
+        db_session,
+        PaidPrepaidInvoiceRepairQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert preview.disposition is (
+        PaidPrepaidInvoiceRepairDisposition.exact_paid_unlinked_invoice
+    )
+    assert preview.actionable is True
+    assert preview.allocation_id == allocation.id
+    assert preview.payment_id == payment.id
+    assert preview.settlement_id == payment.settlement.id
+    assert preview.allocated_amount == Decimal("18812.50")
+    assert preview.billing_period_start == datetime(2026, 8, 2, 23, tzinfo=UTC)
+    assert preview.billing_period_end == datetime(2026, 9, 2, 23, tzinfo=UTC)
+    invoice_id = invoice.id
+    subscription_id = subscription.id
+    fingerprint = preview.fingerprint
+    db_session.commit()
+
+    command = RepairHistoricalPaidPrepaidInvoiceCommand(
+        context=CommandContext.system(
+            actor="pytest:billing-operator",
+            scope="prepaid_draft_reconciliation",
+            reason="Reviewed exact paid onboarding invoice settlement evidence",
+            idempotency_key=f"pytest-paid-prepaid-repair-{invoice_id}",
+        ),
+        invoice_id=invoice_id,
+        subscription_id=subscription_id,
+        preview_fingerprint=fingerprint,
+    )
+    result = repair_historical_paid_prepaid_invoice(db_session, command)
+    replay = repair_historical_paid_prepaid_invoice(db_session, command)
+
+    db_session.refresh(invoice)
+    db_session.refresh(subscription)
+    db_session.refresh(allocation)
+    entitlement = db_session.query(ServiceEntitlement).one()
+    line = db_session.query(InvoiceLine).filter_by(invoice_id=invoice.id).one()
+    assert result.replayed is False
+    assert replay.replayed is True
+    assert result.subscriptions_restored == 0
+    assert invoice.status is InvoiceStatus.paid
+    assert invoice.balance_due == Decimal("0.00")
+    assert invoice.billing_period_start == datetime(2026, 8, 2, 23)
+    assert invoice.billing_period_end == datetime(2026, 9, 2, 23)
+    assert line.subscription_id == subscription.id
+    assert entitlement.source_invoice_id == invoice.id
+    assert entitlement.source_invoice_line_id == line.id
+    assert subscription.next_billing_at == entitlement.ends_at
+    assert subscription.status is SubscriptionStatus.active
+    assert allocation.is_active is True
+    assert allocation.amount == Decimal("18812.50")
+    assert db_session.query(PaymentAllocation).count() == 1
+    assert db_session.query(ServiceEntitlement).count() == 1
+
+
+def test_historical_paid_invoice_repair_rejects_allocation_ambiguity(
+    db_session,
+    subscriber,
+    subscription,
+):
+    invoice, _payment_row, allocation = _historical_paid_unlinked_invoice(
+        db_session,
+        subscriber,
+        subscription,
+    )
+    allocation.is_active = False
+    db_session.commit()
+
+    preview = preview_historical_paid_prepaid_invoice_repair(
+        db_session,
+        PaidPrepaidInvoiceRepairQuery(
+            invoice_id=invoice.id,
+            subscription_id=subscription.id,
+        ),
+    )
+
+    assert preview.disposition is PaidPrepaidInvoiceRepairDisposition.manual_review
+    assert preview.actionable is False
+    assert preview.reason == (
+        "repair requires one exact active allocation from successful "
+        "unreturned settlement evidence"
+    )
 
 
 def test_exact_funded_onboarding_proforma_adopts_then_reconciles(

@@ -63,6 +63,9 @@ and directs the operator to the dry-run-first prepaid reconciliation owner.
 Historical prepaid drafts and other pre-existing ambiguous billing records are
 not modified by this prevention change. They require a separately reviewed,
 dry-run-first reconciliation command with deterministic repair evidence.
+An exact already-paid, periodless prepaid document uses that separate
+historical command; generic conversion remains prevention-only and never
+creates entitlement or restores access.
 
 ## Verification
 
