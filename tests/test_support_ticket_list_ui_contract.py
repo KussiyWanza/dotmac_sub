@@ -267,6 +267,10 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'name="region" data-auto-submit' in list_partial
     assert "All Regions" in list_partial
     assert "{% for option in region_options %}" in list_partial
+    assert 'id="ticket-filter-apply"' in list_partial
+    assert 'aria-label="Apply ticket filters"' in list_partial
+    assert 'hx-include="#ticket-filter-form"' in list_partial
+    assert 'hx-sync="#ticket-filter-form:replace"' in list_partial
     assert 'name="sort" value="{{ list_query.sort_by }}"' in list_partial
     assert "list_query.url('/admin/support/tickets'" in table
     assert 'aria-sort="' in table
