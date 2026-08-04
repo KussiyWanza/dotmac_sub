@@ -215,10 +215,13 @@ all of the following are true:
   `ghcr.io/michaelayoade/dotmac_sub` with read-only package access. Never place
   that credential in the repository or runner labels.
 - The GitHub `staging` environment defines
-  `STAGING_DEPLOY_DIR=/home/dotmac/projects/dotmac_sub`.
+  `STAGING_DEPLOY_DIR=/home/dotmac/deploy-worktrees/dotmac-sub-staging`.
 - The persistent checkout contains the staging `.env` and the required
   host-local `docker-compose.override.yml`.
-- The tracked persistent checkout is clean. The workflow refuses to discard
+- The persistent checkout is a dedicated Git worktree used only by the staging
+  deployment runner. Interactive development, agents, and diagnostic edits use
+  separate worktrees and never write into the deployment worktree.
+- The tracked deployment worktree is clean. The workflow refuses to discard
   tracked changes and updates local `dev` only by fast-forward.
 
 The workflow accepts only a successful push-triggered GHCR build from this

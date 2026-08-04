@@ -92,6 +92,12 @@ before mutating a host. `scripts/deploy.sh` requires successful `CI` and
 migrations, or service replacement. The on-host schema, integration-readiness,
 web-health, and worker-health gates are runtime acceptance checks, not pytest.
 
+The staging runner uses the dedicated persistent worktree
+`/home/dotmac/deploy-worktrees/dotmac-sub-staging`. Interactive development,
+agents, and diagnostic edits must use other worktrees. Sharing a checkout lets
+development writes race deployment verification, so the workflow pins the
+dedicated path and refuses tracked changes rather than discarding them.
+
 Each unit-test shard and the architecture job also has a 30-minute job timeout.
 The per-test watchdog catches a blocked unit test first; the job timeout remains
 the outer guard for collection, environment, plugin, and architecture-suite
