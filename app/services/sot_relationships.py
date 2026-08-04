@@ -1842,7 +1842,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="customer.service_level",
                 module="app.services.customer_service_level",
-                owns=("per-subscription SLA policy resolution and period score",),
+                owns=(
+                    "per-subscription SLA policy resolution and period score",
+                    "immutable effective-dated SLA policy versions",
+                ),
                 depends_on=(
                     "network.customer_outage_accrual",
                     "service_intent.catalog_policy",
@@ -1865,6 +1868,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 contract=ServiceContract(
                     concerns=(
                         ConcernContract(
+                            name="immutable effective-dated SLA policy versions",
+                            role=OwnerRole.AUTHORITATIVE_RECORD,
+                            input_names=("contractual SLA terms",),
+                            canonical_writer="customer.service_level",
+                        ),
+                        ConcernContract(
                             name=(
                                 "per-subscription SLA policy resolution and "
                                 "period score"
@@ -1877,6 +1886,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     authoritative_inputs=(
+                        AuthorityInput(
+                            name="contractual SLA terms",
+                            owner="customer.service_level",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "immutable effective-dated sla_policy_versions "
+                                "rows, append-only, one version in force per "
+                                "policy_key per instant"
+                            ),
+                        ),
                         AuthorityInput(
                             name="qualifying downtime intervals",
                             owner="network.customer_outage_accrual",
@@ -1899,27 +1918,114 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                     ),
                     transaction=TransactionContract(
-                        mode=TransactionMode.READ_ONLY,
+                        mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Scores are computed on read from committed "
-                            "ledger and catalog state; nothing is persisted "
-                            "in the shadow phase."
+                            "record_policy_version appends one immutable "
+                            "version and closes the version it supersedes in "
+                            "a single owner-managed transaction, staging its "
+                            "typed output with the write. Scoring stays a "
+                            "pure read over committed ledger and catalog "
+                            "state and persists nothing."
                         ),
-                        locking="Read scoring acquires no mutation locks.",
+                        locking=(
+                            "The writer locks the target policy series "
+                            "(SELECT ... FOR UPDATE on sla_policy_versions "
+                            "for one policy_key, ordered by version desc) "
+                            "before reading the version in force, so "
+                            "concurrent writers on one scope serialise "
+                            "instead of both acting on a stale current "
+                            "version. No other table is locked, so the "
+                            "single-resource order cannot deadlock against "
+                            "the accrual ledger. Scoring acquires no "
+                            "mutation locks."
+                        ),
                         idempotency=(
-                            "The same intervals, policy, and period produce "
-                            "the same score and evidence digest."
+                            "When a key is supplied it, not the fingerprint, "
+                            "is the identity: the same key with the same "
+                            "fingerprint replays, the same key with different "
+                            "terms raises idempotency_conflict, and identical "
+                            "terms submitted under a NEW key raise "
+                            "duplicate_policy_terms rather than reporting "
+                            "success under a key that reserves nothing. With "
+                            "no key supplied the fingerprint is the only "
+                            "identity and replays on match. "
+                            "A durable command fingerprint over derived "
+                            "policy key, source, effective_from and terms is "
+                            "stored on the row under a unique constraint; a "
+                            "replay returns the original PolicyVersionOutcome "
+                            "with replayed=True rather than raising against "
+                            "the row it already created. Scoring is "
+                            "naturally idempotent: the same intervals, "
+                            "policy and period yield the same score and "
+                            "evidence digest."
                         ),
-                        retries="Read scoring calls are safe to retry.",
+                        retries=(
+                            "A writer that loses the race surfaces "
+                            "customer.service_level.concurrent_version_"
+                            "conflict for the named race constraints, "
+                            "including the idempotency key: a raw collision "
+                            "does not reveal whether the winner wrote the "
+                            "same terms, so the retry re-reads the winner and "
+                            "decides replay-or-conflict from evidence. Named "
+                            "input constraints surface as "
+                            "invalid_policy_version, since retrying those "
+                            "would loop forever. Any UNRECOGNISED constraint "
+                            "or driver failure is re-raised unchanged — an "
+                            "unexpected defect must stay unexpected. Scope "
+                            "and parent existence are validated before the "
+                            "database sees the row. Reads are always safe to "
+                            "retry."
+                        ),
                     ),
                     errors=ErrorContract(
-                        domain_codes=(),
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "customer.service_level"
+                            ),
+                            "customer.service_level.contractual_target_required",
+                            "customer.service_level.missing_effective_from",
+                            "customer.service_level.not_after_current",
+                            "customer.service_level.would_rewrite_closed_period",
+                            "customer.service_level.scope_required",
+                            "customer.service_level.invalid_scope",
+                            "customer.service_level.unknown_scope",
+                            "customer.service_level.idempotency_conflict",
+                            "customer.service_level.duplicate_policy_terms",
+                            "customer.service_level.invalid_policy_version",
+                            "customer.service_level.concurrent_version_conflict",
+                        ),
                         mapping_owner="app.services.web_customer_details",
+                        fail_closed_on=(
+                            "contractual source without an availability target",
+                            "effective_from at or before the version in force",
+                            "backdating behind an already-closed version",
+                            "a precedence claim with no matching scope",
+                            "a scope id that does not belong to the source",
+                            "a scope id with no such parent record",
+                            "an idempotency key reused for different terms",
+                            "identical terms already recorded under another key",
+                            "a concurrent writer winning the series race",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("sla_policy_version.recorded",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 carries policy key, version, source, "
+                            "effective_from and the superseded version; "
+                            "fields are additive. The authoritative record is "
+                            "the immutable row, not this breadcrumb."
+                        ),
+                        replay=(
+                            "No projection handler consumes it; replay writes nothing."
+                        ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.SHADOWING,
                         old_owner=(
-                            "read-time topology.customer_availability "
+                            "mutable SlaProfile terms and the read-time "
+                            "topology.customer_availability "
                             "trailing-window calculation"
                         ),
                         new_owner="customer.service_level",
@@ -1944,7 +2050,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "docs/designs/OUTAGE_SLA_SPINE.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
-                    test_refs=("tests/test_customer_service_level.py",),
+                    test_refs=(
+                        "tests/test_customer_service_level.py",
+                        "tests/integration/test_sla_policy_versions_postgres.py",
+                    ),
                 ),
             ),
             SOTService(

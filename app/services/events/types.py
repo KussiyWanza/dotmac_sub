@@ -386,6 +386,10 @@ class EventType(enum.Enum):
     # (network.cabinet_notice). Operational breadcrumb only: customer emails
     # are queued directly through communication intents, never via this event.
     cabinet_notice_dispatched = "cabinet_notice.dispatched"
+    # Effective-dated SLA policy version recorded (customer.service_level,
+    # OUTAGE_SLA_SPINE §4). Provenance breadcrumb: the authoritative record
+    # is the immutable sla_policy_versions row itself.
+    sla_policy_version_recorded = "sla_policy_version.recorded"
     # Customer outage communications pass completed
     # (network.outage_communications, OUTAGE_SLA_SPINE §3). Operational
     # breadcrumb only, same as the cabinet notice: the customer messages

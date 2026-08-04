@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -1458,3 +1459,130 @@ class ProvisioningLog(Base):
     nas_device = relationship("NasDevice", back_populates="provisioning_logs")
     subscription = relationship("Subscription")
     template = relationship("ProvisioningTemplate")
+
+
+class SlaPolicyVersion(Base):
+    """One immutable, effective-dated contractual SLA policy version.
+
+    Owner: ``customer.service_level`` (OUTAGE_SLA_SPINE §4). Supersedes the
+    mutable ``SlaProfile`` as the authority for what a customer is actually
+    owed. A profile edit silently rewrote every historical score; a version
+    here is append-only, so a period already scored keeps the terms that were
+    in force when it was measured.
+
+    Precedence is carried by ``source``, highest first: a subscription
+    contract beats an account contract, which beats the subscribed offer
+    version, which beats the internal measurement policy. Exactly one scope
+    column is populated, and a CHECK constraint binds it to the matching
+    source so a row cannot claim a precedence it has no scope for.
+
+    ``policy_key`` is the stable identity across versions; ``version`` counts
+    from 1 within it. Ranges are half-open ``[effective_from, effective_to)``
+    with an open end meaning "still in force", and a PostgreSQL exclusion
+    constraint forbids two versions of one policy overlapping in time — the
+    invariant that makes "the policy in force at instant T" a single answer
+    rather than a guess.
+
+    Only ``internal_measurement`` may omit an availability target: it states
+    what we measure, never what we promised. Every contractual source must
+    name its target, because the design forbids inventing one.
+    """
+
+    __tablename__ = "sla_policy_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "policy_key", "version", name="uq_sla_policy_versions_key_version"
+        ),
+        CheckConstraint("version >= 1", name="ck_sla_policy_versions_version"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to > effective_from",
+            name="ck_sla_policy_versions_range",
+        ),
+        CheckConstraint(
+            "availability_target_percent IS NULL "
+            "OR (availability_target_percent > 0 "
+            "AND availability_target_percent <= 100)",
+            name="ck_sla_policy_versions_target_bounds",
+        ),
+        # A contractual policy without a target would force the scorer to
+        # invent one; only the internal measurement policy may be silent.
+        CheckConstraint(
+            "source = 'internal_measurement' "
+            "OR availability_target_percent IS NOT NULL",
+            name="ck_sla_policy_versions_contractual_target",
+        ),
+        # Exactly one scope, and it must match the claimed precedence.
+        CheckConstraint(
+            "(source = 'subscription_contract' AND subscription_id IS NOT NULL "
+            " AND subscriber_id IS NULL AND offer_id IS NULL) "
+            "OR (source = 'account_contract' AND subscriber_id IS NOT NULL "
+            " AND subscription_id IS NULL AND offer_id IS NULL) "
+            "OR (source = 'offer_version' AND offer_id IS NOT NULL "
+            " AND subscription_id IS NULL AND subscriber_id IS NULL) "
+            "OR (source = 'internal_measurement' AND subscription_id IS NULL "
+            " AND subscriber_id IS NULL AND offer_id IS NULL)",
+            name="ck_sla_policy_versions_scope_matches_source",
+        ),
+        UniqueConstraint(
+            "command_fingerprint", name="uq_sla_policy_versions_fingerprint"
+        ),
+        # Database arbitration for concurrent reuse of one idempotency key:
+        # the read-side check cannot serialise two processes on its own.
+        UniqueConstraint(
+            "command_idempotency_key",
+            name="uq_sla_policy_versions_idempotency_key",
+        ),
+        Index("ix_sla_policy_versions_key", "policy_key", "version"),
+        Index("ix_sla_policy_versions_subscription", "subscription_id"),
+        Index("ix_sla_policy_versions_subscriber", "subscriber_id"),
+        Index("ix_sla_policy_versions_offer", "offer_id"),
+        Index("ix_sla_policy_versions_effective", "effective_from", "effective_to"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    policy_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # subscription_contract | account_contract | offer_version |
+    # internal_measurement  (SlaPolicySource in service_impact_contracts)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+    # RESTRICT, never CASCADE: this table exists to preserve what a customer
+    # was owed. Cascading a parent delete would erase the contractual history
+    # a later compensation or dispute has to be settled against.
+    subscription_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subscriptions.id", ondelete="RESTRICT")
+    )
+    subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subscribers.id", ondelete="RESTRICT")
+    )
+    offer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_offers.id", ondelete="RESTRICT")
+    )
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    availability_target_percent: Mapped[Decimal | None] = mapped_column(Numeric(6, 3))
+    calendar_timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Africa/Lagos"
+    )
+    maintenance_excludable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    credit_percent_per_breach: Mapped[Decimal | None] = mapped_column(Numeric(6, 3))
+    credit_cap_percent: Mapped[Decimal | None] = mapped_column(Numeric(6, 3))
+    # Provenance: who established these terms and against what evidence.
+    contract_reference: Mapped[str | None] = mapped_column(String(200))
+    established_by: Mapped[str | None] = mapped_column(String(120))
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sla_policy_versions.id", ondelete="RESTRICT"),
+    )
+    # Durable replay evidence: a retry of the same intent returns the original
+    # outcome instead of raising against the row it already created.
+    command_fingerprint: Mapped[str | None] = mapped_column(String(80))
+    command_idempotency_key: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
