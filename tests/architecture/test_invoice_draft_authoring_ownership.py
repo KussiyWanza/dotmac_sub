@@ -10,7 +10,14 @@ def test_invoice_draft_authoring_has_one_contracted_atomic_owner() -> None:
     assert service.module == "app.services.invoice_draft_authoring"
     assert service.contract is not None
     assert service.contract.transaction.mode is TransactionMode.COORDINATOR_MANAGED
-    assert service.contract.concerns[0].role is OwnerRole.APPLICATION_COORDINATOR
+    assert {concern.name for concern in service.contract.concerns} == {
+        "administrative invoice draft authoring coordination",
+        "administrative proforma conversion coordination",
+    }
+    assert all(
+        concern.role is OwnerRole.APPLICATION_COORDINATOR
+        for concern in service.contract.concerns
+    )
 
 
 def test_admin_invoice_form_does_not_write_headers_or_lines_directly() -> None:
@@ -26,3 +33,14 @@ def test_admin_invoice_form_does_not_write_headers_or_lines_directly() -> None:
     assert "billing_service.invoice_lines.delete(" not in authoring_adapter
     assert "invoice_draft_authoring.create_invoice_draft(" in authoring_adapter
     assert "invoice_draft_authoring.update_invoice_draft(" in authoring_adapter
+
+
+def test_admin_proforma_conversion_delegates_to_locked_owner() -> None:
+    source = Path("app/services/web_billing_invoices.py").read_text()
+    conversion_start = source.index("def convert_proforma_to_final(")
+    conversion_end = source.index("def build_invoice_payload_data(")
+    conversion_adapter = source[conversion_start:conversion_end]
+
+    assert "invoice_draft_authoring.convert_proforma_invoice(" in conversion_adapter
+    assert "billing_service.invoices.update(" not in conversion_adapter
+    assert "db.commit(" not in conversion_adapter

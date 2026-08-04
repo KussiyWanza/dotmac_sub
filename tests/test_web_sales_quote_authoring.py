@@ -20,6 +20,31 @@ from app.models.system_user import SystemUser
 from app.services import web_sales
 from app.services.db_session_adapter import db_session_adapter
 from app.services.sales import quote_authoring
+from app.web.admin.sales import templates as sales_templates
+
+
+class _QuoteRenderURL:
+    path = "/admin/sales/quotes/new"
+
+    def __str__(self) -> str:
+        return self.path
+
+
+class _QuoteRenderRequest:
+    state = SimpleNamespace(
+        csrf_token="quote-render-csrf",
+        auth={"permission_keys": {"*"}},
+    )
+    query_params: dict[str, str] = {}
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+    url = _QuoteRenderURL()
+    session: dict[str, str] = {}
+    client = None
+    scope: dict[str, object] = {}
+
+    def url_for(self, *_args: object, **_kwargs: object) -> str:
+        return "/"
 
 
 @pytest.fixture
@@ -134,6 +159,34 @@ def test_new_quote_context_renders_defaults_and_one_empty_line(db_session):
     assert {item["value"] for item in context["project_types"]} == {
         item.value for item in ProjectType
     }
+
+
+def test_new_quote_context_renders_full_template_without_dict_method_collision(
+    db_session,
+) -> None:
+    _actor, lead, _party = _identity(db_session)
+    context = web_sales.build_quote_new_context(db_session, lead_id=str(lead.id))
+    context.update(
+        {
+            "request": _QuoteRenderRequest(),
+            "active_page": "sales-quotes",
+            "active_menu": "sales",
+            "current_user": {
+                "name": "Quote Author",
+                "email": "quote-author@example.com",
+                "initials": "QA",
+            },
+            "sidebar_stats": {},
+        }
+    )
+
+    html = sales_templates.env.get_template("admin/sales/quotes/form.html").render(
+        **context
+    )
+
+    assert "New Quote" in html
+    assert "quoteAuthoringForm([{" in html
+    assert "x-data='quoteAuthoringForm(" in html
 
 
 def test_new_quote_context_omits_invalid_active_tax_rate_without_500(db_session):

@@ -11,6 +11,11 @@ rollback boundary in one operation.
 - The deployment-only backup upstream is `127.0.0.1:18001`.
 - `.env` contains the production service configuration and approved secret
   references. Secret values are not copied into deployment commands or logs.
+- `.env` identifies the exact production host with `APP_ENV=production` and
+  `SERVER_NAME=dotmac-sub-prod`. The release gate rejects ambiguous markers.
+- GitHub workflow evidence is readable from the host. Public repositories need
+  no credential; restricted repositories inject the read-only
+  `GITHUB_DEPLOY_GATE_TOKEN` through the approved secret-delivery path.
 - The database backup and deploy locks are writable.
 
 The deployment refuses to start if the running Nginx configuration does not
@@ -18,30 +23,33 @@ contain the backup upstream.
 
 ## Release sequence
 
-1. Verify the image exists and its OCI revision matches the requested SHA tag.
-2. Back up the database.
-3. Run candidate-image pre-migration state checks against the target database.
-4. Pin the immutable image and revision.
-5. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
-6. Verify registered schema contracts and reject every invalid or unready
+1. Pull the image and verify its OCI revision matches the requested SHA tag.
+2. Require successful `CI` and `Mobile CI` GitHub push workflow runs for that
+   exact full revision on `main`. Missing, pending, failed, wrong-branch, or
+   unavailable evidence fails closed before backup or database mutation.
+3. Back up the database.
+4. Run candidate-image pre-migration state checks against the target database.
+5. Pin the immutable image and revision.
+6. Apply `alembic upgrade heads`, retrying bounded PostgreSQL lock timeouts.
+7. Verify registered schema contracts and reject every invalid or unready
    user-schema index.
-7. Verify every enabled integration installation pin resolves to a current or
+8. Verify every enabled integration installation pin resolves to a current or
    bounded historical definition in the new image. Unavailable pins block
    replacement; historical pins are reported for explicit adoption.
-8. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
+9. Verify that an enabled `crm.ticket_pull` control has exactly one enabled
    `crm.ticket_observation.v1` binding and one active job bound to it. Complete
    the reviewed
    [`CRM_TICKET_CAPABILITY_CUTOVER.md`](CRM_TICKET_CAPABILITY_CUTOVER.md)
    procedure with the candidate image before deployment when this gate fails.
-9. Start and health-check the new application image on `127.0.0.1:18001`.
-10. Recreate the primary application and workers. Nginx uses the healthy
+10. Start and health-check the new application image on `127.0.0.1:18001`.
+11. Recreate the primary application and workers. Nginx uses the healthy
    candidate while the primary port is unavailable.
-11. Verify the primary image has no source-code bind mount and wait for its
+12. Verify the primary image has no source-code bind mount and wait for its
    health endpoint.
-12. Require every declared Celery worker to remain restart-free and answer a
+13. Require every declared Celery worker to remain restart-free and answer a
    node-specific ping, and require Celery Beat to remain running without
    restarts, across a bounded stabilization window.
-13. Gracefully drain the candidate and retain the configured rollback images.
+14. Gracefully drain the candidate and retain the configured rollback images.
 
 The candidate runs the same image, environment, and database schema as the
 primary. It is bound to localhost and exists only for the handoff window.

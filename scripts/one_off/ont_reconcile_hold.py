@@ -24,7 +24,8 @@ Usage::
         --reason-code wan_intent_adjudication \\
         --explanation "Unverified WAN intent; management drift not adjudicated." \\
         --actor michael@dotmac --reviewer ops@dotmac \\
-        --review-in-days 7 --idempotency-key hold-cohort-001
+        --review-due-at 2026-08-11T10:00:00+00:00 \\
+        --idempotency-key hold-cohort-001
 
     # release it
     python scripts/one_off/ont_reconcile_hold.py release \\
@@ -34,13 +35,24 @@ Usage::
 ``--reviewer`` must differ from ``--actor``: suppressing convergence on a
 customer device is a two-person decision. ``--idempotency-key`` is mandatory so
 a retried invocation cannot create a second decision.
+
+``--review-due-at`` is an absolute, timezone-aware instant, and that is the
+whole point. The owner treats a replay as a replay only when the ENTIRE command
+matches, review date included. An earlier version of this adapter took a
+relative ``--review-in-days`` and resolved it against ``now()`` on every
+invocation, so re-running a byte-identical command produced a review date that
+differed by microseconds -- and mandatory idempotency could therefore never
+replay through its own supported CLI. It refused instead, which was safe but
+made the documented retry story a fiction. A naive timestamp is rejected rather
+than assumed to be UTC: silently reinterpreting an operator's local time would
+move the review date by hours.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -58,6 +70,28 @@ from app.services.network.ont_reconcile_eligibility import (  # noqa: E402
     release_reconcile_hold,
 )
 from app.services.owner_commands import CommandContext  # noqa: E402
+
+
+def parse_review_due_at(value: str) -> datetime:
+    """Parse an absolute, timezone-aware review date at the CLI boundary.
+
+    Converting here rather than deeper means a bad value is reported next to
+    the flag that carried it. Naive input is refused: the owner would coerce it
+    to UTC, silently shifting an operator's local time by their offset.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not an ISO-8601 timestamp "
+            f"(expected e.g. 2026-08-11T10:00:00+00:00)"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} has no timezone offset; pass an absolute instant "
+            f"(e.g. 2026-08-11T10:00:00+00:00 or ...Z)"
+        )
+    return parsed
 
 
 def _resolve_ont(db, serial: str) -> OntUnit:
@@ -113,7 +147,7 @@ def _cmd_place(args) -> int:
             reason_code=args.reason_code,
             explanation=args.explanation,
             reviewer=args.reviewer,
-            review_due_at=datetime.now(UTC) + timedelta(days=args.review_in_days),
+            review_due_at=args.review_due_at,
         )
         context = CommandContext.system(
             actor=args.actor,
@@ -157,7 +191,13 @@ def _cmd_release(args) -> int:
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the operator parser.
+
+    Separate from ``main`` so the argument contract -- absolute review date,
+    mandatory idempotency key, no relative flag -- can be asserted without
+    reaching a database.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -170,7 +210,16 @@ def main() -> int:
     place.add_argument("--explanation", required=True)
     place.add_argument("--actor", required=True)
     place.add_argument("--reviewer", required=True, help="must differ from --actor")
-    place.add_argument("--review-in-days", type=int, default=7)
+    place.add_argument(
+        "--review-due-at",
+        required=True,
+        type=parse_review_due_at,
+        metavar="ISO8601",
+        help=(
+            "absolute, timezone-aware review date (e.g. 2026-08-11T10:00:00+00:00). "
+            "Must be identical on a retry for the idempotency key to replay."
+        ),
+    )
     place.add_argument(
         "--idempotency-key",
         required=True,
@@ -182,7 +231,11 @@ def main() -> int:
     release.add_argument("--actor", required=True)
     release.add_argument("--reason", required=True)
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     return {
         "list": _cmd_list,
         "overdue": _cmd_overdue,

@@ -27,7 +27,7 @@ def _install_adapter_fixture(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "printf '%s\\n' "
-        '"${SKIP_BACKUP}|${REQUIRE_PROXY_HANDOFF}|$*" '
+        '"${SKIP_BACKUP}|${REQUIRE_PROXY_HANDOFF}|${HEALTH_TIMEOUT_SECONDS}|$*" '
         '> "${STAGING_ADAPTER_TEST_OUTPUT}"\n',
         encoding="utf-8",
     )
@@ -36,6 +36,7 @@ def _install_adapter_fixture(
     process_env.update(
         {
             "REQUIRE_PROXY_HANDOFF": "1",
+            "HEALTH_TIMEOUT_SECONDS": "180",
             "SKIP_BACKUP": "0",
             "STAGING_ADAPTER_TEST_OUTPUT": str(output),
         }
@@ -62,7 +63,7 @@ def test_staging_adapter_forces_staging_only_deploy_controls(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
-    assert output.read_text(encoding="utf-8") == "1|0|sha-deadbee\n"
+    assert output.read_text(encoding="utf-8") == "1|0|600|sha-deadbee\n"
 
 
 def test_staging_adapter_refuses_non_staging_environment(tmp_path: Path) -> None:
