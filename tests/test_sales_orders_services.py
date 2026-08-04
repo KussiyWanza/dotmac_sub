@@ -157,6 +157,32 @@ def test_order_number_continues_document_sequence(db_session):
     assert second.order_number == "SO-001235"
 
 
+def test_order_number_repairs_sequence_behind_issued_orders(db_session):
+    subscriber = _make_subscriber(db_session)
+    db_session.add_all(
+        [
+            DocumentSequence(key="sales_order_number", next_value=2),
+            SalesOrder(
+                subscriber_id=subscriber.id,
+                order_number="SO-000087",
+                status=SalesOrderStatus.confirmed.value,
+                payment_status=SalesOrderPaymentStatus.pending.value,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    created = sales_order_service.sales_orders.create(
+        db_session, SalesOrderCreate(subscriber_id=subscriber.id)
+    )
+
+    assert created.order_number == "SO-000088"
+    sequence = (
+        db_session.query(DocumentSequence).filter_by(key="sales_order_number").one()
+    )
+    assert sequence.next_value == 89
+
+
 # ---------------------------------------------------------------------------
 # The crm#233 fix — fixed list shape, no account_id slot to mis-plumb
 # ---------------------------------------------------------------------------

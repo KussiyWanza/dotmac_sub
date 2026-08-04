@@ -200,7 +200,12 @@ initial accepted evidence; changed evidence fails before SalesOrder money is
 updated. Once accepted, the Quote and its line items are immutable commercial
 evidence matching the copied SalesOrder. Every commercial mutation locks the
 parent Quote first, so acceptance cannot race an edit; revised terms require a
-new Quote.
+new Quote. `sales.orders` serializes SalesOrder-number allocation on the locked
+`sales_order_number` document sequence and treats existing canonical
+`SO-<digits>` rows as issued-number evidence. A cursor behind the highest issued
+number is advanced before reservation, making allocation the idempotent repair
+owner for import, restore, or operator sequence drift while the unique number
+constraint remains the final arbiter.
 
 New writes use structural foreign keys. Provider and legacy IDs remain
 provenance. Part payment cannot create service; vendor verification is the
