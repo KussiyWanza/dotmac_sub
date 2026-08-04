@@ -57,6 +57,12 @@ authoritative documents in the same change that updates the contract.
 - New and materially changed owner interfaces use precise identifier,
   collection, optional, enum, value-object, and provenance types. Do not expose
   `Any` containers or free-form primitive bags as domain contracts.
+- Cross-repository engineering governance is pinned and required.
+  `.dotmac/standards-profile.json` declares the enrolled authority and fully
+  typed contract surface against one accepted Governance commit, and the
+  `Dotmac engineering standards` CI job must execute that exact revision.
+  Mutable tags/branches, copied rules, candidate mode, or a missing required
+  check are not substitutes.
 - Keep domain values typed internally. Serialize UUIDs, enums, decimals, dates,
   and value objects explicitly at adapter, persistence, or reporting boundaries.
 - Domain services raise domain errors. HTTP responses, redirects, task retries,
