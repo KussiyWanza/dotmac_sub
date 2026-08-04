@@ -1,4 +1,4 @@
-.PHONY: help test test-v test-cov test-ci test-ci-shard test-fast test-integration test-architecture test-architecture-serial test-e2e lint type-check format security check lint-file type-check-file check-file migrate dev docker-up docker-down docker-logs worker beat coverage clean prod-build prod-pin prod-deploy prod-up prod-down prod-logs prod-restart prod-smtp-inbound-up prod-smtp-inbound-probe prod-migrate prod-check bump-version prod-ghcr-pin prod-ghcr-deploy deploy
+.PHONY: help assert-full-test-host test test-v test-cov test-ci test-ci-shard test-fast test-integration test-architecture test-architecture-serial test-e2e lint type-check format security check lint-file type-check-file check-file migrate dev docker-up docker-down docker-logs worker beat coverage clean prod-build prod-pin prod-deploy prod-up prod-down prod-logs prod-restart prod-smtp-inbound-up prod-smtp-inbound-probe prod-migrate prod-check bump-version prod-ghcr-pin prod-ghcr-deploy deploy
 
 # Production runs IMMUTABLE images: the base docker-compose.yml has no source
 # bind-mounts and pulls code only from the baked image (built by `prod-build`).
@@ -60,16 +60,19 @@ UNIT_TEST_PATHS := tests/ --ignore=tests/integration --ignore=tests/e2e
 UNIT_TEST_WORKERS ?= auto
 UNIT_TEST_ARGS = $(UNIT_TEST_PATHS) -n $(UNIT_TEST_WORKERS) --durations=25
 
-test: ## Run the parallel non-integration suite (override UNIT_TEST_WORKERS as needed)
+assert-full-test-host:
+	poetry run python -m scripts.testing.host_test_policy full-suite
+
+test: assert-full-test-host ## Run the parallel non-integration suite (override UNIT_TEST_WORKERS as needed)
 	poetry run pytest $(UNIT_TEST_ARGS) -q
 
-test-v: ## Run the parallel non-integration suite (verbose)
+test-v: assert-full-test-host ## Run the parallel non-integration suite (verbose)
 	poetry run pytest $(UNIT_TEST_ARGS) -v
 
-test-cov: ## Run the parallel non-integration suite with terminal coverage
+test-cov: assert-full-test-host ## Run the parallel non-integration suite with terminal coverage
 	poetry run pytest $(UNIT_TEST_ARGS) --cov=app --cov-report=term-missing -q
 
-test-ci: ## Run the canonical CI unit suite with XML coverage
+test-ci: assert-full-test-host ## Run the canonical CI unit suite with XML coverage
 	poetry run pytest $(UNIT_TEST_ARGS) --cov=app --cov-report=xml -q
 
 CI_SHARD ?=
@@ -79,7 +82,7 @@ CI_TEST_TIMEOUT_SECONDS ?= 180
 CI_DURATIONS_FILE ?= .ci-cache/test-durations.json
 CI_DURATIONS_OUTPUT ?= .ci-cache/current-test-durations.json
 
-test-ci-shard: ## Run one duration-balanced CI unit shard
+test-ci-shard: assert-full-test-host ## Run one duration-balanced CI unit shard
 	@test -n "$(CI_SHARD)" || (echo "CI_SHARD is required" >&2; exit 2)
 	@paths="$$(poetry run python scripts/ci/select_test_shard.py --shard "$(CI_SHARD)" --shards "$(CI_SHARDS)" --durations-file "$(CI_DURATIONS_FILE)")"; \
 	PYTHONPATH="$(CURDIR)" poetry run pytest $$paths \
@@ -89,20 +92,20 @@ test-ci-shard: ## Run one duration-balanced CI unit shard
 		-p scripts.ci.pytest_durations \
 		--ci-durations-output="$(CI_DURATIONS_OUTPUT)"
 
-test-fast: ## Run the parallel non-integration suite, stopping on first failure
+test-fast: assert-full-test-host ## Run the parallel non-integration suite, stopping on first failure
 	poetry run pytest $(UNIT_TEST_ARGS) -x --tb=short -q
 
-test-integration: ## Run the PostgreSQL integration gate
+test-integration: assert-full-test-host ## Run the PostgreSQL integration gate
 	poetry run python -m scripts.ci.migrated_test_database
 	poetry run pytest tests/integration/ -v --tb=short -o "addopts="
 
-test-architecture: ## Run architecture guards with the measured four-worker default
+test-architecture: assert-full-test-host ## Run architecture guards with the measured four-worker default
 	poetry run pytest tests/architecture -q -n 4 --durations=50
 
-test-architecture-serial: ## Run architecture guards serially for isolation/debugging
+test-architecture-serial: assert-full-test-host ## Run architecture guards serially for isolation/debugging
 	poetry run pytest tests/architecture -q
 
-test-e2e: ## Run end-to-end browser tests
+test-e2e: assert-full-test-host ## Run end-to-end browser tests
 	poetry run pytest tests/e2e/ -v --headed
 
 # ─── Database ─────────────────────────────────────────────

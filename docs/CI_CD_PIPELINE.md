@@ -76,6 +76,15 @@ default. High-volume static guards share a worker-local index of file listings,
 source text, and parsed ASTs, and the job reports its 50 slowest checks so the
 next optimization remains evidence-led.
 
+GitHub-hosted CI owns every full pytest suite. Deployment hosts are runtime
+acceptance environments, not test runners: production refuses every pytest
+invocation, while staging permits only a serial selection of at most ten
+explicit Python test files for focused diagnosis. Full-suite Make targets and
+direct pytest collection both evaluate the non-secret `APP_ENV` and
+`SERVER_NAME` host markers before heavy setup begins. This preserves the same
+required checks without allowing validation load to starve the deployed app,
+workers, or database.
+
 Each unit-test shard and the architecture job also has a 30-minute job timeout.
 The per-test watchdog catches a blocked unit test first; the job timeout remains
 the outer guard for collection, environment, plugin, and architecture-suite
