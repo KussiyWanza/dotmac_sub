@@ -37,6 +37,7 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
 from app.models.party import Party, PartyContactPoint
 from app.models.project import ProjectType
@@ -57,6 +58,7 @@ from app.schemas.sales import (
     QuoteUpdate,
 )
 from app.services import control_registry, settings_spec
+from app.services.audit_adapter import stage_audit_event
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -72,6 +74,27 @@ from app.services.sales import lifecycle as lead_lifecycle
 from app.services.sales import pipeline_configuration
 
 _logger = logging.getLogger(__name__)
+
+
+def _stage_quote_audit(
+    db: Session,
+    *,
+    action: str,
+    quote_id: uuid.UUID,
+    context: CommandContext | None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    stage_audit_event(
+        db,
+        action=action,
+        entity_type="quote",
+        entity_id=str(quote_id),
+        actor_type=AuditActorType.user if context else AuditActorType.system,
+        actor_id=context.actor if context else "sales.service",
+        request_id=str(context.command_id) if context else None,
+        metadata=metadata,
+    )
+
 
 # Normalized lead-source vocabulary. ``Portal`` is the addition — the
 # self-serve (map-pin) quote request tags its leads with it.
@@ -1355,7 +1378,12 @@ class Leads(ListResponseMixin):
 
 class Quotes(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: QuoteCreate) -> Quote:
+    def create(
+        db: Session,
+        payload: QuoteCreate,
+        *,
+        context: CommandContext | None = None,
+    ) -> Quote:
         data = payload.model_dump()
         if data.get("status"):
             data["status"] = _enum_str(data["status"], QuoteStatus, "status")
@@ -1417,6 +1445,14 @@ class Quotes(ListResponseMixin):
                 data["currency"] = default_currency
         quote = Quote(**data)
         db.add(quote)
+        db.flush()
+        _stage_quote_audit(
+            db,
+            action="quote.created",
+            quote_id=quote.id,
+            context=context,
+            metadata={"lead_id": str(quote.lead_id), "status": quote.status},
+        )
         db.commit()
         db.refresh(quote)
         return quote
@@ -1618,17 +1654,39 @@ class Quotes(ListResponseMixin):
         if status_to_validate != previous_status:
             _assert_quote_is_sendable(db, quote, status_to_validate)
 
+        changes = {
+            key: {"from": str(getattr(quote, key)), "to": str(value)}
+            for key, value in data.items()
+            if str(getattr(quote, key)) != str(value)
+        }
         for key, value in data.items():
             setattr(quote, key, value)
 
         if "tax_rate" in data:
             _recalculate_quote_totals(db, quote)
+        if changes:
+            _stage_quote_audit(
+                db,
+                action=(
+                    "quote.status_changed"
+                    if set(changes) == {"status"}
+                    else "quote.updated"
+                ),
+                quote_id=quote.id,
+                context=context,
+                metadata={"changes": changes},
+            )
         db.commit()
         db.refresh(quote)
         return quote
 
     @staticmethod
-    def delete(db: Session, quote_id: str) -> None:
+    def delete(
+        db: Session,
+        quote_id: str,
+        *,
+        context: CommandContext | None = None,
+    ) -> None:
         from app.services.sales import quote_acceptance
 
         quote = _locked_quote_for_mutation(db, coerce_uuid(quote_id))
@@ -1639,12 +1697,23 @@ class Quotes(ListResponseMixin):
             mutation="quote_deactivation",
         )
         quote.is_active = False
+        _stage_quote_audit(
+            db,
+            action="quote.deactivated",
+            quote_id=quote.id,
+            context=context,
+        )
         db.commit()
 
 
 class QuoteLineItems(ListResponseMixin):
     @staticmethod
-    def create(db: Session, payload: QuoteLineItemCreate) -> QuoteLineItem:
+    def create(
+        db: Session,
+        payload: QuoteLineItemCreate,
+        *,
+        context: CommandContext | None = None,
+    ) -> QuoteLineItem:
         from app.services.sales import quote_acceptance
 
         quote = _locked_quote_for_mutation(db, payload.quote_id)
@@ -1664,6 +1733,16 @@ class QuoteLineItems(ListResponseMixin):
         item = QuoteLineItem(**data)
         db.add(item)
         _recalculate_quote_totals(db, quote)
+        _stage_quote_audit(
+            db,
+            action="quote.line_added",
+            quote_id=quote.id,
+            context=context,
+            metadata={
+                "line_item_id": str(item.id),
+                "description": item.description,
+            },
+        )
         db.commit()
         db.refresh(item)
         return item
@@ -1673,6 +1752,8 @@ class QuoteLineItems(ListResponseMixin):
         db: Session,
         item_id: str,
         payload: QuoteLineItemUpdate,
+        *,
+        context: CommandContext | None = None,
     ) -> QuoteLineItem:
         from app.services.sales import quote_acceptance
 
@@ -1695,12 +1776,24 @@ class QuoteLineItems(ListResponseMixin):
                 item.quantity, item.unit_price, item.discount_percent
             )
         _recalculate_quote_totals(db, quote)
+        _stage_quote_audit(
+            db,
+            action="quote.line_updated",
+            quote_id=quote.id,
+            context=context,
+            metadata={"line_item_id": str(item.id)},
+        )
         db.commit()
         db.refresh(item)
         return item
 
     @staticmethod
-    def delete(db: Session, item_id: str) -> None:
+    def delete(
+        db: Session,
+        item_id: str,
+        *,
+        context: CommandContext | None = None,
+    ) -> None:
         """Remove a line and re-derive the quote's money from what is left.
 
         A hard delete is right here: a line item has no history of its own, and
@@ -1719,8 +1812,20 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_delete",
         )
+        line_id = item.id
+        description = item.description
         db.delete(item)
         _recalculate_quote_totals(db, quote)
+        _stage_quote_audit(
+            db,
+            action="quote.line_removed",
+            quote_id=quote.id,
+            context=context,
+            metadata={
+                "line_item_id": str(line_id),
+                "description": description,
+            },
+        )
         db.commit()
 
     @staticmethod

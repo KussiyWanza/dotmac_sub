@@ -206,6 +206,8 @@ class EventType(enum.Enum):
     lead_account_converted = "lead.account_converted"
     quote_created = "quote.created"
     quote_accepted = "quote.accepted"
+    quote_pdf_exported = "quote.pdf_exported"
+    quote_delivery_requested = "quote.delivery_requested"
     sales_order_paid = "sales_order.paid"
     sales_order_funding_satisfied = "sales_order.funding_satisfied"
     sales_order_fulfilled = "sales_order.fulfilled"

@@ -129,6 +129,7 @@ SMTP_ACTIVITY_CHOICES: list[tuple[str, str]] = [
     ("notification_queue", "Notification Queue"),
     ("notification_test", "Notification Template Tests"),
     ("billing_invoice", "Billing Invoices"),
+    ("sales_quote", "Sales Quotes"),
     ("billing_payment_receipt", "Billing Payment Receipts"),
     ("support_ticket", "Support Tickets"),
     ("project_update", "Project Updates"),

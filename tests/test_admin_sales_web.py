@@ -199,6 +199,15 @@ def test_quote_routes_require_quote_read():
     assert _route_has_permission(
         router, "/sales/quotes/{quote_id}", "GET", "crm:quote:read"
     )
+    assert _route_has_permission(
+        router, "/sales/quotes/{quote_id}/pdf", "POST", "crm:quote:read"
+    )
+    assert _route_has_permission(
+        router,
+        "/sales/quotes/{quote_id}/send-email",
+        "POST",
+        "crm:quote:send",
+    )
 
 
 def test_sales_order_routes_require_sales_order_read():

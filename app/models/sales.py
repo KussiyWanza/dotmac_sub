@@ -101,6 +101,11 @@ class QuoteStatus(enum.Enum):
     expired = "expired"
 
 
+class QuoteDeliveryRequestStatus(enum.StrEnum):
+    queued = "queued"
+    suppressed = "suppressed"
+
+
 class SalesOrderStatus(enum.Enum):
     draft = "draft"
     confirmed = "confirmed"
@@ -530,6 +535,8 @@ class Quote(Base):
         uselist=False,
         foreign_keys="Project.quote_id",
     )
+    pdf_exports = relationship("QuotePdfExport", back_populates="quote")
+    delivery_requests = relationship("QuoteDeliveryRequest", back_populates="quote")
 
     @property
     def person_id(self) -> uuid.UUID | None:
@@ -551,6 +558,102 @@ class Quote(Base):
     @contact_id.expression  # type: ignore[no-redef]
     def contact_id(cls):
         return cls.subscriber_id
+
+
+class QuotePdfExport(Base):
+    """Immutable customer-facing Quote document artifact."""
+
+    __tablename__ = "quote_pdf_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "quote_id",
+            "snapshot_fingerprint",
+            name="uq_quote_pdf_exports_snapshot",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    stored_file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("stored_files.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    snapshot_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(
+        MutableDict.as_mutable(JSON()), nullable=False
+    )
+    requested_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    quote = relationship("Quote", back_populates="pdf_exports")
+    stored_file = relationship("StoredFile")
+
+
+class QuoteDeliveryRequest(Base):
+    """Durable, idempotent request to email one exact Quote PDF."""
+
+    __tablename__ = "quote_delivery_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key", name="uq_quote_delivery_requests_idempotency_key"
+        ),
+        CheckConstraint(
+            "request_status IN ('queued', 'suppressed')",
+            name="ck_quote_delivery_requests_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    pdf_export_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quote_pdf_exports.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recipient_contact_point_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("party_contact_points.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    communication_intent_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("communication_intents.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    requested_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_status: Mapped[str] = mapped_column(
+        String(24),
+        default=QuoteDeliveryRequestStatus.queued.value,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    quote = relationship("Quote", back_populates="delivery_requests")
+    pdf_export = relationship("QuotePdfExport")
+    recipient_contact_point = relationship("PartyContactPoint")
+    communication_intent = relationship("CommunicationIntentRecord")
 
 
 class QuoteLineItem(Base):

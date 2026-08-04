@@ -34986,6 +34986,89 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.quote_detail_projection",
+                module="app.services.web_sales",
+                owns=("admin Quote delivery eligibility and activity presentation",),
+                depends_on=(
+                    "communications.notification_service",
+                    "observability.audit_log",
+                    "sales.quote_delivery",
+                    "sales.service",
+                ),
+                notes=(
+                    "The Quote detail builder presents delivery eligibility and the "
+                    "official Quote timeline from authoritative Quote, immutable audit, "
+                    "and durable notification records. It does not infer final mailbox "
+                    "receipt from SMTP transport acceptance."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "admin Quote delivery eligibility and activity presentation"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical Quote detail state",
+                                "canonical Quote audit evidence",
+                                "canonical Quote delivery outcome",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical Quote detail state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active Quote, lines, status, expiry, Lead, Party recipient, "
+                                "and related commercial records"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="immutable Quote-scoped action and actor evidence",
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote delivery outcome",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "durable notification queue state and mail-transport "
+                                "acceptance or terminal failure evidence"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary="The admin GET adapter owns one read-only session.",
+                        locking="No row locks; this is a current-state presentation query.",
+                        idempotency="Equivalent reads return the same projection for the same rows.",
+                        retries="A failed read may be retried without side effects.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=("missing Quote detail read capability",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ui.quote_detail_projection",
+                    ),
+                    steward="sales operations UI",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.nas_list_projection",
                 module="app.services.nas.web_builders",
                 owns=(
@@ -37681,6 +37764,254 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_web_sales_quote_authoring.py",
                         "tests/test_quote_acceptance_workflow.py",
                         "tests/architecture/test_sales_lifecycle_chain_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_documents",
+                module="app.services.sales.quote_documents",
+                owns=("immutable branded Quote PDF generation",),
+                depends_on=(
+                    "customer.branding",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "sales.service",
+                ),
+                notes=(
+                    "This owner snapshots the authoritative Quote, lines, recipient "
+                    "display identity, and resolved company brand into one immutable, "
+                    "content-addressed PDF artifact. Repeated exports of the same "
+                    "snapshot reuse the canonical artifact."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="immutable branded Quote PDF generation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "Quote document command evidence",
+                                "canonical Quote commercial state",
+                                "canonical company branding state",
+                            ),
+                            canonical_writer="sales.quote_documents",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote document command evidence",
+                            owner="sales.quote_documents",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="typed Quote id and CommandContext provenance",
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote commercial state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Quote, QuoteLineItems, Lead Party identity, "
+                                "currency, totals, expiry, and installation metadata"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical company branding state",
+                            owner="customer.branding",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "resolved subscriber, organization, reseller, or platform "
+                                "brand profile and immutable logo digest"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "generate_quote_pdf enters execute_owner_command once; the "
+                            "stored-file record, immutable export row, audit evidence, and "
+                            "quote.pdf_exported event commit or roll back together"
+                        ),
+                        locking="The active Quote is selected FOR UPDATE before snapshotting.",
+                        idempotency=(
+                            "A SHA-256 fingerprint of canonical Quote and brand inputs maps "
+                            "to one deterministic export UUID and unique Quote snapshot."
+                        ),
+                        retries=(
+                            "Equivalent retries reuse the existing export; transient failures "
+                            "retry the complete owner command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "sales.quote_documents"
+                            ),
+                            "sales.quote_documents.artifact_missing",
+                            "sales.quote_documents.export_not_found",
+                            "sales.quote_documents.invalid_pdf",
+                            "sales.quote_documents.owner_command_required",
+                            "sales.quote_documents.quote_not_found",
+                            "sales.quote_documents.renderer_unavailable",
+                        ),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=(
+                            "missing or inactive Quote",
+                            "missing stored artifact",
+                            "unavailable or invalid PDF renderer output",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.pdf_exported",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, export, and snapshot fingerprint "
+                            "without customer contact data."
+                        ),
+                        replay=(
+                            "Fingerprint replay returns the existing artifact and suppresses "
+                            "duplicate audit and event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="sales.quote_documents",
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_delivery",
+                module="app.services.sales.quote_delivery",
+                owns=("idempotent branded Quote email request",),
+                depends_on=(
+                    "communications.intents",
+                    "customer.branding",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.quote_documents",
+                    "sales.service",
+                ),
+                notes=(
+                    "This owner resolves the Quote recipient from Party contact points, "
+                    "attaches the exact immutable branded PDF, and submits one durable "
+                    "communication intent. The notification dispatcher remains transport; "
+                    "SMTP acceptance is not treated as mailbox proof."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="idempotent branded Quote email request",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "Quote delivery command evidence",
+                                "canonical Quote commercial state",
+                                "canonical Party recipient state",
+                                "canonical Quote PDF artifact",
+                            ),
+                            canonical_writer="sales.quote_delivery",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote delivery command evidence",
+                            owner="sales.quote_delivery",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed Quote id plus actor, command, correlation, reason, "
+                                "scope, and required idempotency evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote commercial state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active, unexpired, sendable Quote and lines",
+                        ),
+                        AuthorityInput(
+                            name="canonical Party recipient state",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "primary-first active email contact point reached through "
+                                "Quote to Lead to Party"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote PDF artifact",
+                            owner="sales.quote_documents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="immutable branded Quote snapshot and stored PDF",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "send_quote_email enters execute_owner_command once; the PDF "
+                            "artifact, delivery request, communication intent, Quote Sent "
+                            "transition, audit evidence, and event commit or roll back together"
+                        ),
+                        locking="The active Quote is selected FOR UPDATE before eligibility.",
+                        idempotency=(
+                            "The required request key uniquely identifies one Quote delivery; "
+                            "exact replay returns the original intent and notification ids."
+                        ),
+                        retries=(
+                            "Equivalent retries replay the durable request; transient failures "
+                            "retry the complete command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes("sales.quote_delivery"),
+                            "sales.quote_delivery.idempotency_conflict",
+                            "sales.quote_delivery.idempotency_key_required",
+                            "sales.quote_delivery.line_items_required",
+                            "sales.quote_delivery.quote_expired",
+                            "sales.quote_delivery.quote_not_found",
+                            "sales.quote_delivery.recipient_email_required",
+                            "sales.quote_delivery.status_not_sendable",
+                        ),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=(
+                            "missing, inactive, rejected, or expired Quote",
+                            "Quote without line items",
+                            "missing authoritative active recipient email",
+                            "idempotency key reuse for another Quote",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.delivery_requested",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, request, intent, export, and "
+                            "queue decision without recipient contact data."
+                        ),
+                        replay=(
+                            "The delivery request key returns the original result and "
+                            "suppresses duplicate communication, audit, and event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="sales.quote_delivery",
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
                     ),
                 ),
             ),

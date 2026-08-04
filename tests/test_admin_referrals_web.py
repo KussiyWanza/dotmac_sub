@@ -431,6 +431,7 @@ def test_service_list_reward_status_filter(db_session):
 SALES_KEYS = (
     "crm:quote:read",
     "crm:quote:write",
+    "crm:quote:send",
     "crm:sales_order:read",
     "crm:sales_order:write",
 )

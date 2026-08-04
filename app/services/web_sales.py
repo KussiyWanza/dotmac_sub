@@ -76,7 +76,14 @@ from app.services.list_query import (
     request_needs_canonicalization,
 )
 from app.services.owner_commands import CommandContext
-from app.services.sales import lead_authoring, pipeline_configuration, quote_authoring
+from app.services.sales import (
+    lead_authoring,
+    pipeline_configuration,
+    quote_activity,
+    quote_authoring,
+    quote_delivery,
+    quote_documents,
+)
 from app.services.sales.selfserve import compute_feasibility
 from app.services.sales_orders import _resolve_project_for_sales_order
 from app.services.team_inbox_projection import list_agent_options
@@ -2504,6 +2511,7 @@ def add_quote_line_item_from_form(
     quantity: str | None,
     unit_price: str | None,
     discount_percent: str | None,
+    context: CommandContext | None = None,
 ) -> None:
     """Add a priced line to a quote.
 
@@ -2530,11 +2538,16 @@ def add_quote_line_item_from_form(
         unit_price=_decimal(unit_price, "Unit price", "0"),
         discount_percent=_decimal(discount_percent, "Discount", "0"),
     )
-    sales_service.quote_line_items.create(db, payload)
+    sales_service.quote_line_items.create(db, payload, context=context)
 
 
-def delete_quote_line_item(db: Session, item_id: str) -> None:
-    sales_service.quote_line_items.delete(db, item_id)
+def delete_quote_line_item(
+    db: Session,
+    item_id: str,
+    *,
+    context: CommandContext | None = None,
+) -> None:
+    sales_service.quote_line_items.delete(db, item_id, context=context)
 
 
 def set_quote_status(
@@ -2555,8 +2568,13 @@ def set_quote_status(
     )
 
 
-def deactivate_quote(db: Session, quote_id: str) -> None:
-    sales_service.quotes.delete(db, quote_id)
+def deactivate_quote(
+    db: Session,
+    quote_id: str,
+    *,
+    context: CommandContext | None = None,
+) -> None:
+    sales_service.quotes.delete(db, quote_id, context=context)
 
 
 def build_quotes_list_context(
@@ -2673,6 +2691,24 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         meta.get("feasibility") if isinstance(meta.get("feasibility"), dict) else {}
     )
     install = meta.get("install") if isinstance(meta.get("install"), dict) else {}
+    recipient = quote_documents.resolve_quote_recipient(db, quote)
+    expires_at = quote.expires_at
+    expires_at_utc = (
+        expires_at.replace(tzinfo=UTC)
+        if expires_at is not None and expires_at.tzinfo is None
+        else expires_at
+    )
+    email_reason: str | None = None
+    if not quote.is_active:
+        email_reason = "This Quote is inactive."
+    elif not items:
+        email_reason = "Add at least one line item before emailing this Quote."
+    elif recipient is None:
+        email_reason = "The customer needs an active email address."
+    elif quote.status in {QuoteStatus.rejected.value, QuoteStatus.expired.value}:
+        email_reason = "Rejected or expired Quotes cannot be emailed."
+    elif expires_at_utc is not None and expires_at_utc <= datetime.now(UTC):
+        email_reason = "This Quote has expired."
 
     return {
         "quote": quote,
@@ -2691,6 +2727,16 @@ def build_quote_detail_context(db: Session, *, quote_id: str) -> dict[str, Any]:
         "pricing_mode": meta.get("pricing_mode"),
         "feasibility": feasibility,
         "install": install,
+        "email_action": {
+            "allowed": email_reason is None,
+            "reason": email_reason,
+            "recipient": recipient.email if recipient else None,
+            "recipient_masked": (
+                quote_delivery.mask_email(recipient.email) if recipient else None
+            ),
+            "request_id": str(uuid4()),
+        },
+        "activity_items": quote_activity.list_quote_activity(db, quote=quote),
         "today": datetime.now(UTC),
     }
 

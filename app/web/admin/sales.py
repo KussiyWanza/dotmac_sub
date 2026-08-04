@@ -13,17 +13,18 @@ endpoints ``GET /api/v1/leads/kanban`` / ``POST /api/v1/leads/kanban/move``
 
 RBAC: ``crm:lead:*`` guards leads *and* pipeline settings (pipelines ride
 lead permissions, matching the API port); quotes and sales orders use
-``crm:quote:read`` / ``crm:sales_order:read``. The native sales RBAC owner seeds the keys
-— the guards are in place regardless.
+``crm:quote:read`` / ``crm:quote:send`` / ``crm:sales_order:read``. The native
+sales RBAC owner seeds the keys — the guards are in place regardless.
 """
 
 from __future__ import annotations
 
 import logging
 from urllib.parse import urlencode
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,7 +35,9 @@ from app.services import web_sales as web_sales_service
 from app.services import web_sales_dashboard as dashboard_service
 from app.services.auth_dependencies import require_permission
 from app.services.domain_errors import DomainError
+from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
+from app.services.sales import quote_delivery, quote_documents
 
 router = APIRouter(prefix="/sales", tags=["web-admin-sales"])
 templates = Jinja2Templates(directory="templates")
@@ -57,12 +60,19 @@ def _error_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
 
-def _quote_command_context(request: Request, quote_id: str) -> CommandContext:
+def _quote_command_context(
+    request: Request,
+    quote_id: str,
+    *,
+    action: str = "accept",
+) -> CommandContext:
     return CommandContext.system(
         actor=str(getattr(request.state, "actor_id", None) or "admin-sales-user"),
-        scope="sales:quote-acceptance",
-        reason="Admin accepted Quote",
-        idempotency_key=f"quote-acceptance:{quote_id}",
+        scope=f"sales:quote-{action}",
+        reason=f"Admin Quote {action}",
+        idempotency_key=(
+            f"quote-acceptance:{quote_id}" if action == "accept" else None
+        ),
     )
 
 
@@ -1146,6 +1156,86 @@ def quote_detail(request: Request, quote_id: str, db: Session = Depends(get_db))
     return templates.TemplateResponse("admin/sales/quotes/detail.html", context)
 
 
+@router.post(
+    "/quotes/{quote_id}/pdf",
+    dependencies=[Depends(require_permission("crm:quote:read"))],
+)
+def quote_pdf_download(
+    request: Request,
+    quote_id: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        outcome = quote_documents.generate_quote_pdf(
+            db,
+            quote_documents.GenerateQuotePdfCommand(
+                context=_quote_command_context(request, quote_id, action="pdf-export"),
+                quote_id=UUID(quote_id),
+            ),
+        )
+        export = quote_documents.get_export(db, outcome.export_id)
+        stream = quote_documents.stream_export(db, export)
+    except (DomainError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
+    headers = {"Content-Disposition": build_content_disposition(outcome.filename)}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(
+        stream.chunks,
+        media_type="application/pdf",
+        headers=headers,
+    )
+
+
+@router.post(
+    "/quotes/{quote_id}/send-email",
+    dependencies=[Depends(require_permission("crm:quote:send"))],
+)
+def quote_send_email(
+    request: Request,
+    quote_id: str,
+    request_id: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        command_id = UUID(request_id)
+        outcome = quote_delivery.send_quote_email(
+            db,
+            quote_delivery.SendQuoteEmailCommand(
+                context=CommandContext.system(
+                    actor=str(
+                        getattr(request.state, "actor_id", None) or "admin-sales-user"
+                    ),
+                    scope="sales:quote-delivery",
+                    reason="Admin requested branded Quote email",
+                    command_id=command_id,
+                    idempotency_key=f"quote-email:{quote_id}:{command_id}",
+                ),
+                quote_id=UUID(quote_id),
+            ),
+        )
+    except (DomainError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
+    notice = "email_queued" if outcome.queued else "email_suppressed"
+    return RedirectResponse(
+        url=f"/admin/sales/quotes/{quote_id}?notice={notice}", status_code=303
+    )
+
+
 @router.get(
     "/quotes/{quote_id}/edit",
     response_class=HTMLResponse,
@@ -1193,7 +1283,7 @@ def quote_update(
         web_sales_service.update_quote_from_form(
             db,
             quote_id=quote_id,
-            context=_quote_command_context(request, quote_id),
+            context=_quote_command_context(request, quote_id, action="update"),
             **fields,
         )
         return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
@@ -1234,6 +1324,7 @@ def quote_line_item_add(
             quantity=quantity,
             unit_price=unit_price,
             discount_percent=discount_percent,
+            context=_quote_command_context(request, quote_id, action="line-add"),
         )
     except (ValidationError, ValueError) as exc:
         db.rollback()
@@ -1252,8 +1343,17 @@ def quote_line_item_add(
     "/quotes/{quote_id}/line-items/{item_id}/delete",
     dependencies=[Depends(require_permission("crm:quote:write"))],
 )
-def quote_line_item_delete(quote_id: str, item_id: str, db: Session = Depends(get_db)):
-    web_sales_service.delete_quote_line_item(db, item_id)
+def quote_line_item_delete(
+    request: Request,
+    quote_id: str,
+    item_id: str,
+    db: Session = Depends(get_db),
+):
+    web_sales_service.delete_quote_line_item(
+        db,
+        item_id,
+        context=_quote_command_context(request, quote_id, action="line-remove"),
+    )
     return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
 
 
@@ -1273,7 +1373,11 @@ def quote_set_status(
             db,
             quote_id,
             status,
-            context=_quote_command_context(request, quote_id),
+            context=_quote_command_context(
+                request,
+                quote_id,
+                action="accept" if status == "accepted" else "status",
+            ),
         )
     except (DomainError, ValidationError, ValueError) as exc:
         # Sending or accepting a quote with no line items is refused by the
@@ -1294,8 +1398,16 @@ def quote_set_status(
     "/quotes/{quote_id}/delete",
     dependencies=[Depends(require_permission("crm:quote:write"))],
 )
-def quote_delete(quote_id: str, db: Session = Depends(get_db)):
-    web_sales_service.deactivate_quote(db, quote_id)
+def quote_delete(
+    request: Request,
+    quote_id: str,
+    db: Session = Depends(get_db),
+):
+    web_sales_service.deactivate_quote(
+        db,
+        quote_id,
+        context=_quote_command_context(request, quote_id, action="deactivate"),
+    )
     return RedirectResponse(url="/admin/sales/quotes", status_code=303)
 
 
