@@ -70,7 +70,6 @@ integration.registry
 integration.sync
 network.access_path
 network.connection_health
-network.control_plane_intent
 network.device_groups
 network.fiber_access_attachments
 network.fiber_asset_changes

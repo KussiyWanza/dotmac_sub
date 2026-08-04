@@ -19,6 +19,7 @@ from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxChannelType
 from app.services import (
     conversation_ticket_handoff,
+    lead_intake_ai,
     team_inbox_commands,
     team_inbox_contact_links,
     team_inbox_media,
@@ -32,6 +33,7 @@ from app.services import (
 from app.services import email as email_service
 from app.services.auth_dependencies import can, require_permission
 from app.services.owner_commands import CommandContext
+from app.services.sales import lead_intake
 
 router = APIRouter(prefix="/inbox", tags=["web-admin-inbox"])
 settings_router = APIRouter(prefix="/crm/inbox", tags=["web-admin-inbox"])
@@ -451,6 +453,10 @@ def team_inbox_contact_context(
             # network detail. The customer 360 page remains the authority.
             "can_view_financials": can(request, "billing:account:read"),
             "can_view_network_detail": can(request, "network:ip:read"),
+            "can_manage_leads": can(request, "crm:lead:write"),
+            "lead_intake_invitations": lead_intake.invitation_for_conversation(
+                db, conversation_id
+            ),
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)
@@ -468,6 +474,145 @@ def _actor_uuid_from_request(request: Request) -> UUID | None:
         return UUID(actor_id) if actor_id else None
     except ValueError:
         return None
+
+
+def _system_user_uuid_from_request(request: Request) -> UUID:
+    value = str(getattr(getattr(request.state, "user", None), "id", "") or "")
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise lead_intake.LeadIntakeError(
+            "actor_not_eligible",
+            "An authenticated staff user is required.",
+            kind="forbidden",
+        ) from exc
+
+
+@router.post(
+    "/{conversation_id}/lead-intake/issue",
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def team_inbox_lead_intake_issue(
+    conversation_id: UUID,
+    request: Request,
+    party_type: lead_intake.LeadIntakePartyType = Form(...),
+    db: Session = Depends(get_db),
+):
+    actor_id = _system_user_uuid_from_request(request)
+    message_id = lead_intake.latest_inbound_message_id(db, conversation_id)
+    if message_id is None:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message="No inbound message is available for this invitation.",
+        )
+    finish_read_transaction(db)
+    try:
+        outcome = lead_intake.issue_manual_invitation(
+            db,
+            lead_intake.ManualInvitationCommand(
+                context=CommandContext.system(
+                    actor=f"system_user:{actor_id}",
+                    scope="sales.lead_intake:write",
+                    reason="staff issued Lead intake invitation",
+                    idempotency_key=f"lead-intake-manual:{conversation_id}:{message_id}",
+                ),
+                conversation_id=conversation_id,
+                trigger_message_id=message_id,
+                party_type=party_type,
+                actor_system_user_id=actor_id,
+            ),
+        )
+        body = lead_intake_ai.render_invitation_message(db, outcome)
+        finish_read_transaction(db)
+        try:
+            reply = team_inbox_commands.reply(
+                db,
+                conversation_id=conversation_id,
+                body_text=body,
+                actor_person_id=_actor_id_from_request(request),
+                idempotency_key=f"lead-intake:manual-delivery:{outcome.invitation_id}",
+            )
+            delivery_status = reply.kind
+            outbound_message_id = UUID(reply.message_id) if reply.message_id else None
+            delivery_error = None
+        except team_inbox_commands.InboxCommandError as exc:
+            delivery_status = "failed"
+            outbound_message_id = None
+            delivery_error = exc.code
+        assert outcome.invitation_id is not None
+        lead_intake.record_invitation_delivery(
+            db,
+            lead_intake.InvitationDeliveryCommand(
+                context=CommandContext.system(
+                    actor=f"system_user:{actor_id}",
+                    scope="sales.lead_intake:write",
+                    reason="record manual invitation delivery",
+                    idempotency_key=(
+                        f"lead-intake:manual-delivery-record:{outcome.invitation_id}"
+                    ),
+                ),
+                invitation_id=outcome.invitation_id,
+                message_id=outbound_message_id,
+                delivery_status=delivery_status,
+                error_code=delivery_error,
+            ),
+        )
+    except (lead_intake.LeadIntakeError, ValueError) as exc:
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=getattr(exc, "message", str(exc)),
+        )
+    if delivery_status == "failed":
+        return _detail_redirect(
+            conversation_id,
+            status="error",
+            message=(
+                "The form was issued but could not be sent. Revoke it before reissuing."
+            ),
+        )
+    return _detail_redirect(
+        conversation_id, status="success", message="Lead intake form sent."
+    )
+
+
+@router.post(
+    "/{conversation_id}/lead-intake/{invitation_id}/revoke",
+    dependencies=[Depends(require_permission("crm:lead:write"))],
+)
+def team_inbox_lead_intake_revoke(
+    conversation_id: UUID,
+    invitation_id: UUID,
+    request: Request,
+    reason: str = Form(default="Reissued by staff"),
+    db: Session = Depends(get_db),
+):
+    actor_id = _system_user_uuid_from_request(request)
+    finish_read_transaction(db)
+    try:
+        lead_intake.revoke_invitation(
+            db,
+            lead_intake.RevokeInvitationCommand(
+                context=CommandContext.system(
+                    actor=f"system_user:{actor_id}",
+                    scope="sales.lead_intake:write",
+                    reason="staff revoked Lead intake invitation",
+                    idempotency_key=f"lead-intake-revoke:{invitation_id}",
+                ),
+                invitation_id=invitation_id,
+                conversation_id=conversation_id,
+                actor_system_user_id=actor_id,
+                reason=reason,
+            ),
+        )
+    except lead_intake.LeadIntakeError as exc:
+        return _detail_redirect(conversation_id, status="error", message=exc.message)
+    return _detail_redirect(
+        conversation_id,
+        status="success",
+        message="Lead intake invitation revoked. You can now issue a new link.",
+    )
 
 
 def _audit_actor_type(principal_type: str) -> AuditActorType:

@@ -61,6 +61,7 @@ def _message_payload(
         in_reply_to=str(data["in_reply_to"]) if data.get("in_reply_to") else None,
         references=str(data["references"]) if data.get("references") else None,
         smtp_probe=data.get("smtp_probe") is True,
+        campaign_attributed=data.get("campaign_attributed") is True,
         authentication=(
             data["authentication"]
             if isinstance(data.get("authentication"), dict)
@@ -149,6 +150,7 @@ def process_provider_observation(
                         metadata={
                             "provider": row.provider,
                             "observation_id": str(row.id),
+                            "campaign_attributed": payload.campaign_attributed,
                             "smtp_probe": "team_inbox_smtp_e2e"
                             if payload.smtp_probe
                             else None,
@@ -194,6 +196,7 @@ def process_provider_observation(
                             "provider": row.provider,
                             "provider_account_scope": row.provider_account_scope,
                             "observation_id": str(row.id),
+                            "campaign_attributed": payload.campaign_attributed,
                             "attachments": [
                                 {
                                     "type": item.asset_type,

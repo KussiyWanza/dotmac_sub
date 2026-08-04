@@ -257,6 +257,7 @@ DEFAULT_PERMISSIONS = [
     # the keys are UI-assignable via the role builder.
     ("crm:quote:read", "View quotes"),
     ("crm:quote:write", "Manage quotes"),
+    ("crm:quote:send", "Send quotes to customers"),
     ("crm:sales_order:read", "View sales orders"),
     ("crm:sales_order:write", "Manage sales orders"),
     # Projects

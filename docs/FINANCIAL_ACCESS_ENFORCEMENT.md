@@ -88,9 +88,15 @@ support one-time evidence review. They are not queried by runtime funding.
 Amounts in different currencies are never summed or compared.
 
 An account created after the final cutover starts at zero and accumulates
-native facts. A pre-cutover account without a reviewed baseline fails closed.
-An old postpaid account changing to prepaid requires a reviewed current
-baseline as part of that transition.
+native facts. A pre-cutover account without a reviewed baseline fails closed
+for runtime money action. The opening verifier has one narrower completion
+path for a customer created after the fixed legacy handoff with no Splynx
+identity: it fingerprints the mathematical zero history component plus all
+canonical native facts and compares that exact target with the subledger.
+Runtime funding remains blocked until operator and finance approve that run and
+the existing opening owner captures its immutable opening. An old postpaid
+account, a customer created before the handoff, any retained Splynx identity,
+or ambiguous provenance still requires the complete reviewed source baseline.
 
 ## Exact prepaid renewal charge
 

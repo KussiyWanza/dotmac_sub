@@ -20,6 +20,7 @@ from app.models.team_inbox import (
     InboxMessageDirection,
     InboxTeamRole,
 )
+from app.schemas.ai_intake import APPROVED_FOLLOW_UP_QUESTIONS
 from app.services import team_inbox_realtime, team_inbox_routing, team_outbound
 from app.services.communication_intents import (
     CommunicationClass,
@@ -66,6 +67,15 @@ class InboxReplyPayload:
     bcc_addresses: tuple[str, ...] = ()
     sent_by_person_id: str | UUID | None = None
     metadata: dict | None = None
+    dedupe_key: str | None = None
+
+
+@dataclass(frozen=True)
+class AiIntakeFollowUpPayload:
+    question: str
+    inbound_message_id: UUID
+    config_id: UUID
+    follow_up_count: int
 
 
 @dataclass(frozen=True)
@@ -175,6 +185,7 @@ def _queue_outbox_reply(
             persist_policy_suppressions=False,
             recipients={channel: recipient},
             metadata=intent_metadata,
+            dedupe_key=payload.dedupe_key,
         ),
     )
     notification = next(
@@ -201,6 +212,8 @@ def _queue_outbox_reply(
         if channel
         in {
             NotificationChannel.whatsapp,
+            NotificationChannel.facebook_messenger,
+            NotificationChannel.instagram_dm,
             NotificationChannel.facebook_comment,
             NotificationChannel.instagram_comment,
         }
@@ -365,6 +378,10 @@ _SOCIAL_COMMENT_CHANNELS = {
     InboxChannelType.facebook_comment.value,
     InboxChannelType.instagram_comment.value,
 }
+_META_DM_CHANNELS = {
+    InboxChannelType.facebook_messenger.value,
+    InboxChannelType.instagram_dm.value,
+}
 
 
 def _social_value(
@@ -473,6 +490,67 @@ def _send_social_comment_reply(
     )
 
 
+def _send_meta_direct_reply(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    payload: InboxReplyPayload,
+    now: datetime | None,
+) -> InboxReplyResult:
+    body_text = _plain_text_reply(payload)
+    if not body_text:
+        return InboxReplyResult(
+            kind="empty_body",
+            conversation_id=str(conversation.id),
+            reason="Reply body is required",
+        )
+    messages = (
+        db.query(InboxMessage)
+        .filter(InboxMessage.conversation_id == conversation.id)
+        .order_by(InboxMessage.created_at.asc())
+        .all()
+    )
+    account_id = _social_value(
+        conversation,
+        messages,
+        "provider_account_id",
+        "provider_account_scope",
+        "page_or_account_id",
+        "page_id",
+        "instagram_account_id",
+        "ig_account_id",
+    )
+    recipient = str(conversation.contact_address or "").strip()
+    if not account_id or not recipient:
+        return InboxReplyResult(
+            kind="missing_provider_context",
+            conversation_id=str(conversation.id),
+            reason="This Meta conversation is missing its reply details.",
+        )
+    channel = (
+        NotificationChannel.facebook_messenger
+        if conversation.channel_type == InboxChannelType.facebook_messenger.value
+        else NotificationChannel.instagram_dm
+    )
+    return _queue_outbox_reply(
+        db,
+        conversation=conversation,
+        payload=payload,
+        channel=channel,
+        recipient=recipient,
+        subject=None,
+        body=body_text,
+        now=now,
+        from_address="Support",
+        metadata={
+            "channel_type": conversation.channel_type,
+            "message_kind": "direct_message",
+            "provider": "meta",
+            "provider_account_id": account_id,
+        },
+    )
+
+
 def send_inbox_reply(
     db: Session,
     *,
@@ -512,6 +590,14 @@ def send_inbox_reply(
             payload=payload,
             now=now,
             existing_message=existing_message,
+        )
+
+    if conversation.channel_type in _META_DM_CHANNELS:
+        return _send_meta_direct_reply(
+            db,
+            conversation=conversation,
+            payload=payload,
+            now=now,
         )
 
     if conversation.channel_type in _SOCIAL_COMMENT_CHANNELS:
@@ -584,6 +670,49 @@ def send_inbox_reply(
         from_address=config.get("from_email"),
         to_email=to_email,
         reason=result.reason,
+    )
+
+
+def send_ai_intake_follow_up(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    payload: AiIntakeFollowUpPayload,
+    now: datetime | None = None,
+) -> InboxReplyResult:
+    """Queue one approved intake clarification through the channel owner."""
+
+    if payload.question not in APPROVED_FOLLOW_UP_QUESTIONS:
+        return InboxReplyResult(
+            kind="invalid_body",
+            conversation_id=str(conversation.id),
+            reason="AI intake follow-up question is not approved",
+        )
+    if conversation.channel_type not in {
+        InboxChannelType.whatsapp.value,
+        *_META_DM_CHANNELS,
+    }:
+        return InboxReplyResult(
+            kind="unsupported_channel",
+            conversation_id=str(conversation.id),
+            reason="AI intake follow-up delivery is unsupported on this channel",
+        )
+    return send_inbox_reply(
+        db,
+        conversation=conversation,
+        payload=InboxReplyPayload(
+            body_html=payload.question,
+            body_text=payload.question,
+            metadata={
+                "ai_intake_follow_up": True,
+                "ai_intake_config_id": str(payload.config_id),
+                "ai_intake_inbound_message_id": str(payload.inbound_message_id),
+                "ai_intake_follow_up_count": payload.follow_up_count,
+                "author_name": "Support",
+            },
+            dedupe_key=f"ai-intake-follow-up:{payload.inbound_message_id}",
+        ),
+        now=now,
     )
 
 

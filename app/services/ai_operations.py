@@ -20,7 +20,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.ai_insight import AIInsight, AIInsightStatus
-from app.models.ai_intake import AiIntakeConfig
 from app.services.common import coerce_uuid
 
 
@@ -238,50 +237,6 @@ def expire_stale_insights(
     return len(rows)
 
 
-def upsert_intake_config(db: Session, payload) -> AiIntakeConfig:
-    config = (
-        db.query(AiIntakeConfig)
-        .filter(AiIntakeConfig.scope_key == payload.scope_key)
-        .one_or_none()
-    )
-    if config is None:
-        config = AiIntakeConfig(
-            scope_key=payload.scope_key, channel_type=payload.channel_type
-        )
-        db.add(config)
-    config.channel_type = payload.channel_type
-    config.is_enabled = payload.is_enabled
-    config.confidence_threshold = payload.confidence_threshold
-    config.allow_followup_questions = payload.allow_followup_questions
-    config.max_clarification_turns = payload.max_clarification_turns
-    config.escalate_after_minutes = payload.escalate_after_minutes
-    config.exclude_campaign_attribution = payload.exclude_campaign_attribution
-    config.fallback_team_id = payload.fallback_team_id
-    config.instructions = payload.instructions
-    config.department_mappings = payload.department_mappings
-    config.metadata_ = payload.metadata or {}
-    db.flush()
-    return config
-
-
-def list_intake_configs(
-    db: Session,
-    *,
-    channel_type: str | None = None,
-    enabled: bool | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> list[AiIntakeConfig]:
-    query = db.query(AiIntakeConfig)
-    if channel_type:
-        query = query.filter(AiIntakeConfig.channel_type == channel_type)
-    if enabled is not None:
-        query = query.filter(AiIntakeConfig.is_enabled == enabled)
-    return (
-        query.order_by(AiIntakeConfig.scope_key.asc()).limit(limit).offset(offset).all()
-    )
-
-
 # Commit-owning entry points — see the SOT service-ownership contract; the API
 # layer calls these rather than committing itself.
 def create_insight_committed(
@@ -328,10 +283,3 @@ def expire_insight_committed(db: Session, insight_id: str | UUID) -> AIInsight:
     db.commit()
     db.refresh(insight)
     return insight
-
-
-def upsert_intake_config_committed(db: Session, payload) -> AiIntakeConfig:
-    config = upsert_intake_config(db, payload)
-    db.commit()
-    db.refresh(config)
-    return config

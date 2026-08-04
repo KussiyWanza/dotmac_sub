@@ -632,6 +632,25 @@ def _metadata_float(metadata: dict | None, *keys: str) -> float | None:
         return None
 
 
+def _active_team_id(
+    db: Session, *, team_id: str | None = None, department: str | None = None
+) -> str | None:
+    from app.models.service_team import ServiceTeam
+
+    normalized_id = _coerce_uuid(team_id)
+    if normalized_id is not None:
+        team = db.get(ServiceTeam, UUID(normalized_id))
+        if team is not None and team.is_active:
+            return normalized_id
+    department_key = _normalize_key(department)
+    if department_key is None:
+        return None
+    for team in db.query(ServiceTeam).filter(ServiceTeam.is_active.is_(True)).all():
+        if _normalize_key(team.name) == department_key:
+            return str(team.id)
+    return None
+
+
 def resolve_channel_routing_decision(
     db: Session,
     *,
@@ -656,25 +675,69 @@ def resolve_channel_routing_decision(
     channel_team_id = str(route.service_team_id) if route is not None else None
     ai_allowed = route.allow_ai_routing if route is not None else True
     base_team_id = channel_team_id or _coerce_uuid(fallback_service_team_id)
-    intent = _normalize_key(
-        _metadata_text(metadata, "ai_intent", "ai_category", "intent", "category")
-    )
+    status = _normalize_key(_metadata_text(metadata, "ai_intake_status"))
+    intent = _normalize_key(_metadata_text(metadata, "ai_intent", "intent"))
+    category = _normalize_key(_metadata_text(metadata, "ai_category", "category"))
     confidence = _metadata_float(
         metadata, "ai_confidence", "classification_confidence", "confidence"
     )
+    if status == "awaiting_follow_up":
+        return ChannelRoutingDecision(
+            primary_service_team_id=None,
+            channel_service_team_id=channel_team_id,
+            ai_service_team_id=None,
+            channel_route_id=str(route.id) if route is not None else None,
+            ai_route_id=None,
+            ai_routing_allowed=ai_allowed,
+            ai_intent_key=intent,
+            ai_confidence=confidence,
+            reason="ai_awaiting_follow_up",
+        )
+    if status in {"fallback", "failed", "escalated"}:
+        fallback_team_id = _active_team_id(
+            db,
+            team_id=_metadata_text(metadata, "ai_intake_fallback_team_id"),
+        )
+        selected = fallback_team_id or base_team_id
+        return ChannelRoutingDecision(
+            primary_service_team_id=selected,
+            channel_service_team_id=channel_team_id,
+            ai_service_team_id=None,
+            channel_route_id=str(route.id) if route is not None else None,
+            ai_route_id=None,
+            ai_routing_allowed=ai_allowed,
+            ai_intent_key=intent,
+            ai_confidence=confidence,
+            reason="ai_intake_fallback",
+        )
+
     ai_route = None
-    if ai_allowed and intent and confidence is not None:
-        ai_route = (
+    route_candidates: list[TeamInboxAiRoute] = []
+    intent_keys = [item for item in (intent, category) if item]
+    if (
+        ai_allowed
+        and intent_keys
+        and confidence is not None
+        and status in {None, "classified"}
+    ):
+        route_candidates = (
             db.query(TeamInboxAiRoute)
             .filter(TeamInboxAiRoute.is_active.is_(True))
-            .filter(TeamInboxAiRoute.intent_key == intent)
+            .filter(TeamInboxAiRoute.intent_key.in_(intent_keys))
             .filter(TeamInboxAiRoute.channel_type.in_((channel, "any")))
-            .filter(TeamInboxAiRoute.confidence_threshold <= confidence)
             .order_by(
                 TeamInboxAiRoute.priority.asc(),
                 TeamInboxAiRoute.channel_type.desc(),
             )
-            .first()
+            .all()
+        )
+        ai_route = next(
+            (
+                item
+                for item in route_candidates
+                if float(item.confidence_threshold) <= confidence
+            ),
+            None,
         )
     if ai_route is not None:
         return ChannelRoutingDecision(
@@ -688,6 +751,29 @@ def resolve_channel_routing_decision(
             ai_confidence=confidence,
             reason="ai_intake_route",
         )
+    if (
+        ai_allowed
+        and status == "classified"
+        and confidence is not None
+        and not route_candidates
+    ):
+        department_team_id = _active_team_id(
+            db,
+            team_id=_metadata_text(metadata, "ai_department_team_id"),
+            department=_metadata_text(metadata, "ai_department"),
+        )
+        if department_team_id is not None:
+            return ChannelRoutingDecision(
+                primary_service_team_id=department_team_id,
+                channel_service_team_id=channel_team_id,
+                ai_service_team_id=department_team_id,
+                channel_route_id=str(route.id) if route is not None else None,
+                ai_route_id=None,
+                ai_routing_allowed=ai_allowed,
+                ai_intent_key=intent,
+                ai_confidence=confidence,
+                reason="ai_intake_department",
+            )
     return ChannelRoutingDecision(
         primary_service_team_id=base_team_id,
         channel_service_team_id=channel_team_id,

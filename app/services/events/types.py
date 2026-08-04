@@ -159,6 +159,7 @@ class EventType(enum.Enum):
     # Retired producer; retained so durable historical events remain decodable.
     service_team_party_cutover_adopted = "service_team.party_cutover_adopted"
     workqueue_action_coordinated = "workqueue.action_coordinated"
+    ai_intake_config_updated = "ai.intake_config_updated"
 
     # Operations - vendor installation project lifecycle
     # Materials / vendor / ERP chain outputs
@@ -205,6 +206,8 @@ class EventType(enum.Enum):
     lead_account_converted = "lead.account_converted"
     quote_created = "quote.created"
     quote_accepted = "quote.accepted"
+    quote_pdf_exported = "quote.pdf_exported"
+    quote_delivery_requested = "quote.delivery_requested"
     sales_order_paid = "sales_order.paid"
     sales_order_funding_satisfied = "sales_order.funding_satisfied"
     sales_order_fulfilled = "sales_order.fulfilled"

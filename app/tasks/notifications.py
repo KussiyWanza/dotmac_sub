@@ -191,6 +191,8 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     NotificationChannel.email,
                     NotificationChannel.sms,
                     NotificationChannel.whatsapp,
+                    NotificationChannel.facebook_messenger,
+                    NotificationChannel.instagram_dm,
                     NotificationChannel.facebook_comment,
                     NotificationChannel.instagram_comment,
                     NotificationChannel.push,
@@ -477,6 +479,89 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                     notification.last_error = str(
                         result.get("response") or "whatsapp_send_failed"
                     )
+            elif notification.channel in {
+                NotificationChannel.facebook_messenger,
+                NotificationChannel.instagram_dm,
+            }:
+                from app.models.team_inbox import InboxMessage
+                from app.services import meta_pages
+
+                account_id = str(
+                    delivery_metadata.get("provider_account_id") or ""
+                ).strip()
+                provider_message_id = ""
+                provider_error = "meta_direct_message_failed"
+                try:
+                    if not account_id or not notification.recipient:
+                        raise ValueError("meta_direct_message_context_missing")
+                    if notification.channel == NotificationChannel.facebook_messenger:
+                        provider_result = meta_pages.send_facebook_message_sync(
+                            db,
+                            page_id=account_id,
+                            recipient_id=notification.recipient,
+                            message=body,
+                        )
+                    else:
+                        provider_result = meta_pages.send_instagram_message_sync(
+                            db,
+                            ig_account_id=account_id,
+                            recipient_id=notification.recipient,
+                            message=body,
+                        )
+                    provider_message_id = str(
+                        provider_result.get("message_id")
+                        or provider_result.get("id")
+                        or ""
+                    ).strip()
+                    if not provider_message_id:
+                        raise ValueError("meta_direct_message_id_missing")
+                    success = True
+                except httpx.HTTPStatusError as exc:
+                    success = False
+                    status_code = exc.response.status_code
+                    if status_code not in {408, 409, 425, 429} and status_code < 500:
+                        notification.retry_count = max_retries - 1
+                    provider_error = f"meta_direct_message_http_{status_code}"
+                except ValueError:
+                    success = False
+                    notification.retry_count = max_retries - 1
+                    provider_error = "meta_direct_message_configuration_rejected"
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    success = False
+                    provider_error = "meta_direct_message_provider_unavailable"
+                except Exception:
+                    success = False
+                    provider_error = "meta_direct_message_provider_failed"
+                notification.last_error = None if success else provider_error
+                db.add(
+                    NotificationDelivery(
+                        notification_id=notification.id,
+                        provider="meta",
+                        provider_message_id=provider_message_id or None,
+                        status=(
+                            DeliveryStatus.delivered
+                            if success
+                            else DeliveryStatus.failed
+                        ),
+                        response_code="accepted" if success else provider_error,
+                        response_body=(
+                            "Meta direct message accepted"
+                            if success
+                            else "Meta direct message failed"
+                        ),
+                    )
+                )
+                if success:
+                    message = (
+                        db.query(InboxMessage)
+                        .filter(InboxMessage.notification_id == notification.id)
+                        .one_or_none()
+                    )
+                    if message is not None:
+                        message.external_message_id = provider_message_id
+                        message_metadata = dict(message.metadata_ or {})
+                        message_metadata["provider_message_id"] = provider_message_id
+                        message.metadata_ = message_metadata
             elif notification.channel in {
                 NotificationChannel.facebook_comment,
                 NotificationChannel.instagram_comment,

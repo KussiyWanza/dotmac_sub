@@ -110,6 +110,7 @@ from app.models.billing import (
 )
 from app.models.prepaid_funding import PrepaidFundingReconstructionBatch
 from app.models.subscriber import Subscriber
+from app.services.prepaid_funding_reconstruction import LEGACY_FINANCIAL_HANDOFF_AT
 
 ZERO = Decimal("0.00")
 LEGACY_LEDGER_CUTOVER = datetime(2026, 3, 15, 23, 59, 59, tzinfo=UTC)
@@ -127,10 +128,8 @@ INTERNAL_MEMO_PREFIXES = (
     "Payment reversal account-credit consumption:",
     "Payment allocation account-credit consumption:",
 )
-LEGACY_FINANCIAL_FINAL_DATE = date(2026, 6, 17)
-LEGACY_FINANCIAL_REPLAY_AT = datetime.combine(
-    LEGACY_FINANCIAL_FINAL_DATE + timedelta(days=1), time.min, tzinfo=UTC
-)
+LEGACY_FINANCIAL_REPLAY_AT = LEGACY_FINANCIAL_HANDOFF_AT
+LEGACY_FINANCIAL_FINAL_DATE = LEGACY_FINANCIAL_REPLAY_AT.date() - timedelta(days=1)
 _REVERSAL_OF = re.compile(
     r"Reversal of ledger entry\s+([0-9a-fA-F-]{36})", re.IGNORECASE
 )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import UUID
 
+from app.services import reseller_onboarding
 from app.web.admin.resellers import templates
 
 RESELLER_ID = UUID("6017d1ca-8c53-4bc2-a969-5b7f769f142a")
@@ -45,6 +46,10 @@ def _render(*, reseller: SimpleNamespace | None) -> str:
         action_url=(
             f"/admin/resellers/{RESELLER_ID}" if reseller else "/admin/resellers"
         ),
+        portal_invite_policy=reseller_onboarding.ResellerPortalInvitePolicy(
+            principal_type=reseller_onboarding.ResellerPortalPrincipalType.RESELLER_USER,
+            subscriber_role_assignment_supported=False,
+        ),
         roles=[],
         policy_sets=[],
         error=None,
@@ -74,3 +79,5 @@ def test_create_reseller_does_not_render_detail_navigation() -> None:
     html = _render(reseller=None)
 
     assert "View reseller" not in html
+    assert 'name="user_role"' not in html
+    assert "Subscriber roles do not apply to reseller portal users." in html

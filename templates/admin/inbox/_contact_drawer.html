@@ -94,6 +94,43 @@
         {% endif %}
     {% endcall %}
 
+    {% if can_manage_leads and not subscriber_summary and resolution.get('status') == 'unmatched' and timeline.channel_type in ['whatsapp', 'facebook_messenger', 'instagram_dm'] %}
+    {% call ctx_section("Lead intake") %}
+        <p class="text-xs text-slate-500">Send a secure 24-hour form to collect the prospect's details and create a Party-first Lead.</p>
+        <div class="mt-3 grid grid-cols-2 gap-2">
+            {% for party_type, label in [('individual', 'Individual form'), ('organization', 'Organization form')] %}
+            <form method="post" action="/admin/inbox/{{ timeline.id }}/lead-intake/issue">
+                {% include "components/forms/csrf_input.html" %}
+                <input type="hidden" name="party_type" value="{{ party_type }}">
+                <button type="submit" class="min-h-10 w-full rounded-lg bg-teal-600 px-2 text-xs font-semibold text-white hover:bg-teal-700">{{ label }}</button>
+            </form>
+            {% endfor %}
+        </div>
+        {% if lead_intake_invitations %}
+        <div class="mt-3 space-y-2">
+            {% for invitation in lead_intake_invitations %}
+            <div class="rounded-lg border border-slate-200 p-2 text-[11px] dark:border-slate-700">
+                <div class="flex items-start justify-between gap-2">
+                    <div>
+                        <p class="font-semibold text-slate-800 dark:text-slate-200">{{ invitation.party_type.value | title }} · {{ invitation.effective_status.value | title }}</p>
+                        <p class="mt-0.5 text-slate-500">Issued {{ ts(invitation.issued_at) }} · {{ invitation.delivery_status }}</p>
+                    </div>
+                    {% if invitation.lead_id %}<a href="/admin/sales/leads/{{ invitation.lead_id }}" class="font-semibold text-teal-700">Open Lead</a>{% endif %}
+                </div>
+                {% if invitation.can_revoke %}
+                <form method="post" action="/admin/inbox/{{ timeline.id }}/lead-intake/{{ invitation.invitation_id }}/revoke" class="mt-2">
+                    {% include "components/forms/csrf_input.html" %}
+                    <input type="hidden" name="reason" value="Reissued by staff">
+                    <button type="submit" class="min-h-8 rounded-md border border-rose-300 px-2 font-semibold text-rose-700">Revoke link</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    {% endcall %}
+    {% endif %}
+
     {% call ctx_section("Tickets") %}
         <div class="space-y-2">
             <a href="/admin/support/tickets{% if timeline.subscriber_id %}?search={{ timeline.subscriber_id }}{% endif %}" class="flex min-h-10 items-center justify-between rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"><span>Active &amp; recent tickets</span><span aria-hidden="true">→</span></a>

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.services import reseller_onboarding
+from app.web.admin.resellers import templates
+
 TEMPLATE = (
     Path(__file__).resolve().parents[1] / "templates/admin/resellers/detail.html"
 ).read_text()
@@ -32,3 +35,32 @@ def test_invite_user_form_is_exposed_from_reseller_details_header() -> None:
     assert (
         TEMPLATE.count('action="/admin/resellers/{{ reseller.id }}/users/create"') == 1
     )
+
+
+def test_first_class_reseller_invite_does_not_offer_subscriber_roles() -> None:
+    template = templates.env.get_template("admin/resellers/_invite_role_field.html")
+
+    html = template.render(
+        portal_invite_policy=reseller_onboarding.ResellerPortalInvitePolicy(
+            principal_type=reseller_onboarding.ResellerPortalPrincipalType.RESELLER_USER,
+            subscriber_role_assignment_supported=False,
+        )
+    )
+
+    assert 'name="role"' not in html
+    assert "Subscriber roles do not apply to reseller portal users." in html
+
+
+def test_legacy_reseller_invite_offers_subscriber_roles() -> None:
+    template = templates.env.get_template("admin/resellers/_invite_role_field.html")
+
+    html = template.render(
+        portal_invite_policy=reseller_onboarding.ResellerPortalInvitePolicy(
+            principal_type=reseller_onboarding.ResellerPortalPrincipalType.SUBSCRIBER,
+            subscriber_role_assignment_supported=True,
+        ),
+        roles=[{"name": "reseller-admin"}],
+    )
+
+    assert 'name="role"' in html
+    assert "reseller-admin" in html

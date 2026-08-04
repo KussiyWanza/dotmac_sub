@@ -25,6 +25,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.party import PartyContactPoint
 from app.models.team_inbox import (
     InboxChannelType,
     InboxConversation,
@@ -89,7 +90,12 @@ def _normalize(db: Session, channel_type: str, value: str | None) -> str | None:
 
 def _provider_account_scope(message: InboxMessage) -> str:
     metadata = message.metadata_ or {}
-    for key in ("phone_number_id", "page_or_account_id", "account_scope"):
+    for key in (
+        "provider_account_scope",
+        "phone_number_id",
+        "page_or_account_id",
+        "account_scope",
+    ):
         value = str(metadata.get(key) or "").strip()
         if value:
             return value[:200]
@@ -214,6 +220,61 @@ def record_message_participants(
     if admitted:
         db.flush()
     return admitted
+
+
+def bind_endpoint_to_contact_point(
+    db: Session,
+    *,
+    conversation_id: UUID,
+    channel_type: str,
+    normalized_endpoint: str,
+    provider_account_scope: str,
+    party_contact_point_id: UUID,
+) -> InboxConversationParticipant:
+    """Bind one exact observed endpoint to Party reachability evidence."""
+
+    row = db.scalars(
+        select(InboxConversationParticipant)
+        .where(
+            InboxConversationParticipant.conversation_id == conversation_id,
+            InboxConversationParticipant.channel_type == channel_type,
+            InboxConversationParticipant.normalized_endpoint == normalized_endpoint,
+            InboxConversationParticipant.provider_account_scope
+            == provider_account_scope,
+            InboxConversationParticipant.is_active.is_(True),
+        )
+        .with_for_update()
+    ).one_or_none()
+    if row is None:
+        raise ValueError("The exact Inbox participant endpoint was not found.")
+    contact_point = db.get(PartyContactPoint, party_contact_point_id)
+    if contact_point is None:
+        raise ValueError("The Party contact point was not found.")
+    if (
+        contact_point.channel_type != channel_type
+        or contact_point.normalized_value != normalized_endpoint
+    ):
+        raise ValueError("The Party contact point does not match the Inbox endpoint.")
+    if channel_type in _OPAQUE_ENDPOINT_CHANNELS and (
+        contact_point.provider_account_id != provider_account_scope
+        or contact_point.external_subject_id != normalized_endpoint
+    ):
+        raise ValueError("The Party contact point does not match the provider scope.")
+    if row.party_contact_point_id is not None:
+        if row.party_contact_point_id != contact_point.id:
+            raise ValueError(
+                "The Inbox endpoint is already bound to another contact point."
+            )
+        return row
+    row.party_contact_point_id = contact_point.id
+    row.party_contact_point_bound_at = datetime.now(UTC)
+    row.party_contact_point_binding_source = "sales.lead_intake"
+    row.party_contact_point_binding_reason = (
+        "Customer completed the single-use form issued to this exact endpoint"
+    )
+    row.relationship_type = InboxParticipantRelationship.contact.value
+    db.flush()
+    return row
 
 
 def list_participants(

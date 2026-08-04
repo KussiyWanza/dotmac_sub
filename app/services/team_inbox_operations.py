@@ -10,16 +10,20 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.models.service_team import ServiceTeam
 from app.models.team_inbox import (
     InboxComment,
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationTeam,
     InboxLabel,
     InboxMessage,
     InboxMessageTemplate,
     InboxReplyMacro,
     InboxSavedFilter,
+    InboxTeamRole,
+    InboxTeamSource,
 )
 from app.services import team_inbox_assignment, team_inbox_outbound
 from app.services.common import coerce_uuid
@@ -40,6 +44,47 @@ _ALLOWED_LABEL_COLORS = {
 
 class InboxOperationError(ValueError):
     pass
+
+
+def route_to_service_team(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    service_team_id: UUID,
+    source: str,
+) -> InboxConversation:
+    """Make one active service team the conversation owner, flush-only."""
+
+    team = db.get(ServiceTeam, service_team_id)
+    if team is None or not team.is_active:
+        raise InboxOperationError("The target service team is not active.")
+    links = db.scalars(
+        select(InboxConversationTeam)
+        .where(InboxConversationTeam.conversation_id == conversation.id)
+        .with_for_update()
+    ).all()
+    target = None
+    for link in links:
+        if link.service_team_id == team.id:
+            target = link
+        elif link.is_active and link.role == InboxTeamRole.owner.value:
+            link.role = InboxTeamRole.participant.value
+    if target is None:
+        target = InboxConversationTeam(
+            conversation_id=conversation.id,
+            service_team_id=team.id,
+        )
+        db.add(target)
+    target.role = InboxTeamRole.owner.value
+    target.source = InboxTeamSource.routing_rule.value
+    target.is_active = True
+    target.metadata_ = {
+        **dict(target.metadata_ or {}),
+        "routing_source": str(source)[:80],
+    }
+    conversation.primary_service_team_id = team.id
+    db.flush()
+    return conversation
 
 
 @dataclass(frozen=True)

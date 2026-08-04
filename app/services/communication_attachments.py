@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoicePdfExportStatus, InvoiceStatus
 from app.models.notification import Notification
+from app.models.sales import QuotePdfExport
 from app.services import billing_invoice_pdf
 from app.services.communication_intents import (
     MAX_EMAIL_ATTACHMENT_BYTES,
     CommunicationAttachmentKind,
 )
+from app.services.sales import quote_documents
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -95,6 +97,37 @@ def _resolve_invoice_pdf(
     )
 
 
+def _resolve_quote_pdf(
+    db: Session, notification: Notification, descriptor: dict[str, object]
+) -> ResolvedEmailAttachment:
+    try:
+        export_id = UUID(str(descriptor.get("entity_id") or ""))
+    except ValueError as exc:
+        raise CommunicationAttachmentError("quote_pdf_invalid_reference") from exc
+    export = db.get(QuotePdfExport, export_id)
+    if export is None:
+        raise CommunicationAttachmentError("quote_pdf_not_found")
+    expected_quote_id = str((notification.metadata_ or {}).get("quote_id") or "")
+    if expected_quote_id != str(export.quote_id):
+        raise CommunicationAttachmentError("quote_attachment_scope_mismatch")
+    try:
+        stream = quote_documents.stream_export(db, export)
+        content = b"".join(stream.chunks)
+    except Exception as exc:
+        raise CommunicationAttachmentError("quote_pdf_generation_failed") from exc
+    if not content.startswith(b"%PDF-"):
+        raise CommunicationAttachmentError("quote_pdf_invalid_content")
+    if len(content) > MAX_EMAIL_ATTACHMENT_BYTES:
+        raise CommunicationAttachmentError("quote_pdf_too_large")
+    return ResolvedEmailAttachment(
+        filename=_safe_filename(
+            descriptor.get("filename") or quote_documents.download_filename(export)
+        ),
+        content_type="application/pdf",
+        content=content,
+    )
+
+
 def resolve_email_attachments(
     db: Session, notification: Notification
 ) -> tuple[ResolvedEmailAttachment, ...]:
@@ -111,4 +144,6 @@ def resolve_email_attachments(
             raise CommunicationAttachmentError("unsupported_attachment_kind") from exc
         if kind == CommunicationAttachmentKind.invoice_pdf:
             resolved.append(_resolve_invoice_pdf(db, notification, item))
+        elif kind == CommunicationAttachmentKind.quote_pdf:
+            resolved.append(_resolve_quote_pdf(db, notification, item))
     return tuple(resolved)

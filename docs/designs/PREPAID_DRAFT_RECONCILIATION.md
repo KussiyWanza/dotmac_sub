@@ -61,7 +61,7 @@ conversion. It requires all of the following exact evidence:
 - internally exact subtotal, tax, gross total, and balance;
 - no invoice financial activity and no competing financial draft;
 - one sole native payment-backed source equal to the full gross balance;
-- a successful verified funding-baseline read; and
+- a successful verified funding opening-position read; and
 - an authoritative `paid_at` timestamp and contracted billing cadence.
 
 The sole payment instant is resolved through the canonical Africa/Lagos

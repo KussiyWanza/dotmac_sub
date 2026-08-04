@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Lead intake templates · Sales{% endblock %}
+{% block content %}
+<main class="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
+  <header class="flex flex-wrap items-center justify-between gap-4">
+    <div><p class="text-sm font-semibold text-teal-600">Sales control plane</p><h1 class="text-3xl font-bold text-slate-950 dark:text-white">Lead intake templates</h1><p class="mt-1 text-sm text-slate-500">Published versions drive the forms automatically sent to unknown Meta prospects.</p></div>
+    <a href="/admin/sales/lead-intake/new" class="rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700">New template</a>
+  </header>
+  <section class="rounded-xl border p-4 text-sm {% if rollout.automatic_sends_active %}border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-100{% else %}border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100{% endif %}">
+    <p class="font-semibold">Automatic sends: {{ 'Active' if rollout.automatic_sends_active else 'Disabled' }}</p>
+    {% if not rollout.configured_enabled %}<p class="mt-1">The integration rollout setting is off. Publishing templates alone will not send forms.</p>{% elif not rollout.templates_ready %}<p class="mt-1">Publish one individual and one organization template to complete the rollout gate.</p>{% else %}<p class="mt-1">Eligible high-confidence messages from unknown Meta prospects can receive one automatic invitation.</p>{% endif %}
+  </section>
+  <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+    <table class="w-full text-left text-sm"><thead class="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-800"><tr><th class="px-4 py-3">Template</th><th class="px-4 py-3">Customer type</th><th class="px-4 py-3">Version</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Target team</th><th class="px-4 py-3 text-right">Actions</th></tr></thead>
+      <tbody class="divide-y divide-slate-200 dark:divide-slate-700">{% for row in rows %}<tr><td class="px-4 py-3 font-semibold">{{ row.name }}</td><td class="px-4 py-3">{{ row.party_type | title }}</td><td class="px-4 py-3">v{{ row.version }}</td><td class="px-4 py-3"><span class="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold dark:bg-slate-800">{{ row.status | title }}</span></td><td class="px-4 py-3">{{ row.target_service_team.name }}</td><td class="px-4 py-3"><div class="flex justify-end gap-2"><a href="/admin/sales/lead-intake/{{ row.id }}" class="rounded-md border px-3 py-2 text-xs font-semibold">View{% if row.status == 'draft' %}/edit{% endif %}</a>{% if row.status == 'draft' %}<form method="post" action="/admin/sales/lead-intake/{{ row.id }}/publish">{% include "components/forms/csrf_input.html" %}<button class="rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white">Publish</button></form>{% elif row.status == 'published' %}<form method="post" action="/admin/sales/lead-intake/{{ row.id }}/retire">{% include "components/forms/csrf_input.html" %}<button class="rounded-md border border-rose-300 px-3 py-2 text-xs font-semibold text-rose-700">Retire</button></form>{% endif %}</div></td></tr>{% else %}<tr><td colspan="6" class="px-6 py-12 text-center text-slate-500">No Lead intake templates yet. Create and publish one version for each customer type before enabling automatic sends.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</main>
+{% endblock %}

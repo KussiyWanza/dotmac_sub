@@ -578,10 +578,23 @@ class PonPortCreate(PonPortFields):
 
     @model_validator(mode="after")
     def _ensure_name(self) -> PonPortCreate:
-        if not self.name:
-            if self.port_number is None:
-                raise ValueError("name or port_number is required.")
-            self.name = f"pon-{self.port_number}"
+        """Never invent a name; leave the decision to the identity owner.
+
+        This validator used to synthesise ``pon-{port_number}`` when no name
+        was supplied, which is how 147 production rows acquired an identity
+        nobody chose. A bare port number does not name a port -- it has no
+        frame and no slot -- and a fabricated name cannot later be told apart
+        from a real one.
+
+        It deliberately does not require a name either. ``pon_crud.create``
+        already resolves both legitimate cases: with a linked card port it
+        derives the canonical ``frame/slot/port`` from hardware through
+        ``network.pon_port_identity``, and without one it requires the caller
+        to supply a canonical name. Demanding a name here would break the
+        derived case, so the field is simply left unset and the owner decides.
+        """
+        if not self.name and self.port_number is None:
+            raise ValueError("name or port_number is required.")
         return self
 
 

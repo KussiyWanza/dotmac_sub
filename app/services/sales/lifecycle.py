@@ -53,6 +53,7 @@ _METHOD_PLATFORM = {
     LeadCaptureMethod.agent_declared.value: LeadSourcePlatform.agent.value,
     LeadCaptureMethod.referral.value: LeadSourcePlatform.referral.value,
     LeadCaptureMethod.reviewed_import.value: LeadSourcePlatform.legacy_import.value,
+    LeadCaptureMethod.inbox_form.value: LeadSourcePlatform.team_inbox.value,
 }
 _PLATFORM_LEAD_SOURCES = {
     LeadSourcePlatform.meta.value: {"Facebook Ads", "Instagram Ads"},
@@ -60,6 +61,7 @@ _PLATFORM_LEAD_SOURCES = {
     LeadSourcePlatform.website.value: {"Website"},
     LeadSourcePlatform.portal.value: {"Portal"},
     LeadSourcePlatform.referral.value: {"Referrer"},
+    LeadSourcePlatform.team_inbox.value: {"Whatsapp", "Facebook", "Instagram"},
 }
 _CAPTURE_FIELDS = (
     "capture_method",

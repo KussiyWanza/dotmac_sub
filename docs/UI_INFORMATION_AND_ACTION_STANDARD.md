@@ -313,3 +313,21 @@ Existing screens migrate incrementally:
 Historical plans may provide requirements or research, but each item must be
 revalidated against this standard and the current domain SOT before
 implementation.
+
+## Inbox Lead Intake Page Contract
+
+- Audience and task: an unknown Meta prospect supplies identity and service
+  location; Sales administrators manage immutable form versions; Inbox staff
+  can issue, revoke, and reissue links.
+- Authority: `sales.lead_intake` owns template, eligibility, invitation, and
+  completion decisions. The public and admin routes and templates are adapters.
+- First viewport: form purpose, customer-type fields, address search and
+  confirmation, privacy notice, error state, and one primary Save action.
+- Action eligibility: automatic send is disabled until explicitly enabled and
+  both template types are published. Manual actions require `crm:lead:write`
+  and an unmatched WhatsApp, Messenger, or Instagram DM conversation.
+- State semantics: issued, effectively expired, revoked, completed, and failed
+  delivery are distinct. Unknown/expired tokens render the same unavailable
+  response and never reveal whether a digest exists.
+- Responsive behavior: fields stack on small screens, controls retain a
+  44-pixel target, and address results remain adjacent to their search field.

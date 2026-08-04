@@ -3090,9 +3090,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "billing.contracts",
                     "billing.obligations",
                     "billing.rating",
+                    "customer.accounts",
                     "events.dispatcher",
                     "events.owner_outputs",
                     "financial.billing_automation",
+                    "financial.customer_subledger",
+                    "financial.prepaid_funding_reconstruction",
                     "financial.prepaid_service_renewals",
                 ),
                 notes=(
@@ -3110,7 +3113,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "add-on exclusions as blockers. It never repairs another owner, "
                     "asks a non-owner to repair, or changes authority; operator and "
                     "finance approvals are separate commands and are forbidden while "
-                    "blockers remain."
+                    "blockers remain. Phase 3 may derive an opening target without "
+                    "Splynx only when account provenance proves the customer was "
+                    "created after the fixed legacy handoff with no Splynx identity. "
+                    "The zero history component and canonical native facts are "
+                    "fingerprinted before normal approval and capture."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3134,6 +3141,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "deterministic target rating",
                                 "current postpaid billing preview",
                                 "current prepaid renewal preview",
+                                "verified prepaid opening targets",
+                                "recorded customer postings",
                                 "receipted owner-output deliveries",
                                 "recorded shadow verification evidence",
                             ),
@@ -3204,6 +3213,26 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "typed current-owner monthly period, taxed base "
                                 "renewal, and explicit recurring-add-on exclusions "
                                 "for each prepaid cohort root"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="verified prepaid opening targets",
+                            owner="financial.prepaid_funding_reconstruction",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "reviewed reconstruction/opening positions, or a "
+                                "typed native-after-handoff target proven from the "
+                                "account creation instant, absent Splynx identity, "
+                                "fixed handoff, and canonical native financial facts"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="recorded customer postings",
+                            owner="financial.customer_subledger",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "currency-typed shadow posting lanes compared with "
+                                "the exact opening target at the verification cutoff"
                             ),
                         ),
                         AuthorityInput(
@@ -3673,8 +3702,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_funding_reconstruction",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source=(
-                                "reviewed active baseline plus canonical native "
-                                "post-baseline money facts"
+                                "reviewed active baseline/opening plus canonical later "
+                                "native facts, or the fingerprinted native-after-"
+                                "handoff zero-history target used only by opening "
+                                "verification"
                             ),
                         ),
                         AuthorityInput(
@@ -4631,8 +4662,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "evidence, never a runtime money source or fallback. The separate "
                     "customer.financial_position verifier owns the post-activation "
                     "composition of an approved subledger opening with later native "
-                    "facts; this reconstruction owner never rewrites an opening or "
-                    "posts money."
+                    "facts. For opening verification only, a customer created after "
+                    "the fixed legacy handoff with no Splynx identity has a typed "
+                    "zero history component plus canonical native facts; runtime "
+                    "money actions remain quarantined until approved immutable "
+                    "opening capture. This reconstruction owner never rewrites an "
+                    "opening or posts money."
                 ),
             ),
             SOTService(
@@ -10617,10 +10652,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="financial.prepaid_funding_reconstruction",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "active typed opening baseline, signed reviewed "
-                                "manifest, approval evidence, prior immutable "
-                                "invoice consumptions, and current verified prepaid "
-                                "funding position"
+                                "active typed reconstruction baseline or immutable "
+                                "approved subledger opening, its fingerprinted source "
+                                "evidence, prior immutable invoice consumptions, and "
+                                "current verified prepaid funding position"
                             ),
                         ),
                         AuthorityInput(
@@ -16477,12 +16512,156 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "shared desired-state delivery lifecycle",
                     "control-plane target and revision identity",
                     "vendor status projections and transition guards",
+                    "unset desired-value admissibility policy",
                 ),
                 depends_on=("network.identity",),
                 notes=(
                     "Vendor adapters retain native persistence models but project "
                     "through one desired-to-readback lifecycle. Verified always "
-                    "requires device evidence for the current intent revision."
+                    "requires device evidence for the current intent revision. "
+                    "Missing or provenance-unknown desired state stays typed as "
+                    "unknown and cannot become an executable device value unless "
+                    "a named owner explicitly declares that default. Execution "
+                    "authority is separate from review progress and review "
+                    "progress never grants it; providers register their own "
+                    "sentinel tables, enforce the ruling on every delivery "
+                    "path, and hold any default that still executes without a "
+                    "declaration on a shrink-only debt baseline."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="shared desired-state delivery lifecycle",
+                            role=OwnerRole.POLICY,
+                            input_names=("vendor delivery status",),
+                        ),
+                        ConcernContract(
+                            name="control-plane target and revision identity",
+                            role=OwnerRole.POLICY,
+                            input_names=("control-plane target identity",),
+                        ),
+                        ConcernContract(
+                            name="vendor status projections and transition guards",
+                            role=OwnerRole.POLICY,
+                            input_names=("vendor delivery status",),
+                        ),
+                        ConcernContract(
+                            name="unset desired-value admissibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=("provider unset-sentinel declaration",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="vendor delivery status",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "Native vendor states passed in by their owning "
+                                "adapter: NetworkOperation, UISP intent, Huawei "
+                                "reconcile sync_status, RouterOS push and push "
+                                "result, ProvisioningRun."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="control-plane target identity",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Provider, target type, target id, and desired "
+                                "revision supplied by the calling owner; the "
+                                "correlation key is derived, never stored here."
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="provider unset-sentinel declaration",
+                            owner="network.control_plane_intent",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "Per-field sentinel value, execution authority, "
+                                "and review status declared by the provider's "
+                                "table, e.g. "
+                                "app.services.network.reconcile.sentinels.RULES "
+                                "for Huawei ONTs."
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary=(
+                            "Pure semantic policy. The module opens no session, "
+                            "reads no table, and writes no state; callers apply "
+                            "its rulings inside their own transactions."
+                        ),
+                        locking=(
+                            "None. Revision conflicts are detected by "
+                            "assert_intent_head against a current revision the "
+                            "caller has already locked."
+                        ),
+                        idempotency=(
+                            "Every function is a pure function of its "
+                            "arguments. Same-phase transitions are explicitly "
+                            "allowed so a retried write re-derives the same "
+                            "ruling."
+                        ),
+                        retries=(
+                            "Safe to re-evaluate without side effects; a retry "
+                            "that carries a superseded revision is rejected by "
+                            "assert_intent_head rather than silently applied."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "network.control_plane_intent.contract_error",
+                            "network.control_plane_intent.transition_error",
+                            "network.control_plane_intent.head_conflict",
+                        ),
+                        mapping_owner=(
+                            "Calling delivery owners translate these to their own "
+                            "transport outcomes; this module raises typed errors "
+                            "and never HTTP."
+                        ),
+                        fail_closed_on=(
+                            "unknown vendor status",
+                            "impossible phase transition",
+                            "superseded intent revision",
+                            "undeclared unset desired value",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.SHADOWING,
+                        new_owner="network.control_plane_intent",
+                        old_owner=(
+                            "Per-vendor delivery status vocabularies and, for "
+                            "unset desired values, undeclared per-call defaults "
+                            "scattered across composer, adapter, and planner "
+                            "emission sites."
+                        ),
+                        verification=(
+                            "Providers register every substitution and an audit "
+                            "fails when a new default is added without one; the "
+                            "read-only blast-radius detector reports the live "
+                            "population per rule before any disposition changes."
+                        ),
+                        cutover_gate=(
+                            "The provider authority-debt baselines are empty: "
+                            "every substituted default is either a declared "
+                            "owner default, refused here, or delegated to a "
+                            "named refusing owner, with the detector reporting "
+                            "a measured count behind each decision."
+                        ),
+                        fallback_retirement=(
+                            "Provider-local default substitution is retired as "
+                            "each field's disposition is declared; the registry "
+                            "remains the only place a default may be named."
+                        ),
+                    ),
+                    steward="network operations",
+                    design_refs=("docs/SOT_RELATIONSHIP_MAP.md",),
+                    test_refs=(
+                        "tests/architecture/test_control_plane_desired_value_policy.py",
+                        "tests/test_reconcile_sentinels.py",
+                    ),
                 ),
             ),
             SOTService(
@@ -20002,6 +20181,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.team_inbox_processing",
                 owns=("provider observation consequence coordination",),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_observations",
                     "communications.team_inbox_threads",
                     "communications.team_inbox_contact_resolution",
@@ -20046,6 +20226,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="communications.team_inbox_delivery_receipts",
                             kind=AuthorityKind.DERIVED_PROJECTION,
                             source="Timestamp-monotonic provider delivery state.",
+                        ),
+                        AuthorityInput(
+                            name="validated AI intake result",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Bounded destination-team classification or explicit fallback status.",
                         ),
                     ),
                     transaction_mode=TransactionMode.COORDINATOR_MANAGED,
@@ -20142,6 +20328,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "routing assignment and escalation transitions",
                 ),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_threads",
                     "operations.sla_escalation",
                     "auth.permission_gate",
@@ -20173,6 +20360,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="auth.permission_gate",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source="Granular assignment and escalation permission evidence.",
+                        ),
+                        AuthorityInput(
+                            name="validated AI intake destination metadata",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Approved intent, category, confidence, department, and fallback policy.",
                         ),
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
@@ -20506,9 +20699,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 module="app.services.team_inbox_maintenance",
                 owns=("scheduled Inbox projection maintenance and repair",),
                 depends_on=(
+                    "ai.intake",
                     "communications.team_inbox_threads",
                     "communications.team_inbox_outbound_intents",
                     "communications.team_inbox_projection",
+                    "communications.team_inbox_routing",
                 ),
                 contract=_team_inbox_contract(
                     service_name="communications.team_inbox_maintenance",
@@ -20536,6 +20731,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="communications.team_inbox_outbound_intents",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="Retryable failed communication intent and message evidence.",
+                        ),
+                        AuthorityInput(
+                            name="AI intake recovery state",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="Bounded classifying or awaiting-follow-up state and configured fallback deadline.",
                         ),
                     ),
                     transaction_mode=TransactionMode.OWNER_MANAGED,
@@ -23892,9 +24093,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             owner="ai.generation",
                             kind=AuthorityKind.CONTROL_INPUT,
                             source=(
-                                "System prompt plus the caller's owned "
-                                "projection, already redacted to the advisor's "
-                                "declared input sensitivity."
+                                "System prompt plus either the caller's owned "
+                                "advisory projection or ai.intake's bounded "
+                                "redacted classification projection."
                             ),
                         ),
                         AuthorityInput(
@@ -24066,6 +24267,179 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ai.intake",
+                module="app.services.ai_intake",
+                owns=(
+                    "AI conversational intake configuration lifecycle",
+                    "customer-message intake eligibility policy",
+                    "bounded customer-message intent classification",
+                    "customer contact-data cleaning eligibility policy",
+                ),
+                depends_on=(
+                    "ai.gateway",
+                    "communications.team_inbox_observations",
+                    "communications.team_inbox_threads",
+                    "operations.service_team_lifecycle",
+                    "events.dispatcher",
+                ),
+                notes=(
+                    "AiIntakeConfig is the only runtime policy source. The owner "
+                    "classifies WhatsApp, Facebook Messenger, and Instagram only, "
+                    "returns validated destination-team metadata and one controlled "
+                    "follow-up candidate; the Team Inbox outbound owner alone delivers "
+                    "it. Intake never writes queue position or chooses an agent. "
+                    "The reserved data-cleaning gate compares exact configured and "
+                    "conversation team UUIDs and performs no customer-data access. Classification "
+                    "is a read-only participant in the Inbox coordinator transaction; "
+                    "configuration writes enter execute_owner_command once."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="AI conversational intake configuration lifecycle",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "reviewed AI intake configuration command",
+                                "active fallback and mapped service teams",
+                            ),
+                            canonical_writer="ai.intake",
+                        ),
+                        ConcernContract(
+                            name="customer-message intake eligibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "normalized inbound conversation state",
+                                "channel AI-routing permission",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="bounded customer-message intent classification",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "bounded redacted inbound message projection",
+                                "observed provider classification response",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="customer contact-data cleaning eligibility policy",
+                            role=OwnerRole.POLICY,
+                            input_names=(
+                                "enabled matching AI intake configuration",
+                                "normalized inbound conversation state",
+                                "channel AI-routing permission",
+                                "active fallback and mapped service teams",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="reviewed AI intake configuration command",
+                            owner="auth.permission_gate",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="Authenticated system-settings writer and typed policy.",
+                        ),
+                        AuthorityInput(
+                            name="active fallback and mapped service teams",
+                            owner="operations.service_team_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Active ServiceTeam identifiers referenced by policy.",
+                        ),
+                        AuthorityInput(
+                            name="enabled matching AI intake configuration",
+                            owner="ai.intake",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Most-specific AiIntakeConfig for provider/account/channel scope.",
+                        ),
+                        AuthorityInput(
+                            name="normalized inbound conversation state",
+                            owner="communications.team_inbox_threads",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Conversation lifecycle, ownership, tags, and bounded recent messages.",
+                        ),
+                        AuthorityInput(
+                            name="channel AI-routing permission",
+                            owner="communications.team_inbox_routing",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="Effective TeamInboxChannelRoute allow_ai_routing gate.",
+                        ),
+                        AuthorityInput(
+                            name="bounded redacted inbound message projection",
+                            owner="communications.team_inbox_observations",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="Latest normalized customer message plus at most three relevant messages.",
+                        ),
+                        AuthorityInput(
+                            name="observed provider classification response",
+                            owner="external:llm_provider",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source="Strict JSON candidate returned through ai.gateway.",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "Configuration mutation enters execute_owner_command once. "
+                            "Classification is read-only and its typed result is persisted "
+                            "by the Inbox coordinator with the inbound message."
+                        ),
+                        locking=(
+                            "Configuration upsert locks the scope row; classification writes no row. "
+                            "The Inbox coordinator serializes channel/thread intake with a transaction "
+                            "advisory lock and locks an existing conversation row; recovery uses the "
+                            "same conversation row lock."
+                        ),
+                        idempotency=(
+                            "Configuration uses command evidence; provider message deduplication "
+                            "precedes classification so one inbound fact produces at most one attempt. "
+                            "Clarification delivery uses an inbound-message-derived communication-intent "
+                            "dedupe key."
+                        ),
+                        retries="No synchronous retry beyond ai.gateway's configured fallback provider.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes("ai.intake"),
+                            "ai.intake.invalid_configuration",
+                            "ai.intake.invalid_model_output",
+                            "ai.intake.gateway_unavailable",
+                        ),
+                        mapping_owner="Team Inbox processing and AI operations API adapters",
+                        fail_closed_on=(
+                            "invalid or missing configuration",
+                            "invalid provider output",
+                            "provider unavailability",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("ai.intake_config_updated",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility="Version 1 carries only bounded configuration-change evidence.",
+                        replay="Configuration remains authoritative in AiIntakeConfig.",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="parked ai_operations CRUD with no runtime reader",
+                        new_owner="ai.intake",
+                        verification="Focused classification, routing, deduplication, and architecture tests.",
+                        cutover_gate="All conversational channels call the shared owner after normalization.",
+                        fallback_retirement="Untyped ai_operations AiIntakeConfig writers are removed.",
+                    ),
+                    steward="customer experience platform",
+                    design_refs=(
+                        "docs/designs/AI_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_ai_intake.py",
+                        "tests/test_team_inbox_ai_intake_flow.py",
+                        "tests/architecture/test_ai_boundaries.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ai.insights",
                 module="app.services.ai_operations",
                 owns=(
@@ -24076,9 +24450,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "The canonical writer of AIInsight. Generated insights "
                     "land here and nowhere else. AI is advisory: it never "
                     "mutates domain state — acting on a recommendation means "
-                    "calling the domain's declared owner. AiIntakeConfig is a "
-                    "CRM import for an unimplemented conversational-intake "
-                    "feature and gates nothing; see docs/designs/AI_SOT.md."
+                    "calling the domain's declared owner. Customer-facing "
+                    "classification is separately owned by ai.intake."
                 ),
             ),
             SOTService(
@@ -24105,14 +24478,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             "app.tasks.ai_operations",
             "app.web.admin.reports",
             "app.web.admin.inbox",
+            "app.services.team_inbox_channel_receive",
         ),
         rule=(
-            "AI advises ON an owned projection and never re-derives one: the "
+            "Advisory AI advises ON an owned projection and never re-derives one: the "
             "caller hands in what it already computes, so the boundary holds "
             "by construction. AI observes, derives, and recommends; it never "
             "decides domain state. Insight consequences are requested from the "
             "owning domain service, which applies its own guards, events, and "
-            "audit. No app/services/ai* module writes a non-AI ORM row."
+            "audit. ai.intake is the separate bounded customer-message classifier; "
+            "it may select a destination service team but never an agent or queue position."
         ),
     ),
     DomainSOT(
@@ -34611,6 +34986,89 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.quote_detail_projection",
+                module="app.services.web_sales",
+                owns=("admin Quote delivery eligibility and activity presentation",),
+                depends_on=(
+                    "communications.notification_service",
+                    "observability.audit_log",
+                    "sales.quote_delivery",
+                    "sales.service",
+                ),
+                notes=(
+                    "The Quote detail builder presents delivery eligibility and the "
+                    "official Quote timeline from authoritative Quote, immutable audit, "
+                    "and durable notification records. It does not infer final mailbox "
+                    "receipt from SMTP transport acceptance."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "admin Quote delivery eligibility and activity presentation"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical Quote detail state",
+                                "canonical Quote audit evidence",
+                                "canonical Quote delivery outcome",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical Quote detail state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "active Quote, lines, status, expiry, Lead, Party recipient, "
+                                "and related commercial records"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="immutable Quote-scoped action and actor evidence",
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote delivery outcome",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "durable notification queue state and mail-transport "
+                                "acceptance or terminal failure evidence"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary="The admin GET adapter owns one read-only session.",
+                        locking="No row locks; this is a current-state presentation query.",
+                        idempotency="Equivalent reads return the same projection for the same rows.",
+                        retries="A failed read may be retried without side effects.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=("missing Quote detail read capability",),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="ui.quote_detail_projection",
+                    ),
+                    steward="sales operations UI",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.nas_list_projection",
                 module="app.services.nas.web_builders",
                 owns=(
@@ -36776,6 +37234,197 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="sales.lead_intake",
+                module="app.services.sales.lead_intake",
+                owns=(
+                    "versioned lead-intake template lifecycle",
+                    "sales lead eligibility and invitation lifecycle",
+                    "atomic Inbox form to Party and Lead conversion",
+                ),
+                depends_on=(
+                    "ai.intake",
+                    "auth.staff_provisioning",
+                    "communications.team_inbox_contact_resolution",
+                    "communications.team_inbox_outbound_intents",
+                    "communications.team_inbox_participants",
+                    "communications.team_inbox_processing",
+                    "communications.team_inbox_routing",
+                    "control.settings_spec",
+                    "events.dispatcher",
+                    "gis.geocoding",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.lead_lifecycle",
+                    "sales.service",
+                ),
+                notes=(
+                    "The general ai.intake owner classifies and routes every eligible "
+                    "customer message. Only its final high-confidence sales result is "
+                    "handed to this owner for a single form invitation and Party-first Lead."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="versioned lead-intake template lifecycle",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated Lead intake template command",
+                                "canonical Sales routing configuration",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="sales lead eligibility and invitation lifecycle",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "canonical unknown Inbox conversation state",
+                                "shared customer intake sales handoff",
+                                "explicit Lead intake rollout configuration",
+                                "published Lead intake template versions",
+                            ),
+                        ),
+                        ConcernContract(
+                            name="atomic Inbox form to Party and Lead conversion",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "validated public Lead intake submission",
+                                "canonical Lead intake invitation",
+                                "server-resolved Nigerian service address",
+                                "canonical Party identity state",
+                                "canonical Lead lifecycle state",
+                                "canonical unknown Inbox conversation state",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="authenticated Lead intake template command",
+                            owner="sales.lead_intake",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="typed template values, routing references, actor and CommandContext",
+                        ),
+                        AuthorityInput(
+                            name="canonical Sales routing configuration",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="active ServiceTeam, SystemUser, Pipeline and Stage references",
+                        ),
+                        AuthorityInput(
+                            name="canonical unknown Inbox conversation state",
+                            owner="communications.team_inbox_processing",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked unmatched Meta conversation, message and provider-scoped endpoint",
+                        ),
+                        AuthorityInput(
+                            name="shared customer intake sales handoff",
+                            owner="ai.intake",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source="classified new-connection or coverage intent, customer type and message identity",
+                        ),
+                        AuthorityInput(
+                            name="explicit Lead intake rollout configuration",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="automatic-send switch, bounded TTL and AiIntakeConfig confidence threshold",
+                        ),
+                        AuthorityInput(
+                            name="published Lead intake template versions",
+                            owner="sales.lead_intake",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="one immutable published individual and organization template",
+                        ),
+                        AuthorityInput(
+                            name="validated public Lead intake submission",
+                            owner="sales.lead_intake",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="typed customer fields, address confirmation, privacy acknowledgement and token",
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead intake invitation",
+                            owner="sales.lead_intake",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="hashed token, template, endpoint, expiry, delivery and completion state",
+                        ),
+                        AuthorityInput(
+                            name="server-resolved Nigerian service address",
+                            owner="gis.geocoding",
+                            kind=AuthorityKind.OBSERVATION,
+                            source="reverse-geocoded coordinates, state or FCT and country code",
+                        ),
+                        AuthorityInput(
+                            name="canonical Party identity state",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Party, representative, prospect role and exact contact point",
+                        ),
+                        AuthorityInput(
+                            name="canonical Lead lifecycle state",
+                            owner="sales.lead_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="Party-first Lead and immutable Inbox-form origin",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.COORDINATOR_MANAGED,
+                        boundary="Each mutation enters execute_owner_command once and commits or rolls back atomically.",
+                        locking="Templates, conversation, message, invitation, participant and actor are locked before mutation.",
+                        idempotency="One assessment per message, one automatic invite per conversation and one completion per token.",
+                        retries="Adapters retry only the complete owner command after rollback.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes("sales.lead_intake"),
+                            "sales.lead_intake.actor_not_eligible",
+                            "sales.lead_intake.channel_not_supported",
+                            "sales.lead_intake.conversation_not_found",
+                            "sales.lead_intake.conversation_not_unknown",
+                            "sales.lead_intake.invitation_unavailable",
+                            "sales.lead_intake.message_not_eligible",
+                            "sales.lead_intake.provider_scope_missing",
+                            "sales.lead_intake.template_not_found",
+                            "sales.lead_intake.template_not_published",
+                            "sales.lead_intake.published_template_immutable",
+                            "sales.lead_intake.address_not_confirmed",
+                            "sales.lead_intake.address_outside_nigeria",
+                            "sales.lead_intake.state_unresolved",
+                            "sales.lead_intake.privacy_acknowledgement_required",
+                        ),
+                        mapping_owner="Inbox, Sales admin and public Lead intake adapters",
+                        fail_closed_on=(
+                            "known or ambiguous customer identity",
+                            "unsupported channel or missing account scope",
+                            "disabled rollout, missing templates or low confidence",
+                            "invalid token or service address",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("lead.created",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility="No form values, endpoints or tokens are emitted.",
+                        replay="Invitation completion and immutable origin reproduce the outcome.",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner="none; additive Inbox-to-Lead capability",
+                        new_owner="sales.lead_intake",
+                        verification="Focused template, invite, form, handoff and boundary tests.",
+                        cutover_gate="Both templates are published and automatic sends are explicitly enabled.",
+                        fallback_retirement="No adapter directly creates Lead, Party, invitation or routing state.",
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/designs/INBOX_LEAD_INTAKE.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/PARTY_CUSTOMER_LIFECYCLE.md",
+                    ),
+                    test_refs=(
+                        "tests/test_lead_intake.py",
+                        "tests/test_web_lead_intake.py",
+                        "tests/architecture/test_lead_intake_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="sales.lead_authoring",
                 module="app.services.sales.lead_authoring",
                 owns=("atomic admin Person and Lead authoring",),
@@ -37115,6 +37764,254 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "tests/test_web_sales_quote_authoring.py",
                         "tests/test_quote_acceptance_workflow.py",
                         "tests/architecture/test_sales_lifecycle_chain_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_documents",
+                module="app.services.sales.quote_documents",
+                owns=("immutable branded Quote PDF generation",),
+                depends_on=(
+                    "customer.branding",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "sales.service",
+                ),
+                notes=(
+                    "This owner snapshots the authoritative Quote, lines, recipient "
+                    "display identity, and resolved company brand into one immutable, "
+                    "content-addressed PDF artifact. Repeated exports of the same "
+                    "snapshot reuse the canonical artifact."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="immutable branded Quote PDF generation",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "Quote document command evidence",
+                                "canonical Quote commercial state",
+                                "canonical company branding state",
+                            ),
+                            canonical_writer="sales.quote_documents",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote document command evidence",
+                            owner="sales.quote_documents",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="typed Quote id and CommandContext provenance",
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote commercial state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "locked active Quote, QuoteLineItems, Lead Party identity, "
+                                "currency, totals, expiry, and installation metadata"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical company branding state",
+                            owner="customer.branding",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "resolved subscriber, organization, reseller, or platform "
+                                "brand profile and immutable logo digest"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "generate_quote_pdf enters execute_owner_command once; the "
+                            "stored-file record, immutable export row, audit evidence, and "
+                            "quote.pdf_exported event commit or roll back together"
+                        ),
+                        locking="The active Quote is selected FOR UPDATE before snapshotting.",
+                        idempotency=(
+                            "A SHA-256 fingerprint of canonical Quote and brand inputs maps "
+                            "to one deterministic export UUID and unique Quote snapshot."
+                        ),
+                        retries=(
+                            "Equivalent retries reuse the existing export; transient failures "
+                            "retry the complete owner command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes(
+                                "sales.quote_documents"
+                            ),
+                            "sales.quote_documents.artifact_missing",
+                            "sales.quote_documents.export_not_found",
+                            "sales.quote_documents.invalid_pdf",
+                            "sales.quote_documents.owner_command_required",
+                            "sales.quote_documents.quote_not_found",
+                            "sales.quote_documents.renderer_unavailable",
+                        ),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=(
+                            "missing or inactive Quote",
+                            "missing stored artifact",
+                            "unavailable or invalid PDF renderer output",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.pdf_exported",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, export, and snapshot fingerprint "
+                            "without customer contact data."
+                        ),
+                        replay=(
+                            "Fingerprint replay returns the existing artifact and suppresses "
+                            "duplicate audit and event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="sales.quote_documents",
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
+                name="sales.quote_delivery",
+                module="app.services.sales.quote_delivery",
+                owns=("idempotent branded Quote email request",),
+                depends_on=(
+                    "communications.intents",
+                    "customer.branding",
+                    "events.dispatcher",
+                    "observability.audit_log",
+                    "party.registry",
+                    "sales.quote_documents",
+                    "sales.service",
+                ),
+                notes=(
+                    "This owner resolves the Quote recipient from Party contact points, "
+                    "attaches the exact immutable branded PDF, and submits one durable "
+                    "communication intent. The notification dispatcher remains transport; "
+                    "SMTP acceptance is not treated as mailbox proof."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="idempotent branded Quote email request",
+                            role=OwnerRole.COMMAND_WRITER,
+                            input_names=(
+                                "Quote delivery command evidence",
+                                "canonical Quote commercial state",
+                                "canonical Party recipient state",
+                                "canonical Quote PDF artifact",
+                            ),
+                            canonical_writer="sales.quote_delivery",
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="Quote delivery command evidence",
+                            owner="sales.quote_delivery",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed Quote id plus actor, command, correlation, reason, "
+                                "scope, and required idempotency evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote commercial state",
+                            owner="sales.service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="locked active, unexpired, sendable Quote and lines",
+                        ),
+                        AuthorityInput(
+                            name="canonical Party recipient state",
+                            owner="party.registry",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "primary-first active email contact point reached through "
+                                "Quote to Lead to Party"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical Quote PDF artifact",
+                            owner="sales.quote_documents",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="immutable branded Quote snapshot and stored PDF",
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.OWNER_MANAGED,
+                        boundary=(
+                            "send_quote_email enters execute_owner_command once; the PDF "
+                            "artifact, delivery request, communication intent, Quote Sent "
+                            "transition, audit evidence, and event commit or roll back together"
+                        ),
+                        locking="The active Quote is selected FOR UPDATE before eligibility.",
+                        idempotency=(
+                            "The required request key uniquely identifies one Quote delivery; "
+                            "exact replay returns the original intent and notification ids."
+                        ),
+                        retries=(
+                            "Equivalent retries replay the durable request; transient failures "
+                            "retry the complete command after rollback."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            *owner_command_boundary_error_codes("sales.quote_delivery"),
+                            "sales.quote_delivery.idempotency_conflict",
+                            "sales.quote_delivery.idempotency_key_required",
+                            "sales.quote_delivery.line_items_required",
+                            "sales.quote_delivery.quote_expired",
+                            "sales.quote_delivery.quote_not_found",
+                            "sales.quote_delivery.recipient_email_required",
+                            "sales.quote_delivery.status_not_sendable",
+                        ),
+                        mapping_owner="admin Quote detail adapter",
+                        fail_closed_on=(
+                            "missing, inactive, rejected, or expired Quote",
+                            "Quote without line items",
+                            "missing authoritative active recipient email",
+                            "idempotency key reuse for another Quote",
+                        ),
+                    ),
+                    events=EventContract(
+                        event_types=("quote.delivery_requested",),
+                        schema_version=1,
+                        delivery_owner="events.dispatcher",
+                        compatibility=(
+                            "Version 1 identifies the Quote, request, intent, export, and "
+                            "queue decision without recipient contact data."
+                        ),
+                        replay=(
+                            "The delivery request key returns the original result and "
+                            "suppresses duplicate communication, audit, and event staging."
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.NATIVE,
+                        new_owner="sales.quote_delivery",
+                    ),
+                    steward="sales operations",
+                    design_refs=(
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    ),
+                    test_refs=(
+                        "tests/test_quote_documents_and_delivery.py",
+                        "tests/architecture/test_quote_document_delivery_boundary.py",
                     ),
                 ),
             ),

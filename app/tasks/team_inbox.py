@@ -12,6 +12,28 @@ from app.services.owner_commands import CommandContext
 logger = logging.getLogger(__name__)
 
 
+@celery_app.task(name="app.tasks.team_inbox.recover_stale_ai_intake")
+def recover_stale_ai_intake(*, limit: int = 200) -> dict[str, int]:
+    with db_session_adapter.session() as session:
+        result = team_inbox_maintenance.recover_stale_ai_intake(
+            session,
+            team_inbox_maintenance.RecoverStaleAiIntakeCommand(
+                context=CommandContext.system(
+                    actor="task:team-inbox-ai-intake-recovery",
+                    scope="team-inbox:maintenance",
+                    reason="route expired AI intake waits through fallback policy",
+                ),
+                limit=limit,
+            ),
+        )
+        payload = {"recovered": result.changed, "skipped": result.skipped}
+        logger.info(
+            "team inbox AI intake recovery complete",
+            extra={"event": "team_inbox_ai_intake_recovery", **payload},
+        )
+        return payload
+
+
 @celery_app.task(name="app.tasks.team_inbox.retry_failed_outbound_messages")
 def retry_failed_outbound_messages(
     *,

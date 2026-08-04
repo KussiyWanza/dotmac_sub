@@ -611,6 +611,15 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Retries failed native inbox outbound messages up to a retry cap; "
         "already-sent and over-cap rows are skipped on re-run.",
     ),
+    "app.tasks.team_inbox.recover_stale_ai_intake": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Routes only expired AI intake waits through the configured fallback; "
+        "locked rows already settled by inbound processing or an earlier sweep "
+        "are skipped on re-run.",
+    ),
     "app.tasks.team_inbox.release_scheduled_replies": _c(
         "support",
         SWEEP,

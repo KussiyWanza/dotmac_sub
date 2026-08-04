@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -45,6 +46,28 @@ class PrepaidFundingReconstructionError(ValueError):
 
 class PrepaidFundingBaselineMissingError(RuntimeError):
     pass
+
+
+LEGACY_FINANCIAL_HANDOFF_AT = datetime(2026, 6, 18, tzinfo=UTC)
+
+
+class PrepaidOpeningTargetOrigin(StrEnum):
+    """Authoritative provenance for one opening-position preview target."""
+
+    reviewed_reconstruction = "reviewed_reconstruction"
+    reviewed_subledger_opening = "reviewed_subledger_opening"
+    native_after_handoff = "native_after_handoff"
+
+
+@dataclass(frozen=True, slots=True)
+class PrepaidOpeningTarget:
+    """Typed source target consumed only by reviewed opening verification."""
+
+    account_id: UUID
+    currency: str
+    amount: Decimal
+    origin: PrepaidOpeningTargetOrigin
+    source_position_at: datetime
 
 
 @dataclass(frozen=True)
@@ -640,8 +663,185 @@ def prepaid_funding_incomplete_source_account_ids(
         return set(ids)
     required_ids = prepaid_funding_opening_required_account_ids(db, ids)
     unit = _currency(currency or default_prepaid_funding_currency(db))
-    baseline_ids = set(_active_baselines(db, required_ids, unit))
-    return required_ids - baseline_ids
+    covered_ids = set(_active_baselines(db, required_ids, unit))
+    if db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None:
+        covered_ids.update(
+            coerce_uuid(value)
+            for value in db.scalars(
+                select(CustomerSubledgerOpeningPosition.account_id).where(
+                    CustomerSubledgerOpeningPosition.account_id.in_(required_ids),
+                    CustomerSubledgerOpeningPosition.currency == unit,
+                )
+            ).all()
+        )
+    return required_ids - covered_ids
+
+
+def _native_after_handoff_account_ids(
+    db: Session,
+    account_ids: Iterable[object],
+) -> set[UUID]:
+    ids = {coerce_uuid(value) for value in account_ids}
+    if not ids:
+        return set()
+    return {
+        coerce_uuid(value)
+        for value in db.scalars(
+            select(Subscriber.id).where(
+                Subscriber.id.in_(ids),
+                Subscriber.created_at > LEGACY_FINANCIAL_HANDOFF_AT,
+                Subscriber.splynx_customer_id.is_(None),
+            )
+        ).all()
+    }
+
+
+def prepaid_funding_opening_source_incomplete_account_ids(
+    db: Session,
+    account_ids: Iterable[object],
+    *,
+    currency: str | None = None,
+) -> set[UUID]:
+    """Return accounts lacking either reviewed or provably native source evidence.
+
+    This is intentionally narrower than the runtime quarantine resolver. A native
+    account created after the fixed legacy handoff has a mathematical zero history
+    component and canonical Sub-native facts, so the opening verifier can propose
+    its exact current target without consulting Splynx. Runtime money actions remain
+    blocked until the approved verifier result is captured as an immutable opening.
+    """
+
+    ids = {coerce_uuid(value) for value in account_ids}
+    if not ids:
+        return set()
+    cutover = authority_cutover_batch(db)
+    if cutover is None:
+        return set(ids)
+    required_ids = prepaid_funding_opening_required_account_ids(db, ids)
+    unit = _currency(currency or default_prepaid_funding_currency(db))
+    covered_ids = set(_active_baselines(db, required_ids, unit))
+    if db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None:
+        covered_ids.update(
+            coerce_uuid(value)
+            for value in db.scalars(
+                select(CustomerSubledgerOpeningPosition.account_id).where(
+                    CustomerSubledgerOpeningPosition.account_id.in_(required_ids),
+                    CustomerSubledgerOpeningPosition.currency == unit,
+                )
+            ).all()
+        )
+    covered_ids.update(_native_after_handoff_account_ids(db, required_ids))
+    return required_ids - covered_ids
+
+
+def preview_prepaid_opening_targets(
+    db: Session,
+    account_ids: Iterable[object],
+    *,
+    currency: str | None = None,
+) -> dict[UUID, PrepaidOpeningTarget]:
+    """Resolve typed targets for a fingerprinted opening-position preview.
+
+    Reviewed baselines/openings keep their normal runtime semantics. A missing
+    native-after-handoff account is resolved from mathematical zero plus canonical
+    native facts only for this review surface; it does not become runtime funding
+    authority until the approved opening is captured.
+    """
+
+    from app.services.customer_financial_ledger import (
+        native_customer_financial_balances_by_currency,
+    )
+
+    ids = {coerce_uuid(value) for value in account_ids}
+    if not ids:
+        return {}
+    unit = _currency(currency or default_prepaid_funding_currency(db))
+    accounts = {
+        account.id: account
+        for account in db.scalars(
+            select(Subscriber).where(Subscriber.id.in_(ids))
+        ).all()
+    }
+    unknown = sorted(ids - set(accounts), key=str)
+    if unknown:
+        raise PrepaidFundingBaselineMissingError(
+            "prepaid funding account not found: "
+            + ", ".join(str(value) for value in unknown)
+        )
+    baselines = _active_baselines(db, ids, unit)
+    subledger_authority_active = (
+        db.scalar(select(CustomerSubledgerAuthorityCutover.id).limit(1)) is not None
+    )
+    openings = (
+        {
+            row.account_id: row
+            for row in db.scalars(
+                select(CustomerSubledgerOpeningPosition).where(
+                    CustomerSubledgerOpeningPosition.account_id.in_(ids),
+                    CustomerSubledgerOpeningPosition.currency == unit,
+                )
+            ).all()
+        }
+        if subledger_authority_active
+        else {}
+    )
+    native_ids = _native_after_handoff_account_ids(
+        db,
+        ids - set(baselines) - set(openings),
+    )
+    unresolved = sorted(ids - set(baselines) - set(openings) - native_ids, key=str)
+    if unresolved:
+        raise PrepaidFundingBaselineMissingError(
+            "verified prepaid funding baseline missing for: "
+            + ", ".join(str(value) for value in unresolved)
+        )
+
+    targets: dict[UUID, PrepaidOpeningTarget] = {}
+    reviewed_ids = ids - native_ids
+    if reviewed_ids:
+        reviewed = verified_prepaid_funding_balances(
+            db,
+            reviewed_ids,
+            currency=unit,
+        )
+        for account_id in sorted(reviewed_ids, key=str):
+            opening = openings.get(account_id)
+            baseline = baselines.get(account_id)
+            if opening is not None:
+                source_at = _stored_utc(opening.occurred_at)
+                origin = PrepaidOpeningTargetOrigin.reviewed_subledger_opening
+            else:
+                if baseline is None:
+                    raise PrepaidFundingBaselineMissingError(
+                        f"verified prepaid funding baseline missing for: {account_id}"
+                    )
+                source_at = _stored_utc(baseline.position_at)
+                origin = PrepaidOpeningTargetOrigin.reviewed_reconstruction
+            targets[account_id] = PrepaidOpeningTarget(
+                account_id=account_id,
+                currency=unit,
+                amount=round_money(reviewed[account_id]),
+                origin=origin,
+                source_position_at=source_at,
+            )
+
+    if native_ids:
+        native = native_customer_financial_balances_by_currency(
+            db,
+            native_ids,
+            after=LEGACY_FINANCIAL_HANDOFF_AT,
+        )
+        for account_id in sorted(native_ids, key=str):
+            targets[account_id] = PrepaidOpeningTarget(
+                account_id=account_id,
+                currency=unit,
+                amount=round_money(
+                    native.get(account_id, {}).get(unit, Decimal("0.00"))
+                ),
+                origin=PrepaidOpeningTargetOrigin.native_after_handoff,
+                source_position_at=LEGACY_FINANCIAL_HANDOFF_AT,
+            )
+    return targets
 
 
 def prepaid_funding_opening_required_account_ids(

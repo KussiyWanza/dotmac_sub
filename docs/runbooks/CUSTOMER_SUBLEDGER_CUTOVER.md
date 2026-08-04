@@ -13,6 +13,11 @@ target, residual, posting, and approval.
   complete frozen Splynx transaction set. A complete empty set is zero.
 - A customer created natively after the fixed handoff has an explicit zero
   history component and is advanced only by canonical Sub-native facts.
+- A baseline-missing customer may use that native source only when the account
+  was created after `2026-06-18T00:00:00Z`, has no Splynx identity, and the
+  opening verifier fingerprints every canonical native fact. This exception
+  supplies source evidence for opening review; it does not authorize runtime
+  funding before immutable opening capture.
 - Missing cohort coverage, duplicate or mismatched identity, malformed rows,
   and an unreconciled transaction net abort the whole artifact. There is no
   per-account unknown, default-zero fallback, or partial-subset materialization.
@@ -50,8 +55,11 @@ return one signed target for every current prepaid funding candidate. Review:
   final position;
 - all native-after-handoff components and total targets are plausible.
 
-Any source-integrity error means stop and correct/rebuild the isolated source
-snapshot. Do not create a partial manifest or edit a generated balance.
+Any source-integrity error for a migrated account means stop and correct or
+rebuild the isolated source snapshot. Do not create a partial manifest or edit
+a generated balance. A customer proven native after the fixed handoff does not
+need a Splynx row or reconstruction manifest; its typed zero-history origin and
+native target enter the complete opening preview below.
 
 ## 2. Materialize the exact reviewed targets
 
@@ -80,6 +88,8 @@ revision, and reviewed cutoff. The durable result contract must prove:
 - every existing opening is fingerprinted unchanged;
 - each proposed residual equals verified target minus shadow position at the
   cutoff;
+- each native-after-handoff target records the fixed handoff, absent Splynx
+  identity, and exact canonical native position in its evidence fingerprint;
 - `postings_manufactured=false` and `authority_moved=false`.
 
 Review every non-zero residual and the aggregate positive/negative/zero totals.

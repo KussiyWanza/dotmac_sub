@@ -4,9 +4,9 @@ Production carries 84 conversations against CRM's ~37,539 and has never
 exercised operator workflows at scale, so this asserts the three things that
 have to hold before that changes:
 
-1. **RBAC** — every mutating route is gated on `support:ticket:update`, every
-   read on `support:ticket:read`, and the drawer's sensitive fields have their
-   own gates.
+1. **RBAC** — conversation mutations are gated on `support:ticket:update`,
+   sales-owned Lead intake mutations use `crm:lead:write`, reads use
+   `support:ticket:read`, and the drawer's sensitive fields have their own gates.
 2. **Attribution** — every operator mutation records *who* did it. There is no
    central audit trail for inbox commands (see the module note below), so the
    per-row actor columns are the whole story and must not regress.
@@ -94,6 +94,10 @@ def test_every_inbox_route_declares_a_permission():
 # Saving a personal view is a preference, not a conversation mutation, so it is
 # deliberately gated on :read. Anything else posting under :read is a mistake.
 READ_GATED_POSTS = {"/filters/save"}
+SALES_LEAD_GATED_POSTS = {
+    "/{conversation_id}/lead-intake/issue",
+    "/{conversation_id}/lead-intake/{invitation_id}/revoke",
+}
 
 
 def test_mutating_routes_require_update_and_reads_require_read():
@@ -103,6 +107,8 @@ def test_mutating_routes_require_update_and_reads_require_read():
             expected = "support:ticket:read"
         elif path in READ_GATED_POSTS:
             expected = "support:ticket:read"
+        elif path in SALES_LEAD_GATED_POSTS:
+            expected = "crm:lead:write"
         else:
             expected = "support:ticket:update"
         if permission != expected:
@@ -113,6 +119,13 @@ def test_mutating_routes_require_update_and_reads_require_read():
 def test_the_read_gated_post_allowlist_stays_small():
     """Each entry weakens the write gate, so it must be justified and few."""
     assert READ_GATED_POSTS == {"/filters/save"}
+
+
+def test_sales_owned_post_permissions_stay_explicit():
+    assert SALES_LEAD_GATED_POSTS == {
+        "/{conversation_id}/lead-intake/issue",
+        "/{conversation_id}/lead-intake/{invitation_id}/revoke",
+    }
 
 
 def test_the_drawer_keeps_its_own_gates_for_sensitive_fields():

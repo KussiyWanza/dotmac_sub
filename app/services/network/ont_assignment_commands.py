@@ -147,6 +147,23 @@ class OntAssignmentCommands:
             raise OntAssignmentCommandError(
                 "Active PON port not found", status_code=404
             )
+        # Identity before decision. A prefixed, malformed, or ambiguous PON row
+        # cannot be stated structurally, so an assignment recorded against it
+        # points at something nobody can name -- and the reference outlives the
+        # row. Refused here, under the same lock as the rest of the target
+        # load, so the check cannot race a concurrent rename.
+        from app.services.network.pon_port_identity import (
+            PonPortIdentityError,
+            assert_assignable,
+        )
+
+        try:
+            assert_assignable(db, pon)
+        except PonPortIdentityError as exc:
+            raise OntAssignmentCommandError(
+                f"{exc} Repair it through network.pon_port_identity first.",
+                status_code=409,
+            ) from exc
         olt = db.scalar(
             select(OLTDevice).where(OLTDevice.id == pon.olt_id).with_for_update()
         )

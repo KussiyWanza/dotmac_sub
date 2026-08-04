@@ -1153,6 +1153,13 @@ def build_beat_schedule() -> dict:
         )
         _sync_scheduled_task(
             session,
+            name="team_inbox_ai_intake_recovery",
+            task_name="app.tasks.team_inbox.recover_stale_ai_intake",
+            enabled=True,
+            interval_seconds=60,
+        )
+        _sync_scheduled_task(
+            session,
             name="team_inbox_failed_outbound_retry",
             task_name="app.tasks.team_inbox.retry_failed_outbound_messages",
             enabled=True,

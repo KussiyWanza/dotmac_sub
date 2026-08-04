@@ -34,6 +34,7 @@ class CommunicationClass(enum.StrEnum):
 
 class CommunicationAttachmentKind(enum.StrEnum):
     invoice_pdf = "invoice_pdf"
+    quote_pdf = "quote_pdf"
 
 
 @dataclass(frozen=True)
