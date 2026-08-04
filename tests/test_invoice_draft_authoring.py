@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -8,16 +9,30 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from app.models.billing import Invoice, InvoiceLine, InvoiceStatus, TaxRate
+from app.models.billing import (
+    Invoice,
+    InvoiceLine,
+    InvoiceStatus,
+    PaymentAllocation,
+    TaxRate,
+)
+from app.models.catalog import BillingMode
 from app.models.event_store import EventStore
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate
 from app.services import billing as billing_service
 from app.services import customer_tax_policies, invoice_draft_authoring
+from app.services.account_credit_deposits import (
+    SETTLEMENT_SCOPE,
+    AccountCreditDeposits,
+    AccountCreditDepositSettlementSource,
+    SettleAccountCreditDepositCommand,
+)
 from app.services.billing.account_credit import eligible_invoices
 from app.services.db_session_adapter import db_session_adapter
 from app.services.events.handlers.notification import NotificationHandler
 from app.services.events.types import Event, EventType
 from app.services.owner_commands import CommandContext
+from app.services.topup_intents import TopupIntentChannel
 
 
 def _line(
@@ -102,6 +117,91 @@ def test_create_draft_commits_complete_aggregate_and_replays(
             context=_context("invoice-draft-create-replay"),
         )
     assert mismatched_replay.value.code.endswith(".idempotency_conflict")
+
+
+def test_proforma_conversion_retry_preserves_credit_derived_paid_status(
+    db_session,
+    subscriber,
+) -> None:
+    subscriber.billing_mode = BillingMode.postpaid
+    proforma_command = replace(
+        _create_command(subscriber),
+        invoice_number="PF-RETRY-PAID",
+        memo="[PROFORMA] Retry regression",
+        is_proforma=True,
+    )
+    db_session.commit()
+    intent, _preview, _replayed = AccountCreditDeposits.stage_intent(
+        db_session,
+        account_id=subscriber.id,
+        amount="100.00",
+        currency="NGN",
+        minimum="10.00",
+        maximum="500000.00",
+        reference="proforma-retry-credit",
+        provider_type="paystack",
+        provider_id=None,
+        expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        idempotency_key="proforma-retry-credit-intent",
+        channel=TopupIntentChannel.customer_selfcare,
+        created_by="pytest",
+    )
+    intent_id = intent.id
+    db_session.commit()
+    AccountCreditDeposits.settle_verified(
+        db_session,
+        SettleAccountCreditDepositCommand(
+            intent_id=intent_id,
+            provider_type="paystack",
+            external_transaction_id="proforma-retry-payment",
+            amount=Decimal("100.00"),
+            currency="NGN",
+            provider_intent_id=intent_id,
+            source=AccountCreditDepositSettlementSource.customer_gateway_verify,
+        ),
+        context=CommandContext.system(
+            actor="finance-test",
+            scope=SETTLEMENT_SCOPE,
+            reason="Create exact credit for conversion retry regression",
+        ),
+    )
+    created = invoice_draft_authoring.create_invoice_draft(
+        db_session,
+        proforma_command,
+        context=_context("proforma-retry-create"),
+    )
+    conversion_context = CommandContext.system(
+        actor="finance-test",
+        scope="invoice_proforma:convert",
+        reason="Convert proforma exactly once",
+        idempotency_key="proforma-conversion-retry-paid",
+    )
+
+    converted = invoice_draft_authoring.convert_proforma_invoice(
+        db_session,
+        invoice_draft_authoring.ConvertProformaInvoiceCommand(
+            invoice_id=created.invoice_id,
+        ),
+        context=conversion_context,
+    )
+    replayed = invoice_draft_authoring.convert_proforma_invoice(
+        db_session,
+        invoice_draft_authoring.ConvertProformaInvoiceCommand(
+            invoice_id=created.invoice_id,
+        ),
+        context=conversion_context,
+    )
+
+    allocations = db_session.scalars(
+        select(PaymentAllocation)
+        .where(PaymentAllocation.invoice_id == created.invoice_id)
+        .where(PaymentAllocation.is_active.is_(True))
+    ).all()
+    assert converted.status is InvoiceStatus.paid
+    assert converted.balance_due == Decimal("0.00")
+    assert replayed.status is InvoiceStatus.paid
+    assert replayed.replayed is True
+    assert len(allocations) == 1
 
 
 def test_create_draft_omits_vat_for_exempt_customer(

@@ -85,7 +85,7 @@
                 </form>
                 {% endif %}
                 {% if is_proforma %}
-                <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/convert-proforma">
+                <form method="post" action="/admin/billing/invoices/{{ invoice.id }}/convert-proforma" onsubmit="this.querySelector('button[type=submit]').disabled = true;">
                     {% include "components/forms/csrf_input.html" %}
                     <button type="submit"
                             class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700">

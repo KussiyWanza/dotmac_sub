@@ -124,6 +124,17 @@ class InvoiceLifecycleTransitionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ProformaConversionInput:
+    """Locked documentary values for one proforma-to-invoice transition."""
+
+    invoice_id: UUID
+    invoice_number: str | None
+    memo: str | None
+    issued_at: datetime
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class DraftInvoiceLineReplacement:
     """One line in a complete admin-draft replacement request."""
 
@@ -1552,6 +1563,62 @@ class Invoices(ListResponseMixin):
             invoice=invoice,
             changed=True,
             event_emitted=announce,
+        )
+
+    @staticmethod
+    def convert_proforma_for_owner(
+        db: Session,
+        conversion: ProformaConversionInput,
+    ) -> InvoiceLifecycleTransitionResult:
+        """Convert one locked proforma inside its coordinator transaction."""
+
+        invoice = lock_for_update(db, Invoice, conversion.invoice_id)
+        if invoice is None or not invoice.is_active:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_not_found",
+                message="Proforma invoice was not found.",
+                details={"invoice_id": str(conversion.invoice_id)},
+            )
+        if invoice.status != InvoiceStatus.draft:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_not_draft",
+                message="Only a draft proforma can be converted.",
+                details={
+                    "invoice_id": str(invoice.id),
+                    "status": invoice.status.value,
+                },
+            )
+
+        invoice.invoice_number = conversion.invoice_number
+        invoice.memo = conversion.memo
+        invoice.is_proforma = False
+        invoice.status = InvoiceStatus.issued
+        invoice.issued_at = conversion.issued_at
+        emit_event(
+            db,
+            EventType.invoice_sent,
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": invoice.invoice_number,
+                "amount": str(invoice.total),
+                "total": str(invoice.total),
+                "due_date": invoice.due_at.date().isoformat()
+                if invoice.due_at
+                else None,
+                "currency": invoice.currency,
+                "from_status": InvoiceStatus.draft.value,
+                "to_status": InvoiceStatus.issued.value,
+                "reason": conversion.reason,
+            },
+            account_id=invoice.account_id,
+            invoice_id=invoice.id,
+        )
+        _apply_available_account_credit(db, invoice)
+        db.flush()
+        return InvoiceLifecycleTransitionResult(
+            invoice=invoice,
+            changed=True,
+            event_emitted=True,
         )
 
     @staticmethod

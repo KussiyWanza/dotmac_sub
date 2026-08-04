@@ -6985,8 +6985,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="financial.invoice_draft_authoring",
                 module="app.services.invoice_draft_authoring",
-                owns=("administrative invoice draft authoring coordination",),
+                owns=(
+                    "administrative invoice draft authoring coordination",
+                    "administrative proforma conversion coordination",
+                ),
                 depends_on=(
+                    "control.settings_spec",
                     "customer.accounts",
                     "financial.invoices",
                     "financial.tax_configuration",
@@ -6997,8 +7001,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "complete draft invoice aggregate. It admits a typed header and "
                     "line set, locks the account before the invoice, and commits the "
                     "document, totals, audit, idempotency evidence, and outbox event "
-                    "once. Issue, void, write-off, settlement, and repair remain with "
-                    "their named financial owners."
+                    "once. It also owns locked, idempotent administrative proforma "
+                    "conversion and derives the final status only after canonical "
+                    "account credit is applied. Void, write-off, settlement, and "
+                    "repair remain with their named financial owners."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -7012,6 +7018,16 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "canonical invoice tax rates",
                             ),
                         ),
+                        ConcernContract(
+                            name="administrative proforma conversion coordination",
+                            role=OwnerRole.APPLICATION_COORDINATOR,
+                            input_names=(
+                                "authenticated administrative proforma conversion command",
+                                "canonical customer account",
+                                "canonical invoice draft aggregate",
+                                "canonical invoice numbering policy",
+                            ),
+                        ),
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
@@ -7021,6 +7037,17 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             source=(
                                 "typed header, complete line set, actor, scope, "
                                 "reason, correlation, and idempotency context"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name=(
+                                "authenticated administrative proforma conversion command"
+                            ),
+                            owner="financial.invoice_draft_authoring",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "typed invoice identity plus actor, scope, reason, "
+                                "correlation, and idempotency context"
                             ),
                         ),
                         AuthorityInput(
@@ -7044,25 +7071,34 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source="referenced TaxRate rows",
                         ),
+                        AuthorityInput(
+                            name="canonical invoice numbering policy",
+                            owner="control.settings_spec",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source="billing invoice number settings and sequence",
+                        ),
                     ),
                     transaction=TransactionContract(
                         mode=TransactionMode.COORDINATOR_MANAGED,
                         boundary=(
-                            "Create or update enters execute_owner_command once on a "
-                            "transaction-free session; header, active lines, totals, "
-                            "idempotency reservation, audit, and outbox event commit or "
-                            "roll back together."
+                            "Create, update, or convert enters execute_owner_command "
+                            "once on a transaction-free session; header, active lines, "
+                            "totals or credit allocation, idempotency reservation, "
+                            "audit, and outbox event commit or roll back together."
                         ),
                         locking=(
                             "The customer account is locked first, followed by the "
                             "invoice and its active lines. New drafts reserve the "
-                            "account-scoped idempotency result in the same transaction."
+                            "account-scoped idempotency result in the same transaction. "
+                            "Conversion uses the same account-then-invoice order before "
+                            "deriving its final status from current allocation evidence."
                         ),
                         idempotency=(
                             "Create hashes the caller key and replays the same invoice "
                             "identifier. Update replaces the complete desired draft "
                             "state under locks, so an identical retry converges without "
-                            "duplicating lines."
+                            "duplicating lines. Conversion durably binds its deterministic "
+                            "key to one invoice and replays without another transition."
                         ),
                         retries=(
                             "Adapters retry only the whole command after rollback. "
@@ -7083,6 +7119,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "financial.invoice_draft_authoring.invoice_not_found",
                             "financial.invoice_draft_authoring.account_mismatch",
                             "financial.invoice_draft_authoring.invoice_not_editable",
+                            "financial.invoice_draft_authoring.invoice_not_proforma",
+                            "financial.invoice_draft_authoring.conversion_rejected",
                             "financial.invoice_draft_authoring.currency_mismatch",
                             "financial.invoice_draft_authoring.invalid_command_context",
                             "financial.invoice_draft_authoring.command_contract_violation",
@@ -7096,11 +7134,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "missing account, tax rate, or line evidence",
                             "empty draft or duplicate invoice number",
                             "non-draft, cross-account, or changed-currency update",
+                            "non-proforma or concurrently changed conversion target",
                             "active caller transaction or manifest mismatch",
                         ),
                     ),
                     events=EventContract(
-                        event_types=("invoice_created",),
+                        event_types=("invoice_created", "invoice_sent"),
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
@@ -7108,30 +7147,34 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "amount, due-date, currency, and proforma evidence."
                         ),
                         replay=(
-                            "Draft-created events rebuild projections and audit views; "
-                            "notification policy suppresses customer delivery until "
-                            "explicit issue or send."
+                            "Draft-created and conversion events rebuild projections "
+                            "and audit views; notification policy suppresses customer "
+                            "delivery until explicit issue or send."
                         ),
                     ),
                     migration=MigrationContract(
                         state=AuthorityMigrationState.COMPLETE,
                         old_owner=(
                             "administrative web form header commit followed by "
-                            "independent invoice-line commits"
+                            "independent invoice-line commits, plus unlocked web "
+                            "proforma conversion from a stale invoice snapshot"
                         ),
                         new_owner="financial.invoice_draft_authoring",
                         verification=(
-                            "Atomic rollback, create replay, draft-only update, "
-                            "proforma, event payload, adapter, manifest, and "
-                            "architecture tests."
+                            "Atomic rollback, create and conversion replay, concurrent "
+                            "payment/conversion status preservation, draft-only update, "
+                            "proforma, event payload, adapter, manifest, and architecture "
+                            "tests."
                         ),
                         cutover_gate=(
-                            "Administrative create and edit adapters invoke only the "
-                            "typed owner command on a transaction-free session."
+                            "Administrative create, edit, and proforma conversion "
+                            "adapters invoke only the typed owner command on a "
+                            "transaction-free session."
                         ),
                         fallback_retirement=(
                             "The web adapter no longer commits invoice headers or "
-                            "iterates independent line create/update/delete writers."
+                            "iterates independent line create/update/delete writers, "
+                            "and no longer converts from an unlocked stale snapshot."
                         ),
                     ),
                     steward="finance operations",
@@ -7142,6 +7185,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_invoice_draft_authoring.py",
                         "tests/test_web_billing_invoice_forms.py",
+                        "tests/integration/test_proforma_conversion_concurrency.py",
                         "tests/architecture/test_invoice_draft_authoring_ownership.py",
                     ),
                 ),

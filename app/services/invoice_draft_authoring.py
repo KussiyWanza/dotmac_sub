@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -18,10 +18,12 @@ from app.models.billing import (
     TaxApplication,
     TaxRate,
 )
+from app.models.domain_settings import SettingDomain
 from app.models.idempotency import IdempotencyKey
 from app.models.subscriber import Subscriber
 from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate, InvoiceUpdate
+from app.services import numbering
 from app.services.audit import AuditEvents
 from app.services.billing._common import (
     _validate_invoice_line_amount,
@@ -31,7 +33,9 @@ from app.services.billing.invoices import (
     DraftInvoiceLineReplacement,
     DraftInvoiceParticipantError,
     InvoiceLines,
+    InvoiceOwnerError,
     Invoices,
+    ProformaConversionInput,
 )
 from app.services.common import round_money
 from app.services.customer_tax_policies import get_customer_vat_exemption_policy
@@ -47,7 +51,11 @@ from app.services.owner_commands import (
 
 OWNER = "financial.invoice_draft_authoring"
 CONCERN = "administrative invoice draft authoring coordination"
+CONVERSION_CONCERN = "administrative proforma conversion coordination"
 _CREATE_SCOPE = "invoice-draft-authoring:create"
+_CONVERT_SCOPE = "invoice-proforma-conversion"
+PROFORMA_TAG = "[PROFORMA]"
+PROFORMA_PREFIX = "PF-"
 
 _CREATE_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
@@ -58,6 +66,11 @@ _UPDATE_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern=CONCERN,
     name="update_invoice_draft",
+)
+_CONVERT_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern=CONVERSION_CONCERN,
+    name="convert_proforma_invoice",
 )
 
 
@@ -70,6 +83,44 @@ def _error(suffix: str, message: str, **details: object) -> InvoiceDraftAuthorin
         code=f"{OWNER}.{suffix}",
         message=message,
         details=details,
+    )
+
+
+def apply_proforma_form_values(
+    *,
+    invoice_number: str | None,
+    memo: str | None,
+    proforma_invoice: bool,
+) -> tuple[str | None, str | None]:
+    """Normalize the documentary marker for draft authoring and conversion."""
+
+    clean_number = (invoice_number or "").strip() or None
+    clean_memo = (memo or "").strip() or None
+    if proforma_invoice:
+        if clean_number and not clean_number.upper().startswith(PROFORMA_PREFIX):
+            clean_number = f"{PROFORMA_PREFIX}{clean_number}"
+        if clean_memo:
+            if PROFORMA_TAG not in clean_memo:
+                clean_memo = f"{PROFORMA_TAG} {clean_memo}".strip()
+        else:
+            clean_memo = PROFORMA_TAG
+        return clean_number, clean_memo
+    if clean_number and clean_number.upper().startswith(PROFORMA_PREFIX):
+        clean_number = clean_number[len(PROFORMA_PREFIX) :].strip() or None
+    if clean_memo and PROFORMA_TAG in clean_memo:
+        clean_memo = clean_memo.replace(PROFORMA_TAG, "").strip() or None
+    return clean_number, clean_memo
+
+
+def _is_active_proforma(invoice: Invoice) -> bool:
+    """Recognize the canonical flag and supported historical documentary markers."""
+
+    number = (invoice.invoice_number or "").strip().upper()
+    memo = invoice.memo or ""
+    return bool(
+        invoice.is_proforma
+        or number.startswith(PROFORMA_PREFIX)
+        or PROFORMA_TAG in memo
     )
 
 
@@ -111,6 +162,13 @@ class UpdateInvoiceDraftCommand:
     memo: str | None
     is_proforma: bool
     lines: tuple[DraftLineCommand, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConvertProformaInvoiceCommand:
+    """Convert one exact proforma identity using owner-derived current state."""
+
+    invoice_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +224,16 @@ def _create_fingerprint(command: CreateInvoiceDraftCommand) -> str:
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _conversion_fingerprint(command: ConvertProformaInvoiceCommand) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"invoice_id": str(command.invoice_id)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
 
 
@@ -527,3 +595,141 @@ def _update_invoice_draft(
     )
     db.flush()
     return _result(invoice)
+
+
+def convert_proforma_invoice(
+    db: Session,
+    command: ConvertProformaInvoiceCommand,
+    *,
+    context: CommandContext,
+) -> InvoiceDraftResult:
+    """Convert one proforma under locks and replay retries from durable evidence."""
+
+    return execute_owner_command(
+        db,
+        definition=_CONVERT_COMMAND,
+        context=context,
+        operation=lambda: _convert_proforma_invoice(
+            db,
+            command=command,
+            context=context,
+        ),
+    )
+
+
+def _convert_proforma_invoice(
+    db: Session,
+    *,
+    command: ConvertProformaInvoiceCommand,
+    context: CommandContext,
+) -> InvoiceDraftResult:
+    account_id = db.scalar(
+        select(Invoice.account_id).where(Invoice.id == command.invoice_id)
+    )
+    if account_id is None:
+        raise _error(
+            "invoice_not_found",
+            "Proforma invoice was not found.",
+            invoice_id=str(command.invoice_id),
+        )
+    _validate_account(db, account_id)
+    invoice = lock_for_update(db, Invoice, command.invoice_id)
+    if invoice is None or not invoice.is_active:
+        raise _error(
+            "invoice_not_found",
+            "Proforma invoice was not found.",
+            invoice_id=str(command.invoice_id),
+        )
+
+    key = _normalized_key(context)
+    fingerprint = _conversion_fingerprint(command)
+    replay = db.scalar(
+        select(IdempotencyKey)
+        .where(IdempotencyKey.scope == _CONVERT_SCOPE)
+        .where(IdempotencyKey.key == key)
+        .with_for_update()
+    )
+    if replay is not None:
+        expected_ref = f"{invoice.id}|{fingerprint}"
+        if replay.account_id != account_id or replay.ref_id != expected_ref:
+            raise _error(
+                "idempotency_conflict",
+                "Proforma conversion key was used for a different invoice.",
+            )
+        return _result(invoice, replayed=True)
+    if not _is_active_proforma(invoice):
+        raise _error(
+            "invoice_not_proforma",
+            "Invoice is not an active proforma.",
+            invoice_id=str(invoice.id),
+        )
+    if invoice.status != InvoiceStatus.draft:
+        raise _error(
+            "invoice_not_editable",
+            "Only a draft proforma can be converted.",
+            invoice_id=str(invoice.id),
+            status=invoice.status.value,
+        )
+
+    invoice_number = (invoice.invoice_number or "").strip() or None
+    if invoice_number and invoice_number.upper().startswith(PROFORMA_PREFIX):
+        invoice_number = numbering.generate_required_number(
+            db,
+            SettingDomain.billing,
+            "invoice_number",
+            "invoice_number_prefix",
+            "invoice_number_padding",
+            "invoice_number_start",
+        )
+    _, cleaned_memo = apply_proforma_form_values(
+        invoice_number=invoice_number,
+        memo=invoice.memo,
+        proforma_invoice=False,
+    )
+    reservation = IdempotencyKey(
+        scope=_CONVERT_SCOPE,
+        key=key,
+        account_id=account_id,
+    )
+    db.add(reservation)
+    db.flush()
+    try:
+        transition = Invoices.convert_proforma_for_owner(
+            db,
+            ProformaConversionInput(
+                invoice_id=invoice.id,
+                invoice_number=invoice_number,
+                memo=cleaned_memo,
+                issued_at=datetime.now(UTC),
+                reason=context.reason,
+            ),
+        )
+    except InvoiceOwnerError as exc:
+        raise _error(
+            "conversion_rejected",
+            exc.message,
+            invoice_id=str(invoice.id),
+            owner_code=exc.code,
+        ) from exc
+    converted = transition.invoice
+    reservation.ref_id = f"{converted.id}|{fingerprint}"
+    AuditEvents.stage(
+        db,
+        AuditEventCreate(
+            actor_id=context.actor,
+            action="convert_proforma_invoice",
+            entity_type="invoice",
+            entity_id=str(converted.id),
+            request_id=str(context.correlation_id),
+            metadata_={
+                "account_id": str(converted.account_id),
+                "invoice_number": converted.invoice_number,
+                "status": converted.status.value,
+                "command_id": str(context.command_id),
+                "reason": context.reason,
+                "financial_effect": "existing_account_credit_applied_by_owner",
+            },
+        ),
+    )
+    db.flush()
+    return _result(converted)
