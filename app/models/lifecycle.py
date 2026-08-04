@@ -43,6 +43,14 @@ class SubscriptionLifecycleEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSON)
     actor: Mapped[str | None] = mapped_column(String(120))
+    # What this row can be trusted for. Rows written before migration 468 were
+    # mutable for their whole life, so they are graded
+    # ``unsupported_pre_cutover`` and a contractual score resting on them is
+    # reported incomplete rather than silently computed. A database trigger
+    # rejects UPDATE and DELETE from 468 onward; this table is append-only.
+    evidence_grade: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="transition_evidence"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

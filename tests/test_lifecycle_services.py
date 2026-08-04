@@ -3,7 +3,6 @@
 from app.models.lifecycle import LifecycleEventType
 from app.schemas.lifecycle import (
     SubscriptionLifecycleEventCreate,
-    SubscriptionLifecycleEventUpdate,
 )
 from app.services import lifecycle as lifecycle_service
 
@@ -83,29 +82,19 @@ def test_list_lifecycle_events_by_type(db_session, subscription):
     assert all(e.event_type == LifecycleEventType.activate for e in activate_events)
 
 
-def test_update_lifecycle_event(db_session, subscription):
-    """Test updating a lifecycle event."""
-    event = lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.activate,
-            notes="Initial note",
-        ),
-    )
+def test_lifecycle_events_expose_no_mutation_api():
+    """Transitions are contractual evidence for SLA eligibility, so the
+    service must not offer a way to edit or remove them. Corrections are new
+    transitions; migration 468 enforces the same rule in the database, where
+    it cannot be re-added by a later refactor."""
 
-    updated = lifecycle_service.subscription_lifecycle_events.update(
-        db_session,
-        str(event.id),
-        SubscriptionLifecycleEventUpdate(notes="Updated note"),
-    )
-    assert updated.notes == "Updated note"
+    events = lifecycle_service.subscription_lifecycle_events
+    assert not hasattr(events, "update")
+    assert not hasattr(events, "delete")
 
 
-def test_delete_lifecycle_event(db_session, subscription):
-    """Test deleting a lifecycle event."""
-    import pytest
-    from fastapi import HTTPException
+def test_new_transitions_are_graded_as_evidence(db_session, subscription):
+    """Rows written after the cutover can be trusted; the grade says so."""
 
     event = lifecycle_service.subscription_lifecycle_events.create(
         db_session,
@@ -114,14 +103,8 @@ def test_delete_lifecycle_event(db_session, subscription):
             event_type=LifecycleEventType.activate,
         ),
     )
-    event_id = event.id
 
-    lifecycle_service.subscription_lifecycle_events.delete(db_session, str(event_id))
-
-    # Verify event is deleted
-    with pytest.raises(HTTPException) as exc_info:
-        lifecycle_service.subscription_lifecycle_events.get(db_session, str(event_id))
-    assert exc_info.value.status_code == 404
+    assert event.evidence_grade == "transition_evidence"
 
 
 def test_get_lifecycle_event(db_session, subscription):

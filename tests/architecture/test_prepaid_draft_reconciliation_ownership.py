@@ -40,6 +40,13 @@ def test_prepaid_draft_reconciliation_has_one_contracted_owner():
     )
     assert adoption.role is OwnerRole.RECONCILER
     assert adoption.canonical_writer == service.name
+    paid_repair = next(
+        item
+        for item in service.contract.concerns
+        if item.name == "historical paid prepaid invoice identity and coverage repair"
+    )
+    assert paid_repair.role is OwnerRole.RECONCILER
+    assert paid_repair.canonical_writer == service.name
 
 
 def test_funding_change_checks_draft_before_invoice_less_renewal():
@@ -65,6 +72,8 @@ def test_reconciler_has_no_rounding_tolerance_or_raw_money_writes():
     assert "result.invoice_remaining" in source
     assert "Invoices.void_pristine_draft_for_owner(" in source
     assert "Invoices.adopt_prepaid_proforma_document_for_owner(" in source
+    assert "Invoices.repair_paid_prepaid_document_for_owner(" in source
+    assert "confirm_financial_access_restoration_for_owner(" in source
     assert "invoice.is_proforma = False" not in source
     assert "line.subscription_id =" not in source
 
@@ -111,8 +120,11 @@ def test_reconciliation_cli_is_dry_run_first():
     assert "read_session()" in source
     assert 'parser.add_argument("--adopt-proforma", action="store_true")' in source
     assert 'parser.add_argument("--subscription-id", type=_uuid)' in source
+    assert 'parser.add_argument("--repair-paid-invoice", action="store_true")' in source
     assert "preview_funded_prepaid_proforma_adoption(" in source
     assert "adopt_funded_prepaid_proforma(" in source
+    assert "preview_historical_paid_prepaid_invoice_repair(" in source
+    assert "repair_historical_paid_prepaid_invoice(" in source
 
 
 def test_admin_invoice_adapter_calls_only_the_authoritative_reconciler():

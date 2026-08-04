@@ -391,6 +391,7 @@
         {{ error }}
     </div>
     {% endif %}
+    {% include "admin/catalog/_ipv4_projection_reconciliation.html" %}
     {% if correction_action_forms and can_correct_subscription %}
     <section id="subscription-correction" class="space-y-4" aria-labelledby="subscription-correction-title">
         <div>

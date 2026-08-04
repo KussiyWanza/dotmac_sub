@@ -17,14 +17,18 @@ from app.services.db_session_adapter import db_session_adapter
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_draft_reconciliation import (
     AdoptFundedPrepaidProformaCommand,
+    PaidPrepaidInvoiceRepairQuery,
     PrepaidDraftReconciliationPreview,
     PrepaidProformaAdoptionQuery,
     ReconcilePrepaidDraftCommand,
+    RepairHistoricalPaidPrepaidInvoiceCommand,
     adopt_funded_prepaid_proforma,
     preview_funded_prepaid_proforma_adoption,
+    preview_historical_paid_prepaid_invoice_repair,
     preview_prepaid_draft_cohort,
     preview_prepaid_draft_reconciliation,
     reconcile_prepaid_draft_invoice,
+    repair_historical_paid_prepaid_invoice,
 )
 
 
@@ -113,6 +117,41 @@ def _proforma_adoption_preview_payload(preview) -> dict[str, object]:
     }
 
 
+def _paid_invoice_repair_preview_payload(preview) -> dict[str, object]:
+    return {
+        "invoice_id": str(preview.invoice_id),
+        "account_id": str(preview.account_id),
+        "invoice_number": preview.invoice_number,
+        "subscription_id": str(preview.subscription_id),
+        "line_id": str(preview.line_id) if preview.line_id else None,
+        "allocation_id": str(preview.allocation_id) if preview.allocation_id else None,
+        "settlement_id": str(preview.settlement_id) if preview.settlement_id else None,
+        "payment_id": str(preview.payment_id) if preview.payment_id else None,
+        "settlement_effective_at": (
+            preview.settlement_effective_at.isoformat()
+            if preview.settlement_effective_at
+            else None
+        ),
+        "billing_period_start": (
+            preview.billing_period_start.isoformat()
+            if preview.billing_period_start
+            else None
+        ),
+        "billing_period_end": (
+            preview.billing_period_end.isoformat()
+            if preview.billing_period_end
+            else None
+        ),
+        "disposition": preview.disposition.value,
+        "currency": preview.currency,
+        "invoice_total": str(preview.invoice_total),
+        "allocated_amount": str(preview.allocated_amount),
+        "actionable": preview.actionable,
+        "reason": preview.reason,
+        "fingerprint": preview.fingerprint,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--invoice-id", type=_uuid)
@@ -120,6 +159,7 @@ def main() -> int:
     parser.add_argument("--account-id", type=_uuid)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--adopt-proforma", action="store_true")
+    parser.add_argument("--repair-paid-invoice", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--fingerprint")
     parser.add_argument("--effective-at", type=_timestamp)
@@ -127,6 +167,11 @@ def main() -> int:
     parser.add_argument("--actor")
     parser.add_argument("--reason")
     args = parser.parse_args()
+
+    if args.adopt_proforma and args.repair_paid_invoice:
+        parser.error(
+            "--adopt-proforma and --repair-paid-invoice are mutually exclusive"
+        )
 
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
@@ -138,7 +183,7 @@ def main() -> int:
             ("--actor", args.actor),
             ("--reason", args.reason),
         ]
-        if args.adopt_proforma:
+        if args.adopt_proforma or args.repair_paid_invoice:
             required.append(("--subscription-id", args.subscription_id))
         else:
             required.append(("--effective-at", args.effective_at))
@@ -158,6 +203,16 @@ def main() -> int:
                 adoption = adopt_funded_prepaid_proforma(
                     db,
                     AdoptFundedPrepaidProformaCommand(
+                        context=context,
+                        invoice_id=args.invoice_id,
+                        subscription_id=args.subscription_id,
+                        preview_fingerprint=args.fingerprint,
+                    ),
+                )
+            elif args.repair_paid_invoice:
+                repair = repair_historical_paid_prepaid_invoice(
+                    db,
+                    RepairHistoricalPaidPrepaidInvoiceCommand(
                         context=context,
                         invoice_id=args.invoice_id,
                         subscription_id=args.subscription_id,
@@ -198,6 +253,29 @@ def main() -> int:
                 )
             )
             return 0
+        if args.repair_paid_invoice:
+            print(
+                json.dumps(
+                    {
+                        "invoice_id": str(repair.invoice_id),
+                        "subscription_id": str(repair.subscription_id),
+                        "line_id": str(repair.line_id),
+                        "allocation_id": str(repair.allocation_id),
+                        "settlement_id": str(repair.settlement_id),
+                        "payment_id": str(repair.payment_id),
+                        "entitlement_id": str(repair.entitlement_id),
+                        "access_consequence_id": str(repair.access_consequence_id),
+                        "billing_period_start": repair.billing_period_start.isoformat(),
+                        "billing_period_end": repair.billing_period_end.isoformat(),
+                        "subscriptions_restored": repair.subscriptions_restored,
+                        "preview_fingerprint": repair.preview_fingerprint,
+                        "replayed": repair.replayed,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         print(
             json.dumps(
                 {
@@ -224,16 +302,22 @@ def main() -> int:
         )
         return 0
 
-    if args.adopt_proforma and (
+    if (args.adopt_proforma or args.repair_paid_invoice) and (
         args.invoice_id is None or args.subscription_id is None
     ):
         parser.error(
-            "--adopt-proforma preview requires --invoice-id and --subscription-id"
+            "document repair preview requires --invoice-id and --subscription-id"
         )
-    if args.subscription_id is not None and not args.adopt_proforma:
-        parser.error("--subscription-id requires --adopt-proforma")
-    if args.adopt_proforma and (args.account_id is not None or args.limit is not None):
-        parser.error("--account-id and --limit cannot be used with --adopt-proforma")
+    if args.subscription_id is not None and not (
+        args.adopt_proforma or args.repair_paid_invoice
+    ):
+        parser.error(
+            "--subscription-id requires --adopt-proforma or --repair-paid-invoice"
+        )
+    if (args.adopt_proforma or args.repair_paid_invoice) and (
+        args.account_id is not None or args.limit is not None
+    ):
+        parser.error("--account-id and --limit cannot be used with document repair")
 
     previews: tuple[PrepaidDraftReconciliationPreview, ...]
     with db_session_adapter.read_session() as db:
@@ -249,6 +333,19 @@ def main() -> int:
                 "dry_run": True,
                 "operation": "adopt_funded_prepaid_proforma",
                 "item": _proforma_adoption_preview_payload(adoption_preview),
+            }
+        elif args.repair_paid_invoice:
+            repair_preview = preview_historical_paid_prepaid_invoice_repair(
+                db,
+                PaidPrepaidInvoiceRepairQuery(
+                    invoice_id=args.invoice_id,
+                    subscription_id=args.subscription_id,
+                ),
+            )
+            payload = {
+                "dry_run": True,
+                "operation": "repair_historical_paid_prepaid_invoice",
+                "item": _paid_invoice_repair_preview_payload(repair_preview),
             }
         elif args.invoice_id is not None:
             previews = (preview_prepaid_draft_reconciliation(db, args.invoice_id),)
