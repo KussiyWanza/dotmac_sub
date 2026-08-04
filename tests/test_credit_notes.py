@@ -27,6 +27,7 @@ from app.schemas.billing import (
     CreditNoteLineCreate,
     CreditNoteVoidRequest,
     InvoiceCreate,
+    LedgerEntryCreate,
     TaxRateCreate,
 )
 from app.services import billing as billing_service
@@ -596,6 +597,43 @@ def test_funded_application_consumes_operational_credit_once(
     ) == funding_before - Decimal("30.00")
 
 
+def test_funded_application_uses_exact_note_funding_when_legacy_pool_is_negative(
+    db_session, subscriber_account
+):
+    billing_service.ledger_entries.create(
+        db_session,
+        LedgerEntryCreate(
+            account_id=subscriber_account.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.other,
+            amount=Decimal("250.00"),
+            currency="USD",
+            memo="Legacy account-credit drift evidence",
+        ),
+    )
+    credit_note, invoice = _issued_credit_note_and_invoice(
+        db_session, subscriber_account.id, amount=Decimal("100.00")
+    )
+    assert get_account_credit_balance(
+        db_session, str(subscriber_account.id), currency="USD"
+    ) < Decimal("0.00")
+
+    result = billing_service.credit_notes.apply_with_evidence(
+        db_session,
+        str(credit_note.id),
+        _confirmed_apply_request(
+            db_session,
+            credit_note,
+            invoice,
+            amount=Decimal("100.00"),
+        ),
+    )
+
+    assert result.application.amount == Decimal("100.00")
+    assert result.consumption_ledger_entry is not None
+    assert invoice.balance_due == Decimal("0.00")
+
+
 def test_void_requires_confirmation_and_posts_exact_reversal(
     db_session, subscriber_account
 ):
@@ -627,6 +665,41 @@ def test_void_requires_confirmation_and_posts_exact_reversal(
     assert calculate_customer_balance(
         db_session, subscriber_account.id, currency="USD"
     ) == customer_before - Decimal("40.00")
+
+
+def test_void_uses_exact_note_funding_when_legacy_pool_is_negative(
+    db_session, subscriber_account
+):
+    billing_service.ledger_entries.create(
+        db_session,
+        LedgerEntryCreate(
+            account_id=subscriber_account.id,
+            entry_type=LedgerEntryType.debit,
+            source=LedgerSource.other,
+            amount=Decimal("250.00"),
+            currency="USD",
+            memo="Legacy account-credit drift evidence",
+        ),
+    )
+    note, _invoice = _issued_credit_note_and_invoice(
+        db_session, subscriber_account.id, amount=Decimal("100.00")
+    )
+    assert get_account_credit_balance(
+        db_session, str(subscriber_account.id), currency="USD"
+    ) < Decimal("0.00")
+
+    preview = billing_service.credit_notes.preview_void(db_session, str(note.id))
+    result = billing_service.credit_notes.void_with_evidence(
+        db_session,
+        str(note.id),
+        CreditNoteVoidRequest(
+            preview_fingerprint=preview.fingerprint,
+            idempotency_key=uuid4().hex,
+        ),
+    )
+
+    assert result.credit_note.status == CreditNoteStatus.void
+    assert result.void_ledger_entry.reversal_of_entry_id == note.funding_ledger_entry_id
 
 
 def test_historical_funding_reconciliation_never_guesses(
