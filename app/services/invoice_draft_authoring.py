@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import (
     Invoice,
+    InvoiceLine,
     InvoiceStatus,
     TaxApplication,
     TaxRate,
 )
+from app.models.catalog import BillingMode, Subscription
 from app.models.domain_settings import SettingDomain
 from app.models.idempotency import IdempotencyKey
 from app.models.subscriber import Subscriber
@@ -122,6 +124,27 @@ def _is_active_proforma(invoice: Invoice) -> bool:
         or number.startswith(PROFORMA_PREFIX)
         or PROFORMA_TAG in memo
     )
+
+
+def _requires_prepaid_reconciliation(db: Session, invoice: Invoice) -> bool:
+    """Fail closed when generic conversion would bypass prepaid settlement."""
+
+    account_billing_mode = db.scalar(
+        select(Subscriber.billing_mode).where(Subscriber.id == invoice.account_id)
+    )
+    if account_billing_mode is BillingMode.prepaid:
+        return True
+    prepaid_subscription_id = db.scalar(
+        select(Subscription.id)
+        .join(InvoiceLine, InvoiceLine.subscription_id == Subscription.id)
+        .where(
+            InvoiceLine.invoice_id == invoice.id,
+            InvoiceLine.is_active.is_(True),
+            Subscription.billing_mode == BillingMode.prepaid,
+        )
+        .limit(1)
+    )
+    return prepaid_subscription_id is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -669,6 +692,16 @@ def _convert_proforma_invoice(
             "Only a draft proforma can be converted.",
             invoice_id=str(invoice.id),
             status=invoice.status.value,
+        )
+    if _requires_prepaid_reconciliation(db, invoice):
+        raise _error(
+            "prepaid_reconciliation_required",
+            (
+                "Prepaid proformas cannot use generic conversion; run the reviewed "
+                "prepaid proforma adoption and draft reconciliation workflow."
+            ),
+            invoice_id=str(invoice.id),
+            account_id=str(invoice.account_id),
         )
 
     invoice_number = (invoice.invoice_number or "").strip() or None

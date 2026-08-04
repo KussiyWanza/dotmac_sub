@@ -13,6 +13,7 @@ from app.models.billing import (
     Payment,
     PaymentStatus,
 )
+from app.models.catalog import BillingMode
 from app.schemas.audit import AuditEventCreate
 from app.services import audit as audit_service
 from app.services.web_billing_invoices import (
@@ -45,6 +46,7 @@ def test_apply_proforma_form_values_marks_and_cleans():
 def test_convert_proforma_to_final_updates_status_and_clears_marker(
     db_session, subscriber
 ):
+    subscriber.billing_mode = BillingMode.postpaid
     invoice = Invoice(
         account_id=subscriber.id,
         invoice_number="PF-INV-200",

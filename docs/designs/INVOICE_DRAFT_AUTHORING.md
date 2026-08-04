@@ -28,6 +28,10 @@ notifications itself.
 - Conversion locks the account before the invoice, accepts only a current draft
   proforma, durably binds one deterministic retry key to that invoice, and
   applies canonical account credit before deriving the committed final status.
+- Generic conversion rejects prepaid accounts and any proforma linked to a
+  prepaid subscription before reserving idempotency evidence or moving money.
+  Those documents require the reviewed prepaid proforma adoption and draft
+  reconciliation workflow.
 - A duplicate conversion request replays the first result. It cannot overwrite a
   concurrent or already committed `paid` status with `issued`.
 - `invoice_created` for a draft is internal evidence and does not request a
@@ -50,6 +54,11 @@ could therefore repeat conversion and restore stale `issued` state. The typed
 conversion command now serializes conversion with payment through the canonical
 account and invoice locks, makes retries idempotent, and reapplies available
 credit within the same owner transaction.
+
+Generic conversion is intentionally not a prepaid repair path. A prepaid
+proforma can lack the subscription and service-period identity needed to create
+entitlement and advance the billing anchor. The owner therefore fails closed
+and directs the operator to the dry-run-first prepaid reconciliation owner.
 
 Historical prepaid drafts and other pre-existing ambiguous billing records are
 not modified by this prevention change. They require a separately reviewed,

@@ -409,6 +409,23 @@ requires a fresh export, review, and signature. After materialization, later
 correction uses an append-only reviewed supersession. It never restores Splynx
 or deposit as runtime authority.
 
+## Funded prepaid proforma reconciliation
+
+Generic administrative proforma conversion is forbidden for prepaid accounts
+and for documents linked to prepaid subscriptions. It can allocate account
+credit but cannot safely infer the subscription identity, service period,
+entitlement, or billing anchor required by the prepaid access contract.
+
+`financial.prepaid_draft_reconciliation` owns the dry-run-first exception
+workflow. It may adopt documentary identity only for one pristine proforma,
+one operator-named active unanchored prepaid subscription with an exact
+contract-price match, one exact native payment source, and available reviewed
+opening-funding evidence. Adoption posts no money and creates no entitlement.
+The resulting ordinary prepaid draft must then pass the existing reviewed
+settlement command, which atomically allocates funding, creates entitlement,
+and advances the billing anchor. Ambiguous or changed evidence leaves all
+customer and financial state unchanged.
+
 ## Coverage and lock reconciliation
 
 `financial.prepaid_service_coverage_reconciliation` previews each subscription

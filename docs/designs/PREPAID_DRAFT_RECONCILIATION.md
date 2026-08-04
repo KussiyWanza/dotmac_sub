@@ -24,6 +24,13 @@ Payments alone do not cover the draft. The remaining value belongs to the
 signed opening baseline. Treating that value as a Payment would destroy its
 provenance; ignoring it leaves a funded customer locked and a draft stranded.
 
+A fourth historical case is an onboarding proforma created before its prepaid
+subscription. The document can later have exact native payment-backed credit
+while remaining outside financial allocation because it is still a proforma,
+has no service period, and its line has no subscription identity. Generic
+proforma conversion is insufficient: issuing such a document would settle the
+receivable without creating authoritative entitlement or a billing anchor.
+
 ## Canonical policy
 
 - `financial.invoices` owns invoice lifecycle and document state.
@@ -36,6 +43,31 @@ provenance; ignoring it leaves a funded customer locked and a draft stranded.
 - `financial.prepaid_draft_reconciliation` is the only classifier and repair
   coordinator when a prepaid draft already exists. It alone writes opening
   funding consumption and durable reconciliation exceptions.
+
+The same reconciliation owner coordinates reviewed adoption of a funded
+onboarding proforma. Adoption is deliberately narrower than generic proforma
+conversion. It requires all of the following exact evidence:
+
+- one operator-named subscription belonging to the invoice account;
+- active prepaid state with no billing anchor or active entitlement;
+- one positive, unlinked proforma line whose quantity, unit price, and amount
+  equal the frozen subscription base charge;
+- internally exact subtotal, tax, gross total, and balance;
+- no invoice financial activity and no competing financial draft;
+- one sole native payment-backed source equal to the full gross balance;
+- a successful verified funding-baseline read; and
+- an authoritative `paid_at` timestamp and contracted billing cadence.
+
+The sole payment instant is resolved through the canonical Africa/Lagos
+settlement calendar. The invoice participant writes only the missing period,
+subscription link, line provenance, and non-proforma document identity. The
+adoption command posts no money, issues no invoice, creates no entitlement, and
+does not advance `next_billing_at`. It commits an idempotency reservation,
+audit, metadata, and `prepaid_proforma.adopted` event. The resulting valid
+financial draft is then previewed and settled by the ordinary fingerprint-bound
+draft reconciliation command. A failure between the commands leaves a valid,
+visible prepaid draft that can be safely replayed; it never leaves an issued or
+partially settled invoice.
 
 An existing prepaid draft has first claim on the service-period document
 boundary. A funding-change consequence checks it before an invoice-less direct
@@ -120,6 +152,31 @@ poetry run python -m scripts.billing.reconcile_prepaid_drafts \
   --invoice-id INVOICE_UUID
 ```
 
+For a reviewed onboarding proforma, preview and apply documentary adoption
+first. Preview derives the period and exposes the sole payment identity; apply
+requires the exact fingerprint but does not accept an operator-chosen service
+date:
+
+```bash
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --adopt-proforma \
+  --invoice-id INVOICE_UUID \
+  --subscription-id SUBSCRIPTION_UUID
+
+poetry run python -m scripts.billing.reconcile_prepaid_drafts \
+  --adopt-proforma \
+  --apply \
+  --invoice-id INVOICE_UUID \
+  --subscription-id SUBSCRIPTION_UUID \
+  --fingerprint REVIEWED_SHA256 \
+  --idempotency-key prepaid-proforma-INVOICE_UUID-v1 \
+  --actor operator@example.com \
+  --reason "Reviewed exact onboarding document and payment evidence"
+```
+
+After adoption, run the ordinary invoice preview and apply shown below, using
+the previewed settlement payment timestamp as `--effective-at`.
+
 Apply is limited to one reviewed invoice and requires:
 
 - the exact preview fingerprint;
@@ -161,16 +218,20 @@ which approved path created it.
 
 1. Deploy the funding-change draft-first guard.
 2. Run the full dry-run cohort and retain the reviewed JSON.
-3. Apply exact payment-backed cases in small canary batches, one invoice per
+3. Preview exact funded onboarding proformas one invoice/subscription pair at a
+   time; adopt one canary and verify that only documentary identity changed.
+4. Preview the adopted financial draft and settle it through the ordinary
+   reconciler; verify entitlement and billing anchor before continuing.
+5. Apply exact payment-backed cases in small canary batches, one invoice per
    command.
-4. Apply mixed settlement/opening cases only where the signed baseline and
+6. Apply mixed settlement/opening cases only where the signed baseline and
    approval evidence are verified.
-5. Apply exact direct-renewal overlap closures separately.
-6. Reconstruct legacy/unbacked funding only through its evidence owner; then
+7. Apply exact direct-renewal overlap closures separately.
+8. Reconstruct legacy/unbacked funding only through its evidence owner; then
    re-preview.
-7. Leave insufficient, multiple-draft, reversed/refunded, and ambiguous cases
+9. Leave insufficient, multiple-draft, reversed/refunded, and ambiguous cases
    unchanged.
-8. After every canary, verify invoice and ledger facts, opening consumption,
+10. After every canary, verify invoice and ledger facts, opening consumption,
    entitlement and billing anchor, enforcement locks, billing events, and
    RADIUS access. Stop on any mismatch.
 

@@ -135,6 +135,19 @@ class ProformaConversionInput:
 
 
 @dataclass(frozen=True, slots=True)
+class PrepaidProformaDocumentAdoption:
+    """Exact documentary identity approved by the prepaid reconciler."""
+
+    invoice_id: UUID
+    line_id: UUID
+    subscription_id: UUID
+    billing_period_start: datetime
+    billing_period_end: datetime
+    line_description: str
+    adoption_evidence_ref: str
+
+
+@dataclass(frozen=True, slots=True)
 class DraftInvoiceLineReplacement:
     """One line in a complete admin-draft replacement request."""
 
@@ -1620,6 +1633,75 @@ class Invoices(ListResponseMixin):
             changed=True,
             event_emitted=True,
         )
+
+    @staticmethod
+    def adopt_prepaid_proforma_document_for_owner(
+        db: Session,
+        adoption: PrepaidProformaDocumentAdoption,
+    ) -> Invoice:
+        """Apply a reconciler-approved identity to one pristine proforma.
+
+        This is a flush-only participant. The prepaid reconciliation owner
+        decides whether the evidence is sufficient and owns the surrounding
+        transaction, audit trail, event, and idempotency reservation.
+        """
+
+        invoice = lock_for_update(db, Invoice, str(adoption.invoice_id))
+        if (
+            invoice is None
+            or not invoice.is_active
+            or invoice.status is not InvoiceStatus.draft
+            or not invoice.is_proforma
+            or invoice.billing_period_start is not None
+            or invoice.billing_period_end is not None
+        ):
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Invoice is not a pristine active proforma draft.",
+                details={"invoice_id": str(adoption.invoice_id)},
+            )
+        if adoption.billing_period_end <= adoption.billing_period_start:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Adopted billing period must be positive.",
+                details={"invoice_id": str(adoption.invoice_id)},
+            )
+        line = db.scalar(
+            select(InvoiceLine)
+            .where(
+                InvoiceLine.id == adoption.line_id,
+                InvoiceLine.invoice_id == invoice.id,
+                InvoiceLine.is_active.is_(True),
+            )
+            .with_for_update()
+        )
+        if line is None or line.subscription_id is not None:
+            raise InvoiceOwnerError(
+                code="financial.invoice.proforma_adoption_rejected",
+                message="Proforma line identity changed after review.",
+                details={
+                    "invoice_id": str(adoption.invoice_id),
+                    "line_id": str(adoption.line_id),
+                },
+            )
+
+        invoice.is_proforma = False
+        invoice.billing_period_start = adoption.billing_period_start
+        invoice.billing_period_end = adoption.billing_period_end
+        line.subscription_id = adoption.subscription_id
+        line.description = adoption.line_description
+        line_metadata = dict(line.metadata_ or {})
+        line_metadata.update(
+            {
+                "kind": "base_subscription",
+                "billing_period_start": adoption.billing_period_start.isoformat(),
+                "billing_period_end": adoption.billing_period_end.isoformat(),
+                "prepaid_proforma_adoption_ref": adoption.adoption_evidence_ref,
+            }
+        )
+        line.metadata_ = line_metadata
+        db.flush()
+        return invoice
 
     @staticmethod
     def issue_draft_for_owner(
