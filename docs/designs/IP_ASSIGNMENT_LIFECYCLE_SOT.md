@@ -350,6 +350,21 @@ Served projection repair uses
 subscription and assignment identifiers. It is also dry-run by default and
 requires the exact preview fingerprint, idempotency key, actor, and reason.
 
+The admin subscription detail page exposes the same owner preview as a
+server-owned **Reconcile served IPv4** action. It is absent when the projection
+is already aligned, enabled only for `ready`, and otherwise displays the typed
+blocker. The form carries the owner-produced assignment identifier and
+fingerprint, uses a per-render idempotency key, requires explicit confirmation,
+and delegates directly to `repair_service_ipv4_projection`; its adapter does
+not commit, roll back, or write ORM state. The impact preview names the current
+served/RADIUS evidence, desired IPAM address, old-address session count, and the
+fact that billing and entitlement remain unchanged.
+
+Selecting an address that IPAM already assigns to the service is no longer a
+successful replacement no-op when the served projection is stale. The replace
+adapter directs the operator to the reviewed reconciliation action instead of
+claiming success without repairing RADIUS and sessions.
+
 ## Verification
 
 - `tests/test_ip_assignment_lifecycle.py` proves create, link, deactivate,
@@ -364,3 +379,6 @@ requires the exact preview fingerprint, idempotency key, actor, and reason.
 - `tests/architecture/test_ip_assignment_service_ownership.py` verifies the
   typed manifest, dry-run adapters, transaction ownership, and separation from
   served-IP/RADIUS/session projections.
+- `tests/test_web_ipv4_projection_reconciliation.py` proves the server-owned UI
+  preview, explicit confirmation contract, owner delegation, composed template,
+  and same-address false-success regression.

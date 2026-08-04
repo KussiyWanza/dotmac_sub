@@ -1897,7 +1897,25 @@ def replace_subscription_ipv4_with_owner(
         else None
     )
     if current_address == normalized_ip:
-        return normalized_ip
+        if current_assignment is None:
+            raise ValueError("The current IPv4 assignment could not be resolved.")
+        current_projection = preview_service_ipv4_projection_repair(
+            db,
+            subscription_id=subscription_uuid,
+            assignment_id=current_assignment.id,
+        )
+        if current_projection.decision is IPv4ServedProjectionDecision.noop:
+            return normalized_ip
+        if current_projection.applicable:
+            raise ValueError(
+                "This IPv4 is already assigned, but its served-IP projection is "
+                "stale. Use Reconcile served IPv4 on the subscription detail page."
+            )
+        raise ValueError(
+            "This IPv4 is already assigned, but its served-IP projection cannot "
+            "be reconciled yet "
+            f"({current_projection.decision.value}). Review the subscription detail."
+        )
 
     target, _, _ = _resolve_ipv4_for_selector(
         db,

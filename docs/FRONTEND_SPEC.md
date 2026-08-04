@@ -1342,6 +1342,19 @@ The generic Restore preview rejects a restorable subscription when another
 active sibling uses the same login. That is an atomic-correction case, not a
 single-service lifecycle action.
 
+Exact-service IPv4 projection drift is projected as
+`ipv4_projection_reconciliation_action`, a shared `ActionForm` visible only to
+`catalog:write` operators and only when there is actionable or blocked drift.
+The form shows the IPAM-owned, served, and observed RADIUS addresses. When the
+owner preview returns `ready`, it carries the exact assignment identifier,
+preview fingerprint, and per-render idempotency key; it discloses old-session
+reauthentication and the absence of billing, plan, add-on, or service-period
+changes before requiring confirmation. Missing/ambiguous assignment, inactive
+service, shared login, unavailable/divergent RADIUS, and conflicting-session
+states remain visible with the owner-derived blocker. An aligned `noop` action
+is omitted. The template renders the shared action form and never derives
+eligibility or fingerprints.
+
 #### Subscription Form
 
 ```python
