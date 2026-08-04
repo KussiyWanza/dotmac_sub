@@ -161,6 +161,14 @@ class SentinelRule:
             # A composer default fires precisely when the operator never set
             # the path. Reading ``values`` here would always see the default.
             return self.config_path not in config_keys
+        if self.source_key is None:
+            # Unreachable while ``measurable`` requires one of the two inputs.
+            # Stated at the point of use so a later change to that property
+            # fails loudly here instead of counting the rule as unaffected --
+            # a fake zero is the one outcome this module must never produce.
+            raise ValueError(
+                f"rule {self.field!r} has neither a config path nor a source key"
+            )
         value = values.get(self.source_key)
         return value is None if self.trigger == "absent" else not value
 

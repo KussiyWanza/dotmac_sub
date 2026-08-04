@@ -94,7 +94,7 @@ from .actions import (
     OltTr069ServerConfig,
 )
 from .planner import Plan
-from .sentinels import is_deliverable
+from .sentinels import DesiredScalar, is_deliverable
 from .state import AppliedAction, ReconcileFailure, ReconcileFailureReason
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -864,7 +864,7 @@ def _split_dns_servers(value: str | None) -> tuple[str | None, str | None]:
     return primary, secondary
 
 
-def _refuse_unset(action: Action, *fields: tuple[str, object]) -> None:
+def _refuse_unset(action: Action, *fields: tuple[str, DesiredScalar]) -> None:
     """Refuse the whole action if any field carries an unset sentinel.
 
     Defence in depth behind the planner guards: the synchronous UI delivery
