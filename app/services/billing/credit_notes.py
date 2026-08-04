@@ -54,7 +54,6 @@ from app.services.billing._common import (
     _validate_account,
     _validate_credit_note_totals,
     _validate_invoice_line_amount,
-    get_account_credit_balance,
     lock_account,
 )
 from app.services.billing.ledger import LedgerEntries
@@ -520,6 +519,80 @@ def _validate_funding_entry(
         )
 
 
+def _funded_credit_available(db: Session, credit_note: CreditNote) -> Decimal:
+    """Return exact unconsumed funding linked to one credit note.
+
+    Credit-note funding is source-specific evidence.  Unrelated historical
+    account-credit drift must not prevent this owner from consuming or
+    reversing an otherwise exact, untouched funding chain.
+    """
+
+    if not credit_note.funding_ledger_entry_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Credit note funding evidence was not found",
+        )
+    funding = db.get(LedgerEntry, credit_note.funding_ledger_entry_id)
+    if funding is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Credit note funding evidence was not found",
+        )
+    if not funding.is_active or funding.reversal_of_entry_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Credit note funding evidence is not active",
+        )
+    if (
+        funding.account_id != credit_note.account_id
+        or funding.invoice_id is not None
+        or funding.entry_type != LedgerEntryType.credit
+        or funding.source != LedgerSource.credit_note
+        or funding.currency != credit_note.currency
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Credit note funding evidence does not match the note",
+        )
+
+    consumed = Decimal("0.00")
+    applications = (
+        db.query(CreditNoteApplication)
+        .filter(CreditNoteApplication.credit_note_id == credit_note.id)
+        .order_by(CreditNoteApplication.created_at, CreditNoteApplication.id)
+        .all()
+    )
+    for application in applications:
+        if application.consumption_ledger_entry_id is None:
+            continue
+        entry = db.get(LedgerEntry, application.consumption_ledger_entry_id)
+        amount = round_money(application.amount)
+        if (
+            entry is None
+            or not entry.is_active
+            or entry.account_id != credit_note.account_id
+            or entry.invoice_id is not None
+            or entry.entry_type != LedgerEntryType.debit
+            or entry.source != LedgerSource.credit_note
+            or entry.currency != credit_note.currency
+            or round_money(entry.amount) != amount
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Credit note consumption evidence is incomplete",
+            )
+        consumed = round_money(consumed + amount)
+
+    available = round_money(funding.amount - consumed)
+    document_remaining = round_money(credit_note.total - credit_note.applied_total)
+    if available < Decimal("0.00") or available != document_remaining:
+        raise HTTPException(
+            status_code=409,
+            detail="Credit note funding and document balances disagree",
+        )
+    return available
+
+
 def _build_void_preview(db: Session, credit_note: CreditNote) -> CreditVoidPreview:
     if credit_note.status == CreditNoteStatus.void:
         raise HTTPException(status_code=400, detail="Credit note already void")
@@ -546,13 +619,11 @@ def _build_void_preview(db: Session, credit_note: CreditNote) -> CreditVoidPrevi
         raise HTTPException(
             status_code=409, detail="Credit note funding entry is a reversal"
         )
-    operational_before = get_account_credit_balance(
-        db, str(credit_note.account_id), currency=credit_note.currency
-    )
-    if operational_before < credit_note.total:
+    operational_before = _funded_credit_available(db, credit_note)
+    if operational_before != round_money(credit_note.total):
         raise HTTPException(
             status_code=409,
-            detail="Available account credit is below the amount required to void this note",
+            detail="Exact credit-note funding is below the amount required to void this note",
         )
     wallet_before = calculate_customer_balance(
         db, credit_note.account_id, currency=credit_note.currency
@@ -1666,13 +1737,11 @@ class CreditNotes(ListResponseMixin):
         try:
             consumption_entry = None
             if credit_note.funding_ledger_entry_id:
-                available_funding = get_account_credit_balance(
-                    db, str(credit_note.account_id), currency=credit_note.currency
-                )
+                available_funding = _funded_credit_available(db, credit_note)
                 if available_funding < preview.apply_amount:
                     raise HTTPException(
                         status_code=409,
-                        detail="Available account credit is below the confirmed application amount",
+                        detail="Exact credit-note funding is below the confirmed application amount",
                     )
                 consumption_entry = LedgerEntries.create(
                     db,

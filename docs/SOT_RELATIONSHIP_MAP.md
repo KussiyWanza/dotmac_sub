@@ -1415,8 +1415,11 @@ Credit-note issuance and voiding are the next migrated financial-action contract
   void-reversal ledger rows are operational evidence and are excluded from that
   projection so the same credit is not counted twice.
 - Application boundary: applying a structurally funded note also links the exact
-  unallocated debit that consumes the operational credit pool. Historical notes
-  without reviewed funding evidence retain their legacy application behavior.
+  unallocated debit that consumes that note's structurally linked funding. The
+  owner verifies the note-specific funding and consumption chain, so unrelated
+  historical account-credit pool drift cannot block or fund the application.
+  Historical notes without reviewed funding evidence retain their legacy
+  application behavior.
 - Verification phase: direct writers have migrated to the owner and architecture
   tests reject new document, line, or status writers outside the owner package.
 - Cutover gate: issue/void preview fingerprints, idempotent replay, actor audit,
