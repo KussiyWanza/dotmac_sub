@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.models.service_team import ServiceTeam, ServiceTeamType
+from app.services import email as email_service
 from app.services import team_inbox_commands, team_inbox_routing
 
 ROUTES_TEMPLATE = Path("templates/admin/inbox/email_routes.html").read_text()
@@ -223,6 +224,85 @@ def test_a_deactivated_route_can_be_reactivated(db_session):
     assert team_inbox_routing.list_email_routes(db_session)[0].is_active is True
 
 
+def _smtp_profile(db_session, sender_key: str, *, is_active: bool = True) -> None:
+    email_service.upsert_smtp_sender(
+        db_session,
+        sender_key=sender_key,
+        host="mail.dotmac.ng",
+        port=587,
+        username=f"{sender_key}@dotmac.ng",
+        password=None,
+        from_email=f"{sender_key}@dotmac.ng",
+        from_name=f"Dotmac {sender_key.title()}",
+        use_tls=True,
+        use_ssl=False,
+        is_active=is_active,
+    )
+    db_session.commit()
+
+
+def test_route_can_select_an_active_outbound_sender(db_session):
+    team_id = _team(db_session, "Support")
+    _smtp_profile(db_session, "support")
+    route_id = team_inbox_commands.create_email_route(
+        db_session, service_team_id=team_id, email_address="support@dotmac.ng"
+    )
+
+    team_inbox_commands.update_email_route(
+        db_session,
+        route_id=route_id,
+        outbound_email_sender_key="SUPPORT",
+        update_outbound_email_sender=True,
+    )
+
+    assert (
+        team_inbox_routing.list_email_routes(db_session)[0].outbound_email_sender_key
+        == "support"
+    )
+
+
+def test_route_rejects_an_unknown_or_inactive_outbound_sender(db_session):
+    team_id = _team(db_session, "Support")
+    _smtp_profile(db_session, "disabled", is_active=False)
+    route_id = team_inbox_commands.create_email_route(
+        db_session, service_team_id=team_id, email_address="support@dotmac.ng"
+    )
+
+    with pytest.raises(team_inbox_routing.EmailRouteError, match="active SMTP"):
+        team_inbox_commands.update_email_route(
+            db_session,
+            route_id=route_id,
+            outbound_email_sender_key="disabled",
+            update_outbound_email_sender=True,
+        )
+
+
+def test_route_can_return_to_the_default_outbound_sender(db_session):
+    team_id = _team(db_session, "Support")
+    _smtp_profile(db_session, "support")
+    route_id = team_inbox_commands.create_email_route(
+        db_session, service_team_id=team_id, email_address="support@dotmac.ng"
+    )
+    team_inbox_commands.update_email_route(
+        db_session,
+        route_id=route_id,
+        outbound_email_sender_key="support",
+        update_outbound_email_sender=True,
+    )
+
+    team_inbox_commands.update_email_route(
+        db_session,
+        route_id=route_id,
+        outbound_email_sender_key=None,
+        update_outbound_email_sender=True,
+    )
+
+    assert (
+        team_inbox_routing.list_email_routes(db_session)[0].outbound_email_sender_key
+        is None
+    )
+
+
 def test_an_unknown_team_is_refused(db_session):
     import uuid
 
@@ -262,3 +342,5 @@ def test_the_page_states_what_it_does_not_control():
     assert "/admin/crm/inbox/channel-routes" in ROUTES_TEMPLATE
     assert "/admin/crm/inbox/ai-routes" in ROUTES_TEMPLATE
     assert "components/forms/csrf_input.html" in ROUTES_TEMPLATE
+    assert 'name="outbound_email_sender_key"' in ROUTES_TEMPLATE
+    assert "Default SMTP profile" in ROUTES_TEMPLATE

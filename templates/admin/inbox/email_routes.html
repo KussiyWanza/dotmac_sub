@@ -8,7 +8,7 @@
         <nav class="text-xs text-slate-500 dark:text-slate-400"><a href="/admin/inbox" class="hover:text-amber-700">Inbox</a> / Channel routing</nav>
         <h1 class="mt-1 font-display text-xl font-semibold text-slate-950 dark:text-white">Mailbox routing</h1>
         <p class="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-            Channel routes choose the default service team for each mailbox, WhatsApp number, Meta page, or Instagram account. AI intake routes can override that default when a classified intent meets the configured confidence threshold.
+            Channel routes choose the default service team for each mailbox, WhatsApp number, Meta page, or Instagram account. AI intake routes can override that default when a classified intent meets the configured confidence threshold. Each mailbox route can also select the SMTP profile used when its team replies.
         </p>
     </header>
 
@@ -172,6 +172,7 @@
                     <tr class="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                         <th class="px-5 py-2">Mailbox</th>
                         <th class="px-5 py-2">Team</th>
+                        <th class="px-5 py-2">Reply sender</th>
                         <th class="px-5 py-2">Priority</th>
                         <th class="px-5 py-2">State</th>
                         <th class="px-5 py-2 text-right">Actions</th>
@@ -182,6 +183,17 @@
                     <tr class="text-sm {% if not route.is_active %}opacity-60{% endif %}">
                         <td class="px-5 py-3 font-mono text-xs text-slate-800 dark:text-slate-200">{{ route.email_address }}</td>
                         <td class="px-5 py-3 text-slate-700 dark:text-slate-300">{{ route.service_team_name or "Unknown team" }}</td>
+                        <td class="px-5 py-3">
+                            <form method="post" action="/admin/crm/inbox/email-routes/{{ route.id }}" class="flex min-w-56 items-center gap-2">
+                                {% include "components/forms/csrf_input.html" %}
+                                <input type="hidden" name="update_outbound_email_sender" value="true">
+                                <select name="outbound_email_sender_key" aria-label="Reply sender for {{ route.email_address }}" class="h-9 min-w-36 rounded-lg border-slate-300 text-xs dark:border-slate-700 dark:bg-slate-950">
+                                    <option value="">Default SMTP profile</option>
+                                    {% for sender in smtp_sender_options %}<option value="{{ sender.sender_key }}" {% if route.outbound_email_sender_key == sender.sender_key %}selected{% endif %}>{{ sender.sender_key }} - {{ sender.from_email }}</option>{% endfor %}
+                                </select>
+                                <button type="submit" class="min-h-9 rounded-lg border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700">Save</button>
+                            </form>
+                        </td>
                         <td class="px-5 py-3 tabular-nums text-slate-600 dark:text-slate-400">{{ route.priority }}</td>
                         <td class="px-5 py-3">
                             {% if route.is_primary %}<span class="rounded-lg bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">Primary</span>{% endif %}

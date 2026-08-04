@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -113,6 +114,19 @@ def test_portal_account_health_does_not_treat_plan_family_as_network_migration(
         requested_offer_id=target_offer.id,
         status=SubscriptionChangeStatus.pending,
         effective_date=subscription.created_at.date(),
+        confirmation_snapshot={
+            "provisioning_price_review": {
+                "fingerprint": "a" * 64,
+                "effective_at": datetime(2026, 8, 3, 12, tzinfo=UTC).isoformat(),
+                "previous_amount": "1080.93",
+                "current_amount": "53546.06",
+                "currency": "NGN",
+                "available_balance": "60000.00",
+                "shortfall": "0.00",
+                "allowed": True,
+                "reason": None,
+            }
+        },
     )
     db_session.add(change)
     db_session.commit()
@@ -124,6 +138,10 @@ def test_portal_account_health_does_not_treat_plan_family_as_network_migration(
     assert pending.request_id == change.id
     assert pending.target_offer_name == "Wireless 100"
     assert pending.delivery_mode == "commercial_only"
+    assert pending.price_review is not None
+    assert pending.price_review.previous_amount == Decimal("1080.93")
+    assert pending.price_review.current_amount == Decimal("53546.06")
+    assert pending.price_review.fingerprint == "a" * 64
     wire = PortalAccountHealthRead.model_validate(health)
     assert wire.services[0].pending_change is not None
     assert wire.services[0].pending_change.delivery_mode == "commercial_only"

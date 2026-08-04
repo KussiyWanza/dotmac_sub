@@ -101,6 +101,19 @@ class PortalConnectionDiagnosis:
 
 
 @dataclass(frozen=True, slots=True)
+class PortalRemoteProvisionPriceReview:
+    fingerprint: str
+    effective_at: datetime
+    previous_amount: Decimal
+    current_amount: Decimal
+    currency: str
+    available_balance: Decimal
+    shortfall: Decimal
+    allowed: bool
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class PortalPendingServiceChange:
     request_id: UUID
     status: str
@@ -111,6 +124,7 @@ class PortalPendingServiceChange:
     target_service_address: str | None
     field_fee_amount: Decimal | None
     field_fee_currency: str | None
+    price_review: PortalRemoteProvisionPriceReview | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +404,55 @@ def _service_health(
     )
 
 
+def _review_decimal(raw: dict[object, object], key: str) -> Decimal | None:
+    try:
+        return Decimal(str(raw[key])).quantize(Decimal("0.01"))
+    except (ArithmeticError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _remote_price_review(
+    confirmation: dict[object, object],
+) -> PortalRemoteProvisionPriceReview | None:
+    raw = confirmation.get("provisioning_price_review")
+    if not isinstance(raw, dict):
+        return None
+    fingerprint = str(raw.get("fingerprint") or "").strip()
+    effective_raw = str(raw.get("effective_at") or "").strip()
+    previous_amount = _review_decimal(raw, "previous_amount")
+    current_amount = _review_decimal(raw, "current_amount")
+    available_balance = _review_decimal(raw, "available_balance")
+    shortfall = _review_decimal(raw, "shortfall")
+    if (
+        not fingerprint
+        or not effective_raw
+        or previous_amount is None
+        or current_amount is None
+        or available_balance is None
+        or shortfall is None
+    ):
+        return None
+    try:
+        effective_at = datetime.fromisoformat(effective_raw)
+    except ValueError:
+        return None
+    if effective_at.tzinfo is None:
+        effective_at = effective_at.replace(tzinfo=UTC)
+    else:
+        effective_at = effective_at.astimezone(UTC)
+    return PortalRemoteProvisionPriceReview(
+        fingerprint=fingerprint,
+        effective_at=effective_at,
+        previous_amount=previous_amount,
+        current_amount=current_amount,
+        currency=str(raw.get("currency") or "NGN").upper(),
+        available_balance=available_balance,
+        shortfall=shortfall,
+        allowed=bool(raw.get("allowed", False)),
+        reason=str(raw.get("reason") or "").strip() or None,
+    )
+
+
 def _pending_service_changes(
     db: Session,
     subscriptions: list[Subscription],
@@ -462,6 +525,7 @@ def _pending_service_changes(
             ),
             field_fee_amount=row.field_fee_amount,
             field_fee_currency=row.field_fee_currency,
+            price_review=_remote_price_review(confirmation),
         )
     return changes
 

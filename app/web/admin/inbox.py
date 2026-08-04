@@ -29,6 +29,7 @@ from app.services import (
     team_inbox_read_state,
     team_inbox_routing,
 )
+from app.services import email as email_service
 from app.services.auth_dependencies import can, require_permission
 from app.services.owner_commands import CommandContext
 
@@ -1573,6 +1574,7 @@ def _settings_context(
             "channel_routes": team_inbox_routing.list_channel_routes(db),
             "ai_routes": team_inbox_routing.list_ai_routes(db),
             "service_team_options": team_inbox_metrics.active_service_team_options(db),
+            "smtp_sender_options": email_service.list_smtp_sender_options(db),
             "channel_options": [
                 {
                     "value": item.value,
@@ -1670,6 +1672,8 @@ def team_inbox_email_route_update(
     priority: int | None = Form(default=None),
     is_primary: bool | None = Form(default=None),
     is_active: bool | None = Form(default=None),
+    outbound_email_sender_key: str | None = Form(default=None),
+    update_outbound_email_sender: bool = Form(default=False),
     db: Session = Depends(get_db),
 ):
     _prepare_mutation(db)
@@ -1680,6 +1684,8 @@ def team_inbox_email_route_update(
             is_primary=is_primary,
             priority=priority,
             is_active=is_active,
+            outbound_email_sender_key=_query_text(outbound_email_sender_key),
+            update_outbound_email_sender=_form_flag(update_outbound_email_sender),
         )
     except (team_inbox_routing.EmailRouteError, ValueError) as exc:
         return _routes_redirect(status="error", message=str(exc))

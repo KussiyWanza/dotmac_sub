@@ -33,6 +33,7 @@ def test_customer_detail_remote_plan_action_delegates_to_execution_owner() -> No
     route = (ROOT / "app/web/admin/customers.py").read_text()
     template = (ROOT / "templates/admin/customers/detail.html").read_text()
     owner = (ROOT / "app/services/subscription_change_execution.py").read_text()
+    lifecycle = (ROOT / "app/services/subscription_lifecycle_commands.py").read_text()
 
     assert "provision_and_verify_remote_change(" in route
     assert 'require_permission("provisioning:service_change_reconcile")' in route
@@ -40,6 +41,26 @@ def test_customer_detail_remote_plan_action_delegates_to_execution_owner() -> No
     assert "reconcile_subscription_connectivity(" in owner
     assert "finalize_verified_remote_reprovision(" in owner
     assert "Provision and verify now" in template
+    assert "Refresh price and continue" in template
+    assert 'name="confirmed_price_fingerprint"' in template
+    assert "RemoteProvisionActionCommand(" in route
+    assert "price_review_required" in owner
+    assert "review_remote_plan_change_price" in owner
+    assert "_recover_remote_provision_failure(" in owner
+    assert "rollback_remote_plan_change_provisioning" in owner
+    assert "def prepare_remote_reprovision(" in owner
+    assert "prepare_remote_reprovision(db, request)" in owner
+    assert "prepare_remote_reprovision(db, request)" in lifecycle
+    assert "stage_remote_reprovision(db, request)" not in lifecycle
+    assert "Retry or contact network operations" not in route
+    remote_action = route[
+        route.index("def provision_remote_plan_change(") : route.index(
+            '@router.get(\n    "/subscriptions/{subscription_id}/fiber-path"'
+        )
+    ]
+    assert "db.rollback()" not in remote_action
+    assert "def _provision_and_verify_remote_change(" in owner
+    assert "if db.in_transaction():" in owner
     assert "can_reconcile_service_changes" in template
     assert "remote-plan-change:" in template
 
@@ -59,6 +80,7 @@ def test_execution_owner_registry_covers_reconciliation() -> None:
     )
     assert service is not None
     assert "interrupted execution-chain reconciliation" in service.owns
+    assert "remote provisioning price confirmation and failure recovery" in service.owns
 
 
 def test_reconciliation_evidence_migration_extends_current_head() -> None:

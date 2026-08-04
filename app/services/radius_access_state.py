@@ -31,9 +31,9 @@ def stage_subscription_radius_profile(
     *,
     subscription_id: UUID,
     credential_id: UUID,
-    radius_profile_id: UUID,
+    radius_profile_id: UUID | None,
 ) -> AccessCredential:
-    """Stage one exact subscription credential's desired RADIUS profile."""
+    """Stage one exact subscription credential's desired RADIUS override."""
 
     credential = db.get(AccessCredential, credential_id)
     if (

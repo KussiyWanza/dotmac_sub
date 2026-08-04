@@ -19,6 +19,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.audit import AuditActorType
 from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentAllocation
 from app.models.catalog import (
     AccessCredential,
@@ -43,7 +44,12 @@ from app.models.subscription_change import (
 from app.schemas.billing import InvoiceCreate
 from app.schemas.dispatch import WorkOrderHeaderCreate
 from app.services import billing as billing_service
+from app.services.audit_adapter import stage_audit_event
 from app.services.events import EventType, emit_event
+from app.services.prepaid_plan_changes import (
+    PrepaidPlanChangeDecision,
+    resolve_prepaid_plan_change,
+)
 from app.services.radius_access_state import stage_subscription_radius_profile
 from app.services.subscription_changes import subscription_change_requests
 from app.services.work_order_commands import work_order_commands
@@ -106,6 +112,32 @@ class ExecutionReconciliationOutcome:
 class RemoteProvisionActionStatus(StrEnum):
     completed = "completed"
     replayed = "replayed"
+    price_review_required = "price_review_required"
+    billing_blocked = "billing_blocked"
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteProvisionActionCommand:
+    request_id: UUID
+    subscription_id: UUID
+    account_id: UUID
+    actor_id: str
+    idempotency_key: str
+    reason: str
+    confirmed_price_fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteProvisionPriceReview:
+    fingerprint: str
+    effective_at: datetime
+    previous_amount: Decimal
+    current_amount: Decimal
+    currency: str
+    available_balance: Decimal
+    shortfall: Decimal
+    allowed: bool
+    reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +149,218 @@ class RemoteProvisionActionOutcome:
     target_profile_name: str
     operation_reference: str
     message: str
+    price_review: RemoteProvisionPriceReview | None = None
+
+
+_PRICE_REVIEW_SNAPSHOT_KEY = "provisioning_price_review"
+
+
+def _snapshot_decimal(snapshot: dict[str, object], key: str) -> Decimal:
+    try:
+        return Decimal(str(snapshot.get(key) or "0.00")).quantize(Decimal("0.01"))
+    except (ArithmeticError, ValueError):
+        return Decimal("0.00")
+
+
+def _upgrade_amount(snapshot: dict[str, object]) -> Decimal:
+    return max(Decimal("0.00"), _snapshot_decimal(snapshot, "required_amount"))
+
+
+def _format_amount(currency: str, amount: Decimal) -> str:
+    normalized = currency.strip().upper() or "NGN"
+    prefix = "₦" if normalized == "NGN" else f"{normalized} "
+    return f"{prefix}{amount:,.2f}"
+
+
+def _stored_price_review(
+    request: SubscriptionChangeRequest,
+) -> RemoteProvisionPriceReview | None:
+    snapshot = request.confirmation_snapshot or {}
+    raw = snapshot.get(_PRICE_REVIEW_SNAPSHOT_KEY)
+    if not isinstance(raw, dict):
+        return None
+    fingerprint = str(raw.get("fingerprint") or "").strip()
+    effective_raw = str(raw.get("effective_at") or "").strip()
+    if not fingerprint or not effective_raw:
+        return None
+    try:
+        effective_at = datetime.fromisoformat(effective_raw)
+    except ValueError:
+        return None
+    if effective_at.tzinfo is None:
+        effective_at = effective_at.replace(tzinfo=UTC)
+    else:
+        effective_at = effective_at.astimezone(UTC)
+    return RemoteProvisionPriceReview(
+        fingerprint=fingerprint,
+        effective_at=effective_at,
+        previous_amount=_snapshot_decimal(raw, "previous_amount"),
+        current_amount=_snapshot_decimal(raw, "current_amount"),
+        currency=str(raw.get("currency") or "NGN").upper(),
+        available_balance=_snapshot_decimal(raw, "available_balance"),
+        shortfall=_snapshot_decimal(raw, "shortfall"),
+        allowed=bool(raw.get("allowed", False)),
+        reason=str(raw.get("reason") or "").strip() or None,
+    )
+
+
+def _price_review_snapshot(review: RemoteProvisionPriceReview) -> dict[str, object]:
+    return {
+        "fingerprint": review.fingerprint,
+        "effective_at": review.effective_at.isoformat(),
+        "previous_amount": str(review.previous_amount),
+        "current_amount": str(review.current_amount),
+        "currency": review.currency,
+        "available_balance": str(review.available_balance),
+        "shortfall": str(review.shortfall),
+        "allowed": review.allowed,
+        "reason": review.reason,
+    }
+
+
+def _refreshed_financial_decision(
+    db: Session,
+    *,
+    request: SubscriptionChangeRequest,
+    subscription: Subscription,
+    effective_at: datetime,
+) -> PrepaidPlanChangeDecision:
+    return resolve_prepaid_plan_change(
+        db,
+        subscription,
+        str(request.requested_offer_id),
+        effective_at=effective_at,
+    )
+
+
+def _billing_block_message(review: RemoteProvisionPriceReview) -> str:
+    price = _format_amount(review.currency, review.current_amount)
+    balance = _format_amount(review.currency, review.available_balance)
+    if review.reason == "insufficient_prepaid_funding":
+        shortfall = _format_amount(review.currency, review.shortfall)
+        return (
+            f"The refreshed upgrade price is {price}, but the available prepaid "
+            f"balance is {balance} (shortfall {shortfall}). Fund the account, then "
+            "refresh the price and continue."
+        )
+    if review.reason == "collection_blocking_balance":
+        return (
+            "This account has a collection-blocking balance. Resolve the billing "
+            "balance, then refresh the price and continue."
+        )
+    if review.reason == "catalog_currency_mismatch":
+        return (
+            "The current and requested plans use different currencies. Correct the "
+            "catalog pricing before provisioning."
+        )
+    return (
+        "Billing no longer permits this upgrade. Refresh the account balance and "
+        "price before provisioning."
+    )
+
+
+def _active_remote_credential(
+    db: Session, *, subscription_id: UUID
+) -> AccessCredential | None:
+    credentials = list(
+        db.scalars(
+            select(AccessCredential).where(
+                AccessCredential.subscription_id == subscription_id,
+                AccessCredential.is_active.is_(True),
+            )
+        ).all()
+    )
+    return credentials[0] if len(credentials) == 1 else None
+
+
+def _recover_remote_provision_failure(
+    db: Session,
+    *,
+    command: RemoteProvisionActionCommand,
+    credential_id: UUID,
+    previous_radius_profile_id: UUID | None,
+    operation_reference: str,
+    failure: Exception,
+) -> bool:
+    """Converge database and RADIUS state after a post-projection failure.
+
+    ``True`` means the commercial change committed and its request record was
+    repaired to completed. ``False`` means the old commercial plan remained
+    authoritative and its previous RADIUS projection was restored, leaving the
+    request retryable.
+    """
+
+    request = _lock_request(db, command.request_id)
+    subscription = db.get(Subscription, request.subscription_id)
+    if subscription is None:
+        raise SubscriptionChangeExecutionError(
+            "subscription_not_found",
+            "Subscription disappeared during provisioning recovery",
+        )
+
+    commercial_change_committed = (
+        request.status == SubscriptionChangeStatus.applied
+        and subscription.offer_id == request.requested_offer_id
+    )
+    if commercial_change_committed:
+        request.execution_state = SubscriptionChangeExecutionState.completed
+        stage_audit_event(
+            db,
+            action="recover_remote_plan_change_completion",
+            entity_type="subscription_change_request",
+            entity_id=str(request.id),
+            actor_type=AuditActorType.user,
+            actor_id=command.actor_id,
+            metadata={
+                "subscription_id": str(subscription.id),
+                "operation_reference": operation_reference,
+                "result": "commercial_change_already_committed",
+                "failure_type": type(failure).__name__,
+            },
+        )
+        db.flush()
+        return True
+
+    credential = db.get(AccessCredential, credential_id)
+    if (
+        credential is None
+        or credential.subscription_id != subscription.id
+        or not credential.is_active
+    ):
+        raise SubscriptionChangeExecutionError(
+            "remote_access_credential_ambiguous",
+            "The previous RADIUS credential is unavailable for recovery",
+        )
+    stage_subscription_radius_profile(
+        db,
+        subscription_id=subscription.id,
+        credential_id=credential.id,
+        radius_profile_id=previous_radius_profile_id,
+    )
+    from app.services.radius import reconcile_subscription_connectivity
+
+    reconcile_subscription_connectivity(db, str(subscription.id)).require_projected()
+    request.execution_state = SubscriptionChangeExecutionState.provisioning
+    request.remote_reprovision_requested_at = None
+    request.provisioning_verified_at = None
+    stage_audit_event(
+        db,
+        action="rollback_remote_plan_change_provisioning",
+        entity_type="subscription_change_request",
+        entity_id=str(request.id),
+        actor_type=AuditActorType.user,
+        actor_id=command.actor_id,
+        status_code=409,
+        is_success=False,
+        metadata={
+            "subscription_id": str(subscription.id),
+            "operation_reference": operation_reference,
+            "result": "previous_radius_profile_restored",
+            "failure_type": type(failure).__name__,
+        },
+    )
+    db.flush()
+    return False
 
 
 def _lock_request(db: Session, request_id: UUID) -> SubscriptionChangeRequest:
@@ -178,13 +422,14 @@ def stage_relocation_charge(
     return invoice
 
 
-def stage_remote_reprovision(
+def prepare_remote_reprovision(
     db: Session, request: SubscriptionChangeRequest
 ) -> RemoteReprovisionOutcome:
-    """Stage the exact offer profile on one subscription-scoped credential.
+    """Persist the exact target profile without changing live RADIUS intent.
 
-    The live offer remains unchanged. A later verifier must observe the exact
-    profile on the exact RADIUS user after this request watermark.
+    Confirmation records the target and exact credential/user scope. The
+    desired credential profile remains unchanged until an operator confirms
+    the execution-time price and explicitly starts provisioning.
     """
 
     if request.remote_radius_profile_id is not None:
@@ -211,33 +456,18 @@ def stage_remote_reprovision(
             "remote_radius_profile_ambiguous",
             "The requested plan has multiple RADIUS profiles; exactly one is required",
         )
-    credentials = list(
-        db.scalars(
-            select(AccessCredential).where(
-                AccessCredential.subscription_id == request.subscription_id,
-                AccessCredential.is_active.is_(True),
-            )
-        ).all()
-    )
-    if len(credentials) != 1:
+    credential = _active_remote_credential(db, subscription_id=request.subscription_id)
+    if credential is None:
         raise SubscriptionChangeExecutionError(
             "remote_access_credential_ambiguous",
             "Remote reprovisioning requires exactly one active subscription credential",
         )
-    credential = credentials[0]
     radius_user = db.scalar(
         select(RadiusUser).where(RadiusUser.access_credential_id == credential.id)
     )
-    requested_at = datetime.now(UTC)
-    stage_subscription_radius_profile(
-        db,
-        subscription_id=request.subscription_id,
-        credential_id=credential.id,
-        radius_profile_id=profiles[0].profile_id,
-    )
     request.remote_radius_profile_id = profiles[0].profile_id
     request.remote_radius_user_id = radius_user.id if radius_user is not None else None
-    request.remote_reprovision_requested_at = requested_at
+    request.remote_reprovision_requested_at = None
     request.execution_state = SubscriptionChangeExecutionState.provisioning
     db.flush()
     return RemoteReprovisionOutcome(
@@ -248,15 +478,33 @@ def stage_remote_reprovision(
     )
 
 
-def provision_and_verify_remote_change(
+def stage_remote_reprovision(
+    db: Session, request: SubscriptionChangeRequest
+) -> RemoteReprovisionOutcome:
+    """Stage the confirmed target profile for the explicit RADIUS projection."""
+
+    prepared = prepare_remote_reprovision(db, request)
+    credential = _active_remote_credential(db, subscription_id=request.subscription_id)
+    if credential is None:
+        raise SubscriptionChangeExecutionError(
+            "remote_access_credential_ambiguous",
+            "Remote reprovisioning requires exactly one active subscription credential",
+        )
+    stage_subscription_radius_profile(
+        db,
+        subscription_id=request.subscription_id,
+        credential_id=credential.id,
+        radius_profile_id=prepared.radius_profile_id,
+    )
+    request.remote_reprovision_requested_at = datetime.now(UTC)
+    request.execution_state = SubscriptionChangeExecutionState.provisioning
+    db.flush()
+    return prepared
+
+
+def _provision_and_verify_remote_change(
     db: Session,
-    *,
-    request_id: UUID,
-    subscription_id: UUID,
-    account_id: UUID,
-    actor_id: str,
-    idempotency_key: str,
-    reason: str,
+    command: RemoteProvisionActionCommand,
 ) -> RemoteProvisionActionOutcome:
     """Project and verify one already-confirmed remote service change.
 
@@ -265,24 +513,24 @@ def provision_and_verify_remote_change(
     the commercial plan only after the exact fresh local observation exists.
     """
 
-    key = idempotency_key.strip()
+    key = command.idempotency_key.strip()
     if len(key) < 16:
         raise SubscriptionChangeExecutionError(
             "reconciliation_key_invalid", "Idempotency key is too short"
         )
-    reason_value = reason.strip()
+    reason_value = command.reason.strip()
     if len(reason_value) < 8:
         raise SubscriptionChangeExecutionError(
             "reconciliation_reason_invalid", "Provisioning reason is too short"
         )
     key_hash = hashlib.sha256(key.encode()).hexdigest()
-    operation_reference = f"remote-plan-change:{request_id}:{key_hash[:12]}"
-    request = _lock_request(db, request_id)
+    operation_reference = f"remote-plan-change:{command.request_id}:{key_hash[:12]}"
+    request = _lock_request(db, command.request_id)
     subscription = db.get(Subscription, request.subscription_id)
     if (
-        request.subscription_id != subscription_id
+        request.subscription_id != command.subscription_id
         or subscription is None
-        or subscription.subscriber_id != account_id
+        or subscription.subscriber_id != command.account_id
     ):
         raise SubscriptionChangeExecutionError(
             "service_change_not_found",
@@ -329,33 +577,230 @@ def provision_and_verify_remote_change(
             "A different operator provisioning attempt is already recorded",
         )
 
-    staged = stage_remote_reprovision(db, request)
-    target_profile = db.get(RadiusProfile, staged.radius_profile_id)
-    from app.services.radius import reconcile_subscription_connectivity
-
-    projection = reconcile_subscription_connectivity(db, str(subscription.id))
-    if not projection.ok:
-        reason_by_disposition = {
-            "ineligible_subscription": "The subscription is not eligible for RADIUS provisioning",
-            "missing_login": "The subscription has no RADIUS login configured",
-            "target_unavailable": "No active RADIUS projection target is available",
-            "unbuildable_login": "The RADIUS projection could not build this login",
-        }
-        raise SubscriptionChangeExecutionError(
-            "remote_reprovision_verification_missing",
-            reason_by_disposition.get(
-                projection.disposition.value,
-                "RADIUS provisioning did not converge",
-            ),
+    stored_review = _stored_price_review(request)
+    review_effective_at = (
+        stored_review.effective_at if stored_review is not None else datetime.now(UTC)
+    )
+    decision = _refreshed_financial_decision(
+        db,
+        request=request,
+        subscription=subscription,
+        effective_at=review_effective_at,
+    )
+    current_snapshot = decision.as_quote_dict()
+    current_amount = _upgrade_amount(current_snapshot)
+    current_currency = decision.currency.upper()
+    confirmed_fingerprint = (command.confirmed_price_fingerprint or "").strip()
+    previous_snapshot = request.confirmation_snapshot or {}
+    previous_amount = (
+        stored_review.current_amount
+        if stored_review is not None
+        else _upgrade_amount(previous_snapshot)
+    )
+    previous_currency = (
+        stored_review.currency
+        if stored_review is not None
+        else str(previous_snapshot.get("currency") or current_currency).upper()
+    )
+    amount_changed = (
+        current_amount != previous_amount or current_currency != previous_currency
+    )
+    if stored_review is not None:
+        stored_review_was_confirmed = confirmed_fingerprint == stored_review.fingerprint
+        amount_changed_since_review = (
+            current_amount != stored_review.current_amount
+            or current_currency != stored_review.currency
+        )
+        review_required = not stored_review_was_confirmed or amount_changed_since_review
+    else:
+        current_decision_was_confirmed = confirmed_fingerprint == decision.fingerprint
+        review_required = amount_changed and not current_decision_was_confirmed
+    review = RemoteProvisionPriceReview(
+        fingerprint=decision.fingerprint,
+        effective_at=decision.effective_at,
+        previous_amount=previous_amount,
+        current_amount=current_amount,
+        currency=current_currency,
+        available_balance=decision.prepaid_funding_before,
+        shortfall=decision.shortfall,
+        allowed=decision.allowed,
+        reason=decision.reason,
+    )
+    if review_required or not decision.allowed:
+        snapshot = dict(previous_snapshot)
+        snapshot[_PRICE_REVIEW_SNAPSHOT_KEY] = _price_review_snapshot(review)
+        request.confirmation_snapshot = snapshot
+        request.execution_state = SubscriptionChangeExecutionState.provisioning
+        action_status = (
+            RemoteProvisionActionStatus.price_review_required
+            if review_required
+            else RemoteProvisionActionStatus.billing_blocked
+        )
+        message = (
+            "The upgrade price changed from "
+            f"{_format_amount(previous_currency, previous_amount)} to "
+            f"{_format_amount(current_currency, current_amount)}. Review and "
+            "confirm the new amount."
+            if review_required
+            else _billing_block_message(review)
+        )
+        stage_audit_event(
+            db,
+            action="review_remote_plan_change_price",
+            entity_type="subscription_change_request",
+            entity_id=str(request.id),
+            actor_type=AuditActorType.user,
+            actor_id=command.actor_id,
+            status_code=409,
+            is_success=False,
+            metadata={
+                "subscription_id": str(subscription.id),
+                "result": action_status.value,
+                "previous_amount": str(previous_amount),
+                "current_amount": str(current_amount),
+                "currency": current_currency,
+                "available_balance": str(decision.prepaid_funding_before),
+                "shortfall": str(decision.shortfall),
+                "billing_reason": decision.reason,
+                "operation_reference": operation_reference,
+            },
+        )
+        db.commit()
+        return RemoteProvisionActionOutcome(
+            request.id,
+            request.subscription_id,
+            action_status,
+            target_offer_name,
+            target_profile.name if target_profile is not None else "Target profile",
+            operation_reference,
+            message,
+            review,
         )
 
-    request.reconciliation_idempotency_key_hash = key_hash
-    request.reconciliation_actor_id = actor_id[:120]
-    request.reconciliation_reason = reason_value
-    request.reconciled_at = datetime.now(UTC)
-    finalized = finalize_verified_remote_reprovision(
-        db, request_id=request.id, actor_id=actor_id
-    )
+    refreshed_snapshot = dict(previous_snapshot)
+    refreshed_snapshot.update(json.loads(json.dumps(current_snapshot, default=str)))
+    refreshed_snapshot.pop(_PRICE_REVIEW_SNAPSHOT_KEY, None)
+    request.confirmation_snapshot = refreshed_snapshot
+    request.confirmation_preview_fingerprint = decision.fingerprint
+    request.confirmed_at = datetime.now(UTC)
+
+    credential = _active_remote_credential(db, subscription_id=subscription.id)
+    if credential is None:
+        raise SubscriptionChangeExecutionError(
+            "remote_access_credential_ambiguous",
+            "Remote reprovisioning requires exactly one active subscription credential",
+        )
+    credential_id = credential.id
+    previous_radius_profile_id = credential.radius_profile_id
+    projection_attempted = False
+    commercial_finalization_started = False
+    try:
+        staged = stage_remote_reprovision(db, request)
+        db.flush()
+        target_profile = db.get(RadiusProfile, staged.radius_profile_id)
+        from app.services.radius import reconcile_subscription_connectivity
+
+        projection_attempted = True
+        projection = reconcile_subscription_connectivity(db, str(subscription.id))
+        if not projection.ok:
+            reason_by_disposition = {
+                "ineligible_subscription": "The subscription is not eligible for RADIUS provisioning",
+                "missing_login": "The subscription has no RADIUS login configured",
+                "target_unavailable": "No active RADIUS projection target is available",
+                "unbuildable_login": "The RADIUS projection could not build this login",
+            }
+            raise SubscriptionChangeExecutionError(
+                "remote_reprovision_verification_missing",
+                reason_by_disposition.get(
+                    projection.disposition.value,
+                    "RADIUS provisioning did not converge",
+                ),
+            )
+
+        request.reconciliation_idempotency_key_hash = key_hash
+        request.reconciliation_actor_id = command.actor_id[:120]
+        request.reconciliation_reason = reason_value
+        request.reconciled_at = datetime.now(UTC)
+        stage_audit_event(
+            db,
+            action="provision_remote_plan_change",
+            entity_type="subscription_change_request",
+            entity_id=str(request.id),
+            actor_type=AuditActorType.user,
+            actor_id=command.actor_id,
+            metadata={
+                "subscription_id": str(subscription.id),
+                "target_offer_name": target_offer_name,
+                "target_profile_name": (
+                    target_profile.name if target_profile is not None else None
+                ),
+                "operation_reference": operation_reference,
+                "result": RemoteProvisionActionStatus.completed.value,
+                "confirmed_upgrade_amount": str(current_amount),
+                "currency": current_currency,
+                "price_fingerprint": decision.fingerprint,
+            },
+        )
+        commercial_finalization_started = True
+        finalized = finalize_verified_remote_reprovision(
+            db, request_id=request.id, actor_id=command.actor_id
+        )
+    except Exception as failure:
+        if not projection_attempted:
+            db.rollback()
+            raise
+        if commercial_finalization_started:
+            db.rollback()
+        try:
+            commercial_change_completed = _recover_remote_provision_failure(
+                db,
+                command=command,
+                credential_id=credential_id,
+                previous_radius_profile_id=previous_radius_profile_id,
+                operation_reference=operation_reference,
+                failure=failure,
+            )
+            db.commit()
+        except Exception as recovery_error:
+            db.rollback()
+            try:
+                stage_audit_event(
+                    db,
+                    action="rollback_remote_plan_change_provisioning",
+                    entity_type="subscription_change_request",
+                    entity_id=str(command.request_id),
+                    actor_type=AuditActorType.user,
+                    actor_id=command.actor_id,
+                    status_code=500,
+                    is_success=False,
+                    metadata={
+                        "subscription_id": str(command.subscription_id),
+                        "operation_reference": operation_reference,
+                        "result": "radius_recovery_failed",
+                        "failure_type": type(failure).__name__,
+                        "recovery_failure_type": type(recovery_error).__name__,
+                    },
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+            raise SubscriptionChangeExecutionError(
+                "remote_reprovision_compensation_failed",
+                "Provisioning failed and the previous RADIUS profile could not be "
+                "restored automatically. The request remains retryable; reconcile "
+                f"operation {operation_reference} before retrying.",
+            ) from recovery_error
+        if commercial_change_completed:
+            return RemoteProvisionActionOutcome(
+                request.id,
+                request.subscription_id,
+                RemoteProvisionActionStatus.completed,
+                target_offer_name,
+                target_profile.name if target_profile is not None else "Target profile",
+                operation_reference,
+                f"{target_offer_name} profile verified. Plan change completed.",
+            )
+        raise
     return RemoteProvisionActionOutcome(
         finalized.id,
         finalized.subscription_id,
@@ -365,6 +810,25 @@ def provision_and_verify_remote_change(
         operation_reference,
         f"{target_offer_name} profile verified. Plan change completed.",
     )
+
+
+def provision_and_verify_remote_change(
+    db: Session,
+    command: RemoteProvisionActionCommand,
+) -> RemoteProvisionActionOutcome:
+    """Execute remote provisioning and propagate errors from a clean session.
+
+    The web adapter records failed attempts after this command returns. Ensure
+    that audit persistence cannot commit partially staged price or RADIUS state
+    from any validation, projection, finalization, or recovery failure.
+    """
+
+    try:
+        return _provision_and_verify_remote_change(db, command)
+    except Exception:
+        if db.in_transaction():
+            db.rollback()
+        raise
 
 
 def finalize_verified_remote_reprovision(
@@ -917,12 +1381,18 @@ __all__ = [
     "ExecutionReconciliationItem",
     "ExecutionReconciliationOutcome",
     "FulfillmentOutcome",
+    "RemoteProvisionActionCommand",
+    "RemoteProvisionActionOutcome",
+    "RemoteProvisionActionStatus",
+    "RemoteProvisionPriceReview",
     "SubscriptionChangeExecutionError",
     "RemoteReprovisionOutcome",
     "finalize_verified_remote_reprovision",
+    "prepare_remote_reprovision",
     "finalize_verified_service_change",
     "audit_execution_chain",
     "inspect_execution_chain_reconciliation",
+    "provision_and_verify_remote_change",
     "reconcile_execution_chain",
     "repair_execution_chain",
     "settle_relocation_payment",

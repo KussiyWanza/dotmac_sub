@@ -58,6 +58,8 @@ from app.services.customer_portal_context import resolve_customer_subscription
 from app.services.domain_errors import DomainError
 from app.services.queue_adapter import enqueue_task
 from app.services.subscription_change_execution import (
+    RemoteProvisionActionCommand,
+    RemoteProvisionActionStatus,
     SubscriptionChangeExecutionError,
     provision_and_verify_remote_change,
 )
@@ -820,35 +822,30 @@ def provision_remote_plan_change(
     request_id: uuid.UUID,
     idempotency_key: str = Form(..., min_length=16, max_length=160),
     reason: str = Form(..., min_length=8, max_length=500),
+    confirmed_price_fingerprint: str | None = Form(None, max_length=64),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     actor_id = str(_get_actor_id(request) or "admin")
     try:
         outcome = provision_and_verify_remote_change(
             db,
-            request_id=request_id,
-            subscription_id=subscription_id,
-            account_id=customer_id,
-            actor_id=actor_id,
-            idempotency_key=idempotency_key,
-            reason=reason,
+            RemoteProvisionActionCommand(
+                request_id=request_id,
+                subscription_id=subscription_id,
+                account_id=customer_id,
+                actor_id=actor_id,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                confirmed_price_fingerprint=confirmed_price_fingerprint,
+            ),
         )
-        log_audit_event(
-            db,
-            request,
-            action="provision_remote_plan_change",
-            entity_type="subscription_change_request",
-            entity_id=str(request_id),
-            actor_id=actor_id,
-            metadata={
-                "subscription_id": str(subscription_id),
-                "target_offer_name": outcome.target_offer_name,
-                "target_profile_name": outcome.target_profile_name,
-                "operation_reference": outcome.operation_reference,
-                "result": outcome.status.value,
-            },
+        feedback_status = (
+            "price_changed"
+            if outcome.status == RemoteProvisionActionStatus.price_review_required
+            else "billing_error"
+            if outcome.status == RemoteProvisionActionStatus.billing_blocked
+            else "success"
         )
-        feedback_status = "success"
         feedback_message = outcome.message
         feedback_reference = outcome.operation_reference
     except SubscriptionChangeExecutionError as exc:
@@ -868,7 +865,11 @@ def provision_remote_plan_change(
         )
         feedback_status = (
             "pending"
-            if exc.code == "remote_reprovision_verification_missing"
+            if exc.code
+            in {
+                "remote_reprovision_verification_missing",
+                "remote_reprovision_compensation_failed",
+            }
             else "error"
         )
         feedback_message = str(exc)
@@ -897,7 +898,8 @@ def provision_remote_plan_change(
         )
         feedback_status = "error"
         feedback_message = (
-            "Provisioning failed unexpectedly. Retry or contact network operations."
+            "Provisioning did not complete. No plan change was applied; retry this "
+            "request using the operation reference below."
         )
         feedback_reference = f"remote-plan-change:{request_id}"
     return RedirectResponse(

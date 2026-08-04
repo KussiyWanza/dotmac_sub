@@ -135,11 +135,23 @@ Completed in this slice:
   for paid-but-unreleased and verified-but-not-finalized requests; it never
   repairs from memo text, portal state, or unverified provider payloads.
 - Remote reprovisioning now resolves exactly one catalog-linked target RADIUS
-  profile and one active subscription credential. It stages that desired
-  profile without changing the live offer, then accepts completion only when
-  the exact subscription-scoped RADIUS user carries that profile with a sync
-  watermark after the request. The structural profile/user links and
-  verification time remain available for replay, drift audit, and repair.
+  profile and one active subscription credential. Confirmation records the
+  target without changing either the live offer or desired credential profile.
+  Only execution-time price confirmation stages the desired profile, and
+  completion is accepted only when the exact subscription-scoped RADIUS user
+  carries that profile with a sync watermark after the provisioning request.
+  The structural profile/user links and verification time remain available for
+  replay, drift audit, and repair.
+- Operator-triggered remote reprovisioning recomputes the canonical plan-change
+  price and funding decision before network I/O. A changed amount is persisted
+  as review evidence and requires explicit confirmation; insufficient funding
+  remains a billing-specific, retryable state. After confirmation, RADIUS is
+  projected before commercial finalization. If finalization does not commit,
+  the execution owner restores the previous desired RADIUS profile and
+  reprojects it before returning the request to `provisioning`; if the
+  commercial owner already committed, recovery completes the request instead.
+  Audit rows are staged only with the safe review, compensation, or completed
+  state they describe.
 - Vacation hold and resume are explicit subscription lifecycle commands. The
   lifecycle policy owner resolves duration, annual-use, cooldown, active-lock,
   and subscription-status eligibility from canonical settings and exact

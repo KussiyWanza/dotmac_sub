@@ -387,10 +387,12 @@ def confirm_subscription_service_change(
         stage_relocation_charge(db, request)
         db.flush()
     elif delivery_mode == ServiceChangeDeliveryMode.remote_reprovision:
-        from app.services.subscription_change_execution import stage_remote_reprovision
+        from app.services.subscription_change_execution import (
+            prepare_remote_reprovision,
+        )
 
         if prior is None:
-            stage_remote_reprovision(db, request)
+            prepare_remote_reprovision(db, request)
     else:
         from app.models.subscription_change import SubscriptionChangeExecutionState
 

@@ -41,6 +41,16 @@ class EmailAttachment:
     content: bytes
 
 
+@dataclass(frozen=True)
+class SmtpSenderOption:
+    """Non-secret SMTP profile identity exposed to configuration UIs."""
+
+    sender_key: str
+    from_email: str
+    from_name: str
+    is_active: bool
+
+
 def _attachment_filename(value: str) -> str:
     filename = value.replace("\\", "_").replace("/", "_")
     filename = _SAFE_ATTACHMENT_FILENAME.sub("-", filename).strip(".-")
@@ -328,6 +338,25 @@ def list_smtp_senders(db: Session | None) -> list[dict[str, Any]]:
             profile[field] = "" if raw is None else str(raw)
 
     return [senders[key] for key in sorted(senders.keys())]
+
+
+def list_smtp_sender_options(
+    db: Session | None, *, active_only: bool = True
+) -> tuple[SmtpSenderOption, ...]:
+    """Return typed, non-secret profile choices for other domain surfaces."""
+
+    options = tuple(
+        SmtpSenderOption(
+            sender_key=str(profile["sender_key"]),
+            from_email=str(profile["from_email"]),
+            from_name=str(profile["from_name"]),
+            is_active=bool(profile["is_active"]),
+        )
+        for profile in list_smtp_senders(db)
+    )
+    if active_only:
+        return tuple(option for option in options if option.is_active)
+    return options
 
 
 def get_default_smtp_sender_key(db: Session | None) -> str:

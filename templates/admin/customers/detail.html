@@ -18,10 +18,10 @@
 <div x-data="customerDetail()" class="space-y-6">
     {% if request.query_params.get('service_change_message') %}
     {% set change_feedback_status = request.query_params.get('service_change_status') %}
-    <div class="rounded-xl border p-4 {{ 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-100' if change_feedback_status == 'success' else 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100' if change_feedback_status == 'pending' else 'border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-100' }}"
+    <div class="rounded-xl border p-4 {{ 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-100' if change_feedback_status == 'success' else 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100' if change_feedback_status in ['pending', 'price_changed'] else 'border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-100' }}"
          role="status"
          data-testid="remote-plan-change-feedback">
-        <p class="text-sm font-semibold">{{ 'Remote plan change completed' if change_feedback_status == 'success' else 'Remote plan change still pending' if change_feedback_status == 'pending' else 'Remote plan change failed' }}</p>
+        <p class="text-sm font-semibold">{{ 'Remote plan change completed' if change_feedback_status == 'success' else 'Upgrade price changed' if change_feedback_status == 'price_changed' else 'Billing review required' if change_feedback_status == 'billing_error' else 'Remote plan change still pending' if change_feedback_status == 'pending' else 'Remote plan change failed' }}</p>
         <p class="mt-1 text-sm">{{ request.query_params.get('service_change_message') }}</p>
         {% if request.query_params.get('service_change_reference') %}
         <p class="mt-2 font-mono text-xs opacity-75">Reference: {{ request.query_params.get('service_change_reference') }}</p>
@@ -1397,6 +1397,18 @@
                                         {% if pending_change.target_service_address %}<br>Relocating to {{ pending_change.target_service_address }}{% endif %}
                                         {% if pending_change.field_fee_amount %}<br>One-time field charge: {{ pending_change.field_fee_currency }} {{ '{:,.2f}'.format(pending_change.field_fee_amount) }}{% endif %}
                                     </p>
+                                    {% if pending_change.price_review %}
+                                    <div class="mt-3 rounded-lg border border-amber-300 bg-white/70 p-3 text-xs text-amber-950 dark:border-amber-700 dark:bg-slate-950/30 dark:text-amber-100"
+                                         data-testid="remote-plan-change-price-review">
+                                        <p class="font-semibold">Confirm the refreshed upgrade price before provisioning</p>
+                                        <p class="mt-1">
+                                            {{ '₦' if pending_change.price_review.currency == 'NGN' else pending_change.price_review.currency ~ ' ' }}{{ '{:,.2f}'.format(pending_change.price_review.previous_amount) }}
+                                            →
+                                            {{ '₦' if pending_change.price_review.currency == 'NGN' else pending_change.price_review.currency ~ ' ' }}{{ '{:,.2f}'.format(pending_change.price_review.current_amount) }}
+                                        </p>
+                                        <p class="mt-1 opacity-80">Available balance: {{ '₦' if pending_change.price_review.currency == 'NGN' else pending_change.price_review.currency ~ ' ' }}{{ '{:,.2f}'.format(pending_change.price_review.available_balance) }} · refreshed {{ pending_change.price_review.effective_at | app_datetime('%b %d, %Y %H:%M', '—') }}</p>
+                                    </div>
+                                    {% endif %}
                                     {% if pending_change.delivery_mode == 'remote_reprovision' and can_reconcile_service_changes %}
                                     <form method="post"
                                           action="/admin/customers/person/{{ customer.id }}/services/{{ subscription.id }}/remote-plan-change/{{ pending_change.request_id }}/provision"
@@ -1406,10 +1418,13 @@
                                         {% include "components/forms/csrf_input.html" %}
                                         <input type="hidden" name="idempotency_key" value="remote-plan-change:{{ pending_change.request_id }}">
                                         <input type="hidden" name="reason" value="Operator requested RADIUS provisioning and verification">
+                                        {% if pending_change.price_review %}
+                                        <input type="hidden" name="confirmed_price_fingerprint" value="{{ pending_change.price_review.fingerprint }}">
+                                        {% endif %}
                                         <button type="submit"
                                                 :disabled="provisioning"
                                                 class="inline-flex items-center rounded-md bg-amber-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-800 disabled:cursor-wait disabled:opacity-60">
-                                            <span x-text="provisioning ? 'Provisioning and verifying…' : '{{ 'Retry provisioning' if request.query_params.get('service_change_status') in ['pending', 'error'] else 'Provision and verify now' }}'">{{ 'Retry provisioning' if request.query_params.get('service_change_status') in ['pending', 'error'] else 'Provision and verify now' }}</span>
+                                            <span x-text="provisioning ? 'Refreshing price…' : '{{ 'Refresh price and continue' if pending_change.price_review else 'Retry provisioning' if request.query_params.get('service_change_status') in ['pending', 'error', 'billing_error'] else 'Provision and verify now' }}'">{{ 'Refresh price and continue' if pending_change.price_review else 'Retry provisioning' if request.query_params.get('service_change_status') in ['pending', 'error', 'billing_error'] else 'Provision and verify now' }}</span>
                                         </button>
                                     </form>
                                     {% endif %}

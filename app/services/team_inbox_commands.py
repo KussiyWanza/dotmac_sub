@@ -1126,6 +1126,8 @@ def update_email_route(
     is_primary: bool | None = None,
     priority: int | None = None,
     is_active: bool | None = None,
+    outbound_email_sender_key: str | None = None,
+    update_outbound_email_sender: bool = False,
 ) -> None:
     def action() -> None:
         team_inbox_routing.update_email_route(
@@ -1134,6 +1136,8 @@ def update_email_route(
             is_primary=is_primary,
             priority=priority,
             is_active=is_active,
+            outbound_email_sender_key=outbound_email_sender_key,
+            update_outbound_email_sender=update_outbound_email_sender,
         )
 
     _commit(db, action)

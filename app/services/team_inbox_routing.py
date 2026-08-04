@@ -284,6 +284,7 @@ class EmailRouteRow:
     is_primary: bool
     priority: int
     is_active: bool
+    outbound_email_sender_key: str | None
 
 
 @dataclass(frozen=True)
@@ -357,6 +358,13 @@ def list_email_routes(
             is_primary=bool(route.is_primary),
             priority=int(route.priority),
             is_active=bool(route.is_active),
+            outbound_email_sender_key=str(
+                (route.metadata_ or {}).get(
+                    team_outbound.OUTBOUND_EMAIL_SENDER_METADATA_KEY
+                )
+                or ""
+            ).strip()
+            or None,
         )
         for route, team in query.all()
     ]
@@ -760,11 +768,27 @@ def update_email_route(
     is_primary: bool | None = None,
     priority: int | None = None,
     is_active: bool | None = None,
+    outbound_email_sender_key: str | None = None,
+    update_outbound_email_sender: bool = False,
 ) -> TeamInboxEmailRoute:
     route_uuid = _coerce_uuid(route_id)
     route = db.get(TeamInboxEmailRoute, UUID(route_uuid)) if route_uuid else None
     if route is None:
         raise EmailRouteError("Email route not found.")
+
+    if update_outbound_email_sender:
+        from app.services.email import list_smtp_sender_options
+
+        sender_key = str(outbound_email_sender_key or "").strip().lower()
+        active_keys = {option.sender_key for option in list_smtp_sender_options(db)}
+        if sender_key and sender_key not in active_keys:
+            raise EmailRouteError("Choose an active SMTP sender profile.")
+        metadata = dict(route.metadata_ or {})
+        if sender_key:
+            metadata[team_outbound.OUTBOUND_EMAIL_SENDER_METADATA_KEY] = sender_key
+        else:
+            metadata.pop(team_outbound.OUTBOUND_EMAIL_SENDER_METADATA_KEY, None)
+        route.metadata_ = metadata or None
 
     if priority is not None:
         route.priority = int(priority)

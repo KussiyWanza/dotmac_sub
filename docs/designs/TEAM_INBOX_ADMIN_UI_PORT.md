@@ -369,6 +369,16 @@ dropped silently.
 model and a consumer but no writer outside direct SQL, which is why production
 ran six live mailboxes against zero rows.
 
+The same surface now assigns an active, non-secret SMTP sender key to each
+mailbox route. `communications.team_inbox_commands` owns the committed update;
+`team_inbox_routing` validates the key against the notification service's typed
+sender options and persists only `outbound_email_sender_key` in route metadata.
+That observation is copied to the conversation-team link, where the existing
+outbound resolver gives it precedence over activity and default senders.
+Clearing the route value restores default sender resolution. Reapplying routing
+from the authoritative route recreates the conversation-team projection; SMTP
+credentials remain owned by notification settings and never enter route metadata.
+
 **Still open, and not code:** forward one low-volume mailbox to the inbound
 listener, confirm the probe and conversation materialization, then move the
 rest. That is an MX or per-mailbox forwarding change on the mail side, and a
