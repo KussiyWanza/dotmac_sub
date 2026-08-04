@@ -56,6 +56,7 @@ from app.models.splynx_transaction import SplynxBillingTransaction
 from app.models.subscriber import Subscriber
 from app.schemas.billing import CreditNoteIssuePreviewRequest
 from app.services.billing.credit_notes import CreditNotes
+from app.services.billing.splynx_history_opening import SplynxHistoryOpeningError
 from app.services.customer_financial_ledger import calculate_customer_balance
 from scripts.one_off.billing_alignment_audit import (
     LEGACY_LEDGER_CUTOVER,
@@ -388,8 +389,12 @@ def _replay_tables(
     final_balances = Table(
         "audit_splynx_final_balances",
         metadata,
-        Column("subscriber_id", Uuid(as_uuid=True), primary_key=True),
+        Column("splynx_customer_id", Integer, primary_key=True),
+        Column("subscriber_id", Uuid(as_uuid=True), unique=True),
         Column("final_deposit", Numeric(19, 4), nullable=False),
+        Column("active_transaction_net", Numeric(19, 4)),
+        Column("active_transaction_rows", Integer, nullable=False),
+        Column("transaction_reconciled", Boolean, nullable=False),
     )
     final_services = Table(
         "audit_splynx_final_services",
@@ -419,8 +424,12 @@ def _replay_tables(
     metadata.create_all(db_session.get_bind())
     db_session.execute(
         final_balances.insert().values(
+            splynx_customer_id=1,
             subscriber_id=subscriber_id,
             final_deposit=Decimal("100.00"),
+            active_transaction_net=Decimal("100.00"),
+            active_transaction_rows=1,
+            transaction_reconciled=True,
         )
     )
     db_session.execute(
@@ -484,6 +493,8 @@ def _replay_tables(
 
 
 def _source_mapped_subscription(db_session, subscriber):
+    subscriber.splynx_customer_id = 1
+    subscriber.created_at = datetime(2026, 6, 1, tzinfo=UTC)
     offer = CatalogOffer(
         name="Replay source plan",
         service_type=ServiceType.residential,
@@ -601,15 +612,17 @@ def test_funding_export_uses_owner_cohort_replay_and_threshold(db_session, subsc
 
     assert export.ready is True
     assert export.candidate_ids == (str(subscriber.id),)
-    assert export.positions[str(subscriber.id)] == Decimal("50.00")
+    assert export.positions[str(subscriber.id)] == Decimal("100.00")
     payload = export.funding_payload()
-    assert payload["source"] == "splynx-final-plus-native-events:test"
+    assert payload["source"].startswith(
+        "splynx-final-plus-native-events:test;splynx-history-sha256="
+    )
     assert payload["captured_at"] == "2026-07-12T00:00:00Z"
     assert payload["currency"] == "NGN"
     assert payload["accounts"] == [
         {
             "account_id": str(subscriber.id),
-            "available_balance": "50.00",
+            "available_balance": "100.00",
         }
     ]
     sealed = export.sealed_funding_payload(
@@ -621,7 +634,7 @@ def test_funding_export_uses_owner_cohort_replay_and_threshold(db_session, subsc
     assert sealed["attestation"]["manifest_payload_sha256"]
 
 
-def test_funding_export_blocks_candidate_without_source_baseline(
+def test_funding_export_fails_complete_batch_without_source_history(
     db_session, subscriber
 ):
     subscription = _source_mapped_subscription(db_session, subscriber)
@@ -630,18 +643,17 @@ def test_funding_export_blocks_candidate_without_source_baseline(
     db_session.execute(final_balances.delete())
     db_session.commit()
     try:
-        export = build_prepaid_funding_snapshot(
-            db_session,
-            snapshot_at=datetime(2026, 7, 12, tzinfo=UTC),
-            source="splynx-final-plus-native-events:test",
-        )
+        with pytest.raises(
+            SplynxHistoryOpeningError,
+            match="frozen Splynx history does not cover the complete customer cohort",
+        ):
+            build_prepaid_funding_snapshot(
+                db_session,
+                snapshot_at=datetime(2026, 7, 12, tzinfo=UTC),
+                source="splynx-final-plus-native-events:test",
+            )
     finally:
         metadata.drop_all(db_session.get_bind())
-
-    assert export.ready is False
-    assert export.missing_baseline == (str(subscriber.id),)
-    with pytest.raises(ValueError, match="incomplete provenance"):
-        export.funding_payload()
 
 
 def test_replay_separates_absent_service_history_from_noncanonical_period_evidence(
@@ -794,6 +806,7 @@ def test_replay_starts_proven_native_only_account_at_zero(db_session, subscriber
     subscription = _source_mapped_subscription(db_session, subscriber)
     metadata = _replay_tables(db_session, subscriber.id, subscription.id)
     subscriber.created_at = datetime(2026, 7, 1, tzinfo=UTC)
+    subscriber.splynx_customer_id = None
     final_balances = metadata.tables["audit_splynx_final_balances"]
     final_services = metadata.tables["audit_splynx_final_services"]
     db_session.execute(final_balances.delete())
@@ -816,6 +829,7 @@ def test_replay_keeps_late_entered_backdated_native_payment(db_session, subscrib
     subscription = _source_mapped_subscription(db_session, subscriber)
     metadata = _replay_tables(db_session, subscriber.id, subscription.id)
     subscriber.created_at = datetime(2026, 7, 1, tzinfo=UTC)
+    subscriber.splynx_customer_id = None
     final_balances = metadata.tables["audit_splynx_final_balances"]
     final_services = metadata.tables["audit_splynx_final_services"]
     db_session.execute(final_balances.delete())
@@ -976,7 +990,7 @@ def test_funding_export_replays_customer_position_adjustment(db_session, subscri
 
     account_id = str(subscriber.id)
     assert export.ready is True
-    assert export.positions[account_id] == Decimal("550.00")
+    assert export.positions[account_id] == Decimal("600.00")
     diagnostics = export.diagnostics_payload()
     assert diagnostics["incomplete_reason_counts"] == {}
 

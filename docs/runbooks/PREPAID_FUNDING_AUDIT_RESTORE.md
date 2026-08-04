@@ -1,8 +1,8 @@
 # Runbook: prepaid funding audit restore
 
-**Purpose.** Obtain the per-account blocker reason codes for prepaid accounts
-that have no reviewed opening baseline, so their funding can be reconstructed
-and they can re-enter money-based enforcement.
+**Purpose.** Build one exact, complete-history opening artifact for the prepaid
+funding cohort so every account has a reviewed baseline and participates in
+money-based enforcement.
 
 **Owner.** `app/services/prepaid_funding_reconstruction.py` owns every baseline
 write. Nothing in this runbook writes one.
@@ -23,23 +23,18 @@ must never do so against the live database. Until this runbook existed there
 was no way to satisfy the guard, which made the entire funding-baseline repair
 path unreachable in practice.
 
-## What the quarantined cohort is
+## What source completion means
 
-An account is funding-quarantined when it existed **before** the authority
-cutover and has no active `PrepaidFundingBaseline`. Its balance cannot be
-derived, so `prepaid_balance_sweep` excludes it from enforcement entirely:
-
-```python
-enforceable_ids = set(account_ids) - quarantined_ids
-```
-
-No warning, no suspension, no restoration. That is the correct response to an
-unverifiable balance — and it means each quarantined account is a live customer
-outside money-based enforcement until its baseline is repaired.
-
-As of 2026-07-26 production carried **80** such accounts out of 3,919 funding
-candidates, all active subscribers, holding 84 active subscriptions between
-them, none under a prepaid enforcement lock.
+Every migrated candidate has complete Splynx transaction history. Credits minus
+debits is its source position; a complete empty transaction set is zero. The
+isolated resolver then adds canonical Sub-native facts after the fixed handoff.
+A current account without an active baseline is source-batch debt, not an
+unknown balance or a permanent customer disposition. Until the exact cohort is
+materialized, enforcement continues to fail closed for those accounts. The
+completion gate is source-incomplete count zero, opening count equal to the
+opening-required cohort, and full-cohort parity. Accounts created after
+subledger authority activation start at authoritative zero without a migration
+opening.
 
 ## Safety model
 
@@ -87,9 +82,10 @@ scripts/one_off/prepaid_funding_audit_restore.sh export \
   --source funding-gap-survey-2026-07-26
 ```
 
-**Exit 2 is the expected outcome** while accounts remain quarantined: the
-cohort is not fully reconstructable, so nothing is sealed. The blockers file
-is written *before* that point, and is the artifact you came for:
+The export succeeds only when the complete candidate cohort has exact source
+coverage. Missing, duplicate, malformed, mismatched, or unreconciled history
+aborts the whole artifact. A complete empty transaction set is zero. The
+diagnostics file is written before a blocked exit:
 
 ```
 /var/backups/dotmac_sub/funding_audit/blockers_<stamp>.json
@@ -98,10 +94,9 @@ is written *before* that point, and is the artifact you came for:
 It contains account UUIDs and reason codes only — no customer identity,
 credentials, free text, or delivery coordinates.
 
-Pass `--allow-quarantined-subset` through only when you intend to seal
-baselines for the reconstructable accounts and bind the excluded cohort into
-the signed blocker manifest. That path additionally needs `--signing-key-ref`
-pointing at the OpenBao Ed25519 private key reference.
+There is no partial-subset option. Correct or rebuild the isolated source
+snapshot, rerun the complete export, and use `--signing-key-ref` pointing at the
+OpenBao Ed25519 private-key reference only when the cohort is complete.
 
 ### 3. Destroy
 
@@ -116,16 +111,13 @@ data), and the network. Exported artifacts are kept.
 
 ---
 
-## After the export: the repair pipeline
+## After the export: the completion pipeline
 
-1. `export_prepaid_funding_snapshot.py` — this runbook. Produces blockers.
-2. `adjudicate_prepaid_funding_gaps.py` — binds one reviewed decision to each
-   blocker. Cannot write money: no `SessionLocal`, no `--apply`. Dispositions
-   are `source_evidence_required`, `canonical_payment_required`, `quarantine`,
-   `no_paid_through_due_immediately`.
-3. **Correct the owning source, then re-replay.** A blocker clears only when
-   the independent replay stops reporting it — never by editing the manifest.
-4. `materialize_prepaid_funding_reconstruction.py` — verifies the Ed25519
+1. `export_prepaid_funding_snapshot.py` — resolves the complete frozen history
+   plus canonical post-handoff facts and emits a signed exact-cohort artifact.
+2. **Correct the source snapshot, then rerun.** An integrity error clears only
+   when the resolver proves the complete source; never edit a generated target.
+3. `materialize_prepaid_funding_reconstruction.py` — verifies the Ed25519
    signature against the public key at billing setting
    `prepaid_reconstruction_attestation_public_key_ref`, then applies. Dry-run
    by default; apply requires `--reviewed-sha256`, `--evidence-ref`,
@@ -137,21 +129,21 @@ data), and the network. Exported artifacts are kept.
 `expected_account_ids = candidate_prepaid_funding_account_ids(db)` — the whole
 cohort — and preview blocks on any `missing_reconstruction_account` or
 `unexpected_reconstruction_account`. You cannot repair 80 accounts in
-isolation; every manifest names all of them, each either materialized or
-explicitly quarantined.
+isolation; every manifest materializes every candidate. A signed manifest with
+any blocker/excluded account is rejected.
 
 **A repair batch is not the cutover.** The authority cutover already exists, so
 a new batch gets `is_authority_cutover = False`, and its `position_at` must be
 strictly newer than the existing baselines or preview blocks with
 `reconstruction_position_not_newer`.
 
-**Bank-statement evidence is not self-authorising.** It authorises a canonical
-payment only with attested definitive customer attribution and a non-secret
-evidence reference. Amount/date coincidence is explicitly insufficient.
+**The target is not a copied deposit field.** The resolver proves the complete
+active transaction net equals the final source position, then adds only
+canonical post-handoff Sub facts. A mismatch blocks the whole artifact.
 
 ## Monitoring
 
-`billing_prepaid_funding_quarantined_accounts` tracks the size of this backlog;
-the `prepaid_funding_quarantined` anomaly logs at `warning`, not `error`,
-because quarantine is the correct outcome for an un-baselined account rather
-than a defect to page on. Watch it trend to zero as repairs land.
+`billing_prepaid_funding_quarantined_accounts` is the retained compatibility
+metric for the source-incomplete count. It must reach zero at completion and
+remain zero. Any later non-zero value is a source/materialization regression,
+not a permitted steady state.

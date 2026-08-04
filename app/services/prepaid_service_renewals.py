@@ -2088,15 +2088,15 @@ def run_due_prepaid_service_renewals(
     The daily billing runner calls this only behind the canonical control. A
     stale anchor older than two days is reported for reviewed reconciliation,
     never silently back-billed. Global missing authority fails closed for the
-    pass. Accounts excluded from the materialized authority cohort and an
-    unexpected account-level missing baseline are reported and skipped so one
-    unavailable position cannot block unrelated verified renewals.
+    pass. An incomplete source-batch account is reported and skipped until the
+    complete history artifact materializes it; this is migration debt, not a
+    permanent renewal disposition.
     """
     from app.services.billing_automation import _period_end
     from app.services.prepaid_funding_reconstruction import (
         PrepaidFundingBaselineMissingError,
         authority_cutover_batch,
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
     )
 
     effective_at = _utc(run_at or datetime.now(UTC))
@@ -2190,7 +2190,7 @@ def run_due_prepaid_service_renewals(
         db.flush()
         return summary
 
-    quarantined_account_ids = prepaid_funding_quarantined_account_ids(
+    incomplete_source_account_ids = prepaid_funding_incomplete_source_account_ids(
         db,
         {subscription.subscriber_id for subscription in chargeable_subscriptions},
     )
@@ -2201,7 +2201,7 @@ def run_due_prepaid_service_renewals(
         effective_at,
     )
     for subscription in chargeable_subscriptions:
-        if subscription.subscriber_id in quarantined_account_ids:
+        if subscription.subscriber_id in incomplete_source_account_ids:
             summary["prepaid_renewals_quarantined"] = (
                 int(summary["prepaid_renewals_quarantined"]) + 1
             )

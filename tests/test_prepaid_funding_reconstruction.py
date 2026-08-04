@@ -264,9 +264,7 @@ def test_signed_manifest_rejects_materialized_and_quarantined_overlap(
         )
 
 
-def test_signed_manifest_materializes_verified_subset_and_quarantines_the_rest(
-    db_session, subscriber
-):
+def test_signed_manifest_rejects_a_partial_source_cohort(db_session, subscriber):
     position_at = datetime.now(UTC) - timedelta(minutes=5)
     quarantined = Subscriber(
         first_name="Quarantined",
@@ -291,24 +289,25 @@ def test_signed_manifest_materializes_verified_subset_and_quarantines_the_rest(
         now=position_at + timedelta(minutes=1),
     )
 
-    assert preview.ready is True
+    assert preview.ready is False
     assert preview.create_count == 1
     assert preview.manifest.quarantined_account_ids == (quarantined.id,)
-    result = apply_prepaid_funding_reconstruction(
-        db_session,
-        payload,
-        expected_manifest_sha256=preview.manifest.manifest_sha256,
-        evidence_ref="finance-review:verified-subset-test",
-        approved_by="billing-operations-test",
-        expected_account_ids={subscriber.id, quarantined.id},
-        now=position_at + timedelta(minutes=1),
-    )
-    db_session.commit()
+    assert "reconstruction_source_cohort_incomplete" in preview.blockers
+    with pytest.raises(
+        PrepaidFundingReconstructionError,
+        match="reconstruction_source_cohort_incomplete",
+    ):
+        apply_prepaid_funding_reconstruction(
+            db_session,
+            payload,
+            expected_manifest_sha256=preview.manifest.manifest_sha256,
+            evidence_ref="finance-review:partial-source-must-fail",
+            approved_by="billing-operations-test",
+            expected_account_ids={subscriber.id, quarantined.id},
+            now=position_at + timedelta(minutes=1),
+        )
 
-    assert result.batch.account_count == 1
-    assert prepaid_available_balance(db_session, subscriber.id) == Decimal("100.00")
-    with pytest.raises(PrepaidFundingBaselineMissingError, match="baseline missing"):
-        prepaid_available_balance(db_session, quarantined.id)
+    assert authority_cutover_batch(db_session) is None
 
 
 def test_existing_semantic_manifest_cannot_be_resealed_silently(db_session, subscriber):

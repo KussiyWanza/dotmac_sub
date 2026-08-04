@@ -175,16 +175,14 @@ def test_prepaid_policy_fails_closed_for_cutover_quarantine(db_session, monkeypa
         lambda db: object(),
     )
     monkeypatch.setattr(
-        "app.services.prepaid_funding_reconstruction.prepaid_funding_quarantined_account_ids",
+        "app.services.prepaid_funding_reconstruction.prepaid_funding_incomplete_source_account_ids",
         lambda db, account_ids, *, currency: {prepaid.account_id},
     )
 
     with pytest.raises(PrepaidPolicyError) as exc_info:
         plan_prepaid_consequence(db_session, obligation=prepaid, now=NOW)
 
-    assert (
-        exc_info.value.code == "collections.prepaid_policy.opening_position_quarantined"
-    )
+    assert exc_info.value.code == "collections.prepaid_policy.opening_source_incomplete"
     assert str(prepaid.account_id) in exc_info.value.details["work_item_fingerprint"]
 
 

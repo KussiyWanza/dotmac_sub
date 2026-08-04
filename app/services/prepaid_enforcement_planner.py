@@ -650,15 +650,15 @@ def plan_prepaid_enforcement(
             message="A selected prepaid enforcement account identifier is invalid.",
         ) from exc
     from app.services.prepaid_funding_reconstruction import (
-        prepaid_funding_quarantined_account_ids,
+        prepaid_funding_incomplete_source_account_ids,
     )
 
     funding_candidate_ids = candidate_prepaid_funding_account_ids(db)
-    quarantined_ids = prepaid_funding_quarantined_account_ids(
+    incomplete_source_ids = prepaid_funding_incomplete_source_account_ids(
         db,
         [account_id for account_id in ids if account_id in funding_candidate_ids],
     )
-    ids = [account_id for account_id in ids if account_id not in quarantined_ids]
+    ids = [account_id for account_id in ids if account_id not in incomplete_source_ids]
     if limit is not None:
         ids = ids[: max(0, limit)]
     accounts = list(

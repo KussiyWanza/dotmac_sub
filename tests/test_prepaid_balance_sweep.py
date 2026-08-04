@@ -1,8 +1,9 @@
 """Tests for the balance/expiry-based prepaid enforcement sweep.
 
 This sweep SUSPENDS customers, so every account-level safety transition is
-covered here: arm+warn, configured grace, suspension, recovery, quarantine,
-financial shields, idempotent re-runs, and the shared daily time window.
+covered here: arm+warn, configured grace, suspension, recovery, incomplete
+opening sources, financial shields, idempotent re-runs, and the shared daily
+time window.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,6 @@ from tests.prepaid_funding_helpers import (
     TEST_PREPAID_POSITION_AT,
     ensure_test_prepaid_contract,
     materialize_test_prepaid_opening_balance,
-    materialize_test_prepaid_opening_balances,
 )
 
 # A fixed weekday noon (UTC). 2026-07-06 = Monday.
@@ -198,7 +198,7 @@ def test_prepaid_account_with_postpaid_subscription_is_reviewed_as_mismatch(
     assert subscription.status == SubscriptionStatus.active
 
 
-def test_sweep_never_processes_quarantined_account_for_money_action(
+def test_sweep_never_processes_incomplete_source_account_for_money_action(
     db_session, subscriber_account, subscription, monkeypatch
 ):
     from app.services.collections import prepaid_balance_sweep as sweep_module
@@ -238,13 +238,11 @@ def test_sweep_never_processes_quarantined_account_for_money_action(
     )
     db_session.add(verified_subscription)
     db_session.commit()
-    materialize_test_prepaid_opening_balances(
+    materialize_test_prepaid_opening_balance(
         db_session,
-        {verified_account.id: Decimal("500.00")},
+        verified_account.id,
+        Decimal("500.00"),
         position_at=position_at,
-        quarantined={
-            subscriber_account.id: "plan_decision_not_replayed",
-        },
     )
     _record_retired_control_rows(db_session)
 

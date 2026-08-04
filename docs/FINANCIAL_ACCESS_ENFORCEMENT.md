@@ -371,36 +371,25 @@ trusted public key setting must be an OpenBao reference. The signing private key
 belongs to the isolated audit environment and must never be copied into Sub,
 Git, logs, reports, or durable knowledge.
 
-The manifest binds currency, timestamp, source, account balances, materialized
-IDs, quarantined IDs/reasons, semantic/payload/cohort/blocker hashes, signer
-fingerprint, approving actor, and a non-secret evidence reference. Missing,
-extra, overlapping, duplicate, future-dated, wrong-currency, unsigned, or
-changed-cohort rows fail closed. There is no generic blocker override.
+The manifest binds currency, timestamp, complete source-history fingerprint,
+account targets, payload/cohort hashes, signer fingerprint, approving actor, and
+a non-secret evidence reference. The migrated component is credits minus debits
+over each customer's complete frozen Splynx transaction history; a complete
+empty history is zero. Canonical Sub-native facts after the fixed handoff advance
+that source position to the review instant. Missing, extra, duplicate,
+mismatched, malformed, unreconciled, future-dated, wrong-currency, unsigned, or
+changed-cohort evidence fails the whole batch. Partial-subset sealing and generic
+blocker overrides are forbidden.
 
-Accepted blocker dispositions are narrowly typed:
-
-- `source_evidence_required`
-- `canonical_payment_required` with definitive reviewed attribution
-- `quarantine`
-- `no_paid_through_due_immediately` only for the exact hash-bound, independently
-  verified never-paid service reason
-
-Generate/adjudicate in the isolated audit environment, then seal, review,
-dry-run, and materialize in one controlled window:
+Generate in the isolated audit environment, then seal, review, dry-run, and
+materialize in one controlled window:
 
 ```bash
-python scripts/one_off/adjudicate_prepaid_funding_gaps.py \
-  --blockers /approved/prepaid-funding-blockers.json \
-  --decisions /approved/prepaid-funding-gap-decisions.json \
-  --out /approved/prepaid-funding-gap-actions.json
-
 python scripts/one_off/export_prepaid_funding_snapshot.py \
   --snapshot-at REVIEWED_TIMESTAMP \
   --source REVIEWED_SOURCE_LABEL \
-  --gap-actions /approved/prepaid-funding-gap-actions.json \
   --out /approved/prepaid-funding-sealed.json \
   --blockers-out /approved/prepaid-funding-blockers.json \
-  --allow-quarantined-subset \
   --signing-key-ref bao://secret/audit/prepaid-reconstruction-signer#private_key_pem
 
 python scripts/one_off/materialize_prepaid_funding_reconstruction.py \

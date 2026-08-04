@@ -1211,7 +1211,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "paid and backed by exact active settlement applications. "
                     "An exact direct-renewal adjustment and entitlement for the same "
                     "account, subscription, period, amount, and currency takes "
-                    "precedence so a later documentary invoice cannot debit twice."
+                    "precedence so a later documentary invoice cannot debit twice. "
+                    "After customer-subledger authority activates, the immutable "
+                    "finance-approved subledger opening becomes the verifier's temporal "
+                    "baseline. Pre-opening facts retain their reviewed meaning; only "
+                    "facts crossing the opening instant use current native semantics."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -1222,7 +1226,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             role=OwnerRole.RESOLVER,
                             input_names=(
-                                "reviewed prepaid opening position",
+                                "reviewed prepaid reconstruction position",
                                 "canonical payment and refund documents",
                                 "canonical collectible invoice documents",
                                 "canonical paid prepaid consumption documents",
@@ -1234,7 +1238,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             name="customer-visible financial position",
                             role=OwnerRole.RESOLVER,
                             input_names=(
-                                "reviewed prepaid opening position",
+                                "reviewed prepaid reconstruction position",
                                 "canonical payment and refund documents",
                                 "canonical collectible invoice documents",
                                 "canonical paid prepaid consumption documents",
@@ -1246,7 +1250,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             name="bounded cohort financial projections",
                             role=OwnerRole.RESOLVER,
                             input_names=(
-                                "reviewed prepaid opening position",
+                                "reviewed prepaid reconstruction position",
                                 "canonical payment and refund documents",
                                 "canonical collectible invoice documents",
                                 "canonical paid prepaid consumption documents",
@@ -1267,12 +1271,14 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     authoritative_inputs=(
                         AuthorityInput(
-                            name="reviewed prepaid opening position",
+                            name="reviewed prepaid reconstruction position",
                             owner="financial.prepaid_funding_reconstruction",
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
-                                "active currency-bound PrepaidFundingBaseline and its "
-                                "authority-cutover position time"
+                                "verified_prepaid_funding_balances: active currency-bound "
+                                "PrepaidFundingBaseline before subledger activation, then "
+                                "the immutable approved CustomerSubledgerOpeningPosition "
+                                "plus canonical facts crossing its occurred_at boundary"
                             ),
                         ),
                         AuthorityInput(
@@ -1362,7 +1368,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ProjectionContract(
                             name="customer-visible financial position",
                             input_names=(
-                                "reviewed prepaid opening position",
+                                "reviewed prepaid reconstruction position",
                                 "canonical payment and refund documents",
                                 "canonical collectible invoice documents",
                                 "canonical paid prepaid consumption documents",
@@ -2201,6 +2207,143 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
     DomainSOT(
         domain="financial_access",
         services=(
+            SOTService(
+                name="billing.splynx_history_opening",
+                module="app.services.billing.splynx_history_opening",
+                owns=("complete Splynx-history customer opening target",),
+                depends_on=(
+                    "customer.accounts",
+                    "financial.credit_notes",
+                    "financial.invoices",
+                    "financial.ledger",
+                    "financial.payments",
+                ),
+                notes=(
+                    "Cutover-only resolver over the frozen isolated Splynx audit "
+                    "restore. A complete empty transaction set is zero; missing, "
+                    "duplicate, malformed, or unreconciled source evidence fails the "
+                    "whole cohort. It never contacts Splynx, writes money, assigns an "
+                    "unknown balance, or remains a runtime authority after completion."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="complete Splynx-history customer opening target",
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "frozen Splynx transaction-net evidence",
+                                "canonical post-handoff native financial facts",
+                                "canonical migrated customer identity",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="frozen Splynx transaction-net evidence",
+                            owner="external:splynx_final_snapshot",
+                            kind=AuthorityKind.EXTERNAL_OBSERVATION,
+                            source=(
+                                "isolated audit_splynx_final_balances rows produced from "
+                                "the retained final source snapshot, including exact active "
+                                "transaction count/net and source-deposit reconciliation"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical post-handoff native financial facts",
+                            owner="financial.ledger",
+                            kind=AuthorityKind.DERIVED_PROJECTION,
+                            source=(
+                                "currency-separated native payment, invoice, credit-note, "
+                                "and ledger facts strictly after the fixed legacy handoff; "
+                                "each underlying document remains owned by its named "
+                                "financial service"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical migrated customer identity",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "Subscriber id and retained one-to-one "
+                                "splynx_customer_id provenance"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "The isolated export adapter owns a read-only repeatable "
+                            "snapshot; this resolver performs no write or transaction "
+                            "completion."
+                        ),
+                        locking="No locks; the restored source snapshot is frozen.",
+                        idempotency=(
+                            "The same complete cohort, source rows, handoff, native facts, "
+                            "currency, and position time produce the same fingerprints."
+                        ),
+                        retries=(
+                            "Exact read retries are safe; any integrity error aborts the "
+                            "complete artifact."
+                        ),
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(
+                            "billing.splynx_history_opening.invalid_query",
+                            "billing.splynx_history_opening.unsupported_currency",
+                            "billing.splynx_history_opening.source_snapshot_missing",
+                            "billing.splynx_history_opening.source_cohort_incomplete",
+                            "billing.splynx_history_opening.source_identity_duplicate",
+                            "billing.splynx_history_opening.source_identity_mismatch",
+                            "billing.splynx_history_opening.source_history_malformed",
+                            "billing.splynx_history_opening.source_history_unreconciled",
+                        ),
+                        mapping_owner=(
+                            "scripts.one_off.export_prepaid_funding_snapshot"
+                        ),
+                        fail_closed_on=(
+                            "missing or duplicate customer/source identity",
+                            "missing frozen source row",
+                            "non-zero position with an empty transaction set",
+                            "transaction net not equal to the frozen source position",
+                            "non-NGN source request",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.CUTOVER_READY,
+                        old_owner=(
+                            "partial independent replay with permanent funding quarantine"
+                        ),
+                        new_owner="billing.splynx_history_opening",
+                        verification=(
+                            "Complete/empty history, source mismatch, missing cohort, "
+                            "native advancement, signed manifest, incremental opening, "
+                            "and full-cohort parity regressions."
+                        ),
+                        cutover_gate=(
+                            "Every funding candidate has a signed history-derived target, "
+                            "every account present at subledger activation has one "
+                            "immutable opening, later native accounts start at zero, and "
+                            "per-lane variance is zero."
+                        ),
+                        fallback_retirement=(
+                            "Remove the partial-subset exporter, blocker adjudication, "
+                            "quarantine work items, and Splynx evidence reader after the "
+                            "one-time complete capture."
+                        ),
+                    ),
+                    steward="billing and finance operations",
+                    design_refs=(
+                        "docs/adr/0007-end-to-end-billing-target-architecture.md",
+                        "docs/designs/SPLYNX_RETIREMENT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_splynx_history_opening.py",
+                        "tests/test_billing_alignment_audit.py",
+                        "tests/test_subledger_opening_positions.py",
+                    ),
+                ),
+            ),
             SOTService(
                 name="billing.addon_contract_backfill",
                 module="app.services.billing.addon_contract_backfill",
@@ -3373,8 +3516,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "opening evidence row and shadow posting group commit together. "
                     "The residual is verified legacy position minus already-recorded "
                     "shadow position at the preview cutoff, so forward groups are not "
-                    "double-counted. Quarantined accounts are absent and remain "
-                    "fail-closed; this owner never assigns them zero."
+                    "double-counted. The complete source cohort is mandatory. A later "
+                    "completion run preserves existing immutable openings and captures "
+                    "only missing accounts; no account is permanently excluded."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3510,7 +3654,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             ),
                             (
                                 "financial.customer_subledger_opening_positions."
-                                "quarantine_ownership_incomplete"
+                                "source_cohort_incomplete"
                             ),
                             (
                                 "financial.customer_subledger_opening_positions."
@@ -3525,7 +3669,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         fail_closed_on=(
                             "missing operator or finance approval",
                             "changed or corrupt reviewed fingerprint",
-                            "quarantined account inclusion",
+                            "an incomplete source cohort",
                             "an existing account/currency opening",
                         ),
                     ),
@@ -3537,8 +3681,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         schema_version=1,
                         delivery_owner="events.dispatcher",
                         compatibility=(
-                            "Version 1 carries run, fingerprint, currency, captured and "
-                            "quarantined counts, and authority_moved=false."
+                            "Version 1 carries run, fingerprint, currency, captured count, "
+                            "the compatibility quarantined_count fixed at zero, and "
+                            "authority_moved=false."
                         ),
                         replay=(
                             "Rebuild consumers from immutable opening evidence and "
@@ -3553,12 +3698,13 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         ),
                         new_owner=("financial.customer_subledger_opening_positions"),
                         verification=(
-                            "Fingerprint-bound preview/capture, quarantine exclusion, "
+                            "Fingerprint-bound complete-cohort preview/capture, "
                             "atomic rollback, idempotency, and cohort parity tests."
                         ),
                         cutover_gate=(
-                            "Every non-quarantined cohort account has one reviewed "
-                            "opening, per-account/currency/lane variance is zero, all "
+                            "Every account present at subledger activation has one "
+                            "reviewed opening, later native accounts start at zero, "
+                            "per-account/currency/lane variance is zero, all "
                             "forward facts are covered, and finance approves the run."
                         ),
                         fallback_retirement=(
@@ -3866,7 +4012,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     ),
                     errors=ErrorContract(
                         domain_codes=(
-                            "collections.prepaid_policy.opening_position_quarantined",
+                            "collections.prepaid_policy.opening_source_incomplete",
                         ),
                         mapping_owner="collections adapters",
                         fail_closed_on=(
@@ -4363,13 +4509,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "final prepaid funding authority cutover",
                     "opening balance plus post-cutover native funding projection",
                 ),
-                depends_on=("financial.ledger",),
+                depends_on=(
+                    "billing.splynx_history_opening",
+                    "financial.ledger",
+                ),
                 notes=(
                     "The first approved batch permanently retires Splynx funding "
-                    "authority. Missing pre-cutover opening balances fail closed; "
-                    "later corrections are reviewed append-only supersessions. "
-                    "Splynx exports and bank statements are migration evidence, "
-                    "never runtime money sources or fallbacks."
+                    "authority. The complete-history migration supersession requires "
+                    "one target for every funding candidate and aborts on any source "
+                    "integrity defect; later corrections are reviewed append-only "
+                    "supersessions. The frozen Splynx snapshot is one-time migration "
+                    "evidence, never a runtime money source or fallback. The separate "
+                    "customer.financial_position verifier owns the post-activation "
+                    "composition of an approved subledger opening with later native "
+                    "facts; this reconstruction owner never rewrites an opening or "
+                    "posts money."
                 ),
             ),
             SOTService(
