@@ -57,6 +57,16 @@ def _roles_for_form(db: Session) -> list[Role]:
     )
 
 
+def _portal_invite_form_context(db: Session) -> dict[str, object]:
+    policy = reseller_onboarding.get_reseller_portal_invite_policy()
+    return {
+        "portal_invite_policy": policy,
+        "roles": (
+            _roles_for_form(db) if policy.subscriber_role_assignment_supported else ()
+        ),
+    }
+
+
 def _policy_sets_for_form(db: Session) -> list:
     return list(
         catalog_service.policy_sets.list(
@@ -155,8 +165,8 @@ def new_form_context(db: Session) -> dict[str, object]:
     return {
         "reseller": None,
         "action_url": "/admin/resellers",
-        "roles": _roles_for_form(db),
         "policy_sets": _policy_sets_for_form(db),
+        **_portal_invite_form_context(db),
     }
 
 
@@ -178,9 +188,9 @@ def create_form_error_context(
     return {
         "reseller": payload,
         "action_url": "/admin/resellers",
-        "roles": _roles_for_form(db),
         "policy_sets": _policy_sets_for_form(db),
         "error": error,
+        **_portal_invite_form_context(db),
     }
 
 
@@ -667,7 +677,7 @@ def get_reseller_detail_context(
         "explicit_available_offers": explicit_available_offers,
         "explicit_available_offers_total": explicit_available_offers_total,
         "policy_sets": _policy_sets_for_form(db),
-        "roles": _roles_for_form(db),
+        **_portal_invite_form_context(db),
         "reseller_urls": {
             "billing_overview": f"/admin/billing?partner_id={reseller.id}",
             "invoices": f"/admin/billing/invoices?partner_id={reseller.id}",

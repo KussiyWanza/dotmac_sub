@@ -13,6 +13,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
@@ -58,6 +59,31 @@ _EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 class ResellerOnboardingError(DomainError):
     """Stable, transport-neutral reseller onboarding failure."""
+
+
+class ResellerPortalPrincipalType(StrEnum):
+    SUBSCRIBER = "subscriber"
+    RESELLER_USER = "reseller_user"
+
+
+@dataclass(frozen=True)
+class ResellerPortalInvitePolicy:
+    principal_type: ResellerPortalPrincipalType
+    subscriber_role_assignment_supported: bool
+
+
+def get_reseller_portal_invite_policy() -> ResellerPortalInvitePolicy:
+    """Return the canonical principal and role-assignment policy for invites."""
+
+    if settings.reseller_user_principal_enabled:
+        return ResellerPortalInvitePolicy(
+            principal_type=ResellerPortalPrincipalType.RESELLER_USER,
+            subscriber_role_assignment_supported=False,
+        )
+    return ResellerPortalInvitePolicy(
+        principal_type=ResellerPortalPrincipalType.SUBSCRIBER,
+        subscriber_role_assignment_supported=True,
+    )
 
 
 @dataclass(frozen=True)

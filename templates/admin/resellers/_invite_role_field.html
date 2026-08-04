@@ -1,0 +1,17 @@
+{% if portal_invite_policy.subscriber_role_assignment_supported %}
+{% set role_field_name = portal_role_field_name | default("role") %}
+{% set role_field_id = portal_role_field_id | default("role") %}
+<div>
+    <label for="{{ role_field_id }}" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Role (optional)</label>
+    <select name="{{ role_field_name }}" id="{{ role_field_id }}" class="mt-2 block w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-10 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+        <option value="">No role</option>
+        {% for role in roles | default([]) %}
+        <option value="{{ role.name }}">{{ role.name }}</option>
+        {% endfor %}
+    </select>
+</div>
+{% else %}
+<div class="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-900/30 dark:text-blue-200">
+    Portal access is scoped automatically to this reseller. Subscriber roles do not apply to reseller portal users.
+</div>
+{% endif %}

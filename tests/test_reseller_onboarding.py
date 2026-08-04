@@ -408,6 +408,30 @@ def test_first_class_role_assignment_fails_closed(
     assert db_session.query(Reseller).filter_by(code="ROLE-GATE").count() == 0
 
 
+def test_first_class_invite_policy_disables_subscriber_role_assignment(
+    first_class_principal_mode,
+) -> None:
+    policy = reseller_onboarding.get_reseller_portal_invite_policy()
+
+    assert (
+        policy.principal_type
+        == reseller_onboarding.ResellerPortalPrincipalType.RESELLER_USER
+    )
+    assert policy.subscriber_role_assignment_supported is False
+
+
+def test_legacy_invite_policy_supports_subscriber_role_assignment(
+    legacy_principal_mode,
+) -> None:
+    policy = reseller_onboarding.get_reseller_portal_invite_policy()
+
+    assert (
+        policy.principal_type
+        == reseller_onboarding.ResellerPortalPrincipalType.SUBSCRIBER
+    )
+    assert policy.subscriber_role_assignment_supported is True
+
+
 def test_invite_intent_record_contains_no_capability(
     db_session,
     legacy_principal_mode,
