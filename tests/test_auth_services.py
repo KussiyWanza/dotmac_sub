@@ -128,6 +128,17 @@ def test_admin_login_reseller_tile_links_directly_to_reseller_login():
     assert 'href="/reseller"' not in body
 
 
+def test_admin_login_vendor_tile_links_directly_to_vendor_login():
+    response = web_auth_service.login_page(
+        _make_get_request("/auth/login"),
+        next_url="/admin",
+    )
+
+    body = response.body.decode()
+
+    assert 'href="/vendor/auth/login?next=/vendor"' in body
+
+
 def test_admin_login_page_uses_configured_remember_duration(db_session):
     db_session.add(
         DomainSetting(
