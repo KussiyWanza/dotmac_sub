@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.status_presentation import StatusPresentation
 
@@ -334,6 +334,14 @@ class QuoteDepositVerifyResponse(BaseModel):
     paid: bool
     reference: str
     quote: QuoteItem | None = None
+
+
+class QuotePaymentIntentRequest(BaseModel):
+    """Browser command evidence for one quotation Paystack checkout."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=16, max_length=120)
 
 
 # ── Technician live map + rating ─────────────────────────────────────────────

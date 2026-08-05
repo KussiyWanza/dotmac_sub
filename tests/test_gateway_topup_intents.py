@@ -121,6 +121,7 @@ def test_customer_invoice_creation_derives_locked_invoice_amount(
     assert result.requested_amount == Decimal("3750.00")
     intent = db_session.get(TopupIntent, result.intent_id)
     assert intent is not None
+    assert intent.invoice_id == invoice_id
     assert intent.metadata_ == {
         "payment_flow": "invoice_payment",
         "invoice_id": str(invoice_id),

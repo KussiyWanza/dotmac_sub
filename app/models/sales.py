@@ -543,6 +543,9 @@ class Quote(Base):
     )
     pdf_exports = relationship("QuotePdfExport", back_populates="quote")
     delivery_requests = relationship("QuoteDeliveryRequest", back_populates="quote")
+    deposit_invoice_links = relationship(
+        "QuoteDepositInvoiceLink", back_populates="quote"
+    )
 
     @property
     def person_id(self) -> uuid.UUID | None:
@@ -604,6 +607,44 @@ class QuotePdfExport(Base):
 
     quote = relationship("Quote", back_populates="pdf_exports")
     stored_file = relationship("StoredFile")
+
+
+class QuoteDepositInvoiceLink(Base):
+    """Structural identity joining one Quote deposit attempt to its Invoice."""
+
+    __tablename__ = "quote_deposit_invoice_links"
+    __table_args__ = (
+        Index("ix_quote_deposit_invoice_links_quote_id", "quote_id"),
+        UniqueConstraint(
+            "invoice_id", name="uq_quote_deposit_invoice_links_invoice_id"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscribers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    quote = relationship("Quote", back_populates="deposit_invoice_links")
+    invoice = relationship("Invoice")
+    account = relationship("Subscriber")
 
 
 class QuoteDeliveryRequest(Base):

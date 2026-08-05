@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import builtins
 import re
+from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -15,6 +17,31 @@ from app.models.billing import CollectionAccount, CollectionAccountType
 from app.schemas.billing import CollectionAccountCreate, CollectionAccountUpdate
 from app.services.common import apply_ordering, apply_pagination, get_by_id
 from app.services.response import ListResponseMixin
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionAccountPresentment:
+    """Immutable customer-presentable receiving-account projection."""
+
+    account_id: UUID
+    bank_name: str
+    account_number: str
+    account_name: str
+    sort_code: str | None
+    currency: str
+    presentment_priority: int
+
+    def to_adapter_mapping(self) -> dict[str, str]:
+        """Serialize only at the compatibility-adapter boundary."""
+
+        return {
+            "id": str(self.account_id),
+            "enabled": "true",
+            "bank_name": self.bank_name,
+            "account_name": self.account_name,
+            "account_number": self.account_number,
+            "sort_code": self.sort_code or "",
+        }
 
 
 def _clean_optional(value: object) -> str | None:
@@ -158,12 +185,26 @@ class CollectionAccounts(ListResponseMixin):
     def presentment_accounts(
         db: Session, *, currency: str = "NGN"
     ) -> builtins.list[dict[str, str]]:
-        """Return active, complete transfer destinations in explicit order."""
+        """Compatibility serialization of the typed presentment projection."""
+        return [
+            account.to_adapter_mapping()
+            for account in CollectionAccounts.presentment_account_projection(
+                db, currency=currency
+            )
+        ]
+
+    @staticmethod
+    def presentment_account_projection(
+        db: Session, *, currency: str
+    ) -> tuple[CollectionAccountPresentment, ...]:
+        """Return enabled, complete bank destinations in authoritative order."""
+
+        normalized_currency = currency.strip().upper()
         accounts = (
             db.query(CollectionAccount)
             .filter(CollectionAccount.is_active.is_(True))
             .filter(CollectionAccount.account_type == CollectionAccountType.bank)
-            .filter(CollectionAccount.currency == currency.strip().upper())
+            .filter(CollectionAccount.currency == normalized_currency)
             .filter(CollectionAccount.bank_name.is_not(None))
             .filter(CollectionAccount.account_name.is_not(None))
             .filter(CollectionAccount.account_number.is_not(None))
@@ -174,21 +215,42 @@ class CollectionAccounts(ListResponseMixin):
             )
             .all()
         )
-        return [
-            {
-                "id": str(account.id),
-                "enabled": "true",
-                "bank_name": account.bank_name or "",
-                "account_name": account.account_name or "",
-                "account_number": account.account_number or "",
-                "sort_code": account.sort_code or "",
-            }
-            for account in accounts
-        ]
+        projection: list[CollectionAccountPresentment] = []
+        for account in accounts:
+            bank_name = str(account.bank_name or "").strip()
+            account_name = str(account.account_name or "").strip()
+            account_number = str(account.account_number or "").strip()
+            if not (bank_name and account_name and account_number):
+                continue
+            projection.append(
+                CollectionAccountPresentment(
+                    account_id=account.id,
+                    bank_name=bank_name,
+                    account_number=account_number,
+                    account_name=account_name,
+                    sort_code=_clean_optional(account.sort_code),
+                    currency=normalized_currency,
+                    presentment_priority=account.presentment_priority,
+                )
+            )
+        return tuple(projection)
+
+    @staticmethod
+    def primary_presentment_account_projection(
+        db: Session, *, currency: str
+    ) -> CollectionAccountPresentment | None:
+        """Return the primary enabled, complete destination for one currency."""
+
+        accounts = CollectionAccounts.presentment_account_projection(
+            db, currency=currency
+        )
+        return accounts[0] if accounts else None
 
     @staticmethod
     def primary_presentment_account(
         db: Session, *, currency: str = "NGN"
     ) -> dict[str, str] | None:
-        accounts = CollectionAccounts.presentment_accounts(db, currency=currency)
-        return accounts[0] if accounts else None
+        account = CollectionAccounts.primary_presentment_account_projection(
+            db, currency=currency
+        )
+        return account.to_adapter_mapping() if account else None

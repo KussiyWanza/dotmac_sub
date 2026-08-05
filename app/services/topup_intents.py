@@ -626,6 +626,7 @@ def stage_gateway_topup_intent(
             (
                 existing.account_id == command.account_id,
                 existing.billing_account_id == command.billing_account_id,
+                existing.invoice_id == command.invoice_id,
                 existing.provider_id == command.provider_id,
                 existing.capability_binding_id == command.capability_binding_id,
                 existing.provider_type == provider_type,
@@ -645,6 +646,7 @@ def stage_gateway_topup_intent(
     intent = TopupIntent(
         account_id=command.account_id,
         billing_account_id=command.billing_account_id,
+        invoice_id=command.invoice_id,
         provider_id=command.provider_id,
         capability_binding_id=command.capability_binding_id,
         reference=reference,
@@ -1211,6 +1213,7 @@ def stage_invoice_direct_transfer_intent(
 
     intent = TopupIntent(
         account_id=account_id,
+        invoice_id=invoice_id,
         reference=reference,
         provider_type=DIRECT_TRANSFER_PROVIDER,
         currency=currency,

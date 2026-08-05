@@ -164,7 +164,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
                         "locked TopupIntent identity, subscriber account, provider, "
-                        "reference, requested amount, status, and metadata evidence"
+                        "reference, requested amount, status, structural Invoice "
+                        "identity when applicable, and provenance metadata"
                     ),
                 ),
                 AuthorityInput(
@@ -183,7 +184,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "typed invoice or reseller scope, provider, reference, "
-                        "amount, currency, lifetime, actor, and flow evidence"
+                        "amount, currency, lifetime, actor, structural Invoice "
+                        "identity, and flow evidence"
                     ),
                 ),
                 AuthorityInput(
@@ -1142,8 +1144,8 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="financial.topup_intents",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "flush-only creation, replay, status, failure, metadata, "
-                        "scope lock, and event staging"
+                        "flush-only creation, replay, status, failure, structural "
+                        "Invoice linkage, provenance metadata, scope lock, and event staging"
                     ),
                 ),
                 AuthorityInput(
@@ -1581,9 +1583,12 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         notes=(
             "Portal, reseller, API, invoice, settings, proof, and "
-            "attribution adapters carry this identity and never maintain "
-            "parallel bank-detail copies. Legacy settings are only a "
-            "frozen rollback snapshot during A1 verification."
+            "quotation-document adapters consume the typed presentment projection; "
+            "attribution adapters carry this identity and never maintain parallel "
+            "bank-detail copies. The projection filters inactive, incomplete, and "
+            "currency-ineligible destinations before applying explicit priority. "
+            "Legacy settings are only a frozen rollback snapshot during A1 "
+            "verification."
         ),
     ),
     SOTService(

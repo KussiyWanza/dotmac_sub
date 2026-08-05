@@ -19,7 +19,7 @@ from app.models.billing import Invoice, InvoiceStatus, Payment
 from app.models.party import Party
 from app.models.project import ProjectTemplate
 from app.models.quote_mirror import QuoteMirror
-from app.models.sales import Quote, SalesOrder
+from app.models.sales import Quote, QuoteDepositInvoiceLink, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services import quote_deposits
 from app.services.sales import quote_acceptance, selfserve
@@ -414,6 +414,14 @@ def _paid_deposit_invoice(db, sub, quote_id) -> Invoice:
         metadata_={"quote_id": str(quote_id), "payment_flow": "quote_deposit"},
     )
     db.add(inv)
+    db.flush()
+    db.add(
+        QuoteDepositInvoiceLink(
+            quote_id=quote_id,
+            invoice_id=inv.id,
+            account_id=sub.id,
+        )
+    )
     db.commit()
     return inv
 
@@ -423,14 +431,9 @@ def test_initiate_native_flag_creates_invoice_for_uuid_quote(db_session):
     crm_quote_id) and the deposit invoice is raised off the native payload."""
     sub = _subscriber(db_session)
     quote = _native_quote(db_session, sub)
-    fake_invoice = SimpleNamespace(id=uuid.uuid4(), metadata_=None)
     intent = {"provider_type": "paystack", "reference": "ref_n1", "currency": "NGN"}
     with (
         _flag_on(),
-        patch(
-            "app.services.quote_deposits.billing_service.invoices.create",
-            return_value=fake_invoice,
-        ),
         patch(
             "app.services.quote_deposits.payments.create_invoice_payment_intent",
             return_value=intent,
@@ -439,14 +442,17 @@ def test_initiate_native_flag_creates_invoice_for_uuid_quote(db_session):
         out = quote_deposits.initiate_deposit(
             db_session, _customer(sub), str(sub.id), str(quote.id)
         )
+    invoice = db_session.get(Invoice, uuid.UUID(out["invoice_id"]))
+    assert invoice is not None
     assert out["quote_id"] == str(quote.id)
     assert out["amount"] == "37500.00"
-    assert out["invoice_id"] == str(fake_invoice.id)
-    # The traceback metadata is exactly what _native_deposit_invoice_paid keys on.
-    assert fake_invoice.metadata_ == {
+    assert invoice.metadata_ == {
         "quote_id": str(quote.id),
         "payment_flow": "quote_deposit",
     }
+    link = db_session.query(QuoteDepositInvoiceLink).one()
+    assert link.quote_id == quote.id
+    assert link.invoice_id == invoice.id
 
 
 def test_initiate_native_flag_rejects_when_ledger_deposit_paid(db_session):

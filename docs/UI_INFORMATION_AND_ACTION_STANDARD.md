@@ -332,6 +332,33 @@ implementation.
 - Responsive behavior: fields stack on small screens, controls retain a
   44-pixel target, and address results remain adjacent to their search field.
 
+## Customer Quote Payment Page Contract
+
+- Audience and task: an authenticated customer reviews and pays the exact
+  deposit for a quotation owned by an authorized subscriber identity.
+- Authority: `app.services.quote_deposits` resolves quotation eligibility and
+  the server-owned deposit amount; `financial.payment_routing` resolves
+  Paystack availability; established invoice, intent, payment-verification, and
+  Quote-acceptance owners retain every financial transition. The route and
+  template are adapters.
+- First viewport: quotation identity, expiry, authoritative currency and
+  deposit amount, secure-payment explanation, and one Paystack action.
+- GET state: authentication, ownership, active status, expiry, paid state,
+  positive deposit, and Paystack availability are checked without creating an
+  invoice or payment intent. Missing or unauthorized quotations render the same
+  not-found state.
+- Mutation: the customer confirms through the CSRF-protected POST intent route.
+  The request carries idempotency evidence only; it cannot submit amount,
+  currency, invoice identity, or provider choice. The server fixes the provider
+  to Paystack and re-derives the amount before delegating to the established
+  quotation-deposit capability.
+- States: unauthenticated, unauthorized/not found, expired, cancelled/inactive,
+  already paid, Paystack unavailable, checkout failed, pending verification,
+  and confirmed are distinct and fail closed.
+- Responsive behavior: summary and action stack on small screens, retain the
+  authoritative amount and primary action, and do not expose internal
+  collection-account or payment-intent identifiers.
+
 ## Inbox Customer Context Page Contract
 
 - Authority: `communications.team_inbox_contact_context` owns the typed drawer
