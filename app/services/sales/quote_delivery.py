@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from html import escape
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -18,7 +19,9 @@ from app.models.sales import (
     QuoteDeliveryRequestStatus,
     QuoteStatus,
 )
+from app.services import quote_deposits
 from app.services.audit_adapter import stage_audit_event
+from app.services.brand_theme import DEFAULT_HEX, contrast_ratio
 from app.services.communication_intents import (
     CommunicationAttachment,
     CommunicationAttachmentKind,
@@ -65,6 +68,17 @@ class SendQuoteEmailOutcome:
     suppression_reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class QuoteEmailContent:
+    subject: str
+    body_html: str
+    body_text: str
+    payment_url: str
+
+
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+
 def _error(suffix: str, message: str, **details: object) -> QuoteDeliveryError:
     return QuoteDeliveryError(
         code=f"sales.quote_delivery.{suffix}",
@@ -86,6 +100,105 @@ def mask_email(value: str) -> str:
         return "hidden recipient"
     visible = local[:1]
     return f"{visible}{'*' * max(3, len(local) - 1)}@{domain}"
+
+
+def _button_colors(primary_color: str) -> tuple[str, str]:
+    background = (
+        primary_color if _HEX_COLOR.fullmatch(primary_color.strip()) else DEFAULT_HEX
+    )
+    candidates = ("#111827", "#ffffff")
+    foreground = max(
+        candidates,
+        key=lambda candidate: contrast_ratio(background, candidate),
+    )
+    return background, foreground
+
+
+def render_quote_email(
+    *,
+    snapshot: quote_documents.QuoteDocumentSnapshot,
+    recipient: quote_documents.QuoteRecipient,
+) -> QuoteEmailContent:
+    """Render the branded HTML/text alternatives from one immutable snapshot."""
+
+    brand = snapshot.brand
+    legal_name = brand.legal_name.strip()
+    if not legal_name:
+        raise _error(
+            "brand_legal_name_required",
+            "The company legal name is unavailable for Quote delivery",
+        )
+    payment_url = snapshot.payment.paystack_url
+    background, foreground = _button_colors(brand.primary_color)
+    total = f"{snapshot.currency} {snapshot.total:,.2f}"
+    reference = str(snapshot.quote_id)
+    safe_name = escape(recipient.display_name)
+    safe_total = escape(total)
+    safe_reference = escape(reference)
+    safe_payment_url = escape(payment_url, quote=True)
+    body = f"""
+<h1 style="margin:0 0 20px;font-size:24px;line-height:1.25;color:#111827;">Your quotation is ready</h1>
+<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Dear {safe_name},</p>
+<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Please find attached your quotation for <strong>{safe_total}</strong>.</p>
+<p style="margin:0 0 24px;font-size:14px;line-height:1.6;"><strong>Quote reference:</strong> {safe_reference}</p>
+<h2 style="margin:0 0 12px;font-size:18px;line-height:1.35;color:#111827;">Make payment for this quotation</h2>
+<p style="margin:0 0 20px;font-size:14px;line-height:1.6;">Use the secure payment button below to make the required payment for this quotation through Paystack.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 22px;"><tr><td style="border-radius:8px;background-color:{background};text-align:center;"><a href="{safe_payment_url}" aria-label="Pay Now for quotation {safe_reference}" style="display:inline-block;min-width:120px;padding:14px 24px;border-radius:8px;background-color:{background};color:{foreground} !important;font-size:15px;font-weight:700;line-height:1;text-align:center;text-decoration:none;">Pay Now</a></td></tr></table>
+<p style="margin:0 0 16px;font-size:14px;line-height:1.6;">Alternatively, you can find the available bank-transfer details in the attached quotation PDF.</p>
+<p style="margin:0;font-size:14px;line-height:1.6;">Please reply to this email if you have any questions.</p>
+""".strip()
+    subject = f"Quote from {legal_name}"
+    body_html, _generated_text = render_email_bodies(
+        body,
+        subject=subject,
+        base_url=brand.app_url,
+        brand=brand.to_dict(),
+    )
+    body_text = (
+        "Your quotation is ready\n\n"
+        f"Dear {recipient.display_name},\n\n"
+        f"Please find attached your quotation for {total}.\n\n"
+        f"Quote reference: {reference}\n\n"
+        "Make payment for this quotation\n\n"
+        "Use the secure link below to make the required payment through Paystack:\n\n"
+        f"Pay Now: {payment_url}\n\n"
+        "Alternatively, you can find the available bank-transfer details in the "
+        "attached quotation PDF.\n\n"
+        "Please reply to this email if you have any questions."
+    )
+    return QuoteEmailContent(
+        subject=subject,
+        body_html=body_html,
+        body_text=body_text,
+        payment_url=payment_url,
+    )
+
+
+def _payment_eligibility(
+    db: Session,
+    quote: Quote,
+) -> quote_deposits.QuotePaymentPage:
+    if quote.subscriber_id is None:
+        raise _error(
+            "payment_link_unavailable",
+            "A secure Paystack payment link is unavailable for this Quote",
+            reason="sales.quote_deposits.quote_not_found",
+        )
+    try:
+        return quote_deposits.quote_payment_page(
+            db,
+            quote_deposits.QuotePaymentQuery(
+                quote_id=quote.id,
+                authorized_subscriber_ids=(quote.subscriber_id,),
+                observed_at=datetime.now(UTC),
+            ),
+        )
+    except quote_deposits.QuoteDepositError as exc:
+        raise _error(
+            "payment_link_unavailable",
+            "A secure Paystack payment link is unavailable for this Quote",
+            reason=exc.code,
+        ) from exc
 
 
 def _locked_quote(db: Session, quote_id: UUID) -> Quote:
@@ -171,30 +284,29 @@ def send_quote_email(
                 "The Quote customer needs an active email address before delivery",
             )
 
+        payment = _payment_eligibility(db, quote)
+
         actor_id = _uuid_or_none(command.context.actor)
         export, _ = quote_documents.stage_quote_pdf_export(
             db,
             quote=quote,
             requested_by_id=actor_id,
         )
-        snapshot = export.snapshot
-        brand = dict(snapshot.get("brand") or {})
-        currency = str(snapshot.get("currency") or quote.currency)
-        total = Decimal(str(snapshot.get("total") or "0.00"))
-        subject = (
-            f"Quote from {brand.get('legal_name') or brand.get('name') or 'Dotmac'}"
-        )
-        body = (
-            f"Dear {recipient.display_name},\n\n"
-            f"Please find attached your Quote for {currency} {total:,.2f}.\n\n"
-            f"Quote reference: {quote.id}\n"
-            "Please reply to this email if you have any questions."
-        )
-        body_html, body_text = render_email_bodies(
-            body,
-            subject=subject,
-            base_url=str(brand.get("app_url") or ""),
-            brand=brand,
+        snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
+        if (
+            payment.quote_id != snapshot.quote_id
+            or payment.subscriber_id != quote.subscriber_id
+            or payment.currency != snapshot.currency
+            or payment.provider_type != "paystack"
+        ):
+            raise _error(
+                "payment_link_unavailable",
+                "A secure Paystack payment link is unavailable for this Quote",
+                reason="eligibility_snapshot_mismatch",
+            )
+        content = render_quote_email(
+            snapshot=snapshot,
+            recipient=recipient,
         )
         request_id = uuid4()
         intent_result = submit(
@@ -204,8 +316,8 @@ def send_quote_email(
                 event_type="quote.delivery_requested",
                 category="sales",
                 template_code="quote_sent",
-                subject=subject,
-                body=body_text or body,
+                subject=content.subject,
+                body=content.body_text,
                 channels=(NotificationChannel.email,),
                 include_reseller=False,
                 resolve_subscriber_identity=False,
@@ -221,8 +333,9 @@ def send_quote_email(
                     "quote_id": str(quote.id),
                     "quote_delivery_request_id": str(request_id),
                     "pdf_export_id": str(export.id),
-                    "body_html": body_html,
-                    "body_text": body_text or body,
+                    "body_html": content.body_html,
+                    "body_text": content.body_text,
+                    "quote_payment_url": content.payment_url,
                     "activity": "sales_quote",
                 },
                 dedupe_key=f"quote-email:{command.context.idempotency_key}",

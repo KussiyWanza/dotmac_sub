@@ -145,7 +145,6 @@ app.services.provisioning_step_executors
 app.services.push
 app.services.qualification
 app.services.queue_mapping
-app.services.quote_deposits
 app.services.quotes_mirror
 app.services.radio_registration
 app.services.radius
