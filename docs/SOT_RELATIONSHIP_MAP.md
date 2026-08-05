@@ -2521,6 +2521,17 @@ UUIDs. Routes and templates only transport and render the owner-defined scope.
     to the owner-provided URL; the template uses shared sortable-header,
     pagination, page-size, and keyboard-visible row-action controls.
 
+18. The admin Quote list remains owned by `sales.service`; no separate UI
+    search owner exists. Its typed Quote list specification normalizes search,
+    status, Lead, stable sort, and pagination once, and the exact predicate set
+    drives both `count(Quote.id)` and the directly selected Quote page. Related
+    Lead, Party, active Party contact-point, and optional Subscriber matches use
+    correlated `EXISTS`, so contact multiplicity cannot duplicate Quotes and
+    the PostgreSQL `json` metadata column is never compared by full-row
+    `DISTINCT`. `app.services.web_sales` only translates the normalized result
+    into `ListQuery`/`PageMeta` and the route/template render canonical URLs,
+    reset behavior, and the truthful retryable failure state.
+
 Rule: filters and search are applied before pagination; every paginated sort has
 a unique tie-breaker. Web list state is encoded in URL query parameters so deep
 links, refresh, and browser history reproduce the same projection. A changed
@@ -4637,10 +4648,11 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
 2. `sales.selfserve`: owns the self-serve quote and signup flow.
 3. `sales.service`: owns the sales pipeline and quote lifecycle, including the
    governed stage-presentation vocabulary, atomic stage ordering, and typed
-   Lead list query projection. Its normalized Lead search/filter predicate is
-   shared by unique rows, count, pagination, and filtered summary; related
-   Party/contact/Subscriber matches are correlated observations rather than
-   row-multiplying joins.
+   Lead and Quote list query projections. Each normalized search/filter
+   predicate is shared by unique rows, count, and pagination (plus filtered
+   summary for Leads); related Party/active-contact/Subscriber matches are
+   correlated observations rather than row-multiplying joins. JSON-bearing
+   Lead and Quote rows are never subjected to full-row `DISTINCT`.
 4. `sales.quote_documents`: owns immutable, content-addressed, branded Quote
    PDF snapshots.
 5. `sales.quote_delivery`: owns the idempotent branded Quote email request and

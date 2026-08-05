@@ -233,5 +233,12 @@ SERVICES: tuple[SOTService, ...] = (
             "read-only sales pipeline reporting",
         ),
         depends_on=("sales.lead_lifecycle",),
+        notes=(
+            "The typed Lead and Quote list queries normalize search, filters, "
+            "sort, and pagination once. Their row and count projections share "
+            "one predicate specification; related Party, active contact-point, "
+            "and Subscriber matches use correlated EXISTS predicates so JSON-"
+            "bearing Lead and Quote rows are never subjected to full-row DISTINCT."
+        ),
     ),
 )
