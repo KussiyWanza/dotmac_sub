@@ -47,8 +47,12 @@ from app.schemas.lead_intake import (
     LeadIntakeTemplateDraft,
     ResolvedLeadIntakeAddress,
 )
+from app.services import (
+    conversation_lead_relationships,
+    team_inbox_operations,
+    team_inbox_participants,
+)
 from app.services import party as party_service
-from app.services import team_inbox_operations, team_inbox_participants
 from app.services.audit_adapter import stage_audit_event
 from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
@@ -1096,6 +1100,18 @@ def submit_form(
         template = invitation.template
         if invitation.status == "completed":
             assert invitation.lead_id and invitation.party_id
+            conversation_lead_relationships.link_conversation_lead_participant(
+                db,
+                conversation_lead_relationships.ConversationLeadLinkCommand(
+                    context=command.context,
+                    conversation_id=invitation.conversation_id,
+                    lead_id=invitation.lead_id,
+                    party_id=invitation.party_id,
+                    actor_person_id=None,
+                    source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_intake,
+                    reason="Completed Inbox lead-intake evidence establishes exact provenance",
+                ),
+            )
             return SubmitLeadIntakeOutcome(
                 invitation.id,
                 invitation.conversation_id,
@@ -1280,6 +1296,18 @@ def submit_form(
         invitation.party_id = lead_party.id
         invitation.representative_party_id = representative_party_id
         invitation.party_contact_point_id = contact_point.id
+        conversation_lead_relationships.link_conversation_lead_participant(
+            db,
+            conversation_lead_relationships.ConversationLeadLinkCommand(
+                context=command.context,
+                conversation_id=conversation.id,
+                lead_id=lead.id,
+                party_id=lead_party.id,
+                actor_person_id=None,
+                source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_intake,
+                reason="Lead was created atomically from this completed Inbox intake",
+            ),
+        )
         emit_event(
             db,
             EventType.lead_created,

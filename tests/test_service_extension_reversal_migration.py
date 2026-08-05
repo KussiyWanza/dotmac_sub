@@ -16,7 +16,7 @@ def test_service_extension_reversal_is_the_single_additive_head() -> None:
     config.set_main_option("script_location", str(ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["474_lifecycle_evidence_authority"]
+    assert script.get_heads() == ["475_inbox_conversation_lead_links"]
     assert (
         script.get_revision("472_service_extension_reversals").down_revision
         == "471_quote_documents_and_delivery"

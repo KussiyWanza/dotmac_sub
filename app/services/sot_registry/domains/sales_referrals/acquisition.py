@@ -213,6 +213,7 @@ SERVICES: tuple[SOTService, ...] = (
             "ai.intake",
             "auth.staff_provisioning",
             "communications.team_inbox_contact_resolution",
+            "communications.conversation_lead_relationships",
             "communications.team_inbox_outbound_intents",
             "communications.team_inbox_participants",
             "communications.team_inbox_processing",
@@ -399,6 +400,7 @@ SERVICES: tuple[SOTService, ...] = (
         depends_on=(
             "auth.staff_provisioning",
             "customer.accounts",
+            "communications.conversation_lead_relationships",
             "events.dispatcher",
             "observability.audit_log",
             "party.registry",

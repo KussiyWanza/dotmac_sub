@@ -21,7 +21,7 @@
         </div>
     {% endcall %}
 
-    {% include "admin/inbox/_contact_preview.html" %}
+    {% include "admin/inbox/_authoritative_context.html" %}
 
     {% call ctx_section("Customer & subscription") %}
         {% if subscriber_summary %}
@@ -55,19 +55,19 @@
         <div class="mt-3 space-y-1.5 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
             <div class="flex items-center justify-between gap-2">
                 <span class="text-xs font-medium text-slate-500">Outstanding</span>
-                <span class="text-sm font-bold tabular-nums text-slate-900 dark:text-white">{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.outstanding or 0) }}</span>
+                <span class="text-sm font-bold tabular-nums text-slate-900 dark:text-white">{% if balance.outstanding is not none %}{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.outstanding) }}{% else %}—{% endif %}</span>
             </div>
             {% if balance.overdue %}
             <div class="flex items-center justify-between gap-2">
                 <span class="text-xs font-medium text-rose-600 dark:text-rose-300">Overdue{% if balance.overdue_count %} · {{ balance.overdue_count }} invoice{{ '' if balance.overdue_count == 1 else 's' }}{% endif %}</span>
-                <span class="text-sm font-bold tabular-nums text-rose-700 dark:text-rose-300">{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.overdue or 0) }}</span>
+                <span class="text-sm font-bold tabular-nums text-rose-700 dark:text-rose-300">{% if balance.overdue is not none %}{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.overdue) }}{% else %}—{% endif %}</span>
             </div>
             {% if balance.days_overdue %}<p class="text-[11px] text-rose-600 dark:text-rose-300">{{ balance.days_overdue }} day{{ '' if balance.days_overdue == 1 else 's' }} overdue</p>{% endif %}
             {% endif %}
             {% if balance.prepaid %}
             <div class="flex items-center justify-between gap-2">
                 <span class="text-xs font-medium text-slate-500">Prepaid</span>
-                <span class="text-xs font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.prepaid or 0) }}</span>
+                <span class="text-xs font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">{% if balance.prepaid is not none %}{{ balance.currency or '' }} {{ "{:,.2f}".format(balance.prepaid) }}{% else %}—{% endif %}</span>
             </div>
             {% endif %}
         </div>

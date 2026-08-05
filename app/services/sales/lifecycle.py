@@ -61,7 +61,13 @@ _PLATFORM_LEAD_SOURCES = {
     LeadSourcePlatform.website.value: {"Website"},
     LeadSourcePlatform.portal.value: {"Portal"},
     LeadSourcePlatform.referral.value: {"Referrer"},
-    LeadSourcePlatform.team_inbox.value: {"Whatsapp", "Facebook", "Instagram"},
+    LeadSourcePlatform.team_inbox.value: {
+        "Whatsapp",
+        "Facebook",
+        "Instagram",
+        "Email",
+        "Website",
+    },
 }
 _CAPTURE_FIELDS = (
     "capture_method",

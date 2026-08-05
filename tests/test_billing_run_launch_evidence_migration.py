@@ -36,7 +36,7 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["474_lifecycle_evidence_authority"]
+    assert script.get_heads() == ["475_inbox_conversation_lead_links"]
     assert (
         script.get_revision("464_survey_lifecycle_and_creation").down_revision
         == "463_outage_customer_notices"

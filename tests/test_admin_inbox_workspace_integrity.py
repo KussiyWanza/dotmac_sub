@@ -18,7 +18,9 @@ CONVERSATION = Path("templates/admin/inbox/_conversation.html").read_text()
 COMMENT_THREAD = Path("templates/admin/inbox/_comment_thread.html").read_text()
 DRAWER = Path("templates/admin/inbox/_contact_drawer.html").read_text()
 EMPTY_STATE = Path("templates/admin/inbox/_empty_state.html").read_text()
-CONTACT_PREVIEW = Path("templates/admin/inbox/_contact_preview.html").read_text()
+AUTHORITATIVE_CONTEXT = Path(
+    "templates/admin/inbox/_authoritative_context.html"
+).read_text()
 FLOATING_SURFACES = Path("templates/admin/inbox/_floating_surfaces.html").read_text()
 INDEX = Path("templates/admin/inbox/index.html").read_text()
 LAYOUT = Path("templates/layouts/admin.html").read_text()
@@ -54,12 +56,15 @@ def test_workspace_frame_fills_the_viewport_below_the_admin_topbar():
     assert "bg-slate-100 bg-noise bg-mesh dark:bg-slate-900" in INDEX
 
 
-def test_crm_replication_surfaces_keep_remaining_preview_data_separate():
+def test_crm_replication_surfaces_exclude_customer_placeholder_data():
     assert 'href="/static/css/admin-inbox-replica.css' in INDEX
     assert 'data-replica-placeholder="reply-failure"' in FLOATING_SURFACES
     assert 'data-replica-placeholder="incoming-whatsapp-call"' in FLOATING_SURFACES
-    assert 'data-replica-placeholder="rich-crm-contact"' in CONTACT_PREVIEW
-    assert "Dummy data" in CONTACT_PREVIEW
+    assert "Dummy data" not in DRAWER
+    assert "Profile completeness" not in AUTHORITATIVE_CONTEXT
+    assert "Retention risk" not in AUTHORITATIVE_CONTEXT
+    assert "contact_context.tickets" in AUTHORITATIVE_CONTEXT
+    assert "contact_context.projects" in AUTHORITATIVE_CONTEXT
     assert "crm_preview" in JAVASCRIPT
     assert "data-social-comment-thread" in COMMENT_THREAD
     assert 'action="/admin/inbox/{{ timeline.id }}/reply"' in COMMENT_THREAD

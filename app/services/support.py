@@ -203,6 +203,22 @@ _TICKET_TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 
+def active_ticket_status_values() -> tuple[str, ...]:
+    """Return the support-owned statuses eligible for active customer context."""
+
+    return tuple(
+        status.value
+        for status in TicketStatus
+        if status
+        not in {
+            TicketStatus.resolved,
+            TicketStatus.closed,
+            TicketStatus.canceled,
+            TicketStatus.merged,
+        }
+    )
+
+
 def transition_ticket_status(
     ticket: Ticket,
     new_status: TicketStatus | str,

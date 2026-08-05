@@ -36,6 +36,7 @@ from app.models.sales import (
 from app.models.service_team import ServiceTeamMember
 from app.models.subscriber import Reseller
 from app.models.system_user import SystemUser
+from app.services import conversation_lead_relationships
 from app.services import party as party_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.credential_crypto import encrypt_credential
@@ -114,6 +115,7 @@ class AuthorLeadCommand:
     notes: str | None
     is_active: bool
     person: LeadPersonDraft
+    origin_conversation_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +179,11 @@ def _fingerprint(command: AuthorLeadCommand) -> str:
         "lost_reason": command.lost_reason,
         "notes": command.notes,
         "is_active": command.is_active,
+        "origin_conversation_id": (
+            str(command.origin_conversation_id)
+            if command.origin_conversation_id is not None
+            else None
+        ),
         "person": {
             "display_name": command.person.display_name,
             "emails": command.person.emails.values,
@@ -482,6 +489,17 @@ def _validate_scalar_fields(
     return currency, country_code
 
 
+def _inbox_lead_source(channel_type: str) -> str:
+    return {
+        "email": "Email",
+        "whatsapp": "Whatsapp",
+        "facebook_messenger": "Facebook",
+        "facebook_comment": "Facebook",
+        "instagram_dm": "Instagram",
+        "instagram_comment": "Instagram",
+    }.get(channel_type, "Website")
+
+
 def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
     actor = _active_actor(db, command.actor_system_user_id)
     fingerprint = _fingerprint(command)
@@ -499,6 +517,19 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             raise _error(
                 "replay_party_missing", "The saved Lead is missing its Person."
             )
+        if command.origin_conversation_id is not None:
+            conversation_lead_relationships.link_conversation_lead_participant(
+                db,
+                conversation_lead_relationships.ConversationLeadLinkCommand(
+                    context=command.context,
+                    conversation_id=command.origin_conversation_id,
+                    lead_id=replay.id,
+                    party_id=replay.party_id,
+                    actor_person_id=actor.person_party_id,
+                    source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_authoring,
+                    reason="Inbox Party and Lead authoring replay restored exact provenance",
+                ),
+            )
         return AuthorLeadOutcome(
             lead_id=replay.id,
             party_id=replay.party_id,
@@ -506,6 +537,13 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             reseller_routed=bool(metadata.get("communication_routed_through_reseller")),
         )
 
+    conversation = (
+        conversation_lead_relationships.require_new_prospect_conversation(
+            db, command.origin_conversation_id
+        )
+        if command.origin_conversation_id is not None
+        else None
+    )
     currency, country_code = _validate_scalar_fields(command)
     owner_id = _eligible_owner(db, command.owner_system_user_id)
     pipeline_id, stage_id = _pipeline_stage(db, command.pipeline_id, command.stage_id)
@@ -607,7 +645,11 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             metadata={"organization_profile_id": str(organization.id)},
         )
 
-    source = command.lead_source or "Portal"
+    source = (
+        _inbox_lead_source(conversation.channel_type)
+        if conversation is not None
+        else command.lead_source or "Portal"
+    )
     lead_metadata: dict[str, object] = {
         "authoring_key": str(command.lead_id),
         "authoring_fingerprint": fingerprint,
@@ -617,14 +659,37 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
         "reseller_id": str(reseller.id) if reseller else None,
         "region_zone_id": str(region.id) if region else None,
         "communication_routed_through_reseller": reseller_routed,
+        "origin_conversation_id": (
+            str(conversation.id) if conversation is not None else None
+        ),
     }
     origin = {
-        "capture_method": LeadCaptureMethod.agent_declared.value,
-        "source_platform": LeadSourcePlatform.agent.value,
-        "source_interaction_id": f"admin-lead:{command.lead_id}",
+        "capture_method": (
+            LeadCaptureMethod.inbox_form.value
+            if conversation is not None
+            else LeadCaptureMethod.agent_declared.value
+        ),
+        "source_platform": (
+            LeadSourcePlatform.team_inbox.value
+            if conversation is not None
+            else LeadSourcePlatform.agent.value
+        ),
+        "source_interaction_id": (
+            f"inbox-conversation:{conversation.id}"
+            if conversation is not None
+            else f"admin-lead:{command.lead_id}"
+        ),
         "capture_fingerprint": fingerprint,
-        "capture_source": "admin_sales_lead_form",
-        "capture_reason": "Authenticated staff created the Lead",
+        "capture_source": (
+            "communications.inbox_lead_actions"
+            if conversation is not None
+            else "admin_sales_lead_form"
+        ),
+        "capture_reason": (
+            "Authorized operator created a new prospect from an Inbox conversation"
+            if conversation is not None
+            else "Authenticated staff created the Lead"
+        ),
     }
     lead = lifecycle.create_party_lead(
         db,
@@ -682,6 +747,19 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             "reseller_routed": reseller_routed,
         },
     )
+    if conversation is not None:
+        conversation_lead_relationships.link_conversation_lead_participant(
+            db,
+            conversation_lead_relationships.ConversationLeadLinkCommand(
+                context=command.context,
+                conversation_id=conversation.id,
+                lead_id=lead.id,
+                party_id=party.id,
+                actor_person_id=actor.person_party_id,
+                source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_authoring,
+                reason="Party and Lead created atomically from this Inbox conversation",
+            ),
+        )
     db.flush()
     return AuthorLeadOutcome(
         lead_id=lead.id,

@@ -331,3 +331,15 @@ implementation.
   response and never reveal whether a digest exists.
 - Responsive behavior: fields stack on small screens, controls retain a
   44-pixel target, and address results remain adjacent to their search field.
+
+## Inbox Customer Context Page Contract
+
+- Authority: `communications.team_inbox_contact_context` owns the typed drawer
+  projection and `communications.inbox_lead_actions` owns action resolution.
+- Zero means a successful authoritative collection query returned no rows.
+  `—`, `Unavailable`, `Not calculated`, and `Restricted` remain separate states.
+- Customer-specific examples and fabricated fallback values are prohibited.
+- Profile and Lead actions are permission-scoped server outcomes. The browser
+  never selects identity, pipeline defaults, or duplicate-prevention policy.
+- Successful actions return to the exact originating conversation and trigger
+  a fresh drawer query; read failure never replays the mutation.
