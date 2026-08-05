@@ -730,6 +730,7 @@ def test_domain_sot_relationships_encode_cross_domain_dependencies():
         "communications.team_inbox_threads",
         "communications.team_inbox_contact_resolution",
         "communications.team_inbox_routing",
+        "communications.team_inbox_status",
         "communications.team_inbox_outbound_intents",
         "communications.team_inbox_operator_state",
     )

@@ -457,6 +457,7 @@ def execute_macro_actions(
                     actor_person_id=actor_uuid,
                     reason=team_inbox_status.InboxStatusReason.macro,
                     source_id=f"macro:{macro.id}:{conversation.id}:{uuid4()}",
+                    macro_id=macro.id,
                 )
             elif action_type == "add_tag":
                 label_name = str(params.get("tag") or params.get("label") or "").strip()

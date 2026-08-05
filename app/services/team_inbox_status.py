@@ -44,6 +44,7 @@ class InboxStatusTransitionCommand:
     source_id: str
     occurred_at: datetime
     compatibility_source: str
+    macro_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,17 +96,16 @@ def _apply_status_transition(
     history = metadata.get("status_history")
     if not isinstance(history, list):
         history = []
-    history.append(
-        {
-            "from": previous.value,
-            "to": command.status.value,
-            "at": effective_at.isoformat(),
-            "actor_id": (
-                str(command.actor_person_id) if command.actor_person_id else None
-            ),
-            "source": command.compatibility_source,
-        }
-    )
+    compatibility_entry: dict[str, str | None] = {
+        "from": previous.value,
+        "to": command.status.value,
+        "at": effective_at.isoformat(),
+        "actor_id": (str(command.actor_person_id) if command.actor_person_id else None),
+        "source": command.compatibility_source,
+    }
+    if command.macro_id is not None:
+        compatibility_entry["macro_id"] = str(command.macro_id)
+    history.append(compatibility_entry)
     metadata["status_history"] = history[-50:]
     conversation.metadata_ = metadata
     conversation.status = command.status.value
@@ -129,6 +129,7 @@ def apply_status_transition(
     source_id: str | None = None,
     occurred_at: datetime | None = None,
     compatibility_source: str | None = None,
+    macro_id: UUID | None = None,
 ) -> InboxStatusTransitionOutcome:
     """Normalize callers into the one typed, flush-only command contract."""
 
@@ -143,5 +144,6 @@ def apply_status_transition(
             source_id=source_id or f"status:{uuid4()}",
             occurred_at=occurred_at or datetime.now(UTC),
             compatibility_source=compatibility_source or reason.value,
+            macro_id=macro_id,
         ),
     )

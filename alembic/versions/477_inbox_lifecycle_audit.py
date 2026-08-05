@@ -1,7 +1,7 @@
 """Add prospective Team Inbox lifecycle audit evidence.
 
-Revision ID: 476_inbox_lifecycle_audit
-Revises: 475_inbox_conversation_lead_links
+Revision ID: 477_inbox_lifecycle_audit
+Revises: 476_reconcile_project_number_series
 Create Date: 2026-08-05
 
 This expand migration deliberately does not infer historical events. Native
@@ -18,8 +18,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "476_inbox_lifecycle_audit"
-down_revision: str | None = "475_inbox_conversation_lead_links"
+revision: str = "477_inbox_lifecycle_audit"
+down_revision: str | None = "476_reconcile_project_number_series"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

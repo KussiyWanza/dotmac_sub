@@ -21,6 +21,7 @@ from app.services import (
     team_inbox_audit_reconstruction,
     team_inbox_status,
 )
+from scripts.one_off import team_inbox_lifecycle_audit as lifecycle_audit_cli
 from tests.staff_identity_fixtures import add_bound_staff_user
 
 
@@ -165,6 +166,12 @@ def test_reconstruction_preview_is_deterministic_and_preserves_unknown_end(db_se
     }
     unknown = next(item for item in first.items if item.occurred_at is None)
     assert unknown.evidence_grade is InboxAuditEvidenceGrade.unknown
+    report = lifecycle_audit_cli._manifest_report(first)
+    assert report["sha256"] == first.sha256
+    assert report["counts_by_evidence_grade"] == {
+        "authoritative_historical": 1,
+        "unknown": 1,
+    }
 
 
 def test_reconstruction_apply_is_hash_bound_and_replays(db_session, monkeypatch):
@@ -222,6 +229,9 @@ def test_timeline_combines_events_and_reports_projection_drift(db_session):
     ]
     assert healthy.findings == ()
     assert healthy.native_coverage_started_at is not None
+    report = lifecycle_audit_cli._timeline_report(healthy)
+    assert report["conversation_id"] == str(conversation.id)
+    assert report["entries"][0]["source_id"] == "test:timeline-status"
 
     conversation.status = InboxConversationStatus.open.value
     db_session.flush()
