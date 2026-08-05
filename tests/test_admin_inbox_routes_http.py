@@ -13,16 +13,19 @@ arrive at the read model with the type the read model expects.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from io import BytesIO
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
 
 from app.db import get_db
-from app.services import team_inbox_projection
-from app.web.admin.inbox import router
+from app.services import team_inbox_commands, team_inbox_projection
+from app.web.admin.inbox import _read_new_conversation_uploads, router
 
 
 def _client(db_session) -> TestClient:
@@ -122,3 +125,73 @@ def test_every_route_declares_a_permission_guard():
         ]
     ]
     assert unguarded == []
+
+
+def _post_new_email_conversation(
+    db_session,
+    *,
+    files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+):
+    captured: list[tuple[tuple[str, str | None, bytes], ...]] = []
+
+    def start_conversation(db, **kwargs):
+        assert db is db_session
+        captured.append(tuple(kwargs["uploads"]))
+        return team_inbox_commands.StartConversationOutcome(
+            conversation_id="37bc5b83-dad9-4ddd-9c45-85dbb72ca35b",
+            kind="queued",
+            sender="support@example.test",
+            contact_status="unmatched",
+        )
+
+    client = _client(db_session)
+    with (
+        patch(
+            "app.services.team_inbox_commands.start_conversation",
+            side_effect=start_conversation,
+        ),
+        patch("app.services.web_admin.get_actor_id", return_value=None),
+    ):
+        response = client.post(
+            "/inbox/conversations",
+            data={
+                "channel_type": "email",
+                "contact_address": "customer@example.test",
+                "body_text": "Hello from the Inbox.",
+            },
+            files=files,
+            follow_redirects=False,
+        )
+    return response, captured
+
+
+def test_new_conversation_ignores_an_empty_browser_file_placeholder():
+    placeholder = UploadFile(
+        file=BytesIO(b""),
+        filename="",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    uploads = asyncio.run(_read_new_conversation_uploads([placeholder]))
+
+    assert uploads == []
+
+
+def test_new_conversation_passes_a_selected_attachment_to_the_owner(db_session):
+    response, captured = _post_new_email_conversation(
+        db_session,
+        files=[("files", ("evidence.txt", b"proof", "text/plain"))],
+    )
+
+    assert response.status_code == 303
+    assert captured == [(("evidence.txt", "text/plain", b"proof"),)]
+
+
+def test_new_conversation_keeps_a_named_empty_file_for_domain_validation(db_session):
+    response, captured = _post_new_email_conversation(
+        db_session,
+        files=[("files", ("empty.txt", b"", "text/plain"))],
+    )
+
+    assert response.status_code == 303
+    assert captured == [(("empty.txt", "text/plain", b""),)]

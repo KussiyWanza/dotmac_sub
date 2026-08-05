@@ -2188,6 +2188,24 @@ async def team_inbox_voice_transcription(
         voice_transcription.release_actor_slot(actor_id)
 
 
+async def _read_new_conversation_uploads(
+    files: list[UploadFile],
+) -> list[tuple[str, str | None, bytes]]:
+    """Normalize browser multipart file parts for the Inbox command owner."""
+    uploads: list[tuple[str, str | None, bytes]] = []
+    for upload in files:
+        data = await upload.read()
+        filename = str(upload.filename or "").strip()
+        if not filename and not data:
+            # Browsers may serialize an untouched file input as an empty
+            # multipart part. That is transport-level "no attachment", not a
+            # selected zero-byte file. Named empty files still reach the media
+            # owner and retain its fail-closed validation.
+            continue
+        uploads.append((filename or "attachment", upload.content_type, data))
+    return uploads
+
+
 @router.post(
     "/conversations",
     dependencies=[Depends(require_permission("support:ticket:update"))],
@@ -2213,10 +2231,7 @@ async def team_inbox_start_conversation(
     db: Session = Depends(get_db),
 ):
     """Open a new conversation and send its first message."""
-    uploads: list[tuple[str, str | None, bytes]] = []
-    for upload in files:
-        data = await upload.read()
-        uploads.append((upload.filename or "attachment", upload.content_type, data))
+    uploads = await _read_new_conversation_uploads(files)
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.start_conversation(
