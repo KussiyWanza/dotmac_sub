@@ -13,8 +13,8 @@ existing ``crm:quote:write`` grant onto it, across role, subscriber and
 system-user grant tables. Sending is treated as part of the established quote
 management authority rather than new policy invented here.
 
-Revision ID: 472_quote_send_permission
-Revises: 471_quote_documents_and_delivery
+Revision ID: 477_quote_send_permission
+Revises: 476_reconcile_project_number_series
 Create Date: 2026-08-05
 """
 
@@ -28,8 +28,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "472_quote_send_permission"
-down_revision: str | None = "471_quote_documents_and_delivery"
+revision: str = "477_quote_send_permission"
+down_revision: str | None = "476_reconcile_project_number_series"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

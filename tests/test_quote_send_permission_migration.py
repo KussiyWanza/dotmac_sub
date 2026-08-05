@@ -139,10 +139,10 @@ def _seed_write_holders(connection, tables, ids, now) -> None:
 
 
 def test_quote_send_permission_migration_extends_the_single_head_chain():
-    migration = _load("quote_send_permission_chain", "472_quote_send_permission.py")
-    delivery = _load("quote_delivery_chain", "471_quote_documents_and_delivery.py")
+    migration = _load("quote_send_permission_chain", "477_quote_send_permission.py")
+    parent = _load("chain_parent", "476_reconcile_project_number_series.py")
 
-    assert migration.down_revision == delivery.revision
+    assert migration.down_revision == parent.revision
 
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
@@ -158,7 +158,7 @@ def test_quote_send_permission_migration_extends_the_single_head_chain():
 
 
 def test_upgrade_seeds_send_permission_for_every_quote_write_holder(monkeypatch):
-    migration = _load("quote_send_permission_grants", "472_quote_send_permission.py")
+    migration = _load("quote_send_permission_grants", "477_quote_send_permission.py")
     engine = sa.create_engine("sqlite://")
     tables = _schema(engine)
     ids = {
@@ -233,7 +233,7 @@ def test_upgrade_seeds_the_permission_even_with_no_existing_holders(monkeypatch)
     dependency fails closed, which is exactly how the feature shipped dark.
     """
 
-    migration = _load("quote_send_permission_bare", "472_quote_send_permission.py")
+    migration = _load("quote_send_permission_bare", "477_quote_send_permission.py")
     engine = sa.create_engine("sqlite://")
     tables = _schema(engine)
 
