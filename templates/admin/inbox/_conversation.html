@@ -17,8 +17,9 @@
                     hx-swap="innerHTML"
                     @click="openContact('{{ timeline.id }}')"
                     class="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 text-xs font-bold uppercase text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:from-amber-950 dark:to-orange-950 dark:text-amber-200"
-                    aria-label="Open contact details">
-                {{ (timeline.contact_address or '?')[:2] | upper }}
+                    aria-label="Open contact details for {{ timeline.contact_name }}"
+                    title="{{ timeline.contact_name }}">
+                {{ timeline.contact_initials }}
                 <span class="inbox-channel-indicator absolute -bottom-1 -right-1 h-4 w-4 rounded-full border-2 border-white dark:border-slate-900" data-inbox-channel="{{ timeline.channel_type }}"></span>
             </button>
             <div class="min-w-0 flex-1">
@@ -27,7 +28,7 @@
                     {{ status_badge(timeline.status | replace('_',' ') | title, timeline.status, size="sm", show_icon=False) }}
                 </div>
                 <div class="flex min-w-0 items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                    <span class="truncate">{{ timeline.contact_address or "Unknown contact" }}</span>
+                    <span class="truncate" title="{{ timeline.contact_name }}">{{ timeline.contact_name }}</span>
                     <span aria-hidden="true">·</span>
                     <span>{{ timeline.channel_type | replace('_',' ') | title }}</span>
                     <span x-show="presenceText" x-cloak aria-hidden="true">·</span>

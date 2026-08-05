@@ -205,6 +205,7 @@ def test_receive_whatsapp_webhook_normalizes_and_deduplicates(db_session):
                 "text": "Hello",
                 "id": "wamid-1",
             },
+            "contact_name": "Amina Customer",
         },
     )
     second = team_inbox_channel_receive.receive_whatsapp_webhook(
@@ -227,3 +228,6 @@ def test_receive_whatsapp_webhook_normalizes_and_deduplicates(db_session):
     assert message.channel_type == InboxChannelType.whatsapp.value
     assert message.from_address == "+2348012345678"
     assert message.body == "Hello"
+    conversation = db_session.get(InboxConversation, first.conversation_id)
+    assert conversation.metadata_["contact_name"] == "Amina Customer"
+    assert conversation.metadata_["contact_name_source"] == "provider_observation"

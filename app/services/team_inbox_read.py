@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -10,7 +10,9 @@ from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.models.party import Party
 from app.models.service_team import ServiceTeam
+from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxChannelType,
     InboxComment,
@@ -95,6 +97,9 @@ class InboxConversationTimeline:
     snoozed_until: datetime | None
     subject: str | None
     contact_address: str | None
+    contact_name: str
+    contact_initials: str
+    contact_name_source: str
     external_thread_id: str | None
     first_message_at: datetime | None
     last_message_at: datetime | None
@@ -120,7 +125,9 @@ class InboxConversationListRow:
     is_muted: bool
     snoozed_until: datetime | None
     is_snoozed: bool
-    contact_name: str | None
+    contact_name: str
+    contact_initials: str
+    contact_name_source: str
     subject: str | None
     contact_address: str | None
     first_message_at: datetime | None
@@ -154,6 +161,21 @@ class InboxConversationListResult:
     count: int
     limit: int
     offset: int
+
+
+class InboxContactDisplaySource(StrEnum):
+    party = "party"
+    subscriber = "subscriber"
+    provider = "provider"
+    operator = "operator"
+    address = "address"
+
+
+@dataclass(frozen=True, slots=True)
+class InboxContactDisplayIdentity:
+    display_name: str
+    initials: str
+    source: InboxContactDisplaySource
 
 
 def _conversation_id(value: str | UUID) -> UUID:
@@ -524,13 +546,135 @@ def _contact_resolution_status(conversation: InboxConversation) -> str | None:
     return None
 
 
-def _contact_display_name(conversation: InboxConversation) -> str | None:
+def _bounded_name(value: object | None) -> str | None:
+    clean = str(value or "").strip()
+    return clean[:200] if clean else None
+
+
+def _display_initials(display_name: str) -> str:
+    words = display_name.split()
+    if len(words) > 1:
+        return f"{words[0][0]}{words[-1][0]}".upper()
+    return display_name[:2].upper() or "?"
+
+
+def _legacy_subscriber_name(subscriber: Subscriber) -> str | None:
+    return next(
+        (
+            name
+            for value in (
+                subscriber.display_name,
+                subscriber.company_name,
+                subscriber.legal_name,
+                f"{subscriber.first_name} {subscriber.last_name}",
+                subscriber.billing_name,
+            )
+            if (name := _bounded_name(value)) is not None
+        ),
+        None,
+    )
+
+
+def _metadata_contact_name(
+    conversation: InboxConversation,
+) -> tuple[str | None, InboxContactDisplaySource]:
     metadata = conversation.metadata_ or {}
     for key in ("contact_name", "sender_name", "profile_name"):
-        value = str(metadata.get(key) or "").strip()
-        if value:
-            return value[:200]
+        if value := _bounded_name(metadata.get(key)):
+            source = (
+                InboxContactDisplaySource.operator
+                if metadata.get("source") == "operator_initiated"
+                else InboxContactDisplaySource.provider
+            )
+            return value, source
+    return None, InboxContactDisplaySource.address
+
+
+def _provider_message_name(messages: Sequence[InboxMessage]) -> str | None:
+    for message in reversed(messages):
+        if message.direction != InboxMessageDirection.inbound.value:
+            continue
+        metadata = message.metadata_ or {}
+        for key in ("from_name", "contact_name", "sender_name", "profile_name"):
+            if value := _bounded_name(metadata.get(key)):
+                return value
     return None
+
+
+def _contact_display_identities(
+    db: Session,
+    conversations: Sequence[InboxConversation],
+    messages_by_conversation: Mapping[UUID, Sequence[InboxMessage]],
+) -> dict[UUID, InboxContactDisplayIdentity]:
+    subscriber_ids = tuple(
+        {row.subscriber_id for row in conversations if row.subscriber_id is not None}
+    )
+    canonical_names: dict[UUID, tuple[str, InboxContactDisplaySource]] = {}
+    if subscriber_ids:
+        identity_rows = (
+            db.query(Subscriber, Party)
+            .outerjoin(Party, Party.id == Subscriber.party_id)
+            .filter(Subscriber.id.in_(subscriber_ids))
+            .all()
+        )
+        for subscriber, party in identity_rows:
+            party_name = _bounded_name(
+                party.display_name if party is not None else None
+            )
+            if party_name:
+                canonical_names[subscriber.id] = (
+                    party_name,
+                    InboxContactDisplaySource.party,
+                )
+            elif legacy_name := _legacy_subscriber_name(subscriber):
+                canonical_names[subscriber.id] = (
+                    legacy_name,
+                    InboxContactDisplaySource.subscriber,
+                )
+
+    identities: dict[UUID, InboxContactDisplayIdentity] = {}
+    for conversation in conversations:
+        canonical = (
+            canonical_names.get(conversation.subscriber_id)
+            if conversation.subscriber_id is not None
+            else None
+        )
+        metadata_name, metadata_source = _metadata_contact_name(conversation)
+        provider_name = _provider_message_name(
+            messages_by_conversation.get(conversation.id, [])
+        )
+        if canonical is not None:
+            display_name, source = canonical
+        elif provider_name:
+            display_name = provider_name
+            source = InboxContactDisplaySource.provider
+        elif metadata_name:
+            display_name = metadata_name
+            source = metadata_source
+        else:
+            display_name = (
+                _bounded_name(conversation.contact_address) or "Unknown contact"
+            )
+            source = InboxContactDisplaySource.address
+        identities[conversation.id] = InboxContactDisplayIdentity(
+            display_name=display_name,
+            initials=_display_initials(display_name),
+            source=source,
+        )
+    return identities
+
+
+def contact_display_identity(
+    db: Session,
+    *,
+    conversation: InboxConversation,
+    messages: Sequence[InboxMessage],
+) -> InboxContactDisplayIdentity:
+    return _contact_display_identities(
+        db,
+        (conversation,),
+        {conversation.id: list(messages)},
+    )[conversation.id]
 
 
 def _delivery_status(message: InboxMessage | None) -> str | None:
@@ -863,6 +1007,11 @@ def list_conversations(
         for conversation_id, messages in messages_by_conversation.items()
         if (latest := _latest_external_message(messages)) is not None
     }
+    contact_identities = _contact_display_identities(
+        db,
+        conversations,
+        messages_by_conversation,
+    )
     ticketed_conversation_ids = _ticketed_conversation_ids(db, conversation_ids)
     active_assignments = (
         {
@@ -927,6 +1076,7 @@ def list_conversations(
     items: list[InboxConversationListRow] = []
     for conversation, team in rows:
         latest = latest_messages.get(conversation.id)
+        contact_identity = contact_identities[conversation.id]
         active_assignment = active_assignments.get(conversation.id)
         resolution_status = _contact_resolution_status(conversation)
         cohort = response_cohort(
@@ -969,7 +1119,9 @@ def list_conversations(
                 is_muted=conversation.is_muted,
                 snoozed_until=conversation.snoozed_until,
                 is_snoozed=_is_currently_snoozed(conversation),
-                contact_name=_contact_display_name(conversation),
+                contact_name=contact_identity.display_name,
+                contact_initials=contact_identity.initials,
+                contact_name_source=contact_identity.source.value,
                 subject=conversation.subject,
                 contact_address=conversation.contact_address,
                 first_message_at=conversation.first_message_at,
@@ -1058,6 +1210,11 @@ def get_conversation_timeline(
         .order_by(InboxComment.created_at.asc())
         .all()
     )
+    contact_identity = contact_display_identity(
+        db,
+        conversation=conversation,
+        messages=messages,
+    )
 
     return InboxConversationTimeline(
         id=str(conversation.id),
@@ -1074,6 +1231,9 @@ def get_conversation_timeline(
         snoozed_until=conversation.snoozed_until,
         subject=conversation.subject,
         contact_address=conversation.contact_address,
+        contact_name=contact_identity.display_name,
+        contact_initials=contact_identity.initials,
+        contact_name_source=contact_identity.source.value,
         external_thread_id=conversation.external_thread_id,
         first_message_at=conversation.first_message_at,
         last_message_at=conversation.last_message_at,

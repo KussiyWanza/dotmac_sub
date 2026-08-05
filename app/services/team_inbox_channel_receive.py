@@ -628,6 +628,12 @@ def receive_inbound_channel(
     )
     created_conversation = conversation is None
     if conversation is None:
+        conversation_metadata: dict[str, object] = {
+            "contact_resolution": resolution.as_metadata()
+        }
+        if contact_name := str(payload.contact_name or "").strip():
+            conversation_metadata["contact_name"] = contact_name[:200]
+            conversation_metadata["contact_name_source"] = "provider_observation"
         conversation = InboxConversation(
             subscriber_id=resolution.subscriber_id,
             channel_type=channel_type,
@@ -637,7 +643,7 @@ def receive_inbound_channel(
             external_thread_id=external_thread_id,
             first_message_at=received_at,
             last_message_at=received_at,
-            metadata_={"contact_resolution": resolution.as_metadata()},
+            metadata_=conversation_metadata,
         )
         db.add(conversation)
         db.flush()
@@ -647,6 +653,9 @@ def receive_inbound_channel(
             conversation.subscriber_id = resolution.subscriber_id
         conversation_metadata = dict(conversation.metadata_ or {})
         conversation_metadata["contact_resolution"] = resolution.as_metadata()
+        if contact_name := str(payload.contact_name or "").strip():
+            conversation_metadata["contact_name"] = contact_name[:200]
+            conversation_metadata["contact_name_source"] = "provider_observation"
         conversation.metadata_ = conversation_metadata
 
     # The shared intake owner runs after normalization/idempotency and before
@@ -897,6 +906,11 @@ def receive_whatsapp_webhook(
         InboundChannelPayload(
             channel_type=InboxChannelType.whatsapp.value,
             contact_address=str(normalized.get("from") or ""),
+            contact_name=(
+                str(normalized["contact_name"])
+                if normalized.get("contact_name")
+                else None
+            ),
             body=_message_body(normalized.get("text")),
             external_message_id=(
                 str(normalized.get("external_id"))

@@ -800,15 +800,6 @@ def build_ai_reply_projection(
     )
     ticket = linked_tickets[0] if linked_tickets else None
     recent_messages = timeline.messages[-12:]
-    metadata = timeline.metadata if isinstance(timeline.metadata, dict) else {}
-    contact_name = next(
-        (
-            str(metadata.get(key)).strip()
-            for key in ("contact_name", "sender_name", "profile_name")
-            if str(metadata.get(key) or "").strip()
-        ),
-        None,
-    )
     return {
         "company_name": resolve_brand(
             db,
@@ -821,7 +812,7 @@ def build_ai_reply_projection(
         "status": timeline.status,
         "priority": timeline.priority,
         "subject": timeline.subject,
-        "contact_display_name": contact_name,
+        "contact_display_name": timeline.contact_name,
         "assigned_agent_name": assigned_agent_name,
         "tags": [label.name for label in labels],
         "linked_ticket": (
