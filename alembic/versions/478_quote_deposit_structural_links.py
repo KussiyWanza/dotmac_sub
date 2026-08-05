@@ -1,7 +1,7 @@
 """Add structural Quote-to-Invoice and checkout-to-Invoice identities.
 
-Revision ID: 477_quote_deposit_structural_links
-Revises: 476_reconcile_project_number_series
+Revision ID: 478_quote_deposit_structural_links
+Revises: 477_quote_send_permission
 Create Date: 2026-08-05
 
 ADR 0007 makes JSON metadata provenance-only. This expand/backfill migration
@@ -19,8 +19,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "477_quote_deposit_structural_links"
-down_revision: str | None = "476_reconcile_project_number_series"
+revision: str = "478_quote_deposit_structural_links"
+down_revision: str | None = "477_quote_send_permission"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
