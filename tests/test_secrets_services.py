@@ -215,3 +215,49 @@ def test_openbao_token_file_precedes_environment_token(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENBAO_TOKEN", "environment-token")
 
     assert secrets._read_openbao_token() == "file-token"
+
+
+def test_list_secret_paths_expands_nested_openbao_metadata(monkeypatch):
+    monkeypatch.setenv("OPENBAO_ADDR", "https://vault.test.local:8200")
+    monkeypatch.setenv("OPENBAO_TOKEN", "test-token")
+
+    responses = {
+        "https://vault.test.local:8200/v1/secret/metadata/?list=true": {
+            "data": {"keys": ["auth", "integrations/"]}
+        },
+        "https://vault.test.local:8200/v1/secret/metadata/integrations?list=true": {
+            "data": {"keys": ["meta_social", "payments/"]}
+        },
+        "https://vault.test.local:8200/v1/secret/metadata/integrations/payments?list=true": {
+            "data": {"keys": ["paystack"]}
+        },
+    }
+
+    def mock_get(url, **_kwargs):
+        return FakeHTTPXResponse(json_data=responses[url])
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+
+    assert secrets.list_secret_paths() == (
+        "auth",
+        "integrations/meta_social",
+        "integrations/payments/paystack",
+    )
+
+
+def test_list_secret_paths_keeps_visible_leaves_when_subtree_is_forbidden(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENBAO_ADDR", "https://vault.test.local:8200")
+    monkeypatch.setenv("OPENBAO_TOKEN", "test-token")
+
+    def mock_get(url, **_kwargs):
+        if url.endswith("/metadata/?list=true"):
+            return FakeHTTPXResponse(
+                json_data={"data": {"keys": ["auth", "restricted/"]}}
+            )
+        return FakeHTTPXResponse(status_code=403)
+
+    monkeypatch.setattr(httpx, "get", mock_get)
+
+    assert secrets.list_secret_paths() == ("auth",)
