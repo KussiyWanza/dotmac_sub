@@ -164,6 +164,12 @@ stale. Realtime has no replay authority.
   conversation/message rows, delivery metadata, and ticket provenance on
   every read. There is no stored flag to drift and no event-specific repair
   path; a normal projection refetch is the idempotent rebuild.
+- Sidebar filter refreshes are a typed, reduced composition of the same
+  projection: they retain queue rows, counts, filter options, and selected-id
+  highlighting while omitting conversation detail, manager-dashboard, and
+  compose-template work that the sidebar does not render. The browser applies
+  latest-request-wins semantics and pauses fallback polling during an active
+  filter request so stale responses cannot replace a newer operator choice.
 - Queue-row unread totals count inbound messages after the authenticated
   operator's authoritative read cursor. With no cursor, every timestamped
   inbound message in the conversation is unread; outbound and internal

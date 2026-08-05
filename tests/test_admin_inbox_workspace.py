@@ -128,6 +128,11 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "setInterval" in javascript
     assert "5000" in javascript
     assert "handleShortcut" in javascript
+    assert 'hx-sync="this:replace"' in sidebar
+    assert ':aria-busy="filterLoading.toString()"' in sidebar
+    assert "activeFilterXhr?.abort()" in javascript
+    assert "if (this.filterLoading) return" in javascript
+    assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
 
 
 def test_projection_supplies_live_agent_and_assignment_options(db_session):
@@ -319,6 +324,33 @@ def test_queue_and_detail_use_email_from_name_when_contact_is_unlinked(db_sessio
     assert timeline is not None
     assert timeline.contact_name == row.contact_name
     assert timeline.contact_initials == row.contact_initials
+
+
+def test_sidebar_projection_preserves_selection_without_loading_detail(
+    db_session, monkeypatch
+):
+    conversation_id = _conversation(db_session)
+
+    def fail_if_detail_is_loaded(*_args, **_kwargs):
+        raise AssertionError("sidebar projection must not load conversation detail")
+
+    monkeypatch.setattr(
+        team_inbox_projection,
+        "get_conversation_projection",
+        fail_if_detail_is_loaded,
+    )
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(
+            actor_person_id=uuid.uuid4(),
+            selected_conversation_id=conversation_id,
+            composition=team_inbox_projection.InboxQueueComposition.sidebar,
+        ),
+    )
+
+    assert projection.selected is None
+    assert projection.selected_id == str(conversation_id)
 
 
 def test_manager_dashboard_projects_presence_load_status_and_channels(db_session):

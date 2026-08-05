@@ -289,6 +289,18 @@ def test_stats_filters_scroll_without_hiding_the_conversation_queue():
         assert contract in REPLICA_CSS
 
 
+def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
+    assert 'hx-sync="this:replace"' in SIDEBAR
+    assert 'hx-sync="#inbox-sidebar-content:replace"' in SIDEBAR
+    assert ':aria-busy="filterLoading.toString()"' in SIDEBAR
+    assert "Updating conversations" in SIDEBAR
+    assert "activeFilterXhr?.abort()" in JAVASCRIPT
+    assert "if (this.filterLoading) return" in JAVASCRIPT
+    assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
+    assert "InboxQueueComposition.sidebar" in ROUTES
+    assert "if can_manage_inbox and not is_sidebar_request" in ROUTES
+
+
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():
     marker = INDEX.index('aria-label="Drag to resize inbox"')
     handle = INDEX[max(0, marker - 3000) : marker + 2500]

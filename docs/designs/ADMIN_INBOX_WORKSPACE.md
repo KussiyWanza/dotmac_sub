@@ -149,6 +149,14 @@ notice. `Refresh list` refetches and swaps only
 boundary and preserves the selected conversation in the URL. Thread refresh
 remains independent, so a focused composer is never replaced.
 
+Interactive sidebar filters use latest-request-wins coordination. A new filter
+selection replaces an older in-flight filter request, background polling pauses
+while that request is active, and the form exposes an immediate accessible busy
+state. Sidebar-only requests preserve the selected conversation identifier but
+do not rebuild its detail projection, the new-conversation template catalog, or
+the manager dashboard. A normal full-page request remains the deterministic
+rebuild path for those projections.
+
 Each queue row displays only projected facts. Contact display identity resolves
 in this order: the linked canonical Party name, the linked legacy Subscriber
 name, the latest inbound provider-observed name, an operator/provider name on

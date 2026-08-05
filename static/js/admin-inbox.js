@@ -97,6 +97,9 @@
       pollTimer: null,
       typingTimer: null,
       inFlight: new Set(),
+      filterLoading: false,
+      activeFilterXhr: null,
+      pendingStatusFilter: null,
       newConversation: {
         channel: "email",
         contactName: "",
@@ -239,6 +242,15 @@
         document.body.addEventListener("htmx:beforeRequest", (event) => {
           const path = event.detail?.requestConfig?.path || "";
           const target = event.detail?.target?.id || "";
+          const trigger = event.detail?.elt || event.target;
+          const isFilterRequest =
+            target === "inbox-sidebar-content" &&
+            (this.filterLoading || trigger?.closest?.("#inbox-filter-form"));
+          if (isFilterRequest) {
+            this.filterLoading = true;
+            this.activeFilterXhr = event.detail.xhr;
+            return;
+          }
           const key = `${event.detail?.requestConfig?.verb || "GET"}:${path}:${target}`;
           if (this.inFlight.has(key)) {
             event.preventDefault();
@@ -248,10 +260,17 @@
           event.detail.xhr.__inboxRequestKey = key;
         });
         const release = (event) => {
+          if (event.detail?.xhr === this.activeFilterXhr) {
+            this.activeFilterXhr = null;
+            this.filterLoading = false;
+            this.pendingStatusFilter = null;
+          }
           const key = event.detail?.xhr?.__inboxRequestKey;
           if (key) this.inFlight.delete(key);
         };
         document.body.addEventListener("htmx:afterRequest", release);
+        document.body.addEventListener("htmx:sendAbort", release);
+        document.body.addEventListener("htmx:timeout", release);
         document.body.addEventListener("htmx:sendError", release);
         document.body.addEventListener("htmx:responseError", release);
         document.body.addEventListener("htmx:afterSwap", (event) => {
@@ -304,6 +323,8 @@
             url.searchParams.set("conversation_id", this.selectedId);
           }
           history.pushState({}, "", url);
+          this.filterLoading = true;
+          this.activeFilterXhr?.abort();
           window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
             target: "#inbox-sidebar-content",
             swap: "innerHTML",
@@ -320,9 +341,19 @@
         });
       },
 
-      filterRequestStarted() {
+      filterRequestStarted(status = null) {
         this.newMessagesAvailable = false;
         this.newListActivityAvailable = false;
+        this.filterLoading = true;
+        if (status !== null) {
+          this.pendingStatusFilter = status;
+          const url = new URL(window.location.href);
+          url.searchParams.delete("open_only");
+          url.searchParams.delete("has_ticket");
+          if (status) url.searchParams.set("status", status);
+          else url.searchParams.delete("status");
+          history.replaceState({}, "", url);
+        }
       },
 
       showList() {
@@ -435,6 +466,8 @@
           url.searchParams.set("conversation_id", this.selectedId);
         }
         history.pushState({}, "", url);
+        this.filterLoading = true;
+        this.activeFilterXhr?.abort();
         window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
           target: "#inbox-sidebar-content",
           swap: "innerHTML",
@@ -1064,6 +1097,7 @@
         let ticks = 0;
         this.pollTimer = window.setInterval(() => {
           if (document.visibilityState !== "visible") return;
+          if (this.filterLoading) return;
           ticks += 1;
           const dueWhileConnected = ticks % 6 === 0;
           if (!this.realtimeConnected || dueWhileConnected) {
