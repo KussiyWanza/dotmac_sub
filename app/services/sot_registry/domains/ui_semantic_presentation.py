@@ -726,11 +726,13 @@ DOMAIN = DomainSOT(
                 "customer network path graph projection",
                 "customer serving-endpoint presentation projection",
                 "customer passive-fibre path detail projection",
+                "customer geographic network path projection",
                 "shared network graph view contract",
             ),
             depends_on=(
                 "network.access_path",
                 "network.fiber_topology",
+                "customer.identity_scope",
                 "ui.status_presentation",
             ),
             notes=(
@@ -775,6 +777,14 @@ DOMAIN = DomainSOT(
                         ),
                     ),
                     ConcernContract(
+                        name="customer geographic network path projection",
+                        role=OwnerRole.RESOLVER,
+                        input_names=(
+                            "validated fibre plant trace",
+                            "customer primary service address",
+                        ),
+                    ),
+                    ConcernContract(
                         name="shared network graph view contract",
                         role=OwnerRole.POLICY,
                         input_names=("shared network graph vocabulary",),
@@ -812,6 +822,16 @@ DOMAIN = DomainSOT(
                             "projections for hop states, path gaps, "
                             "serving-endpoint sources, and RF signal "
                             "freshness"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="customer primary service address",
+                        owner="customer.identity_scope",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "the customer account's selected primary Address latitude "
+                            "and longitude; the map never geocodes or substitutes a "
+                            "nearby asset"
                         ),
                     ),
                     AuthorityInput(
@@ -879,6 +899,33 @@ DOMAIN = DomainSOT(
                             "Recompute on read from the current "
                             "access-path resolution; nothing is "
                             "persisted."
+                        ),
+                        repair_owner="ui.customer_network_path_projection",
+                    ),
+                    ProjectionContract(
+                        name="customer geographic network path projection",
+                        input_names=(
+                            "validated fibre plant trace",
+                            "customer primary service address",
+                        ),
+                        writer="ui.customer_network_path_projection",
+                        freshness=(
+                            "Recomputed on customer-detail read from the current "
+                            "primary service-address coordinates, validated fiber "
+                            "trace, and mapped canonical asset coordinates."
+                        ),
+                        stale_behavior=(
+                            "Missing coordinates or topology are emitted as explicit "
+                            "map gaps; the projection never connects assets by "
+                            "proximity or silently bridges an owner gap."
+                        ),
+                        drift_signal=(
+                            "Customer geographic path contract tests and the fiber "
+                            "topology owner's trace completeness evidence."
+                        ),
+                        rebuild_operation=(
+                            "Recompute on read from the current address and fiber "
+                            "topology records; nothing is persisted."
                         ),
                         repair_owner="ui.customer_network_path_projection",
                     ),
