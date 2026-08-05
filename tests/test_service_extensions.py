@@ -17,6 +17,9 @@ from app.models.service_extension import (
     ServiceExtension,
     ServiceExtensionAnchorBasis,
     ServiceExtensionEntry,
+    ServiceExtensionReversal,
+    ServiceExtensionReversalAnchorDisposition,
+    ServiceExtensionReversalEntry,
     ServiceExtensionScope,
     ServiceExtensionStatus,
 )
@@ -61,6 +64,7 @@ def _command_context(
     *,
     actor_id: str = "admin-1",
     idempotency_key: str | None = None,
+    reason: str = "Service-extension test",
 ) -> CommandContext:
     command_id = uuid4()
     return CommandContext(
@@ -68,7 +72,7 @@ def _command_context(
         correlation_id=command_id,
         actor=f"user:{actor_id}",
         scope=scope,
-        reason="Service-extension test",
+        reason=reason,
         idempotency_key=idempotency_key or str(uuid4()),
     )
 
@@ -128,6 +132,48 @@ def _cancel(db_session, extension_id, *, actor_id: str = "admin-1"):
         svc.CancelServiceExtensionCommand(
             context=_command_context(svc.CANCEL_SCOPE, actor_id=actor_id),
             extension_id=UUID(str(extension_id)),
+        ),
+    )
+
+
+def _reverse(
+    db_session,
+    extension_id,
+    *,
+    reason: str = "Incorrect outage compensation",
+    actor_id: str = "reverser-1",
+):
+    if db_session.in_transaction():
+        db_session.commit()
+    stored = db_session.scalar(
+        select(ServiceExtensionReversal).where(
+            ServiceExtensionReversal.extension_id == UUID(str(extension_id))
+        )
+    )
+    fingerprint = (
+        stored.preview_fingerprint_sha256
+        if stored is not None
+        else svc.preview_service_extension_reversal(
+            db_session,
+            extension_id=UUID(str(extension_id)),
+            reason=reason,
+        ).fingerprint
+    )
+    db_session.commit()
+    return svc.reverse_service_extension(
+        db_session,
+        svc.ReverseServiceExtensionCommand(
+            context=_command_context(
+                svc.REVERSE_SCOPE,
+                actor_id=actor_id,
+                idempotency_key=svc.transition_idempotency_key(
+                    UUID(str(extension_id)),
+                    "reverse",
+                ),
+                reason=reason,
+            ),
+            extension_id=UUID(str(extension_id)),
+            preview_fingerprint=fingerprint,
         ),
     )
 
@@ -475,6 +521,293 @@ def test_cancel_pending_extension(db_session, subscriber, catalog_offer):
     assert canceled.status == ServiceExtensionStatus.canceled
     with pytest.raises(ServiceExtensionError):
         _apply(db_session, ext.id)
+
+
+def test_reverse_applied_extension_preserves_history_and_only_restores_exact_anchor(
+    db_session,
+    subscriber,
+    catalog_offer,
+):
+    exact = _sub(
+        db_session,
+        subscriber,
+        catalog_offer,
+        next_billing_at=datetime(2026, 7, 2, tzinfo=UTC),
+    )
+    later = _sub(
+        db_session,
+        _another_subscriber(db_session),
+        catalog_offer,
+        next_billing_at=datetime(2026, 7, 3, tzinfo=UTC),
+    )
+    lower = _sub(
+        db_session,
+        _another_subscriber(db_session),
+        catalog_offer,
+        next_billing_at=datetime(2026, 7, 4, tzinfo=UTC),
+    )
+    terminal = _sub(
+        db_session,
+        _another_subscriber(db_session),
+        catalog_offer,
+        next_billing_at=datetime(2026, 7, 5, tzinfo=UTC),
+    )
+    extension = _create(
+        db_session,
+        reason="Incorrect network grant",
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+        days=7,
+        scope_type=ServiceExtensionScope.network,
+    )
+    _apply(db_session, extension.id)
+    entries = {
+        entry.subscription_id: entry
+        for entry in db_session.scalars(
+            select(ServiceExtensionEntry).where(
+                ServiceExtensionEntry.extension_id == extension.id
+            )
+        ).all()
+    }
+    exact_entry = entries[exact.id]
+    later.next_billing_at = entries[later.id].new_next_billing_at + timedelta(days=30)
+    lower.next_billing_at = entries[lower.id].new_next_billing_at - timedelta(days=1)
+    terminal.status = SubscriptionStatus.canceled
+    db_session.commit()
+
+    preview = svc.preview_service_extension_reversal(
+        db_session,
+        extension_id=extension.id,
+        reason="Grant created for the wrong incident",
+    )
+
+    assert preview.inspected_count == 4
+    assert preview.restored_anchor_count == 1
+    assert preview.preserved_later_anchor_count == 1
+    assert preview.preserved_lower_anchor_count == 1
+    assert preview.preserved_terminal_count == 1
+    later_before = later.next_billing_at
+    lower_before = lower.next_billing_at
+    terminal_before = terminal.next_billing_at
+    outcome = _reverse(
+        db_session,
+        extension.id,
+        reason="Grant created for the wrong incident",
+    )
+
+    assert outcome.status == ServiceExtensionStatus.reversed
+    assert outcome.inspected_count == 4
+    db_session.refresh(exact)
+    db_session.refresh(later)
+    db_session.refresh(lower)
+    db_session.refresh(terminal)
+    assert _naive(exact.next_billing_at) == _naive(exact_entry.previous_next_billing_at)
+    assert _naive(later.next_billing_at) == _naive(later_before)
+    assert _naive(lower.next_billing_at) == _naive(lower_before)
+    assert _naive(terminal.next_billing_at) == _naive(terminal_before)
+
+    reversal = db_session.scalar(
+        select(ServiceExtensionReversal).where(
+            ServiceExtensionReversal.extension_id == extension.id
+        )
+    )
+    assert reversal is not None
+    results = list(
+        db_session.scalars(
+            select(ServiceExtensionReversalEntry).where(
+                ServiceExtensionReversalEntry.reversal_id == reversal.id
+            )
+        ).all()
+    )
+    assert len(results) == 4
+    assert {item.disposition for item in results} == {
+        ServiceExtensionReversalAnchorDisposition.restored_previous_anchor,
+        ServiceExtensionReversalAnchorDisposition.preserved_later_anchor,
+        ServiceExtensionReversalAnchorDisposition.preserved_lower_anchor,
+        ServiceExtensionReversalAnchorDisposition.preserved_terminal_subscription,
+    }
+    stored_entries = list(
+        db_session.scalars(
+            select(ServiceExtensionEntry).where(
+                ServiceExtensionEntry.extension_id == extension.id
+            )
+        ).all()
+    )
+    assert len(stored_entries) == 4
+    coverage = resolve_prepaid_service_coverage(
+        db_session,
+        [exact],
+        as_of=_APPLIED_AT,
+    )[exact.id]
+    assert coverage.status == PrepaidCoverageStatus.unresolved_projection
+    assert coverage.evidence is None
+    actions = set(
+        db_session.scalars(
+            select(AuditEvent.action).where(
+                AuditEvent.entity_type == "service_extension",
+                AuditEvent.entity_id == str(extension.id),
+            )
+        ).all()
+    )
+    assert "billing.service_extension_reversed" in actions
+    assert (
+        db_session.query(EventStore)
+        .filter(
+            EventStore.event_type == "billing.service_extension_reversed",
+            EventStore.payload["extension_id"].as_string() == str(extension.id),
+        )
+        .count()
+        == 1
+    )
+
+
+def test_reverse_is_idempotent_and_rejects_changed_confirmation(
+    db_session,
+    subscriber,
+    catalog_offer,
+):
+    _sub(db_session, subscriber, catalog_offer)
+    extension = _create(
+        db_session,
+        reason="Mistaken grant",
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+        days=2,
+        scope_type=ServiceExtensionScope.network,
+    )
+    _apply(db_session, extension.id)
+    first = _reverse(db_session, extension.id, reason="Wrong outage selected")
+    second = _reverse(db_session, extension.id, reason="Wrong outage selected")
+
+    assert first.replayed is False
+    assert second.replayed is True
+    assert first.reversal_id == second.reversal_id
+    assert db_session.query(ServiceExtensionReversal).count() == 1
+    assert db_session.query(ServiceExtensionReversalEntry).count() == 1
+    assert (
+        db_session.query(AuditEvent)
+        .filter(AuditEvent.action == "billing.service_extension_reversed")
+        .count()
+        == 1
+    )
+    db_session.commit()
+
+    with pytest.raises(ServiceExtensionError) as exc:
+        svc.reverse_service_extension(
+            db_session,
+            svc.ReverseServiceExtensionCommand(
+                context=_command_context(
+                    svc.REVERSE_SCOPE,
+                    idempotency_key=svc.transition_idempotency_key(
+                        extension.id,
+                        "reverse",
+                    ),
+                    reason="A different reason",
+                ),
+                extension_id=extension.id,
+                preview_fingerprint="0" * 64,
+            ),
+        )
+    assert exc.value.code.endswith("idempotency_conflict")
+
+
+def test_reverse_rejects_stale_preview_without_partial_write(
+    db_session,
+    subscriber,
+    catalog_offer,
+):
+    subscription = _sub(db_session, subscriber, catalog_offer)
+    extension = _create(
+        db_session,
+        reason="Mistaken grant",
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+        days=2,
+        scope_type=ServiceExtensionScope.network,
+    )
+    _apply(db_session, extension.id)
+    preview = svc.preview_service_extension_reversal(
+        db_session,
+        extension_id=extension.id,
+        reason="Wrong outage selected",
+    )
+    subscription.next_billing_at = subscription.next_billing_at + timedelta(days=1)
+    db_session.commit()
+
+    with pytest.raises(ServiceExtensionError) as exc:
+        svc.reverse_service_extension(
+            db_session,
+            svc.ReverseServiceExtensionCommand(
+                context=_command_context(
+                    svc.REVERSE_SCOPE,
+                    idempotency_key=svc.transition_idempotency_key(
+                        extension.id,
+                        "reverse",
+                    ),
+                    reason="Wrong outage selected",
+                ),
+                extension_id=extension.id,
+                preview_fingerprint=preview.fingerprint,
+            ),
+        )
+
+    assert exc.value.code.endswith("stale_reversal_preview")
+    stored = db_session.get(ServiceExtension, extension.id)
+    assert stored is not None and stored.status == ServiceExtensionStatus.applied
+    assert db_session.query(ServiceExtensionReversal).count() == 0
+
+
+def test_reverse_rolls_back_anchor_and_evidence_when_audit_staging_fails(
+    db_session,
+    subscriber,
+    catalog_offer,
+    monkeypatch,
+):
+    subscription = _sub(db_session, subscriber, catalog_offer)
+    extension = _create(
+        db_session,
+        reason="Mistaken grant",
+        window_start=_WIN_START,
+        window_end=_WIN_END,
+        days=2,
+        scope_type=ServiceExtensionScope.network,
+    )
+    _apply(db_session, extension.id)
+    applied_anchor = subscription.next_billing_at
+    preview = svc.preview_service_extension_reversal(
+        db_session,
+        extension_id=extension.id,
+        reason="Wrong outage selected",
+    )
+    db_session.commit()
+
+    def fail_evidence(*_args, **_kwargs):
+        raise RuntimeError("forced reversal evidence failure")
+
+    monkeypatch.setattr(svc, "_stage_lifecycle_evidence", fail_evidence)
+    with pytest.raises(RuntimeError, match="forced reversal evidence failure"):
+        svc.reverse_service_extension(
+            db_session,
+            svc.ReverseServiceExtensionCommand(
+                context=_command_context(
+                    svc.REVERSE_SCOPE,
+                    idempotency_key=svc.transition_idempotency_key(
+                        extension.id,
+                        "reverse",
+                    ),
+                    reason="Wrong outage selected",
+                ),
+                extension_id=extension.id,
+                preview_fingerprint=preview.fingerprint,
+            ),
+        )
+
+    stored = db_session.get(ServiceExtension, extension.id)
+    db_session.refresh(subscription)
+    assert stored is not None and stored.status == ServiceExtensionStatus.applied
+    assert _naive(subscription.next_billing_at) == _naive(applied_anchor)
+    assert db_session.query(ServiceExtensionReversal).count() == 0
+    assert db_session.query(ServiceExtensionReversalEntry).count() == 0
 
 
 def test_create_and_cancel_record_actor_audit(db_session, subscriber, catalog_offer):

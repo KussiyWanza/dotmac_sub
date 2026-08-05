@@ -467,6 +467,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=(
             "service-extension lifecycle and exact grant intervals",
             "immutable applied service-extension entry evidence",
+            "immutable service-extension reversal evidence",
             "service-extension billing-anchor projection",
         ),
         depends_on=(
@@ -478,7 +479,8 @@ SERVICES: tuple[SOTService, ...] = (
             "observability.audit_log",
         ),
         notes=(
-            "Typed create, apply, cancel, and anchor-repair commands are the "
+            "Typed create, apply, cancel, reverse, and anchor-repair commands are "
+            "the "
             "only lifecycle writers. They stage immutable extension evidence, "
             "exact entity-linked audit records, and aggregate/per-subscription "
             "domain events in the same owner transaction. The owner records one "
@@ -489,7 +491,11 @@ SERVICES: tuple[SOTService, ...] = (
             "parallel clocks. A fingerprint-gated historical repair collapses "
             "exact duplicate rows and preserves an approved chained interval as "
             "a separately audited corrective extension without shortening "
-            "customer service. Access restoration remains a request to "
+            "customer service. Reversal preserves every original grant row, "
+            "invalidates coverage through an explicit terminal status, restores "
+            "only an unchanged extension-owned anchor, and records why later, "
+            "lower, or terminal anchors were preserved. Access restoration "
+            "remains a request to "
             "access.subscription_lifecycle."
         ),
         contract=ServiceContract(
@@ -503,6 +509,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical subscriber scope",
                         "canonical subscription lifecycle and billing anchor",
                         "service-extension duration policy",
+                        "reviewed service-extension reversal command",
                         "reviewed historical duplicate reconciliation command",
                     ),
                     canonical_writer="financial.service_extensions",
@@ -517,12 +524,24 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="financial.service_extensions",
                 ),
                 ConcernContract(
+                    name="immutable service-extension reversal evidence",
+                    role=OwnerRole.AUTHORITATIVE_RECORD,
+                    input_names=(
+                        "canonical service-extension aggregate",
+                        "immutable applied service-extension entry evidence",
+                        "canonical subscription lifecycle and billing anchor",
+                        "reviewed service-extension reversal command",
+                    ),
+                    canonical_writer="financial.service_extensions",
+                ),
+                ConcernContract(
                     name="service-extension billing-anchor projection",
                     role=OwnerRole.PROJECTION_WRITER,
                     input_names=(
                         "canonical service-extension aggregate",
                         "canonical subscription lifecycle and billing anchor",
                         "immutable applied service-extension entry evidence",
+                        "immutable service-extension reversal evidence",
                     ),
                     canonical_writer="financial.service_extensions",
                 ),
@@ -536,6 +555,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "CreateServiceExtensionCommand, "
                         "ApplyServiceExtensionCommand, "
                         "CancelServiceExtensionCommand, or "
+                        "ReverseServiceExtensionCommand, "
                         "RepairServiceExtensionAnchorProjectionCommand with "
                         "CommandContext actor and reason"
                     ),
@@ -572,6 +592,16 @@ SERVICES: tuple[SOTService, ...] = (
                     source="billing.service_extension_max_days",
                 ),
                 AuthorityInput(
+                    name="reviewed service-extension reversal command",
+                    owner="auth.permission_gate",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "billing:extension:reverse permission, normalized reason, "
+                        "exact impact fingerprint, command identity, and UUID "
+                        "idempotency key"
+                    ),
+                ),
+                AuthorityInput(
                     name=("reviewed historical duplicate reconciliation command"),
                     owner="auth.permission_gate",
                     kind=AuthorityKind.CONTROL_INPUT,
@@ -590,17 +620,31 @@ SERVICES: tuple[SOTService, ...] = (
                         "resulting billing-anchor interval"
                     ),
                 ),
+                AuthorityInput(
+                    name="immutable service-extension reversal evidence",
+                    owner="financial.service_extensions",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "unique ServiceExtensionReversal and "
+                        "ServiceExtensionReversalEntry rows linking the original "
+                        "grant entry to observed and resulting anchors plus a "
+                        "typed restoration or preservation disposition"
+                    ),
+                ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
                 boundary=(
-                    "Each public create, apply, cancel, anchor-repair, or historical "
+                    "Each public create, apply, cancel, reverse, anchor-repair, or "
+                    "historical "
                     "duplicate reconciliation command enters execute_owner_command "
                     "exactly once on a transaction-free session. Internal mutation, "
                     "access-restoration, audit, and event helpers are flush-only."
                 ),
                 locking=(
-                    "Apply and cancel select the extension FOR UPDATE. Apply "
+                    "Apply, cancel, and reverse select the extension FOR UPDATE. "
+                    "Reverse also locks ordered immutable entries and affected "
+                    "subscriptions before re-fingerprinting the preview. Apply "
                     "locks its resolved subscriptions in stable UUID order, and "
                     "database primary and unique keys arbitrate create and entry "
                     "races so a duplicate extension/subscription grant is "
@@ -610,7 +654,7 @@ SERVICES: tuple[SOTService, ...] = (
                 idempotency=(
                     "Create derives its extension UUID from the form key and "
                     "compares a complete material-input fingerprint. Apply and "
-                    "cancel persist command evidence and replay the stable "
+                    "cancel and reverse persist command evidence and replay the stable "
                     "outcome without duplicate entries, audits, or events. "
                     "Historical repair reserves one bounded idempotency key "
                     "against the reviewed cohort fingerprint."
@@ -648,10 +692,16 @@ SERVICES: tuple[SOTService, ...] = (
                     "financial.service_extensions.invalid_scope",
                     "financial.service_extensions.invalid_transition_action",
                     "financial.service_extensions.invalid_window",
+                    "financial.service_extensions.invalid_reversal_preview",
                     "financial.service_extensions.missing_idempotency_key",
                     "financial.service_extensions.missing_reason",
+                    "financial.service_extensions.missing_reversal_reason",
                     "financial.service_extensions.missing_scope_id",
+                    "financial.service_extensions.reversal_evidence_conflict",
+                    "financial.service_extensions.reversal_evidence_incomplete",
+                    "financial.service_extensions.reversal_reason_too_long",
                     "financial.service_extensions.self_approval_forbidden",
+                    "financial.service_extensions.stale_reversal_preview",
                     "financial.service_extensions.transition_conflict",
                     "financial.service_extensions.write_conflict",
                     *owner_command_boundary_error_codes("financial.service_extensions"),
@@ -671,13 +721,14 @@ SERVICES: tuple[SOTService, ...] = (
                     "billing.service_extension_created",
                     "billing.service_extension_applied",
                     "billing.service_extension_canceled",
+                    "billing.service_extension_reversed",
                     "billing.service_extension_anchor_repaired",
                     "billing.service_extended",
                 ),
                 schema_version=1,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 carries stable extension, command, correlation, "
+                    "Version 1 carries stable extension, reversal, command, correlation, "
                     "scope, status, and bounded outcome evidence without customer "
                     "contact data or full subscriber lists. Grant interval and "
                     "anchor-basis fields are additive within schema version 1."
@@ -695,6 +746,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical service-extension aggregate",
                         "canonical subscription lifecycle and billing anchor",
                         "immutable applied service-extension entry evidence",
+                        "immutable service-extension reversal evidence",
                     ),
                     writer="financial.service_extensions",
                     freshness=(
@@ -714,7 +766,9 @@ SERVICES: tuple[SOTService, ...] = (
                     rebuild_operation=(
                         "Run the bounded financial.service_extensions anchor "
                         "repair command over ordered immutable applied grant "
-                        "evidence."
+                        "evidence. Reversal restores only anchors still equal to "
+                        "the exact extension result and retains a per-subscription "
+                        "terminal disposition for every preserved anchor."
                     ),
                     repair_owner="financial.service_extensions",
                 ),
@@ -736,7 +790,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "and architecture boundary tests."
                 ),
                 cutover_gate=(
-                    "All create, apply, cancel, and repair adapters invoke typed "
+                    "All create, apply, cancel, reverse, and repair adapters invoke "
+                    "typed "
                     "owner commands, detail reads use the registered UI "
                     "projection, and all grant consumers read "
                     "grant_starts_at/grant_ends_at."
@@ -753,12 +808,14 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/designs/SERVICE_EXTENSION_LIFECYCLE_SOT.md",
                 "docs/designs/SERVICE_EXTENSION_EFFECTIVE_INTERVALS.md",
                 "docs/runbooks/SERVICE_EXTENSION_ACTIVITY_CUTOVER.md",
+                "docs/runbooks/SERVICE_EXTENSION_REVERSAL.md",
                 "docs/FINANCIAL_ACCESS_ENFORCEMENT.md",
                 "docs/SOT_RELATIONSHIP_MAP.md",
             ),
             test_refs=(
                 "tests/test_service_extensions.py",
                 "tests/test_web_billing_service_extensions.py",
+                "tests/test_service_extension_reversal_migration.py",
                 "tests/test_prepaid_service_coverage.py",
                 "tests/integration/test_service_extension_concurrency.py",
                 "tests/architecture/test_service_extension_sot_boundary.py",

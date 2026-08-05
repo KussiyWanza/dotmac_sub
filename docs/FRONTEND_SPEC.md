@@ -1127,9 +1127,19 @@ Page contract:
 The route supplies one typed `ServiceExtensionDetailProjection`. Its summary
 includes server-owned `status_presentation`, created actor and application-
 timezone timestamp, scope, days, outage window, and UUID. The decision area
-receives owner-computed impact and permission-aware `can_apply`/`can_cancel`.
+receives owner-computed impact and permission-aware
+`can_apply`/`can_cancel`/`can_reverse`.
 Users with only `billing:extension:read` can see summarized activity but no
 action controls.
+
+Applied extensions expose reversal only to `billing:extension:reverse`. The
+operator supplies a reviewed reason, then a separate owner-computed confirmation
+page shows exact invalidated-grant counts, exact-anchor restorations, and later,
+lower, or terminal anchors that will be preserved. Confirmation submits the
+fingerprint, reason, and deterministic transition idempotency key. The owner
+locks and recomputes the cohort; stale previews fail closed. The UI explains
+that reversal removes coverage/shield authority but does not bulk suspend
+customers outside normal financial policy.
 
 “Recent activity” appears below the decision/action area and before affected-
 subscription evidence. It uses typed `ServiceExtensionActivityItem` values and

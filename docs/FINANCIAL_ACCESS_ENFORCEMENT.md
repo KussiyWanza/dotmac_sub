@@ -43,7 +43,7 @@ account-scoped; it is never coerced to zero, paid, funded, or safe-to-suspend.
 | Prepaid opening position | `financial.prepaid_funding_reconstruction` | Owns the one-time reviewed baseline and native-after-cutover projection. |
 | Customer-facing financial position | `customer.financial_position` | Resolves document/event facts without becoming their writer. |
 | Current prepaid coverage | `financial.prepaid_service_coverage` | Classifies exact evidence; writes no money, dates, or access state. |
-| Service-extension lifecycle | `financial.service_extensions` | Owns create/apply/cancel, immutable `ServiceExtensionEntry` evidence, and extension-caused billing-anchor changes; requests restoration from the access lifecycle owner. |
+| Service-extension lifecycle | `financial.service_extensions` | Owns create/apply/cancel/reverse, immutable grant and linked reversal evidence, and extension-caused billing-anchor changes; requests restoration from the access lifecycle owner. |
 | Prepaid renewal charge and execution | `financial.prepaid_service_renewals` | Resolves the exact taxed contract charge and writes the debit, entitlement, anchor, and renewed outcome together. |
 | Prepaid threshold | `financial.prepaid_threshold` | Combines due uncovered services with the shared renewal charge and configured reserve. |
 | Funding/access eligibility | `financial.access_resolution` | Produces the currency-bound funded/insufficient decision. |
@@ -150,6 +150,13 @@ billing-lock restoration, but `access.subscription_lifecycle` remains the sole
 restoration-policy and lock writer. Audit request paths and a future
 `next_billing_at` without entry evidence are not extension authority. See
 `docs/designs/SERVICE_EXTENSION_LIFECYCLE_SOT.md`.
+
+A reversed extension retains its original interval and per-subscription
+correction evidence but is not current coverage or a dunning shield. Reversal
+restores only anchors still equal to the exact extension result; changed anchors
+are preserved and explicitly classified. It never bulk re-suspends previously
+restored customers. Normal account-scoped prepaid/postpaid enforcement rechecks
+funding, grace, shields, and access locks after the grant is removed.
 
 A paid invoice is source evidence, not read-time coverage. The coverage
 reconciler must project its exact subscription line and ordered period into an
