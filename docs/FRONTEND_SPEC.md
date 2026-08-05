@@ -732,7 +732,7 @@ Dashboard implementation notes:
 
     "has_active_subscribers": bool,
     "has_any_subscribers": bool,
-    "activity_items": list[dict],       # [{type, title, description, timestamp}]
+    "activity_items": list[CustomerTimelineItem],
     "customer_user_access": dict,       # portal login state
     "can_activate_subscriptions": bool, # RBAC-owned visibility for restore actions
     "can_suspend_subscriptions": bool,  # RBAC-owned visibility for suspend actions
@@ -758,6 +758,16 @@ their existing customer, access, identity, and CRM owners.
   permissions, confirmations, or command destinations.
 - Subscription records are investigated and managed in the Services tab; the
   Account tab does not duplicate an Active Subscriptions preview.
+
+**Timeline tab presentation contract:**
+`ui.customer_timeline_projection` supplies each typed `CustomerTimelineItem`.
+The template displays the recorded actor category and label, plain-language
+action and object, timestamp, outcome, security sensitivity, related-record
+link, and expandable evidence. An audit event keeps its recorded attribution;
+record-only activity displays `Actor not recorded` and `Recorded` rather than
+inventing a person or claiming a successful action. This surface intentionally
+has no timeline filters, search, date controls, grouping, pagination, or load-more
+control.
 
 The **All Subscriptions** work surface exposes one visible `Restore` row action
 for blocked, suspended, stopped, or disabled services only when the authenticated
