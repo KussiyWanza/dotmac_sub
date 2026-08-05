@@ -68,21 +68,13 @@ from app.models.support import Ticket
 from app.schemas.geocoding import GeocodePreviewRequest
 from app.services import account_status_commands
 from app.services import catalog as catalog_service
+from app.services import customer_timeline as customer_timeline_service
 from app.services import geocoding as geocoding_service
 from app.services import notification as notification_service
 from app.services import subscriber as subscriber_service
 from app.services import subscriber_summary as subscriber_summary_service
 from app.services import web_customer_user_access as web_customer_user_access_service
 from app.services.access_resolution import resolve_customer_access
-from app.services.audit_helpers import (
-    extract_changes,
-    format_changes,
-    humanize_action,
-    humanize_entity,
-    list_audit_events_for_entities,
-    load_audit_actor_subscribers,
-    resolve_actor_name,
-)
 from app.services.billing_settings import resolve_payment_due_days
 from app.services.collections import get_available_balance
 from app.services.credential_crypto import decrypt_credential
@@ -376,303 +368,15 @@ def _format_contact_channel(
     }
 
 
-def _enum_label(value: object) -> str:
-    raw_value = getattr(value, "value", value)
-    if raw_value is None:
-        return ""
-    return str(raw_value).replace("_", " ").title()
-
-
-def _event_timestamp(*values: datetime | None) -> datetime | None:
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
-def _timeline_sort_key(item: dict[str, object]) -> datetime:
-    timestamp = item.get("timestamp")
-    if isinstance(timestamp, datetime):
-        return timestamp
-    return datetime.min.replace(tzinfo=UTC)
-
-
-def _audit_entity_link(entity_type: str | None, entity_id: str | None) -> str | None:
-    if not entity_type or not entity_id:
-        return None
-    route_prefix = {
-        "subscription": "/admin/catalog/subscriptions",
-        "invoice": "/admin/billing/invoices",
-        "payment": "/admin/billing/payments",
-        "support_ticket": "/admin/support/tickets",
-        "service_order": "/admin/provisioning/orders",
-    }.get(entity_type)
-    if not route_prefix:
-        return None
-    return f"{route_prefix}/{entity_id}"
-
-
-def _build_audit_activity_items(
-    db: Session,
-    entity_refs: list[tuple[str, str]],
-    limit: int = 16,
-) -> list[dict[str, object]]:
-    audit_events = list_audit_events_for_entities(db, entity_refs, limit=limit)
-    if not audit_events:
-        return []
-    people = load_audit_actor_subscribers(db, audit_events)
-    items: list[dict[str, object]] = []
-    for event in audit_events:
-        actor_name = resolve_actor_name(event, people)
-        metadata = getattr(event, "metadata_", None) or {}
-        comment_text = str(metadata.get("comment") or "").strip()
-        changes = extract_changes(metadata, getattr(event, "action", None))
-        change_summary = format_changes(changes, max_items=2)
-        description = ""
-        if comment_text:
-            description = comment_text
-        elif change_summary:
-            description = change_summary
-        items.append(
-            {
-                "type": "audit",
-                "title": (
-                    f"{humanize_entity(getattr(event, 'entity_type', None))} "
-                    f"{humanize_action(getattr(event, 'action', None))}"
-                ),
-                "actor_name": actor_name,
-                "description": description,
-                "timestamp": getattr(event, "occurred_at", None),
-                "link": _audit_entity_link(
-                    getattr(event, "entity_type", None),
-                    getattr(event, "entity_id", None),
-                ),
-            }
-        )
-    return items
-
-
 def get_customer_audit_activity_items(
     db: Session, customer_id: str, limit: int = 5
-) -> list[dict[str, object]]:
+) -> list[customer_timeline_service.CustomerTimelineItem]:
     """Return recent structured audit activity for a customer edit surface."""
-    return _build_audit_activity_items(
+    return customer_timeline_service.get_customer_audit_activity_items(
         db,
-        [("subscriber", str(customer_id))],
+        customer_id,
         limit=limit,
     )
-
-
-def _build_activity_items(
-    db: Session,
-    entity_type: str,
-    entity_id: str,
-    account_ids: list[UUID],
-    subscriptions: list[Subscription],
-) -> list[dict[str, object]]:
-    activity_items: list[dict[str, object]] = []
-
-    if account_ids:
-        invoices = (
-            db.query(Invoice)
-            .filter(Invoice.account_id.in_(account_ids))
-            .filter(Invoice.is_active.is_(True))
-            .order_by(func.coalesce(Invoice.issued_at, Invoice.created_at).desc())
-            .limit(8)
-            .all()
-        )
-        payments = (
-            db.query(Payment)
-            .filter(Payment.account_id.in_(account_ids))
-            .filter(Payment.is_active.is_(True))
-            .order_by(func.coalesce(Payment.paid_at, Payment.created_at).desc())
-            .limit(8)
-            .all()
-        )
-        support_tickets = (
-            db.query(Ticket)
-            .filter(ticket_customer_any_link_filter(Ticket, account_ids))
-            .order_by(Ticket.updated_at.desc())
-            .limit(8)
-            .all()
-        )
-        communication_logs = (
-            db.query(CommunicationLog)
-            .filter(CommunicationLog.subscriber_id.in_(account_ids))
-            .order_by(
-                func.coalesce(
-                    CommunicationLog.sent_at, CommunicationLog.created_at
-                ).desc()
-            )
-            .limit(8)
-            .all()
-        )
-        service_orders = (
-            db.query(ServiceOrder)
-            .filter(ServiceOrder.subscriber_id.in_(account_ids))
-            .order_by(ServiceOrder.updated_at.desc())
-            .limit(8)
-            .all()
-        )
-        dunning_cases = (
-            db.query(DunningCase)
-            .filter(DunningCase.account_id.in_(account_ids))
-            .order_by(
-                func.coalesce(
-                    DunningCase.resolved_at,
-                    DunningCase.updated_at,
-                    DunningCase.started_at,
-                ).desc()
-            )
-            .limit(8)
-            .all()
-        )
-    else:
-        invoices = []
-        payments = []
-        support_tickets = []
-        communication_logs = []
-        service_orders = []
-        dunning_cases = []
-
-    for invoice in invoices:
-        amount = invoice.total if invoice.total is not None else 0
-        activity_items.append(
-            {
-                "type": "invoice",
-                "title": f"Invoice {invoice.invoice_number or 'created'}",
-                "description": _enum_label(invoice.status),
-                "timestamp": _event_timestamp(invoice.issued_at, invoice.created_at),
-                "amount": float(amount),
-                "link": f"/admin/billing/invoices/{invoice.id}",
-            }
-        )
-
-    for payment in payments:
-        presentation = payment_status_presentation(payment.status)
-        activity_items.append(
-            {
-                "type": "payment",
-                "title": "Payment received"
-                if payment.status == PaymentStatus.succeeded
-                else "Payment update",
-                "description": presentation.label,
-                "timestamp": _event_timestamp(payment.paid_at, payment.created_at),
-                "amount": float(payment.amount or 0),
-            }
-        )
-
-    for subscription in subscriptions[:8]:
-        account_label = (
-            subscription.login or subscription.ipv4_address or subscription.ipv6_address
-        )
-        description = _enum_label(subscription.status)
-        if account_label:
-            description = (
-                f"{description} · {account_label}" if description else account_label
-            )
-        activity_items.append(
-            {
-                "type": "subscription",
-                "title": subscription.offer.name
-                if subscription.offer
-                else "Subscription updated",
-                "description": description,
-                "timestamp": _event_timestamp(
-                    subscription.updated_at,
-                    subscription.next_billing_at,
-                    subscription.start_at,
-                    subscription.created_at,
-                ),
-                "amount": float(subscription.unit_price or 0)
-                if subscription.unit_price is not None
-                else None,
-                "link": f"/admin/catalog/subscriptions/{subscription.id}",
-            }
-        )
-
-    for ticket in support_tickets:
-        description = " · ".join(
-            part
-            for part in (_enum_label(ticket.status), _enum_label(ticket.priority))
-            if part
-        )
-        activity_items.append(
-            {
-                "type": "ticket",
-                "title": ticket.title or ticket.number or "Support ticket",
-                "description": description,
-                "timestamp": _event_timestamp(ticket.updated_at, ticket.created_at),
-                "link": f"/admin/support/tickets/{ticket.id}",
-            }
-        )
-
-    for log in communication_logs:
-        subject = (
-            log.subject
-            or log.recipient
-            or log.sender
-            or _enum_label(log.channel)
-            or "Communication"
-        )
-        description = " · ".join(
-            part
-            for part in (
-                _enum_label(log.channel),
-                _enum_label(log.direction),
-                _enum_label(log.status),
-            )
-            if part
-        )
-        activity_items.append(
-            {
-                "type": "communication",
-                "title": subject,
-                "description": description,
-                "timestamp": _event_timestamp(log.sent_at, log.created_at),
-            }
-        )
-
-    for order in service_orders:
-        title = f"{_enum_label(order.order_type) or 'Service'} order"
-        description = _enum_label(order.status)
-        activity_items.append(
-            {
-                "type": "service_order",
-                "title": title,
-                "description": description,
-                "timestamp": _event_timestamp(order.updated_at, order.created_at),
-                "link": f"/admin/provisioning/orders/{order.id}",
-            }
-        )
-
-    for case in dunning_cases:
-        description_parts = [_enum_label(case.status)]
-        if case.current_step is not None:
-            description_parts.append(f"Step {case.current_step}")
-        activity_items.append(
-            {
-                "type": "dunning",
-                "title": "Dunning case",
-                "description": " · ".join(part for part in description_parts if part),
-                "timestamp": _event_timestamp(
-                    case.resolved_at, case.updated_at, case.started_at, case.created_at
-                ),
-            }
-        )
-
-    entity_refs = [(entity_type, entity_id)]
-    entity_refs.extend(
-        ("subscription", str(subscription.id)) for subscription in subscriptions[:8]
-    )
-    entity_refs.extend(("invoice", str(invoice.id)) for invoice in invoices)
-    entity_refs.extend(("payment", str(payment.id)) for payment in payments)
-    entity_refs.extend(("support_ticket", str(ticket.id)) for ticket in support_tickets)
-    entity_refs.extend(("service_order", str(order.id)) for order in service_orders)
-    activity_items.extend(_build_audit_activity_items(db, entity_refs))
-
-    activity_items.sort(key=_timeline_sort_key, reverse=True)
-    return activity_items[:20]
 
 
 def _build_common_financials(db: Session, account_ids):
@@ -2022,12 +1726,11 @@ def build_customer_detail_snapshot(
         db.rollback()
         notifications = []
 
-    activity_items = _build_activity_items(
+    activity_items = customer_timeline_service.build_customer_timeline(
         db,
-        "subscriber",
-        str(customer_id),
-        account_ids,
-        subscriptions,
+        customer_id=str(customer_id),
+        account_ids=account_ids,
+        subscriptions=subscriptions,
     )
     relationship_summary = cast(
         dict[str, int],

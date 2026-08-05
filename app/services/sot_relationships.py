@@ -33843,6 +33843,174 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="ui.customer_timeline_projection",
+                module="app.services.customer_timeline",
+                owns=("admin customer timeline attribution and evidence projection",),
+                depends_on=(
+                    "customer.accounts",
+                    "access.subscription_lifecycle",
+                    "financial.invoices",
+                    "financial.payments",
+                    "financial.dunning",
+                    "support.ticket_lifecycle",
+                    "operations.provisioning_workflow",
+                    "communications.notification_service",
+                    "observability.audit_log",
+                    "auth.staff_provisioning",
+                ),
+                notes=(
+                    "This read-only projection composes canonical customer-linked "
+                    "records and audit evidence for the admin customer detail page. "
+                    "Audit rows retain their recorded staff, customer, system, "
+                    "service, or API-key attribution. Record-only activity is marked "
+                    "Actor not recorded instead of inferring an actor from record "
+                    "ownership or timestamps."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "admin customer timeline attribution and evidence "
+                                "projection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical customer account identity",
+                                "canonical subscription lifecycle records",
+                                "canonical invoice records",
+                                "canonical payment records",
+                                "canonical dunning records",
+                                "canonical support-ticket records",
+                                "canonical service-order records",
+                                "canonical communication records",
+                                "canonical audit evidence",
+                                "canonical staff display identity",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical customer account identity",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer identifier and account relationships",
+                        ),
+                        AuthorityInput(
+                            name="canonical subscription lifecycle records",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked subscription rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical invoice records",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked invoice rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical payment records",
+                            owner="financial.payments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked payment rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical dunning records",
+                            owner="financial.dunning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked dunning-case rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical support-ticket records",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked support-ticket rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical service-order records",
+                            owner="operations.provisioning_workflow",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked service-order rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical communication records",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked communication-log rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "immutable actor, action, outcome, change, and request "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff display identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "write-time audit actor-label snapshot, with current "
+                                "SystemUser lookup only for legacy rows"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "The admin adapter creates and closes the session. The "
+                            "projection reads canonical records and audit evidence and "
+                            "never writes or completes a transaction."
+                        ),
+                        locking=(
+                            "No mutation lock is required; each timeline reflects the "
+                            "canonical snapshot visible to the caller session."
+                        ),
+                        idempotency=(
+                            "The same visible records and audit evidence produce the "
+                            "same stable timeline keys, attribution, ordering, and "
+                            "details."
+                        ),
+                        retries="Read-only projection calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="admin customer web adapter",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "app.services.web_customer_details mixed record and audit "
+                            "dictionary assembly plus template-local attribution"
+                        ),
+                        new_owner="ui.customer_timeline_projection",
+                        verification=(
+                            "Focused attribution, audit evidence, record fallback, "
+                            "template, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "The customer detail snapshot and template consume only the "
+                            "typed timeline projection."
+                        ),
+                        fallback_retirement=(
+                            "The untyped helper and template inference of actor display "
+                            "are removed."
+                        ),
+                    ),
+                    steward="customer operations UI",
+                    design_refs=(
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/FRONTEND_SPEC.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_customer_timeline_projection.py",
+                        "tests/architecture/test_customer_timeline_boundary.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="ui.subscriber_list_projection",
                 module="app.services.web_subscriber_lists",
                 owns=(
