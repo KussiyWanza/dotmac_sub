@@ -170,6 +170,10 @@ stale. Realtime has no replay authority.
   compose-template work that the sidebar does not render. The browser applies
   latest-request-wins semantics and pauses fallback polling during an active
   filter request so stale responses cannot replace a newer operator choice.
+  Search, pagination, history, manual/realtime refresh, read-state refresh, and
+  polling share that coordination boundary. This ordering is transport state
+  only: the server projection remains authoritative for filter meaning, queue
+  membership, counts, sorting, pagination, and canonical query normalization.
 - Queue-row unread totals count inbound messages after the authenticated
   operator's authoritative read cursor. With no cursor, every timestamped
   inbound message in the conversation is unread; outbound and internal

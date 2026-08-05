@@ -130,7 +130,8 @@ def test_workspace_exposes_responsive_realtime_and_accessible_controls():
     assert "handleShortcut" in javascript
     assert 'hx-sync="this:replace"' in sidebar
     assert ':aria-busy="filterLoading.toString()"' in sidebar
-    assert "activeFilterXhr?.abort()" in javascript
+    assert "stale.xhr.abort()" in javascript
+    assert "event.detail.shouldSwap = false" in javascript
     assert "if (this.filterLoading) return" in javascript
     assert 'document.body.addEventListener("htmx:sendAbort", release)' in javascript
 

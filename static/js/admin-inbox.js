@@ -100,6 +100,11 @@
       filterLoading: false,
       activeFilterXhr: null,
       pendingStatusFilter: null,
+      listRequestSequence: 0,
+      activeListRequest: null,
+      pendingListRequest: null,
+      listRequestError: "",
+      lastSuccessfulListUrl: window.location.href,
       newConversation: {
         channel: "email",
         contactName: "",
@@ -242,13 +247,34 @@
         document.body.addEventListener("htmx:beforeRequest", (event) => {
           const path = event.detail?.requestConfig?.path || "";
           const target = event.detail?.target?.id || "";
-          const trigger = event.detail?.elt || event.target;
-          const isFilterRequest =
-            target === "inbox-sidebar-content" &&
-            (this.filterLoading || trigger?.closest?.("#inbox-filter-form"));
-          if (isFilterRequest) {
-            this.filterLoading = true;
-            this.activeFilterXhr = event.detail.xhr;
+          if (
+            target === "inbox-sidebar-content" ||
+            target === "inbox-conversation-queue"
+          ) {
+            const request = this.pendingListRequest || {
+              sequence: ++this.listRequestSequence,
+              intent: "external",
+              operator: false,
+            };
+            this.pendingListRequest = null;
+            if (
+              this.activeListRequest &&
+              this.activeListRequest.sequence < request.sequence
+            ) {
+              const stale = this.activeListRequest;
+              this.activeListRequest = null;
+              stale.xhr.abort();
+            }
+            event.detail.xhr.__inboxListSequence = request.sequence;
+            event.detail.xhr.__inboxListIntent = request.intent;
+            this.activeListRequest = {
+              ...request,
+              xhr: event.detail.xhr,
+            };
+            if (request.operator) {
+              this.filterLoading = true;
+              this.activeFilterXhr = event.detail.xhr;
+            }
             return;
           }
           const key = `${event.detail?.requestConfig?.verb || "GET"}:${path}:${target}`;
@@ -259,20 +285,42 @@
           this.inFlight.add(key);
           event.detail.xhr.__inboxRequestKey = key;
         });
-        const release = (event) => {
+        const release = (event, failed = false) => {
+          const sequence = event.detail?.xhr?.__inboxListSequence;
+          if (sequence === this.activeListRequest?.sequence) {
+            const wasOperator = this.activeListRequest.operator;
+            this.activeListRequest = null;
+            if (wasOperator) this.filterLoading = false;
+          }
           if (event.detail?.xhr === this.activeFilterXhr) {
             this.activeFilterXhr = null;
             this.filterLoading = false;
             this.pendingStatusFilter = null;
+          }
+          if (failed && sequence === this.listRequestSequence) {
+            this.listRequestError = "Could not update conversations. Try again.";
+            history.replaceState({}, "", this.lastSuccessfulListUrl);
           }
           const key = event.detail?.xhr?.__inboxRequestKey;
           if (key) this.inFlight.delete(key);
         };
         document.body.addEventListener("htmx:afterRequest", release);
         document.body.addEventListener("htmx:sendAbort", release);
-        document.body.addEventListener("htmx:timeout", release);
-        document.body.addEventListener("htmx:sendError", release);
-        document.body.addEventListener("htmx:responseError", release);
+        document.body.addEventListener("htmx:timeout", (event) =>
+          release(event, true),
+        );
+        document.body.addEventListener("htmx:sendError", (event) =>
+          release(event, true),
+        );
+        document.body.addEventListener("htmx:responseError", (event) =>
+          release(event, true),
+        );
+        document.body.addEventListener("htmx:beforeSwap", (event) => {
+          const sequence = event.detail?.xhr?.__inboxListSequence;
+          if (sequence && sequence !== this.listRequestSequence) {
+            event.detail.shouldSwap = false;
+          }
+        });
         document.body.addEventListener("htmx:afterSwap", (event) => {
           const target = event.detail?.target;
           if (!target) return;
@@ -297,6 +345,8 @@
             target.id === "inbox-sidebar-content" ||
             target.id === "inbox-conversation-queue"
           ) {
+            this.lastSuccessfulListUrl = window.location.href;
+            this.listRequestError = "";
             this.syncSelectedCheckboxes();
             this.updateSelectedHighlight();
             this.subscribeVisibleTopics();
@@ -322,12 +372,9 @@
           if (this.selectedId) {
             url.searchParams.set("conversation_id", this.selectedId);
           }
-          history.pushState({}, "", url);
-          this.filterLoading = true;
-          this.activeFilterXhr?.abort();
-          window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
-            target: "#inbox-sidebar-content",
-            swap: "innerHTML",
+          this.requestInboxList(url, {
+            intent: "operator_filter",
+            historyMode: "push",
           });
         });
         window.addEventListener("popstate", () => {
@@ -335,7 +382,10 @@
           const selected =
             url.searchParams.get("conversation_id") || url.searchParams.get("c");
           this.selectedId = selected || "";
-          this.refreshSidebar();
+          this.requestInboxList(url, {
+            intent: "history",
+            historyMode: "none",
+          });
           if (selected) this.refreshThread(selected, true);
           else this.showList();
         });
@@ -345,6 +395,7 @@
         this.newMessagesAvailable = false;
         this.newListActivityAvailable = false;
         this.filterLoading = true;
+        this.beginListRequest("operator_filter", true);
         if (status !== null) {
           this.pendingStatusFilter = status;
           const url = new URL(window.location.href);
@@ -354,6 +405,41 @@
           else url.searchParams.delete("status");
           history.replaceState({}, "", url);
         }
+      },
+
+      beginListRequest(intent, operator = false) {
+        const request = {
+          sequence: ++this.listRequestSequence,
+          intent,
+          operator,
+        };
+        if (this.activeListRequest) {
+          const stale = this.activeListRequest;
+          this.activeListRequest = null;
+          stale.xhr.abort();
+        }
+        this.pendingListRequest = request;
+        this.listRequestError = "";
+        if (operator) this.filterLoading = true;
+        return request;
+      },
+
+      requestInboxList(urlValue, options = {}) {
+        const url =
+          urlValue instanceof URL
+            ? urlValue
+            : new URL(urlValue, window.location.origin);
+        const intent = options.intent || "operator_filter";
+        const operator = !["poll", "read_state", "realtime"].includes(intent);
+        if (!operator && this.activeListRequest?.operator) return;
+        this.beginListRequest(intent, operator);
+        if (options.historyMode === "push") history.pushState({}, "", url);
+        if (options.historyMode === "replace") history.replaceState({}, "", url);
+        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+          target: options.target || "#inbox-sidebar-content",
+          select: options.select,
+          swap: options.swap || "innerHTML",
+        });
       },
 
       showList() {
@@ -465,12 +551,9 @@
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
-        history.pushState({}, "", url);
-        this.filterLoading = true;
-        this.activeFilterXhr?.abort();
-        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
-          target: "#inbox-sidebar-content",
-          swap: "innerHTML",
+        this.requestInboxList(url, {
+          intent: "operator_filter",
+          historyMode: "push",
         });
       },
 
@@ -483,10 +566,9 @@
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
-        history.pushState({}, "", url);
-        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
-          target: "#inbox-sidebar-content",
-          swap: "innerHTML",
+        this.requestInboxList(url, {
+          intent: "search",
+          historyMode: "replace",
         });
       },
 
@@ -504,7 +586,7 @@
         } catch (error) {
           return;
         }
-        this.refreshSidebar();
+        this.refreshSidebar("read_state");
       },
 
       applyAssignmentFilter(value) {
@@ -652,7 +734,7 @@
           if (!response.ok) throw new Error("Unable to save view");
           this.savedViewName = "";
           this.showToast("Saved view created.");
-          this.refreshSidebar();
+          this.refreshSidebar("saved_view");
         } catch (error) {
           this.showToast(error.message || "Unable to save view.");
         }
@@ -966,24 +1048,37 @@
         });
       },
 
-      refreshSidebar() {
+      refreshSidebar(intent = "manual_refresh") {
         const url = new URL(window.location.href);
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
-        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
-          target: "#inbox-sidebar-content",
-          swap: "innerHTML",
+        this.requestInboxList(url, {
+          intent,
+          historyMode: "none",
         });
       },
 
-      refreshConversationList() {
+      refreshConversationList(intent = "manual_refresh") {
         const url = new URL(window.location.href);
         if (this.selectedId) {
           url.searchParams.set("conversation_id", this.selectedId);
         }
         this.newListActivityAvailable = false;
-        window.htmx.ajax("GET", `${url.pathname}${url.search}`, {
+        this.requestInboxList(url, {
+          intent,
+          historyMode: "none",
+          target: "#inbox-conversation-queue",
+          select: "#inbox-conversation-queue",
+          swap: "outerHTML",
+        });
+      },
+
+      navigatePage(urlValue) {
+        const url = new URL(urlValue, window.location.origin);
+        this.requestInboxList(url, {
+          intent: "pagination",
+          historyMode: "push",
           target: "#inbox-conversation-queue",
           select: "#inbox-conversation-queue",
           swap: "outerHTML",
@@ -1101,7 +1196,7 @@
           ticks += 1;
           const dueWhileConnected = ticks % 6 === 0;
           if (!this.realtimeConnected || dueWhileConnected) {
-            this.refreshSidebar();
+            this.refreshSidebar("poll");
           }
         }, 5000);
       },

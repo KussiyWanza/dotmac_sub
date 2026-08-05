@@ -157,6 +157,10 @@
                     Updating conversations…
                 </p>
             </fieldset>
+            <p x-show="listRequestError" x-cloak class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200" role="alert">
+                <span x-text="listRequestError"></span>
+                <button type="button" class="ml-1 underline" @click="refreshSidebar()">Retry</button>
+            </p>
 
             <fieldset>
                 <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Assignment</legend>
