@@ -213,6 +213,24 @@ def test_customer_table_contract_renders_with_empty_results():
     assert "No customers found" in html
 
 
+def test_customer_infrastructure_filter_is_lazy_and_bounded():
+    template = (PROJECT_ROOT / "templates/admin/customers/index.html").read_text(
+        encoding="utf-8"
+    )
+    service = (PROJECT_ROOT / "app/services/web_customer_lists.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/admin/customers/infrastructure-options" in template
+    assert "@input.debounce.300ms" in template
+    assert "Type at least 2 characters" in template
+    assert "limit: '20'" in template
+    assert "nas_options" not in template
+    assert "pop_site_options" not in template
+    assert ".limit(bounded_limit)" in service
+    assert "if len(term) < 2:" in service
+
+
 def test_semantic_status_macro_renders_owner_label_tone_and_icon():
     templates = Jinja2Templates(directory=str(PROJECT_ROOT / "templates"))
     template = templates.env.from_string(

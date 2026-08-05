@@ -694,6 +694,8 @@ _CUSTOMER_BULK_FILTER_KEYS = (
     "customer_type",
     "nas_id",
     "pop_site_id",
+    "infrastructure_type",
+    "infrastructure_id",
 )
 
 
@@ -751,6 +753,8 @@ def resolve_bulk_customer_scope(
                 customer_type=None,
                 nas_id=None,
                 pop_site_id=None,
+                infrastructure_type=None,
+                infrastructure_id=None,
                 include_related=True,
             )
             .filter(Subscriber.id.in_(parsed_ids))
@@ -772,6 +776,8 @@ def resolve_bulk_customer_scope(
             customer_type=selection.filter_value("customer_type"),
             nas_id=selection.filter_value("nas_id"),
             pop_site_id=selection.filter_value("pop_site_id"),
+            infrastructure_type=selection.filter_value("infrastructure_type"),
+            infrastructure_id=selection.filter_value("infrastructure_id"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -782,6 +788,8 @@ def resolve_bulk_customer_scope(
         customer_type=list_query.filter_value("customer_type"),
         nas_id=list_query.filter_value("nas_id"),
         pop_site_id=list_query.filter_value("pop_site_id"),
+        infrastructure_type=list_query.filter_value("infrastructure_type"),
+        infrastructure_id=list_query.filter_value("infrastructure_id"),
     )
     return ResolvedCustomerBulkScope(selection=selection, customers=customers)
 

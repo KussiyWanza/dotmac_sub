@@ -190,8 +190,7 @@
                         <span x-show="searchQuery" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800" x-text="`Search: ${searchQuery}`"></span>
                         <span x-show="currentCustomerType" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800" x-text="`Type: ${customerTypeLabel()}`"></span>
                         <span x-show="currentStatus" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800" x-text="`Status: ${titleCase(currentStatus)}`"></span>
-                        <span x-show="currentNasId" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800">NAS filtered</span>
-                        <span x-show="currentPopSiteId" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800">Location filtered</span>
+                        <span x-show="currentInfrastructureId" x-cloak class="rounded-full bg-slate-100 px-2.5 py-1 font-medium dark:bg-slate-800" x-text="`${titleCase(currentInfrastructureType)} filtered`"></span>
                         <a x-show="activeFilterCount > 0" x-cloak href="/admin/customers" class="font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300">Clear filters</a>
                     </div>
                 </div>
@@ -241,19 +240,70 @@
                             ] %}
                             {{ filter_select("status", status_options, value=status or "", label="Status", color="amber", attrs=live_filter_attrs) }}
                         </div>
-                        <div>
-                            {% set ns = namespace(options=[{"value": "", "label": "All NAS"}]) %}
-                            {% for nas in nas_options %}
-                                {% set _ = ns.options.append({"value": nas.id|string, "label": nas.name}) %}
-                            {% endfor %}
-                            {{ filter_select("nas_id", ns.options, value=nas_id or "", label="NAS Device", color="amber", attrs=live_filter_attrs) }}
-                        </div>
-                        <div>
-                            {% set pop_options = namespace(options=[{"value": "", "label": "All Locations"}]) %}
-                            {% for pop in pop_site_options %}
-                                {% set _ = pop_options.options.append({"value": pop.id|string, "label": pop.name}) %}
-                            {% endfor %}
-                            {{ filter_select("pop_site_id", pop_options.options, value=pop_site_id or "", label="Location", color="amber", attrs=live_filter_attrs) }}
+                        <div
+                            class="md:col-span-2 xl:col-span-2"
+                            x-data="infrastructurePicker({
+                                type: {{ (infrastructure_type or '') | tojson }},
+                                id: {{ (infrastructure_id or '') | tojson }},
+                                selected: {{ selected_infrastructure | tojson }}
+                            })"
+                        >
+                            <div class="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                    <label for="infrastructure-type" class="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Infrastructure type</label>
+                                    <select id="infrastructure-type" name="infrastructure_type" x-model="type" @change="changeType()" class="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-amber-300 focus:outline-none focus:ring-4 focus:ring-amber-500/15 dark:border-slate-700 dark:bg-slate-950 dark:text-white">
+                                        <option value="">All infrastructure</option>
+                                        <option value="location">Location / POP</option>
+                                        <option value="nas">NAS device</option>
+                                        <option value="access_point">Access point</option>
+                                        <option value="base_station">Base station</option>
+                                        <option value="olt">OLT / GPON device</option>
+                                        <option value="pon_port">PON port</option>
+                                        <option value="cabinet">FDH cabinet</option>
+                                    </select>
+                                </div>
+                                <div class="relative">
+                                    <label for="infrastructure-search" class="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Infrastructure</label>
+                                    <input
+                                        id="infrastructure-search"
+                                        type="search"
+                                        x-model="search"
+                                        @input="handleInput()"
+                                        @input.debounce.300ms="lookup()"
+                                        @focus="lookup()"
+                                        @keydown.escape="open = false"
+                                        :disabled="!type"
+                                        :placeholder="type ? 'Type at least 2 characters' : 'Choose a type first'"
+                                        autocomplete="off"
+                                        class="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-amber-300 focus:outline-none focus:ring-4 focus:ring-amber-500/15 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:disabled:bg-slate-900"
+                                        role="combobox"
+                                        :aria-expanded="open"
+                                        aria-controls="infrastructure-results"
+                                    >
+                                    <input
+                                        type="hidden"
+                                        name="infrastructure_id"
+                                        x-model="id"
+                                        data-live-filter="true"
+                                        hx-get="/admin/customers"
+                                        hx-trigger="change"
+                                        hx-target="#customers-table"
+                                        hx-push-url="true"
+                                        hx-include="#customers-filters"
+                                        hx-sync="#customers-filters:replace"
+                                    >
+                                    <div x-show="open" x-cloak @click.outside="open = false" id="infrastructure-results" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                                        <p x-show="loading" class="px-3 py-2 text-sm text-slate-500">Searching…</p>
+                                        <p x-show="!loading && search.length >= 2 && results.length === 0" class="px-3 py-2 text-sm text-slate-500">No matching infrastructure.</p>
+                                        <template x-for="option in results" :key="option.id">
+                                            <button type="button" @click="choose(option)" class="block w-full rounded-lg px-3 py-2 text-left hover:bg-amber-50 dark:hover:bg-slate-800">
+                                                <span class="block text-sm font-medium text-slate-900 dark:text-white" x-text="option.label"></span>
+                                                <span x-show="option.context" class="block text-xs text-slate-500 dark:text-slate-400" x-text="option.context"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         <div>
                             {% set per_page_options = [
@@ -674,6 +724,80 @@
 </div>
 
 <script>
+function infrastructurePicker(initial) {
+    const selected = initial.selected || null;
+    return {
+        type: initial.type || '',
+        id: initial.id || '',
+        search: selected ? selected.label : '',
+        selectedLabel: selected ? selected.label : '',
+        results: [],
+        open: false,
+        loading: false,
+        requestController: null,
+
+        changeType() {
+            if (this.requestController) this.requestController.abort();
+            this.id = '';
+            this.search = '';
+            this.selectedLabel = '';
+            this.results = [];
+            this.open = false;
+            this.$nextTick(() => {
+                const hidden = this.$root.querySelector('input[name="infrastructure_id"]');
+                hidden?.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        },
+
+        handleInput() {
+            if (this.id && this.search.trim() !== this.selectedLabel) this.id = '';
+        },
+
+        async lookup() {
+            const term = this.search.trim();
+            if (!this.type || term.length < 2 || (this.id && this.selectedLabel === term)) {
+                this.results = [];
+                this.open = false;
+                return;
+            }
+            if (this.requestController) this.requestController.abort();
+            this.requestController = new AbortController();
+            this.loading = true;
+            this.open = true;
+            try {
+                const params = new URLSearchParams({
+                    infrastructure_type: this.type,
+                    q: term,
+                    limit: '20'
+                });
+                const response = await fetch(`/admin/customers/infrastructure-options?${params}`, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    signal: this.requestController.signal
+                });
+                if (!response.ok) throw new Error('Infrastructure search failed');
+                const payload = await response.json();
+                this.results = Array.isArray(payload.results) ? payload.results.slice(0, 20) : [];
+            } catch (error) {
+                if (error.name !== 'AbortError') this.results = [];
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        choose(option) {
+            this.id = option.id;
+            this.search = option.label;
+            this.selectedLabel = option.label;
+            this.results = [];
+            this.open = false;
+            this.$nextTick(() => {
+                const hidden = this.$root.querySelector('input[name="infrastructure_id"]');
+                hidden?.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        }
+    };
+}
+
 function customersPage(bulkContract) {
     return {
         bulkContract: bulkContract || { actions: [], filtered_selection_supported: false },
@@ -685,8 +809,8 @@ function customersPage(bulkContract) {
         searchQuery: {{ (search or '') | tojson }},
         currentCustomerType: {{ (('person' if customer_type in ['person', 'individual'] else customer_type) or '') | tojson }},
         currentStatus: {{ (status or '') | tojson }},
-        currentNasId: {{ (nas_id or '') | tojson }},
-        currentPopSiteId: {{ (pop_site_id or '') | tojson }},
+        currentInfrastructureType: {{ (infrastructure_type or '') | tojson }},
+        currentInfrastructureId: {{ (infrastructure_id or '') | tojson }},
         isSearching: false,
         searchErrorMessage: '',
         loadingMessage: 'Searching customers...',
@@ -867,6 +991,14 @@ function customersPage(bulkContract) {
                 });
             });
 
+            form.querySelectorAll('input[data-live-filter]').forEach((input) => {
+                input.addEventListener('change', () => {
+                    this.clearSelection();
+                    this.resetToFirstPage();
+                    this.syncFiltersFromForm();
+                });
+            });
+
             form.addEventListener('submit', () => {
                 this.clearSelection();
                 this.syncFiltersFromForm();
@@ -1002,8 +1134,8 @@ function customersPage(bulkContract) {
             this.searchQuery = filters.search;
             this.currentCustomerType = filters.customer_type;
             this.currentStatus = filters.status;
-            this.currentNasId = filters.nas_id;
-            this.currentPopSiteId = filters.pop_site_id;
+            this.currentInfrastructureType = filters.infrastructure_type;
+            this.currentInfrastructureId = filters.infrastructure_id;
             this.activeFilterCount = this.countActiveFilters(filters);
         },
 
@@ -1056,22 +1188,25 @@ function customersPage(bulkContract) {
                     search: '',
                     customer_type: '',
                     status: '',
-                    nas_id: '',
-                    pop_site_id: ''
+                    infrastructure_type: '',
+                    infrastructure_id: ''
                 };
             }
             const data = new FormData(form);
+            const infrastructureId = (data.get('infrastructure_id') || '').toString();
             return {
                 search: (data.get('search') || '').toString(),
                 customer_type: (data.get('customer_type') || '').toString(),
                 status: (data.get('status') || '').toString(),
-                nas_id: (data.get('nas_id') || '').toString(),
-                pop_site_id: (data.get('pop_site_id') || '').toString()
+                infrastructure_type: infrastructureId
+                    ? (data.get('infrastructure_type') || '').toString()
+                    : '',
+                infrastructure_id: infrastructureId
             };
         },
 
         countActiveFilters(filters) {
-            return ['search', 'customer_type', 'status', 'nas_id', 'pop_site_id']
+            return ['search', 'customer_type', 'status', 'infrastructure_id']
                 .reduce((count, key) => count + (filters[key] ? 1 : 0), 0);
         },
 

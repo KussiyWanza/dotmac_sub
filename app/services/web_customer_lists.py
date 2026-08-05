@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from ipaddress import IPv4Address as ParsedIPv4Address
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -12,11 +13,27 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 from sqlalchemy import and_, func, not_, or_
+from sqlalchemy import select as db_select
 from sqlalchemy.orm import Query, Session, selectinload
 
 from app.models.catalog import NasDevice, Subscription, SubscriptionStatus
-from app.models.network import IPAssignment, IPv4Address, OntAssignment, OntUnit
-from app.models.network_monitoring import PopSite
+from app.models.network import (
+    CPEDevice,
+    FdhCabinet,
+    IPAssignment,
+    IPv4Address,
+    OLTDevice,
+    OntAssignment,
+    OntUnit,
+    PonPort,
+    Splitter,
+    SplitterPort,
+    SplitterPortAssignment,
+)
+from app.models.network import (
+    DeviceStatus as CPEDeviceStatus,
+)
+from app.models.network_monitoring import DeviceType, NetworkDevice, PopSite
 from app.models.subscriber import (
     Subscriber,
     SubscriberCategory,
@@ -63,6 +80,10 @@ CUSTOMER_LIST_DEFINITION = ListDefinition(
         ListFieldDefinition("status", "Status", filterable=True, sortable=True),
         ListFieldDefinition("nas_id", "NAS device", filterable=True),
         ListFieldDefinition("pop_site_id", "Location", filterable=True),
+        ListFieldDefinition(
+            "infrastructure_type", "Infrastructure type", filterable=True
+        ),
+        ListFieldDefinition("infrastructure_id", "Infrastructure", filterable=True),
         ListFieldDefinition("created_at", "Created", sortable=True),
     ),
     default_sort="created_at",
@@ -78,6 +99,8 @@ _LEGACY_CUSTOMER_TABLE_PARAMS = frozenset(
         "nas_id",
         "offset",
         "pop_site_id",
+        "infrastructure_type",
+        "infrastructure_id",
         "q",
         "search",
         "sort_by",
@@ -86,6 +109,27 @@ _LEGACY_CUSTOMER_TABLE_PARAMS = frozenset(
         "table_key",
     }
 )
+
+
+class CustomerInfrastructureType(StrEnum):
+    """Infrastructure audiences supported by the lazy customer-list filter."""
+
+    location = "location"
+    nas = "nas"
+    access_point = "access_point"
+    base_station = "base_station"
+    olt = "olt"
+    pon_port = "pon_port"
+    cabinet = "cabinet"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerInfrastructureOption:
+    id: UUID
+    label: str
+    context: str | None = None
+
+
 CUSTOMER_TABLE_SORT_ALIASES: dict[str, CustomerListSort] = {
     "created_at": "created_at",
     "customer_name": "name",
@@ -169,6 +213,221 @@ def _normalize_per_page(per_page: int | str | None) -> int:
     return CUSTOMER_LIST_DEFINITION.default_per_page
 
 
+def normalize_customer_infrastructure_type(
+    value: str | None,
+) -> CustomerInfrastructureType | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    try:
+        return CustomerInfrastructureType(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported infrastructure_type filter: {normalized}"
+        ) from exc
+
+
+def search_customer_infrastructure_options(
+    db: Session,
+    *,
+    infrastructure_type: str,
+    query: str,
+    limit: int = 20,
+) -> tuple[CustomerInfrastructureOption, ...]:
+    """Return a bounded, projection-only typeahead result.
+
+    The customer page deliberately loads none of these inventories. Searches
+    require two characters and select only the label fields needed by the UI.
+    """
+
+    kind = normalize_customer_infrastructure_type(infrastructure_type)
+    if kind is None:
+        raise ValueError("infrastructure_type is required")
+    term = str(query or "").strip()
+    if len(term) < 2:
+        return ()
+    bounded_limit = max(1, min(int(limit), 20))
+    pattern = f"%{term}%"
+
+    if kind is CustomerInfrastructureType.nas:
+        nas_rows = (
+            db.query(NasDevice.id, NasDevice.name, NasDevice.nas_ip)
+            .filter(
+                NasDevice.is_active.is_(True),
+                or_(NasDevice.name.ilike(pattern), NasDevice.nas_ip.ilike(pattern)),
+            )
+            .order_by(NasDevice.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(
+                row.id, row.name, str(row.nas_ip or "") or None
+            )
+            for row in nas_rows
+        )
+
+    if kind is CustomerInfrastructureType.location:
+        location_rows = (
+            db.query(PopSite.id, PopSite.name)
+            .filter(PopSite.name.ilike(pattern))
+            .order_by(PopSite.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(row.id, row.name) for row in location_rows
+        )
+
+    if kind is CustomerInfrastructureType.access_point:
+        access_point_rows = (
+            db.query(NetworkDevice.id, NetworkDevice.name, PopSite.name.label("site"))
+            .outerjoin(PopSite, PopSite.id == NetworkDevice.pop_site_id)
+            .filter(
+                NetworkDevice.is_active.is_(True),
+                NetworkDevice.device_type == DeviceType.access_point,
+                or_(
+                    NetworkDevice.name.ilike(pattern),
+                    NetworkDevice.hostname.ilike(pattern),
+                    NetworkDevice.mgmt_ip.ilike(pattern),
+                    PopSite.name.ilike(pattern),
+                ),
+            )
+            .order_by(NetworkDevice.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(row.id, row.name, row.site)
+            for row in access_point_rows
+        )
+
+    if kind is CustomerInfrastructureType.base_station:
+        base_station_rows = (
+            db.query(PopSite.id, PopSite.name)
+            .filter(PopSite.zabbix_group_id.isnot(None), PopSite.name.ilike(pattern))
+            .order_by(PopSite.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(row.id, row.name) for row in base_station_rows
+        )
+
+    if kind is CustomerInfrastructureType.olt:
+        olt_rows = (
+            db.query(OLTDevice.id, OLTDevice.name, OLTDevice.hostname)
+            .filter(
+                OLTDevice.is_active.is_(True),
+                or_(
+                    OLTDevice.name.ilike(pattern),
+                    OLTDevice.hostname.ilike(pattern),
+                    OLTDevice.mgmt_ip.ilike(pattern),
+                ),
+            )
+            .order_by(OLTDevice.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(row.id, row.name, row.hostname)
+            for row in olt_rows
+        )
+
+    if kind is CustomerInfrastructureType.pon_port:
+        pon_port_rows = (
+            db.query(PonPort.id, PonPort.name, OLTDevice.name.label("olt_name"))
+            .join(OLTDevice, OLTDevice.id == PonPort.olt_id)
+            .filter(
+                PonPort.is_active.is_(True),
+                OLTDevice.is_active.is_(True),
+                or_(PonPort.name.ilike(pattern), OLTDevice.name.ilike(pattern)),
+            )
+            .order_by(OLTDevice.name, PonPort.name)
+            .limit(bounded_limit)
+            .all()
+        )
+        return tuple(
+            CustomerInfrastructureOption(row.id, row.name, row.olt_name)
+            for row in pon_port_rows
+        )
+
+    cabinet_rows = (
+        db.query(FdhCabinet.id, FdhCabinet.name, FdhCabinet.code)
+        .filter(
+            FdhCabinet.is_active.is_(True),
+            or_(FdhCabinet.name.ilike(pattern), FdhCabinet.code.ilike(pattern)),
+        )
+        .order_by(FdhCabinet.name)
+        .limit(bounded_limit)
+        .all()
+    )
+    return tuple(
+        CustomerInfrastructureOption(row.id, row.name, row.code) for row in cabinet_rows
+    )
+
+
+def customer_infrastructure_option_by_id(
+    db: Session,
+    *,
+    infrastructure_type: str | None,
+    infrastructure_id: str | None,
+) -> CustomerInfrastructureOption | None:
+    """Resolve one selected label without loading an infrastructure inventory."""
+
+    kind = normalize_customer_infrastructure_type(infrastructure_type)
+    normalized_id = str(infrastructure_id or "").strip()
+    if kind is None or not normalized_id:
+        return None
+    try:
+        target_id = UUID(normalized_id)
+    except ValueError as exc:
+        raise ValueError("infrastructure_id must be a valid UUID") from exc
+
+    if kind is CustomerInfrastructureType.nas:
+        nas = db.get(NasDevice, target_id)
+        return CustomerInfrastructureOption(nas.id, nas.name) if nas else None
+    if kind is CustomerInfrastructureType.location:
+        location = db.get(PopSite, target_id)
+        return (
+            CustomerInfrastructureOption(location.id, location.name)
+            if location
+            else None
+        )
+    if kind is CustomerInfrastructureType.access_point:
+        access_point = db.get(NetworkDevice, target_id)
+        return (
+            CustomerInfrastructureOption(access_point.id, access_point.name)
+            if access_point
+            else None
+        )
+    if kind is CustomerInfrastructureType.base_station:
+        base_station = db.get(PopSite, target_id)
+        return (
+            CustomerInfrastructureOption(base_station.id, base_station.name)
+            if base_station
+            else None
+        )
+    if kind is CustomerInfrastructureType.olt:
+        olt = db.get(OLTDevice, target_id)
+        return CustomerInfrastructureOption(olt.id, olt.name) if olt else None
+    if kind is CustomerInfrastructureType.pon_port:
+        pon_port = db.get(PonPort, target_id)
+        if pon_port is None:
+            return None
+        return CustomerInfrastructureOption(
+            pon_port.id,
+            pon_port.name,
+            pon_port.olt.name if pon_port.olt else None,
+        )
+    cabinet = db.get(FdhCabinet, target_id)
+    return (
+        CustomerInfrastructureOption(cabinet.id, cabinet.name, cabinet.code)
+        if cabinet
+        else None
+    )
+
+
 def build_customer_list_query(
     *,
     search: str | None,
@@ -176,6 +435,8 @@ def build_customer_list_query(
     customer_type: str | None,
     nas_id: str | None,
     pop_site_id: str | None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
     sort_by: CustomerListSort = "created_at",
     sort_dir: SortDirection = "desc",
     page: int = 1,
@@ -201,6 +462,15 @@ def build_customer_list_query(
         except ValueError as exc:
             raise ValueError(f"{name} must be a valid UUID") from exc
 
+    normalized_infrastructure_type = normalize_customer_infrastructure_type(
+        infrastructure_type
+    )
+    normalized_infrastructure_id = _uuid_filter(infrastructure_id, "infrastructure_id")
+    if normalized_infrastructure_id and normalized_infrastructure_type is None:
+        raise ValueError("infrastructure_type is required with infrastructure_id")
+    if normalized_infrastructure_id is None:
+        normalized_infrastructure_type = None
+
     return CUSTOMER_LIST_DEFINITION.build_query(
         search=search,
         filters={
@@ -208,6 +478,12 @@ def build_customer_list_query(
             "customer_type": normalized_customer_type,
             "nas_id": _uuid_filter(nas_id, "nas_id"),
             "pop_site_id": _uuid_filter(pop_site_id, "pop_site_id"),
+            "infrastructure_type": (
+                normalized_infrastructure_type.value
+                if normalized_infrastructure_type is not None
+                else None
+            ),
+            "infrastructure_id": normalized_infrastructure_id,
         },
         sort_by=sort_by,
         sort_dir=sort_dir,
@@ -274,6 +550,10 @@ def build_customer_list_query_from_legacy_params(
         customer_type=str(request_params.get("customer_type") or "").strip(),
         nas_id=str(request_params.get("nas_id") or "").strip(),
         pop_site_id=str(request_params.get("pop_site_id") or "").strip(),
+        infrastructure_type=str(
+            request_params.get("infrastructure_type") or ""
+        ).strip(),
+        infrastructure_id=str(request_params.get("infrastructure_id") or "").strip(),
         sort_by=sort_by,
         sort_dir=cast(SortDirection, raw_sort_dir),
         page=(offset // limit) + 1,
@@ -503,6 +783,8 @@ def _apply_customer_filters(
     customer_type: str | None,
     nas_id: str | None,
     pop_site_id: str | None,
+    infrastructure_type: str | None,
+    infrastructure_id: str | None,
 ):
     normalized_customer_type = _normalize_customer_type(customer_type)
     status_filter = _status_filter_clause(status)
@@ -552,6 +834,123 @@ def _apply_customer_filters(
         )
     if pop_site_id:
         query = query.filter(Subscriber.pop_site_id == pop_site_id)
+    kind = normalize_customer_infrastructure_type(infrastructure_type)
+    target_id = UUID(infrastructure_id) if infrastructure_id else None
+    if kind is CustomerInfrastructureType.nas and target_id is not None:
+        query = query.filter(
+            Subscriber.subscriptions.any(
+                and_(
+                    _active_subscription_clause(),
+                    Subscription.provisioning_nas_device_id == target_id,
+                )
+            )
+        )
+    elif kind is CustomerInfrastructureType.location and target_id is not None:
+        query = query.filter(Subscriber.pop_site_id == target_id)
+    elif kind is CustomerInfrastructureType.access_point and target_id is not None:
+        query = query.filter(
+            Subscriber.id.in_(
+                db_select(CPEDevice.subscriber_id).where(
+                    CPEDevice.parent_network_device_id == target_id,
+                    CPEDevice.subscriber_id.isnot(None),
+                    CPEDevice.status == CPEDeviceStatus.active,
+                    or_(
+                        CPEDevice.last_uisp_status.is_(None),
+                        CPEDevice.last_uisp_status != "vanished",
+                    ),
+                )
+            ),
+            Subscriber.subscriptions.any(_active_subscription_clause()),
+        )
+    elif kind is CustomerInfrastructureType.base_station and target_id is not None:
+        node_ids = db_select(NetworkDevice.id).where(
+            NetworkDevice.pop_site_id == target_id,
+            NetworkDevice.is_active.is_(True),
+        )
+        query = query.filter(
+            Subscriber.id.in_(
+                db_select(CPEDevice.subscriber_id).where(
+                    CPEDevice.parent_network_device_id.in_(node_ids),
+                    CPEDevice.subscriber_id.isnot(None),
+                    CPEDevice.status == CPEDeviceStatus.active,
+                    or_(
+                        CPEDevice.last_uisp_status.is_(None),
+                        CPEDevice.last_uisp_status != "vanished",
+                    ),
+                )
+            ),
+            Subscriber.subscriptions.any(_active_subscription_clause()),
+        )
+    elif kind is CustomerInfrastructureType.olt and target_id is not None:
+        query = query.filter(
+            Subscriber.id.in_(
+                db_select(OntAssignment.subscriber_id)
+                .join(OntUnit, OntUnit.id == OntAssignment.ont_unit_id)
+                .where(
+                    OntAssignment.active.is_(True),
+                    OntAssignment.subscriber_id.isnot(None),
+                    OntUnit.olt_device_id == target_id,
+                )
+            ),
+            Subscriber.subscriptions.any(_active_subscription_clause()),
+        )
+    elif kind is CustomerInfrastructureType.pon_port and target_id is not None:
+        query = query.filter(
+            Subscriber.id.in_(
+                db_select(OntAssignment.subscriber_id).where(
+                    OntAssignment.active.is_(True),
+                    OntAssignment.subscriber_id.isnot(None),
+                    OntAssignment.pon_port_id == target_id,
+                )
+            ),
+            Subscriber.subscriptions.any(_active_subscription_clause()),
+        )
+    elif kind is CustomerInfrastructureType.cabinet and target_id is not None:
+        splitter_ids = db_select(Splitter.id).where(
+            Splitter.fdh_id == target_id,
+            Splitter.is_active.is_(True),
+        )
+        splitter_port_ids = db_select(SplitterPort.id).where(
+            SplitterPort.splitter_id.in_(splitter_ids),
+            SplitterPort.is_active.is_(True),
+        )
+        assigned_subscriber_ids = db_select(SplitterPortAssignment.subscriber_id).where(
+            SplitterPortAssignment.splitter_port_id.in_(splitter_port_ids),
+            SplitterPortAssignment.active.is_(True),
+            SplitterPortAssignment.subscriber_id.isnot(None),
+        )
+        assigned_address_ids = db_select(
+            SplitterPortAssignment.service_address_id
+        ).where(
+            SplitterPortAssignment.splitter_port_id.in_(splitter_port_ids),
+            SplitterPortAssignment.active.is_(True),
+            SplitterPortAssignment.service_address_id.isnot(None),
+        )
+        ont_subscriber_ids = (
+            db_select(OntAssignment.subscriber_id)
+            .join(OntUnit, OntUnit.id == OntAssignment.ont_unit_id)
+            .where(
+                OntAssignment.active.is_(True),
+                OntAssignment.subscriber_id.isnot(None),
+                or_(
+                    OntUnit.splitter_id.in_(splitter_ids),
+                    OntUnit.splitter_port_id.in_(splitter_port_ids),
+                ),
+            )
+        )
+        query = query.filter(
+            or_(
+                Subscriber.id.in_(assigned_subscriber_ids),
+                Subscriber.id.in_(ont_subscriber_ids),
+                Subscriber.subscriptions.any(
+                    and_(
+                        _active_subscription_clause(),
+                        Subscription.service_address_id.in_(assigned_address_ids),
+                    )
+                ),
+            ),
+            Subscriber.subscriptions.any(_active_subscription_clause()),
+        )
     return query
 
 
@@ -563,6 +962,8 @@ def customer_scope_query(
     customer_type: str | None,
     nas_id: str | None,
     pop_site_id: str | None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
     include_related: bool = True,
 ):
     query = db.query(Subscriber)
@@ -589,6 +990,8 @@ def customer_scope_query(
         customer_type=customer_type,
         nas_id=nas_id,
         pop_site_id=pop_site_id,
+        infrastructure_type=infrastructure_type,
+        infrastructure_id=infrastructure_id,
     )
 
 
@@ -608,6 +1011,8 @@ def build_customer_list_page(
     customer_type = list_query.filter_value("customer_type")
     nas_id = list_query.filter_value("nas_id")
     pop_site_id = list_query.filter_value("pop_site_id")
+    infrastructure_type = list_query.filter_value("infrastructure_type")
+    infrastructure_id = list_query.filter_value("infrastructure_id")
     query = customer_scope_query(
         db,
         search=search,
@@ -615,6 +1020,8 @@ def build_customer_list_page(
         customer_type=customer_type,
         nas_id=nas_id,
         pop_site_id=pop_site_id,
+        infrastructure_type=infrastructure_type,
+        infrastructure_id=infrastructure_id,
         include_related=include_related,
     )
     total = (
@@ -625,6 +1032,8 @@ def build_customer_list_page(
             customer_type=customer_type,
             nas_id=nas_id,
             pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
             include_related=False,
         )
         .order_by(None)
@@ -652,6 +1061,8 @@ def list_customers_for_scope(
     customer_type: str | None,
     nas_id: str | None,
     pop_site_id: str | None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
 ) -> list[Subscriber]:
     return (
         customer_scope_query(
@@ -661,6 +1072,8 @@ def list_customers_for_scope(
             customer_type=customer_type,
             nas_id=nas_id,
             pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
             include_related=True,
         )
         .order_by(Subscriber.created_at.desc())
@@ -675,10 +1088,19 @@ def active_customer_filter_count(
     customer_type: str | None,
     nas_id: str | None,
     pop_site_id: str | None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
 ) -> int:
     return sum(
         1
-        for value in (search, status, customer_type, nas_id, pop_site_id)
+        for value in (
+            search,
+            status,
+            customer_type,
+            nas_id,
+            pop_site_id,
+            infrastructure_type and infrastructure_id,
+        )
         if str(value or "").strip()
     )
 
@@ -702,6 +1124,8 @@ def build_customers_index_context(
     customer_type = list_query.filter_value("customer_type")
     nas_id = list_query.filter_value("nas_id")
     pop_site_id = list_query.filter_value("pop_site_id")
+    infrastructure_type = list_query.filter_value("infrastructure_type")
+    infrastructure_id = list_query.filter_value("infrastructure_id")
     people = page.query.all()
     customers: list[dict[str, Any]] = [_build_customer_dict(p) for p in people]
 
@@ -718,14 +1142,11 @@ def build_customers_index_context(
     total_businesses = int(stats_row.businesses or 0)
     total_people = int(stats_row.people or 0)
 
-    # Load filter dropdown options
-    nas_options = (
-        db.query(NasDevice.id, NasDevice.name)
-        .filter(NasDevice.is_active.is_(True))
-        .order_by(NasDevice.name)
-        .all()
+    selected_infrastructure = customer_infrastructure_option_by_id(
+        db,
+        infrastructure_type=infrastructure_type,
+        infrastructure_id=infrastructure_id,
     )
-    pop_site_options = db.query(PopSite.id, PopSite.name).order_by(PopSite.name).all()
 
     return {
         "customers": customers,
@@ -748,13 +1169,24 @@ def build_customers_index_context(
         "customer_type": customer_type,
         "nas_id": nas_id or "",
         "pop_site_id": pop_site_id or "",
-        "nas_options": nas_options,
-        "pop_site_options": pop_site_options,
+        "infrastructure_type": infrastructure_type or "",
+        "infrastructure_id": infrastructure_id or "",
+        "selected_infrastructure": (
+            {
+                "id": str(selected_infrastructure.id),
+                "label": selected_infrastructure.label,
+                "context": selected_infrastructure.context,
+            }
+            if selected_infrastructure is not None
+            else None
+        ),
         "active_filter_count": active_customer_filter_count(
             search=search,
             status=status,
             customer_type=customer_type,
             nas_id=nas_id,
             pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
         ),
     }

@@ -356,6 +356,39 @@ def contacts_convert_to_subscriber(
 
 
 @router.get(
+    "/infrastructure-options",
+    dependencies=[Depends(require_permission("customer:read"))],
+)
+def customer_infrastructure_options(
+    infrastructure_type: str = Query(..., min_length=1, max_length=40),
+    q: str = Query("", max_length=120),
+    limit: int = Query(20, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    """Bounded lazy options for the customer infrastructure typeahead."""
+
+    try:
+        options = web_customer_lists_service.search_customer_infrastructure_options(
+            db,
+            infrastructure_type=infrastructure_type,
+            query=q,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "results": [
+            {
+                "id": str(option.id),
+                "label": option.label,
+                "context": option.context,
+            }
+            for option in options
+        ]
+    }
+
+
+@router.get(
     "",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("customer:read"))],
@@ -367,6 +400,8 @@ def customers_list(
     customer_type: str | None = None,  # 'person' or 'business'
     nas_id: str | None = None,
     pop_site_id: str | None = None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
     sort: Literal["created_at", "name", "status"] = Query("created_at"),
     direction: Literal["asc", "desc"] = Query("desc", alias="dir"),
     page: int = Query(1, ge=1),
@@ -374,6 +409,15 @@ def customers_list(
     db: Session = Depends(get_db),
 ):
     """List all customers with search and filtering."""
+    if not infrastructure_type and not infrastructure_id:
+        if nas_id:
+            infrastructure_type = "nas"
+            infrastructure_id = nas_id
+            nas_id = None
+        elif pop_site_id:
+            infrastructure_type = "location"
+            infrastructure_id = pop_site_id
+            pop_site_id = None
     try:
         list_query = web_customer_lists_service.build_customer_list_query(
             search=search,
@@ -381,6 +425,8 @@ def customers_list(
             customer_type=customer_type,
             nas_id=nas_id,
             pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
             sort_by=sort,
             sort_dir=direction,
             page=page,
