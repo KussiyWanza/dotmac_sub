@@ -14,6 +14,7 @@ import pytest
 from app.models.audit import AuditActorType, AuditEvent
 from app.models.notification import Notification, NotificationChannel
 from app.models.project import (
+    Project,
     ProjectTask,
     ProjectTaskDependency,
     ProjectTemplate,
@@ -21,6 +22,7 @@ from app.models.project import (
     ProjectTemplateTaskDependency,
     ProjectType,
 )
+from app.models.sequence import DocumentSequence
 from app.models.support import Ticket
 from app.models.ticket_workflow import SlaClock, SlaClockStatus, WorkflowEntityType
 from app.models.work_order import WorkOrder
@@ -61,6 +63,30 @@ def _tasks_for(db_session, project):
         .filter(ProjectTask.project_id == project.id)
         .order_by(ProjectTask.created_at.asc())
         .all()
+    )
+
+
+def test_project_number_continues_after_imported_series(db_session, subscriber):
+    db_session.add(
+        Project(
+            name="Last repaired native project",
+            number="PROJ-1107",
+            status="active",
+            priority="normal",
+        )
+    )
+    db_session.add(DocumentSequence(key="project_number", next_value=8))
+    db_session.commit()
+
+    project = _create_fiber_project(db_session, subscriber)
+
+    assert project.number == "PROJ-1108"
+    assert (
+        db_session.query(DocumentSequence)
+        .filter(DocumentSequence.key == "project_number")
+        .one()
+        .next_value
+        == 1109
     )
 
 

@@ -1,10 +1,11 @@
 from decimal import Decimal
 
+from app.models.domain_settings import SettingDomain
 from app.schemas.billing import CreditNoteCreate, InvoiceCreate
 from app.schemas.settings import DomainSettingUpdate
 from app.schemas.subscriber import SubscriberAccountCreate, SubscriberCreate
 from app.services import billing as billing_service
-from app.services import settings_api
+from app.services import settings_api, settings_spec
 from app.services import subscriber as subscriber_service
 
 
@@ -35,6 +36,27 @@ def test_invoice_number_defaults_use_settings(db_session, subscriber_account):
         ),
     )
     assert invoice.invoice_number == "INVX-0042"
+
+
+def test_project_number_defaults_match_imported_series(db_session):
+    assert (
+        settings_spec.resolve_value(
+            db_session, SettingDomain.projects, "project_number_enabled"
+        )
+        is True
+    )
+    assert (
+        settings_spec.resolve_value(
+            db_session, SettingDomain.projects, "project_number_prefix"
+        )
+        == "PROJ-"
+    )
+    assert (
+        settings_spec.resolve_value(
+            db_session, SettingDomain.projects, "project_number_padding"
+        )
+        == 4
+    )
 
 
 def test_credit_note_number_defaults_use_settings(db_session, subscriber_account):
