@@ -356,6 +356,72 @@ _DEFINITIONS: tuple[ConnectorManifest, ...] = (
         health=HealthManifest(operation="connection.validate.v1"),
     ),
     ConnectorManifest(
+        key="meta.social",
+        name="Meta Social Inbox",
+        version="1.0.0",
+        connector_type="messaging",
+        description=(
+            "Facebook Page Messenger and Instagram Login transport for Team Inbox."
+        ),
+        runtime=RuntimeManifest(
+            type=ConnectorRuntimeType.builtin_worker,
+            module="app.services.integrations.connectors.meta_social_runtime",
+        ),
+        capabilities=(
+            CapabilityManifest(
+                id="messaging.send.v1",
+                modes=(CapabilityMode.interactive, CapabilityMode.event),
+            ),
+            CapabilityManifest(
+                id="messaging.receive.v1",
+                modes=(CapabilityMode.inbound,),
+            ),
+        ),
+        config_schema={
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "enum": ["meta_social"]},
+                "app_id": {"type": "string"},
+                "facebook_page_id": {"type": "string"},
+                "facebook_auth_mode": {
+                    "type": "string",
+                    "enum": ["page_access_token"],
+                },
+                "instagram_account_id": {"type": "string"},
+                "instagram_auth_mode": {
+                    "type": "string",
+                    "enum": ["instagram_login"],
+                },
+                "webhook_url": {"type": "string"},
+                "graph_version": {"type": "string"},
+                "timeout_seconds": {"type": "integer"},
+            },
+            "required": [
+                "provider",
+                "app_id",
+                "facebook_page_id",
+                "facebook_auth_mode",
+                "instagram_account_id",
+                "instagram_auth_mode",
+                "graph_version",
+            ],
+            "additionalProperties": False,
+        },
+        secrets=(
+            SecretBindingManifest(name="facebook_page_access_token"),
+            SecretBindingManifest(name="instagram_login_access_token"),
+            SecretBindingManifest(name="webhook_signing_secret"),
+            SecretBindingManifest(name="webhook_verify_token"),
+        ),
+        data_access=DataAccessManifest(
+            reads=("communications.outbound_message",),
+            emits=("communications.inbound_message_observation",),
+            classifications=("customer_contact", "message_content"),
+        ),
+        egress=EgressManifest(hosts=("graph.facebook.com", "graph.instagram.com")),
+        health=HealthManifest(operation="connection.validate.v1"),
+    ),
+    ConnectorManifest(
         key="dotmac.erp",
         name="DotMac ERP",
         version="1.0.0",

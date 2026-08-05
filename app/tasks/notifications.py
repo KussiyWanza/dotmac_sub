@@ -484,7 +484,11 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                 NotificationChannel.instagram_dm,
             }:
                 from app.models.team_inbox import InboxMessage
-                from app.services import meta_pages
+                from app.services.integrations import meta_social_capability
+                from app.services.integrations.meta_social_contracts import (
+                    MetaDirectMessageCommand,
+                    MetaSocialChannel,
+                )
 
                 account_id = str(
                     delivery_metadata.get("provider_account_id") or ""
@@ -494,34 +498,32 @@ def _deliver_notification_queue_stats(db, batch_size: int = 50) -> dict[str, int
                 try:
                     if not account_id or not notification.recipient:
                         raise ValueError("meta_direct_message_context_missing")
-                    if notification.channel == NotificationChannel.facebook_messenger:
-                        provider_result = meta_pages.send_facebook_message_sync(
-                            db,
-                            page_id=account_id,
+                    outcome = meta_social_capability.send_direct_message(
+                        db,
+                        MetaDirectMessageCommand(
+                            channel=(
+                                MetaSocialChannel.facebook_messenger
+                                if notification.channel
+                                == NotificationChannel.facebook_messenger
+                                else MetaSocialChannel.instagram_dm
+                            ),
+                            provider_account_id=account_id,
                             recipient_id=notification.recipient,
-                            message=body,
+                            body=body,
+                            correlation_id=(
+                                f"notification:{notification.id}:"
+                                f"attempt:{notification.retry_count}"
+                            ),
+                        ),
+                    )
+                    provider_message_id = outcome.provider_message_id or ""
+                    success = outcome.accepted and bool(provider_message_id)
+                    if not success:
+                        provider_error = (
+                            outcome.error_code or "meta_direct_message_not_accepted"
                         )
-                    else:
-                        provider_result = meta_pages.send_instagram_message_sync(
-                            db,
-                            ig_account_id=account_id,
-                            recipient_id=notification.recipient,
-                            message=body,
-                        )
-                    provider_message_id = str(
-                        provider_result.get("message_id")
-                        or provider_result.get("id")
-                        or ""
-                    ).strip()
-                    if not provider_message_id:
-                        raise ValueError("meta_direct_message_id_missing")
-                    success = True
-                except httpx.HTTPStatusError as exc:
-                    success = False
-                    status_code = exc.response.status_code
-                    if status_code not in {408, 409, 425, 429} and status_code < 500:
-                        notification.retry_count = max_retries - 1
-                    provider_error = f"meta_direct_message_http_{status_code}"
+                        if outcome.operation_status == "rejected":
+                            notification.retry_count = max_retries - 1
                 except ValueError:
                     success = False
                     notification.retry_count = max_retries - 1

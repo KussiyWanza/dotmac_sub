@@ -342,22 +342,25 @@ def test_social_comment_provider_failure_does_not_create_a_false_reply(
 def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
     db_session, monkeypatch
 ):
-    from app.services import meta_pages
-
-    calls: list[tuple[str, dict[str, str]]] = []
-    monkeypatch.setattr(
-        meta_pages,
-        "send_facebook_message_sync",
-        lambda _db, **kwargs: (
-            calls.append(("facebook", kwargs)) or {"message_id": "mid-facebook"}
-        ),
+    from app.services.integrations import meta_social_capability
+    from app.services.integrations.meta_social_contracts import (
+        MetaDirectMessageOutcome,
     )
+
+    calls = []
+
+    def send_direct_message(_db, command):
+        calls.append(command)
+        return MetaDirectMessageOutcome(
+            accepted=True,
+            operation_status="succeeded",
+            provider_message_id=f"mid-{command.channel.value}",
+        )
+
     monkeypatch.setattr(
-        meta_pages,
-        "send_instagram_message_sync",
-        lambda _db, **kwargs: (
-            calls.append(("instagram", kwargs)) or {"message_id": "mid-instagram"}
-        ),
+        meta_social_capability,
+        "send_direct_message",
+        send_direct_message,
     )
 
     expected_channels = (
@@ -413,23 +416,17 @@ def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
 
     notification_tasks._deliver_notification_queue_stats(db_session)
 
-    assert calls == [
-        (
-            "facebook",
-            {
-                "page_id": "page-123",
-                "recipient_id": "customer-fb",
-                "message": GENERIC_FOLLOW_UP_QUESTION,
-            },
-        ),
-        (
-            "instagram",
-            {
-                "ig_account_id": "ig-123",
-                "recipient_id": "customer-ig",
-                "message": GENERIC_FOLLOW_UP_QUESTION,
-            },
-        ),
+    assert [command.channel.value for command in calls] == [
+        "facebook_messenger",
+        "instagram_dm",
+    ]
+    assert [command.provider_account_id for command in calls] == [
+        "page-123",
+        "ig-123",
+    ]
+    assert [command.recipient_id for command in calls] == [
+        "customer-fb",
+        "customer-ig",
     ]
     outbound = (
         db_session.query(InboxMessage)
@@ -438,8 +435,8 @@ def test_meta_direct_intake_followups_use_normal_outbound_dispatcher(
         .all()
     )
     assert [message.external_message_id for message in outbound] == [
-        "mid-facebook",
-        "mid-instagram",
+        "mid-facebook_messenger",
+        "mid-instagram_dm",
     ]
     assert all(
         message.metadata_["delivery_status"] == "delivered" for message in outbound

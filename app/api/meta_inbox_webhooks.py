@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 from datetime import UTC, datetime
 from typing import Any
@@ -8,17 +9,50 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.api.inbox_webhooks import (
-    SIGNATURE_HEADER,
-    _verify_meta_signature,
-    _verify_token,
-)
 from app.api.webhook_observation import webhook_observation
 from app.db import get_db
 from app.models.team_inbox import InboxChannelType
 from app.services import team_inbox_channel_receive
+from app.services.integrations import inbox as integration_inbox
+from app.services.integrations.connectors.meta_social_runtime import (
+    META_SOCIAL_RECEIVE_CAPABILITY,
+)
+from app.services.integrations.meta_social_capability import (
+    inbound_secret_material,
+    require_binding,
+)
 
 router = APIRouter(prefix="/webhooks/meta", tags=["meta-inbox-webhook"])
+SIGNATURE_HEADER = "X-Hub-Signature-256"
+
+
+def _verify_token(db: Session) -> str:
+    try:
+        return inbound_secret_material(db).verify_token.strip()
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta webhook verification is not configured.",
+        ) from exc
+
+
+def _verify_meta_signature(db: Session, raw_body: bytes, presented: str | None) -> None:
+    try:
+        secret = inbound_secret_material(db).signing_secret.strip()
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta webhook signature verification is not configured.",
+        ) from exc
+    expected = (
+        "sha256="
+        + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    )
+    if not presented or not hmac.compare_digest(presented, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing Meta webhook signature.",
+        )
 
 
 def _event_timestamp(value: object) -> datetime | None:
@@ -168,12 +202,50 @@ async def receive_meta_inbox_webhook(
                     metadata=item.get("metadata"),
                 ),
             )
-        results = team_inbox_channel_receive.receive_inbound_channel_batch_committed(
+        binding = require_binding(
             db,
-            inbound_payloads,
+            capability_id=META_SOCIAL_RECEIVE_CAPABILITY,
         )
-        return {
-            "status": "ok",
-            "processed": len(results),
-            "items": results,
-        }
+        receipt, should_process = integration_inbox.receive_and_claim_verified(
+            db,
+            capability_binding_id=binding.id,
+            provider_event_id=f"meta-social:{hashlib.sha256(raw_body).hexdigest()}",
+            event_type="meta.social.webhook.v1",
+            payload=payload,
+            headers={
+                key: value
+                for key, value in {
+                    "content-type": request.headers.get("content-type"),
+                    "user-agent": request.headers.get("user-agent"),
+                }.items()
+                if value
+            },
+        )
+        if not should_process:
+            return dict(receipt.consequence_json)
+        try:
+            results = (
+                team_inbox_channel_receive.receive_inbound_channel_batch_committed(
+                    db,
+                    inbound_payloads,
+                )
+            )
+            consequence: dict[str, object] = {
+                "status": "ok",
+                "processed": len(results),
+                "items": results,
+            }
+            integration_inbox.complete_consequence(
+                db,
+                receipt=receipt,
+                consequence=consequence,
+            )
+        except Exception as exc:
+            integration_inbox.fail_consequence(
+                db,
+                receipt=receipt,
+                error_code="meta_social_consequence_failed",
+                error_detail=type(exc).__name__,
+            )
+            raise
+        return consequence

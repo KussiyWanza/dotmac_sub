@@ -25,6 +25,12 @@
   },
   {
     "current": true,
+    "key": "meta.social",
+    "manifest_digest": "c2a13ab30bebb90b312ab4bbcf1d2feaa23ea706100b3e5ea35a101ec566cf08",
+    "version": "1.0.0"
+  },
+  {
+    "current": true,
     "key": "dotmac.erp",
     "manifest_digest": "5c0b5f58d5b9e10b30e2bbb329b32f0e2b0e1eddb3512ab16af5efac6e126454",
     "version": "1.0.0"
