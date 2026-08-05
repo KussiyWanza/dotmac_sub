@@ -8,11 +8,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
 
 from app.models.support import Ticket, TicketChannel
 from app.services import support as support_service
 from app.services import web_support_tickets
 from app.services.list_query import PageMeta
+from app.web.admin import support_tickets as admin_support_tickets
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -246,6 +248,60 @@ def test_ticket_complete_scope_explicitly_disables_the_page_limit(monkeypatch):
     assert captured["limit"] is None
     assert captured["offset"] == 0
     assert captured["region"] == "north"
+
+
+def test_ticket_number_search_renders_htmx_list_response(db_session, monkeypatch):
+    ticket_number = "TKT-SEARCH-2048"
+    db_session.add_all(
+        [
+            _ticket(number=ticket_number, title="Matching ticket"),
+            _ticket(number="TKT-OTHER-4096", title="Different ticket"),
+        ]
+    )
+    db_session.commit()
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/admin/support/tickets",
+            "query_string": f"search={ticket_number}".encode(),
+            "headers": [(b"hx-request", b"true")],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        }
+    )
+    monkeypatch.setattr(
+        admin_support_tickets,
+        "_ctx",
+        lambda request, db: {"request": request},
+    )
+    monkeypatch.setattr(admin_support_tickets, "_actor_id", lambda request: None)
+
+    response = admin_support_tickets.tickets_list(
+        request=request,
+        search=ticket_number,
+        status=None,
+        ticket_type=None,
+        region=None,
+        assigned_to_me=False,
+        project_manager_person_id=None,
+        site_coordinator_person_id=None,
+        subscriber_id=None,
+        filters=None,
+        sort=None,
+        direction=None,
+        order_by=None,
+        order_dir=None,
+        page=1,
+        per_page="25",
+        db=db_session,
+    )
+
+    html = response.body.decode()
+    assert response.status_code == 200
+    assert ticket_number in html
+    assert "TKT-OTHER-4096" not in html
 
 
 def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
