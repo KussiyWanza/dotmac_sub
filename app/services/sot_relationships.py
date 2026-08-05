@@ -3117,7 +3117,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Splynx only when account provenance proves the customer was "
                     "created after the fixed legacy handoff with no Splynx identity. "
                     "The zero history component and canonical native facts are "
-                    "fingerprinted before normal approval and capture."
+                    "fingerprinted before normal approval and capture. After "
+                    "authority activation, a separate single-account preview derives "
+                    "the immutable original cutoff and evaluates only the explicitly "
+                    "selected eligible native account; it cannot satisfy initial "
+                    "complete-cohort cutover evidence."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3223,7 +3227,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "reviewed reconstruction/opening positions, or a "
                                 "typed native-after-handoff target proven from the "
                                 "account creation instant, absent Splynx identity, "
-                                "fixed handoff, and canonical native financial facts"
+                                "fixed handoff, and canonical native financial facts; "
+                                "post-cutover single-account evidence is bounded at "
+                                "the original authority verification cutoff"
                             ),
                         ),
                         AuthorityInput(
@@ -3257,19 +3263,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Each terminal consumption, complete-cohort run, or "
-                            "approval enters execute_owner_command once on a "
-                            "transaction-free session."
+                            "Each terminal consumption, complete-cohort run, explicit "
+                            "post-cutover account run, or approval enters "
+                            "execute_owner_command once on a transaction-free session."
                         ),
                         locking=(
                             "Terminal delivery uniqueness is database-enforced; "
                             "verification locks the complete selected Subscription, "
                             "contract-version, and obligation cohort; approvals lock "
-                            "one run."
+                            "one run. Post-cutover capture separately locks and "
+                            "revalidates the one selected customer account."
                         ),
                         idempotency=(
                             "One terminal evidence row per event and one run per "
-                            "business idempotency key. Replays return stored evidence."
+                            "business idempotency key. The post-cutover account ID is "
+                            "part of run identity; replays return stored evidence."
                         ),
                         retries=(
                             "Delivery and run commands are retryable. Expected new-"
@@ -3295,6 +3303,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "billing.shadow_verification."
                                 "opening_position_already_captured"
                             ),
+                            "billing.shadow_verification.account_not_found",
+                            (
+                                "billing.shadow_verification."
+                                "account_not_in_funding_cohort"
+                            ),
+                            "billing.shadow_verification.corrupt_authority_evidence",
+                            "billing.shadow_verification.opening_not_required",
+                            (
+                                "billing.shadow_verification."
+                                "post_cutover_scope_requires_native_account"
+                            ),
+                            (
+                                "billing.shadow_verification."
+                                "post_cutover_scope_unavailable"
+                            ),
+                            (
+                                "billing.shadow_verification."
+                                "shadow_fact_after_authority_cutoff"
+                            ),
+                            "billing.shadow_verification.source_cohort_incomplete",
+                            "billing.shadow_verification.stale_reviewed_preview",
                             "billing.shadow_verification.verification_blockers_present",
                             "billing.shadow_verification.verification_run_not_found",
                         ),
@@ -3303,6 +3332,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "an incomplete or non-timezone-aware observation window",
                             "any unresolved, ambiguous, unlinked, duplicate, gap, "
                             "overlap, or variance category",
+                            "a selected account outside the native post-cutover "
+                            "completion contract or changed after preview",
                             "finance approval without operator approval",
                         ),
                     ),
@@ -3352,6 +3383,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_billing_shadow_pipeline.py",
                         "tests/test_billing_phase2_shadow.py",
+                        "tests/test_subledger_opening_positions.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -3656,7 +3688,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "shadow position at the preview cutoff, so forward groups are not "
                     "double-counted. The complete source cohort is mandatory. A later "
                     "completion run preserves existing immutable openings and captures "
-                    "only missing accounts; no account is permanently excluded."
+                    "only missing accounts; no account is permanently excluded. After "
+                    "authority activation, a distinct single-account completion may "
+                    "capture one explicitly selected native-after-handoff account "
+                    "against the original cutoff without reading or changing unrelated "
+                    "opening debt. It is forbidden before activation and cannot support "
+                    "the initial cutover gate."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3694,7 +3731,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
                                 "immutable phase_3_opening_preview run with exact "
-                                "result fingerprint plus operator and finance approval"
+                                "result fingerprint plus operator and finance approval, "
+                                "or one immutable phase_3_post_cutover_opening_preview "
+                                "bound to an explicit account and the active authority "
+                                "record"
                             ),
                         ),
                         AuthorityInput(
@@ -3738,17 +3778,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         boundary=(
                             "The fingerprint-bound capture enters execute_owner_command "
                             "once; every opening evidence row, posting group, and capture "
-                            "event commits or rolls back as one transaction."
+                            "event commits or rolls back as one transaction. A bounded "
+                            "post-cutover capture uses the same owner transaction and "
+                            "never updates the authority record."
                         ),
                         locking=(
                             "The approved verification run is locked before capture; "
+                            "a post-cutover run then locks and recomputes its one selected "
+                            "account against the immutable original cutoff; "
                             "unique account/currency and posting idempotency constraints "
                             "arbitrate concurrent attempts."
                         ),
                         idempotency=(
                             "One immutable opening per account/currency. Exact replay of "
                             "the same reviewed run returns the recorded cohort; changed "
-                            "rows or fingerprints fail closed."
+                            "rows, selected-account evidence, or fingerprints fail closed."
                         ),
                         retries=(
                             "Retry the complete command with the same approved run and "
@@ -3810,6 +3854,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "missing operator or finance approval",
                             "changed or corrupt reviewed fingerprint",
                             "an incomplete source cohort",
+                            "a stale or ineligible selected post-cutover account",
                             "an existing account/currency opening",
                         ),
                     ),
@@ -3839,7 +3884,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner=("financial.customer_subledger_opening_positions"),
                         verification=(
                             "Fingerprint-bound complete-cohort preview/capture, "
-                            "atomic rollback, idempotency, and cohort parity tests."
+                            "post-cutover single-account revalidation, atomic rollback, "
+                            "idempotency, and cohort parity tests."
                         ),
                         cutover_gate=(
                             "Every account present at subledger activation has one "
@@ -4666,7 +4712,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the fixed legacy handoff with no Splynx identity has a typed "
                     "zero history component plus canonical native facts; runtime "
                     "money actions remain quarantined until approved immutable "
-                    "opening capture. This reconstruction owner never rewrites an "
+                    "opening capture. A post-cutover single-account review bounds "
+                    "those native facts at the immutable original authority cutoff so "
+                    "later authoritative postings are not absorbed twice. This "
+                    "reconstruction owner never rewrites an "
                     "opening or posts money."
                 ),
             ),
@@ -33791,6 +33840,174 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 depends_on=(
                     "ui.list_contracts",
                     "customer.account_visibility",
+                ),
+            ),
+            SOTService(
+                name="ui.customer_timeline_projection",
+                module="app.services.customer_timeline",
+                owns=("admin customer timeline attribution and evidence projection",),
+                depends_on=(
+                    "customer.accounts",
+                    "access.subscription_lifecycle",
+                    "financial.invoices",
+                    "financial.payments",
+                    "financial.dunning",
+                    "support.ticket_lifecycle",
+                    "operations.provisioning_workflow",
+                    "communications.notification_service",
+                    "observability.audit_log",
+                    "auth.staff_provisioning",
+                ),
+                notes=(
+                    "This read-only projection composes canonical customer-linked "
+                    "records and audit evidence for the admin customer detail page. "
+                    "Audit rows retain their recorded staff, customer, system, "
+                    "service, or API-key attribution. Record-only activity is marked "
+                    "Actor not recorded instead of inferring an actor from record "
+                    "ownership or timestamps."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name=(
+                                "admin customer timeline attribution and evidence "
+                                "projection"
+                            ),
+                            role=OwnerRole.RESOLVER,
+                            input_names=(
+                                "canonical customer account identity",
+                                "canonical subscription lifecycle records",
+                                "canonical invoice records",
+                                "canonical payment records",
+                                "canonical dunning records",
+                                "canonical support-ticket records",
+                                "canonical service-order records",
+                                "canonical communication records",
+                                "canonical audit evidence",
+                                "canonical staff display identity",
+                            ),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="canonical customer account identity",
+                            owner="customer.accounts",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer identifier and account relationships",
+                        ),
+                        AuthorityInput(
+                            name="canonical subscription lifecycle records",
+                            owner="access.subscription_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked subscription rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical invoice records",
+                            owner="financial.invoices",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked invoice rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical payment records",
+                            owner="financial.payments",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked payment rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical dunning records",
+                            owner="financial.dunning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked dunning-case rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical support-ticket records",
+                            owner="support.ticket_lifecycle",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked support-ticket rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical service-order records",
+                            owner="operations.provisioning_workflow",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked service-order rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical communication records",
+                            owner="communications.notification_service",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source="customer-linked communication-log rows",
+                        ),
+                        AuthorityInput(
+                            name="canonical audit evidence",
+                            owner="observability.audit_log",
+                            kind=AuthorityKind.OBSERVATION,
+                            source=(
+                                "immutable actor, action, outcome, change, and request "
+                                "evidence"
+                            ),
+                        ),
+                        AuthorityInput(
+                            name="canonical staff display identity",
+                            owner="auth.staff_provisioning",
+                            kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                            source=(
+                                "write-time audit actor-label snapshot, with current "
+                                "SystemUser lookup only for legacy rows"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.READ_ONLY,
+                        boundary=(
+                            "The admin adapter creates and closes the session. The "
+                            "projection reads canonical records and audit evidence and "
+                            "never writes or completes a transaction."
+                        ),
+                        locking=(
+                            "No mutation lock is required; each timeline reflects the "
+                            "canonical snapshot visible to the caller session."
+                        ),
+                        idempotency=(
+                            "The same visible records and audit evidence produce the "
+                            "same stable timeline keys, attribution, ordering, and "
+                            "details."
+                        ),
+                        retries="Read-only projection calls are safe to retry.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=(),
+                        mapping_owner="admin customer web adapter",
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "app.services.web_customer_details mixed record and audit "
+                            "dictionary assembly plus template-local attribution"
+                        ),
+                        new_owner="ui.customer_timeline_projection",
+                        verification=(
+                            "Focused attribution, audit evidence, record fallback, "
+                            "template, and architecture tests."
+                        ),
+                        cutover_gate=(
+                            "The customer detail snapshot and template consume only the "
+                            "typed timeline projection."
+                        ),
+                        fallback_retirement=(
+                            "The untyped helper and template inference of actor display "
+                            "are removed."
+                        ),
+                    ),
+                    steward="customer operations UI",
+                    design_refs=(
+                        "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                        "docs/FRONTEND_SPEC.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_customer_timeline_projection.py",
+                        "tests/architecture/test_customer_timeline_boundary.py",
+                    ),
                 ),
             ),
             SOTService(

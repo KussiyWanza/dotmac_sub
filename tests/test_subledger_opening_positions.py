@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 
@@ -19,10 +20,14 @@ from app.services import customer_financial_ledger
 from app.services.billing.customer_subledger import resolve_position
 from app.services.billing.shadow_verification import (
     BillingShadowVerification,
+    BillingShadowVerificationError,
+    Phase3OpeningPreviewResult,
     RecordPhase3OpeningPreviewCommand,
     RecordPhase3SubledgerParityCommand,
+    RecordPostCutoverAccountOpeningPreviewCommand,
     record_phase3_opening_preview,
     record_phase3_subledger_parity,
+    record_post_cutover_account_opening_preview,
 )
 from app.services.billing.subledger_opening import (
     ActivateCustomerSubledgerAuthorityCommand,
@@ -86,6 +91,23 @@ def _preview(db, *, cutoff: datetime, key: str):
     )
 
 
+def _post_cutover_preview(
+    db,
+    *,
+    account_id: UUID,
+    key: str,  # noqa: ANN001
+) -> Phase3OpeningPreviewResult:
+    return record_post_cutover_account_opening_preview(
+        db,
+        RecordPostCutoverAccountOpeningPreviewCommand(
+            account_id=account_id,
+            code_version="pytest-post-cutover-opening",
+            database_schema_version="471",
+        ),
+        context=_context("operator:pytest", key),
+    )
+
+
 def _approve(db, run_id, *, at: datetime) -> None:
     BillingShadowVerification.approve_operator(
         db,
@@ -111,6 +133,22 @@ def _capture(db, preview, *, key: str):
             review_reference="pytest:finance-reviewed-opening-run",
         ),
     )
+
+
+def test_single_account_opening_preview_requires_active_authority(
+    db_session, subscriber_account, subscription
+):
+    account_id = subscriber_account.id
+    _candidate(db_session, subscriber_account, subscription)
+
+    with pytest.raises(BillingShadowVerificationError) as exc:
+        _post_cutover_preview(
+            db_session,
+            account_id=account_id,
+            key="opening-preview-before-authority",
+        )
+
+    assert exc.value.code.endswith("post_cutover_scope_unavailable")
 
 
 def test_approved_residual_closes_position_without_double_counting_forward_fact(
@@ -287,9 +325,9 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
         == 1
     )
 
-    # Universal completion is incremental after irreversible activation: an
-    # already-opened account is fingerprinted and preserved, while only the
-    # newly completed account receives another immutable opening.
+    # Post-cutover completion is explicitly account-scoped. An unrelated
+    # source-incomplete account continues to block the complete-cohort path but
+    # cannot prevent an independently complete native account from being reviewed.
     original_opening_id = opening.id
     second_account = Subscriber(
         first_name="Native",
@@ -301,8 +339,9 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     )
     db_session.add(second_account)
     db_session.flush()
+    second_account_id = second_account.id
     second_subscription = Subscription(
-        subscriber_id=second_account.id,
+        subscriber_id=second_account_id,
         offer_id=subscription.offer_id,
         status=SubscriptionStatus.active,
         billing_mode=BillingMode.prepaid,
@@ -312,15 +351,40 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     _candidate(db_session, second_account, second_subscription)
     assert prepaid_funding_incomplete_source_account_ids(
         db_session,
-        [second_account.id],
-    ) == {second_account.id}
+        [second_account_id],
+    ) == {second_account_id}
     assert (
         prepaid_funding_opening_source_incomplete_account_ids(
             db_session,
-            [second_account.id],
+            [second_account_id],
         )
         == set()
     )
+    unrelated_blocker = Subscriber(
+        first_name="Legacy",
+        last_name="Incomplete",
+        email="legacy-incomplete-opening@example.com",
+        billing_mode=BillingMode.prepaid,
+        reseller_id=subscriber_account.reseller_id,
+        created_at=LEGACY_FINANCIAL_HANDOFF_AT - timedelta(days=1),
+    )
+    db_session.add(unrelated_blocker)
+    db_session.flush()
+    unrelated_blocker_id = unrelated_blocker.id
+    blocker_subscription = Subscription(
+        subscriber_id=unrelated_blocker_id,
+        offer_id=subscription.offer_id,
+        status=SubscriptionStatus.active,
+        billing_mode=BillingMode.prepaid,
+    )
+    db_session.add(blocker_subscription)
+    db_session.flush()
+    _candidate(db_session, unrelated_blocker, blocker_subscription)
+    assert prepaid_funding_opening_source_incomplete_account_ids(
+        db_session,
+        [unrelated_blocker_id],
+    ) == {unrelated_blocker_id}
+
     native_account = Subscriber(
         first_name="Native",
         last_name="After Cutover",
@@ -331,8 +395,9 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     )
     db_session.add(native_account)
     db_session.flush()
+    native_account_id = native_account.id
     native_subscription = Subscription(
-        subscriber_id=native_account.id,
+        subscriber_id=native_account_id,
         offer_id=subscription.offer_id,
         status=SubscriptionStatus.active,
         billing_mode=BillingMode.prepaid,
@@ -340,21 +405,55 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
     db_session.add(native_subscription)
     db_session.flush()
     _candidate(db_session, native_account, native_subscription)
-    completion_cutoff = cutoff + timedelta(minutes=2)
-    completion = _preview(
+
+    with pytest.raises(BillingShadowVerificationError) as unnecessary_exc:
+        _post_cutover_preview(
+            db_session,
+            account_id=native_account_id,
+            key="opening-preview-not-required",
+        )
+    assert unnecessary_exc.value.code.endswith("opening_not_required")
+
+    with pytest.raises(BillingShadowVerificationError) as cohort_exc:
+        _preview(
+            db_session,
+            cutoff=cutoff + timedelta(minutes=2),
+            key="opening-preview-complete-cohort-blocked",
+        )
+    assert cohort_exc.value.code.endswith("source_cohort_incomplete")
+
+    completion = _post_cutover_preview(
         db_session,
-        cutoff=completion_cutoff,
-        key="opening-preview-complete-cohort",
+        account_id=second_account_id,
+        key="opening-preview-single-account",
     )
-    assert completion.cohort_count == 2
+    assert completion.cohort_count == 1
     assert completion.capture_eligible_count == 1
     assert completion.quarantined_count == 0
     db_session.commit()
-    _approve(db_session, completion.run_id, at=completion_cutoff)
+    _approve(
+        db_session,
+        completion.run_id,
+        at=cutover.cutover_at + timedelta(minutes=2),
+    )
+
+    second_account.splynx_customer_id = "late-identity-must-invalidate-review"
+    db_session.commit()
+    with pytest.raises(CustomerSubledgerOpeningError) as stale_exc:
+        _capture(
+            db_session,
+            completion,
+            key="opening-capture-single-account",
+        )
+    assert stale_exc.value.code.endswith("stale_reviewed_preview")
+    assert db_session.query(CustomerSubledgerOpeningPosition).count() == 1
+
+    second_account.splynx_customer_id = None
+    db_session.commit()
     completed = _capture(
         db_session,
         completion,
-        key="opening-capture-complete-cohort",
+        key="opening-capture-single-account",
     )
     assert completed.captured_count == 1
     assert completed.positive_total == Decimal("0.00")
@@ -364,23 +463,29 @@ def test_approved_residual_closes_position_without_double_counting_forward_fact(
         db_session.get(CustomerSubledgerOpeningPosition, original_opening_id) is opening
     )
     native_opening = next(
-        row for row in openings if row.account_id == second_account.id
+        row for row in openings if row.account_id == second_account_id
     )
     assert native_opening.baseline_id is None
     assert Decimal(native_opening.legacy_position) == Decimal("0.00")
     assert Decimal(native_opening.opening_delta) == Decimal("0.00")
     assert (
+        db_session.query(CustomerSubledgerOpeningPosition)
+        .filter(CustomerSubledgerOpeningPosition.account_id == unrelated_blocker_id)
+        .count()
+        == 0
+    )
+    assert (
         prepaid_funding_incomplete_source_account_ids(
             db_session,
-            [second_account.id],
+            [second_account_id],
         )
         == set()
     )
     assert verified_prepaid_funding_balance(
         db_session,
-        second_account.id,
+        second_account_id,
     ) == Decimal("0.00")
-    assert verified_prepaid_funding_balance(db_session, native_account.id) == Decimal(
+    assert verified_prepaid_funding_balance(db_session, native_account_id) == Decimal(
         "0.00"
     )
 

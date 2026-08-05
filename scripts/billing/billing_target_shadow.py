@@ -434,6 +434,43 @@ def _cmd_preview_subledger_openings(db, args) -> int:
     return 0
 
 
+def _cmd_preview_post_cutover_account_opening(db, args) -> int:
+    from app.services.billing.shadow_verification import (
+        RecordPostCutoverAccountOpeningPreviewCommand,
+        record_post_cutover_account_opening_preview,
+    )
+
+    result = record_post_cutover_account_opening_preview(
+        db,
+        RecordPostCutoverAccountOpeningPreviewCommand(
+            account_id=UUID(args.account),
+            code_version=args.code_version,
+            database_schema_version=args.schema_version,
+            currency=args.currency,
+        ),
+        context=_context(
+            "record one reviewed post-cutover customer opening proposal",
+            idempotency_key=args.idempotency_key,
+        ),
+    )
+    _emit(
+        {
+            "run_id": result.run_id,
+            "account_id": args.account,
+            "cohort_count": result.cohort_count,
+            "capture_eligible_count": result.capture_eligible_count,
+            "quarantined_count": result.quarantined_count,
+            "nonzero_opening_count": result.nonzero_opening_count,
+            "source_fingerprint": result.source_fingerprint,
+            "result_fingerprint": result.result_fingerprint,
+            "replayed": result.replayed,
+            "authority_moved": False,
+            "postings_manufactured": False,
+        }
+    )
+    return 0
+
+
 def _cmd_approve_verification(db, args) -> int:
     method = (
         BillingShadowVerification.approve_finance
@@ -858,6 +895,17 @@ def main() -> int:
     p.add_argument("--currency", default="NGN")
     p.add_argument("--idempotency-key", required=True)
     p.set_defaults(func=_cmd_preview_subledger_openings)
+
+    p = sub.add_parser(
+        "preview-post-cutover-account-opening",
+        help="record one explicit native account opening after authority activation",
+    )
+    p.add_argument("--account", required=True)
+    p.add_argument("--code-version", required=True)
+    p.add_argument("--schema-version", required=True)
+    p.add_argument("--currency", default="NGN")
+    p.add_argument("--idempotency-key", required=True)
+    p.set_defaults(func=_cmd_preview_post_cutover_account_opening)
 
     p = sub.add_parser(
         "approve-verification",

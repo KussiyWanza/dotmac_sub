@@ -28,6 +28,7 @@ from app.models.customer_subledger import (
     PostingProducer,
     PostingSourceKind,
 )
+from app.models.subscriber import Subscriber
 from app.services.billing.customer_subledger import (
     EffectInput,
     StagePostingGroupCommand,
@@ -173,7 +174,10 @@ def _capture(
     run = lock_for_update(
         db, BillingCutoverVerificationRun, command.verification_run_id
     )
-    if run is None or run.phase != "phase_3_opening_preview":
+    if run is None or run.phase not in {
+        "phase_3_opening_preview",
+        "phase_3_post_cutover_opening_preview",
+    }:
         raise _error(
             "verification_run_not_found",
             "The approved Phase 3 opening preview does not exist.",
@@ -229,6 +233,68 @@ def _capture(
                 run_id=str(run.id),
             )
         return _result(run.id, existing, replayed=True)
+
+    if run.phase == "phase_3_post_cutover_opening_preview":
+        if len(rows) != 1:
+            raise _error(
+                "corrupt_reviewed_preview",
+                "A post-cutover account preview must contain exactly one opening.",
+                run_id=str(run.id),
+            )
+        payload = rows[0]
+        account_id = UUID(str(payload["account_id"]))
+        if lock_for_update(db, Subscriber, account_id) is None:
+            raise _error(
+                "stale_reviewed_preview",
+                "The reviewed account no longer exists.",
+                account_id=str(account_id),
+            )
+        authority_cutover_id = details.get("authority_cutover_id")
+        if authority_cutover_id is None:
+            raise _error(
+                "corrupt_reviewed_preview",
+                "Post-cutover opening evidence has no authority identity.",
+                run_id=str(run.id),
+            )
+        from app.services.billing.shadow_verification import (
+            BillingShadowVerificationError,
+            ResolvePostCutoverOpeningEvidenceQuery,
+            resolve_post_cutover_opening_evidence,
+        )
+
+        try:
+            current = resolve_post_cutover_opening_evidence(
+                db,
+                ResolvePostCutoverOpeningEvidenceQuery(
+                    account_id=account_id,
+                    currency=currency,
+                    expected_authority_cutover_id=UUID(str(authority_cutover_id)),
+                ),
+            )
+        except BillingShadowVerificationError as exc:
+            raise _error(
+                "stale_reviewed_preview",
+                "The selected account no longer matches its reviewed opening evidence.",
+                account_id=str(account_id),
+                run_id=str(run.id),
+                cause_code=exc.code,
+            ) from exc
+        if (
+            str(payload.get("evidence_fingerprint")) != current.evidence_fingerprint
+            or round_money(Decimal(str(payload.get("legacy_position"))))
+            != current.legacy_position
+            or round_money(Decimal(str(payload.get("shadow_position_before"))))
+            != current.shadow_position_before
+            or round_money(Decimal(str(payload.get("opening_delta"))))
+            != current.opening_delta
+            or _utc(run.cutoff_at) != current.opening_cutoff_at
+        ):
+            raise _error(
+                "stale_reviewed_preview",
+                "The selected account's opening evidence changed after approval.",
+                account_id=str(account_id),
+                run_id=str(run.id),
+            )
 
     account_ids = tuple(UUID(str(row["account_id"])) for row in rows)
     conflicting = list(

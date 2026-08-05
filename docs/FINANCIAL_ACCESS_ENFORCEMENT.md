@@ -98,6 +98,14 @@ the existing opening owner captures its immutable opening. An old postpaid
 account, a customer created before the handoff, any retained Splynx identity,
 or ambiguous provenance still requires the complete reviewed source baseline.
 
+After subledger authority is active, the verifier may bind one explicitly named
+eligible native account to the original authority cutoff without evaluating
+unrelated opening debt. The capture owner revalidates that same account under
+lock and writes only its approved immutable opening. The bounded path is not a
+partial initial cutover: it is unavailable before authority activation, excludes
+facts after the original cutoff, and cannot accept migrated or ambiguous source
+provenance.
+
 ## Exact prepaid renewal charge
 
 Renewal and enforcement call the same bounded resolver. For each collectible
