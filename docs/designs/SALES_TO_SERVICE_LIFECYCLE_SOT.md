@@ -137,9 +137,15 @@ depend on HTTP request/response or exception types.
 - List contract: server-side search across Lead title plus authoritative
   contact name/email/phone, status/pipeline/stage/owner/source filters,
   updated/created ordering, 10/25/50/100 page sizes, and URL-preserved state.
+- Query contract: `sales.service` accepts one typed Lead list input, collapses
+  search whitespace, canonicalizes stale filters/sort/page values, and applies
+  one shared predicate set to rows, unique count, pagination, and summary.
+  Party, active Party email/phone contact points, and Subscriber matches use
+  correlated `EXISTS`; full Lead rows (including PostgreSQL `json` metadata)
+  are never subjected to `DISTINCT`.
 - Summary contract: Total, Open, Won, and Pipeline Value come from
-  `sales.service`; Open is New/Contacted/Qualified/Proposal/Negotiation and
-  won/lost value is excluded.
+  `sales.service` over the active search/filter scope; Open is
+  New/Contacted/Qualified/Proposal/Negotiation and won/lost value is excluded.
 - States: permission denial is enforced by route dependencies; forms preserve
   validated input and field errors; empty, loading/submitting, API failure with
   retry, duplicate-open-lead, and unavailable-contact states are explicit.

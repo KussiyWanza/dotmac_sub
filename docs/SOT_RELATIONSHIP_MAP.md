@@ -4632,7 +4632,11 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
 1. `sales.orders`: owns sales order lifecycle.
 2. `sales.selfserve`: owns the self-serve quote and signup flow.
 3. `sales.service`: owns the sales pipeline and quote lifecycle, including the
-   governed stage-presentation vocabulary and atomic stage ordering.
+   governed stage-presentation vocabulary, atomic stage ordering, and typed
+   Lead list query projection. Its normalized Lead search/filter predicate is
+   shared by unique rows, count, pagination, and filtered summary; related
+   Party/contact/Subscriber matches are correlated observations rather than
+   row-multiplying joins.
 4. `sales.quote_documents`: owns immutable, content-addressed, branded Quote
    PDF snapshots.
 5. `sales.quote_delivery`: owns the idempotent branded Quote email request and

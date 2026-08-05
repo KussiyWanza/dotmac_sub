@@ -56,6 +56,11 @@ As each list is migrated, express its KPI tiles as `ui_contracts.Kpi` (value as
 Admin: **referrals** (pattern-setter, start here) · sales leads · sales quotes ·
 sales orders · inbox. Reseller: accounts · invoices · work-orders.
 
+Sales Leads now uses the generic URL/pagination contract together with a typed
+`sales.service` query input and outcome. The owner normalizes search and filters
+once, and correlated related-record predicates keep the PostgreSQL `json` Lead
+row out of any full-row `DISTINCT` operation.
+
 Each is independent; migrate and validate one at a time. The reference
 implementation, the two macros, and this recipe make each a mechanical change
 rather than a design problem.

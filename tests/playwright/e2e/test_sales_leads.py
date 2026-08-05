@@ -17,6 +17,44 @@ def _mark_admin_tour_seen(page: Page) -> None:
 
 
 class TestSalesLeads:
+    def test_customer_name_search_composes_with_status_filter(
+        self,
+        admin_page: Page,
+        settings,
+    ) -> None:
+        _mark_admin_tour_seen(admin_page)
+        suffix = uuid4().hex[:10]
+        customer_name = f"Search Customer {suffix}"
+        admin_page.goto(f"{settings.base_url}/admin/sales/leads/new")
+        admin_page.get_by_label("Display Name").fill(customer_name)
+        admin_page.get_by_label("Email 1").fill(f"search-{suffix}@example.com")
+        admin_page.get_by_label("Phone 1").fill("08031234567")
+        admin_page.get_by_role("button", name="Create Lead").click()
+        admin_page.wait_for_url("**/admin/sales/leads/**")
+
+        admin_page.goto(f"{settings.base_url}/admin/sales/leads")
+        admin_page.get_by_label("Search leads").fill(customer_name)
+        admin_page.get_by_role("button", name="Filter").click()
+
+        admin_page.wait_for_url(
+            f"**/admin/sales/leads?*search={customer_name.replace(' ', '+')}*"
+        )
+        rows = admin_page.locator("tbody tr")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text(customer_name)
+        expect(admin_page.get_by_text("Showing 1 to 1 of 1 leads")).to_be_visible()
+        expect(admin_page.get_by_role("alert")).to_have_count(0)
+
+        admin_page.get_by_label("Status", exact=True).select_option("new")
+        admin_page.get_by_role("button", name="Filter").click()
+
+        admin_page.wait_for_url("**/admin/sales/leads?*search=*&status=new*")
+        assert admin_page.url.find("search=") > -1
+        assert admin_page.url.find("status=new") > -1
+        expect(admin_page.locator("tbody tr")).to_have_count(1)
+        expect(admin_page.locator("tbody tr").first).to_contain_text(customer_name)
+        expect(admin_page.get_by_text("Showing 1 to 1 of 1 leads")).to_be_visible()
+
     def test_admin_can_create_and_open_a_lead(
         self,
         admin_page: Page,

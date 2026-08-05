@@ -28,14 +28,17 @@ native models (``app/models/sales.py``), with the deltas applied:
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import Enum, StrEnum
+from typing import TypeVar
 
 from fastapi import HTTPException
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql.elements import ColumnElement, SQLColumnExpression
 
 from app.models.audit import AuditActorType
 from app.models.domain_settings import SettingDomain
@@ -98,18 +101,20 @@ def _stage_quote_audit(
 
 # Normalized lead-source vocabulary. ``Portal`` is the addition — the
 # self-serve (map-pin) quote request tags its leads with it.
-LEAD_SOURCE_OPTIONS = (
-    "Facebook",
-    "Instagram",
-    "Whatsapp",
-    "Email",
-    "Referrer",
-    "Instagram Ads",
-    "Facebook Ads",
-    "Google",
-    "Website",
-    "Portal",
-)
+class LeadSource(StrEnum):
+    FACEBOOK = "Facebook"
+    INSTAGRAM = "Instagram"
+    WHATSAPP = "Whatsapp"
+    EMAIL = "Email"
+    REFERRER = "Referrer"
+    INSTAGRAM_ADS = "Instagram Ads"
+    FACEBOOK_ADS = "Facebook Ads"
+    GOOGLE = "Google"
+    WEBSITE = "Website"
+    PORTAL = "Portal"
+
+
+LEAD_SOURCE_OPTIONS = tuple(source.value for source in LeadSource)
 
 _LEAD_SOURCE_NORMALIZED_MAP = {
     "facebook": "Facebook",
@@ -168,6 +173,288 @@ class LeadPipelineSummary:
     won_leads: int
     pipeline_value: Decimal
     currency: str
+
+
+class LeadListSortField(StrEnum):
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+
+
+class LeadListSortDirection(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+@dataclass(frozen=True, slots=True)
+class LeadListQueryInput:
+    """Raw adapter values for the authoritative Lead list query."""
+
+    search_term: str | None = None
+    status: str | None = None
+    pipeline_id: str | None = None
+    stage_id: str | None = None
+    owner_agent_id: str | None = None
+    lead_source: str | None = None
+    sort_field: str | None = None
+    sort_direction: str | None = None
+    page: int = 1
+    page_size: int = 25
+
+
+@dataclass(frozen=True, slots=True)
+class LeadListQuery:
+    """Normalized Lead list scope shared by rows, count, and summary."""
+
+    search_term: str | None
+    status: LeadStatus | None
+    pipeline_id: uuid.UUID | None
+    stage_id: uuid.UUID | None
+    owner_agent_id: uuid.UUID | None
+    lead_source: LeadSource | None
+    sort_field: LeadListSortField
+    sort_direction: LeadListSortDirection
+    page: int
+    page_size: int
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
+
+
+@dataclass(frozen=True, slots=True)
+class LeadListQueryResult:
+    """One unique, deterministically ordered page plus matching projections."""
+
+    items: tuple[Lead, ...]
+    total_count: int
+    query: LeadListQuery
+    summary: LeadPipelineSummary
+
+
+@dataclass(frozen=True, slots=True)
+class _LeadListFilters:
+    search_term: str | None
+    status: str | None
+    pipeline_id: uuid.UUID | None
+    stage_id: uuid.UUID | None
+    owner_agent_id: uuid.UUID | None
+    lead_source: str | None
+    is_active: bool
+
+
+def normalize_lead_search(value: str | None) -> str | None:
+    """Collapse user-entered whitespace without changing search casing."""
+
+    normalized = " ".join(str(value or "").split())
+    return normalized or None
+
+
+def _optional_uuid_filter(value: str | None) -> uuid.UUID | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    try:
+        return uuid.UUID(candidate)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+EnumT = TypeVar("EnumT", bound=Enum)
+
+
+def _optional_enum_filter(
+    value: str | None,
+    enum_type: type[EnumT],
+) -> EnumT | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    try:
+        return enum_type(candidate)
+    except ValueError:
+        return None
+
+
+def _normalize_lead_list_query(
+    db: Session,
+    request: LeadListQueryInput,
+) -> LeadListQuery:
+    pipeline_id = _optional_uuid_filter(request.pipeline_id)
+    stage_id = _optional_uuid_filter(request.stage_id)
+    if pipeline_id is not None and stage_id is not None:
+        selected_stage = (
+            db.query(PipelineStage)
+            .filter(PipelineStage.id == stage_id)
+            .filter(PipelineStage.is_active.is_(True))
+            .one_or_none()
+        )
+        if selected_stage is not None and selected_stage.pipeline_id != pipeline_id:
+            stage_id = None
+
+    return LeadListQuery(
+        search_term=normalize_lead_search(request.search_term),
+        status=_optional_enum_filter(request.status, LeadStatus),
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        owner_agent_id=_optional_uuid_filter(request.owner_agent_id),
+        lead_source=_optional_enum_filter(request.lead_source, LeadSource),
+        sort_field=(
+            _optional_enum_filter(request.sort_field, LeadListSortField)
+            or LeadListSortField.CREATED_AT
+        ),
+        sort_direction=(
+            _optional_enum_filter(request.sort_direction, LeadListSortDirection)
+            or LeadListSortDirection.DESC
+        ),
+        page=max(1, request.page),
+        page_size=request.page_size if request.page_size in (10, 25, 50, 100) else 25,
+    )
+
+
+def _phone_search_value(
+    column: SQLColumnExpression[str | None],
+) -> ColumnElement[str]:
+    normalized: ColumnElement[str] = func.coalesce(column, "")
+    for character in (" ", "-", "(", ")", ".", "+"):
+        normalized = func.replace(normalized, character, "")
+    return normalized
+
+
+def _lead_search_predicate(search_term: str) -> ColumnElement[bool]:
+    pattern = f"%{search_term}%"
+    subscriber_full_name = func.trim(
+        func.coalesce(Subscriber.first_name, "")
+        + " "
+        + func.coalesce(Subscriber.last_name, "")
+    )
+    subscriber_matches: ColumnElement[bool] = (
+        select(1)
+        .where(
+            Subscriber.id == Lead.subscriber_id,
+            or_(
+                Subscriber.display_name.ilike(pattern),
+                subscriber_full_name.ilike(pattern),
+                Subscriber.first_name.ilike(pattern),
+                Subscriber.last_name.ilike(pattern),
+                Subscriber.email.ilike(pattern),
+                Subscriber.phone.ilike(pattern),
+            ),
+        )
+        .correlate(Lead)
+        .exists()
+    )
+    party_matches = (
+        select(1)
+        .where(Party.id == Lead.party_id, Party.display_name.ilike(pattern))
+        .correlate(Lead)
+        .exists()
+    )
+
+    contact_conditions: list[ColumnElement[bool]] = [
+        PartyContactPoint.display_value.ilike(pattern),
+        PartyContactPoint.normalized_value.ilike(pattern),
+    ]
+    digits = "".join(character for character in search_term if character.isdigit())
+    if len(digits) >= 4:
+        digit_pattern = f"%{digits}%"
+        subscriber_matches = or_(
+            subscriber_matches,
+            select(1)
+            .where(
+                Subscriber.id == Lead.subscriber_id,
+                _phone_search_value(Subscriber.phone).ilike(digit_pattern),
+            )
+            .correlate(Lead)
+            .exists(),
+        )
+        contact_conditions.append(
+            (PartyContactPoint.channel_type == "phone")
+            & _phone_search_value(PartyContactPoint.display_value).ilike(digit_pattern)
+        )
+
+    contact_matches = (
+        select(1)
+        .where(
+            PartyContactPoint.party_id == Lead.party_id,
+            PartyContactPoint.is_active.is_(True),
+            PartyContactPoint.channel_type.in_(("email", "phone")),
+            or_(*contact_conditions),
+        )
+        .correlate(Lead)
+        .exists()
+    )
+    return or_(
+        Lead.title.ilike(pattern),
+        party_matches,
+        contact_matches,
+        subscriber_matches,
+    )
+
+
+def _lead_list_predicates(
+    filters: _LeadListFilters,
+) -> tuple[ColumnElement[bool], ...]:
+    predicates: list[ColumnElement[bool]] = [Lead.is_active == filters.is_active]
+    if filters.pipeline_id is not None:
+        predicates.append(Lead.pipeline_id == filters.pipeline_id)
+    if filters.stage_id is not None:
+        predicates.append(Lead.stage_id == filters.stage_id)
+    if filters.owner_agent_id is not None:
+        predicates.append(Lead.owner_agent_id == filters.owner_agent_id)
+    if filters.status is not None:
+        predicates.append(Lead.status == filters.status)
+    if filters.lead_source is not None:
+        predicates.append(func.lower(Lead.lead_source) == filters.lead_source.lower())
+    if filters.search_term is not None:
+        predicates.append(_lead_search_predicate(filters.search_term))
+    return tuple(predicates)
+
+
+def _lead_list_filters(query: LeadListQuery) -> _LeadListFilters:
+    return _LeadListFilters(
+        search_term=query.search_term,
+        status=query.status.value if query.status is not None else None,
+        pipeline_id=query.pipeline_id,
+        stage_id=query.stage_id,
+        owner_agent_id=query.owner_agent_id,
+        lead_source=query.lead_source.value if query.lead_source is not None else None,
+        is_active=True,
+    )
+
+
+def _lead_summary_for_predicates(
+    db: Session,
+    predicates: tuple[ColumnElement[bool], ...],
+) -> LeadPipelineSummary:
+    rows = (
+        db.query(
+            Lead.status,
+            func.count(Lead.id),
+            func.coalesce(func.sum(Lead.estimated_value), 0),
+        )
+        .filter(*predicates)
+        .group_by(Lead.status)
+        .all()
+    )
+    by_status: dict[str, int] = {}
+    total = 0
+    pipeline_value = Decimal("0")
+    for status_value, count, value_sum in rows:
+        status_key = status_value or LeadStatus.new.value
+        status_count = int(count)
+        by_status[status_key] = by_status.get(status_key, 0) + status_count
+        total += status_count
+        if status_key in _OPEN_LEAD_STATUSES:
+            pipeline_value += Decimal(str(value_sum or 0))
+    return LeadPipelineSummary(
+        total_leads=total,
+        open_leads=sum(
+            by_status.get(status_key, 0) for status_key in _OPEN_LEAD_STATUSES
+        ),
+        won_leads=by_status.get(LeadStatus.won.value, 0),
+        pipeline_value=pipeline_value,
+        currency=_default_currency(db) or "NGN",
+    )
 
 
 def _enum_str(value, enum_cls, label: str) -> str | None:
@@ -743,6 +1030,47 @@ class PipelineStages(ListResponseMixin):
 
 class Leads(ListResponseMixin):
     @staticmethod
+    def query(db: Session, request: LeadListQueryInput) -> LeadListQueryResult:
+        """Return one filtered Lead page from the typed authoritative query."""
+
+        normalized = _normalize_lead_list_query(db, request)
+        predicates = _lead_list_predicates(_lead_list_filters(normalized))
+        total_count = int(
+            db.query(func.count(Lead.id)).filter(*predicates).scalar() or 0
+        )
+        total_pages = max(
+            1,
+            (total_count + normalized.page_size - 1) // normalized.page_size,
+        )
+        if normalized.page > total_pages:
+            normalized = replace(normalized, page=total_pages)
+
+        order_columns = {
+            LeadListSortField.CREATED_AT.value: Lead.created_at,
+            LeadListSortField.UPDATED_AT.value: Lead.updated_at,
+        }
+        rows_query = db.query(Lead).filter(*predicates)
+        rows_query = apply_ordering(
+            rows_query,
+            normalized.sort_field.value,
+            normalized.sort_direction.value,
+            order_columns,
+        ).order_by(Lead.id.asc())
+        items = tuple(
+            apply_pagination(
+                rows_query,
+                normalized.page_size,
+                normalized.offset,
+            ).all()
+        )
+        return LeadListQueryResult(
+            items=items,
+            total_count=total_count,
+            query=normalized,
+            summary=_lead_summary_for_predicates(db, predicates),
+        )
+
+    @staticmethod
     def create(db: Session, payload):
         data = payload.model_dump()
         origin_capture = data.pop("origin_capture", None)
@@ -982,55 +1310,16 @@ class Leads(ListResponseMixin):
         lead_source: str | None = None,
         search: str | None = None,
     ):
-        query = db.query(Lead)
-        if pipeline_id:
-            query = query.filter(Lead.pipeline_id == coerce_uuid(pipeline_id))
-        if stage_id:
-            query = query.filter(Lead.stage_id == coerce_uuid(stage_id))
-        if owner_agent_id:
-            query = query.filter(Lead.owner_agent_id == coerce_uuid(owner_agent_id))
-        if status:
-            query = query.filter(Lead.status == _enum_str(status, LeadStatus, "status"))
-        if lead_source:
-            query = query.filter(
-                func.lower(Lead.lead_source) == lead_source.strip().lower()
-            )
-        if search:
-            pattern = f"%{search.strip()}%"
-            if pattern != "%%":
-                full_name = func.trim(
-                    func.coalesce(Subscriber.first_name, "")
-                    + " "
-                    + func.coalesce(Subscriber.last_name, "")
-                )
-                query = (
-                    query.outerjoin(Subscriber, Subscriber.id == Lead.subscriber_id)
-                    .outerjoin(Party, Party.id == Lead.party_id)
-                    .outerjoin(
-                        PartyContactPoint,
-                        (PartyContactPoint.party_id == Lead.party_id)
-                        & PartyContactPoint.is_active.is_(True),
-                    )
-                    .filter(
-                        or_(
-                            Lead.title.ilike(pattern),
-                            Party.display_name.ilike(pattern),
-                            PartyContactPoint.display_value.ilike(pattern),
-                            PartyContactPoint.normalized_value.ilike(pattern),
-                            Subscriber.display_name.ilike(pattern),
-                            full_name.ilike(pattern),
-                            Subscriber.first_name.ilike(pattern),
-                            Subscriber.last_name.ilike(pattern),
-                            Subscriber.email.ilike(pattern),
-                            Subscriber.phone.ilike(pattern),
-                        )
-                    )
-                    .distinct()
-                )
-        if is_active is None:
-            query = query.filter(Lead.is_active.is_(True))
-        else:
-            query = query.filter(Lead.is_active == is_active)
+        filters = _LeadListFilters(
+            search_term=normalize_lead_search(search),
+            status=_enum_str(status, LeadStatus, "status") if status else None,
+            pipeline_id=coerce_uuid(pipeline_id) if pipeline_id else None,
+            stage_id=coerce_uuid(stage_id) if stage_id else None,
+            owner_agent_id=coerce_uuid(owner_agent_id) if owner_agent_id else None,
+            lead_source=lead_source.strip() if lead_source else None,
+            is_active=True if is_active is None else is_active,
+        )
+        query = db.query(Lead).filter(*_lead_list_predicates(filters))
         query = apply_ordering(
             query,
             order_by,
@@ -1051,89 +1340,38 @@ class Leads(ListResponseMixin):
         search: str | None,
         is_active: bool | None = None,
     ) -> int:
-        query = db.query(func.count(func.distinct(Lead.id))).select_from(Lead)
-        if pipeline_id:
-            query = query.filter(Lead.pipeline_id == coerce_uuid(pipeline_id))
-        if stage_id:
-            query = query.filter(Lead.stage_id == coerce_uuid(stage_id))
-        if owner_agent_id:
-            query = query.filter(Lead.owner_agent_id == coerce_uuid(owner_agent_id))
-        if status:
-            query = query.filter(Lead.status == _enum_str(status, LeadStatus, "status"))
-        if lead_source:
-            query = query.filter(
-                func.lower(Lead.lead_source) == lead_source.strip().lower()
-            )
-        if search:
-            pattern = f"%{search.strip()}%"
-            if pattern != "%%":
-                full_name = func.trim(
-                    func.coalesce(Subscriber.first_name, "")
-                    + " "
-                    + func.coalesce(Subscriber.last_name, "")
-                )
-                query = (
-                    query.outerjoin(Subscriber, Subscriber.id == Lead.subscriber_id)
-                    .outerjoin(Party, Party.id == Lead.party_id)
-                    .outerjoin(
-                        PartyContactPoint,
-                        (PartyContactPoint.party_id == Lead.party_id)
-                        & PartyContactPoint.is_active.is_(True),
-                    )
-                    .filter(
-                        or_(
-                            Lead.title.ilike(pattern),
-                            Party.display_name.ilike(pattern),
-                            PartyContactPoint.display_value.ilike(pattern),
-                            PartyContactPoint.normalized_value.ilike(pattern),
-                            Subscriber.display_name.ilike(pattern),
-                            full_name.ilike(pattern),
-                            Subscriber.first_name.ilike(pattern),
-                            Subscriber.last_name.ilike(pattern),
-                            Subscriber.email.ilike(pattern),
-                            Subscriber.phone.ilike(pattern),
-                        )
-                    )
-                )
-        if is_active is None:
-            query = query.filter(Lead.is_active.is_(True))
-        else:
-            query = query.filter(Lead.is_active == is_active)
-        return int(query.scalar() or 0)
+        filters = _LeadListFilters(
+            search_term=normalize_lead_search(search),
+            status=_enum_str(status, LeadStatus, "status") if status else None,
+            pipeline_id=coerce_uuid(pipeline_id) if pipeline_id else None,
+            stage_id=coerce_uuid(stage_id) if stage_id else None,
+            owner_agent_id=coerce_uuid(owner_agent_id) if owner_agent_id else None,
+            lead_source=lead_source.strip() if lead_source else None,
+            is_active=True if is_active is None else is_active,
+        )
+        return int(
+            db.query(func.count(Lead.id))
+            .filter(*_lead_list_predicates(filters))
+            .scalar()
+            or 0
+        )
 
     @staticmethod
     def summary(db: Session) -> LeadPipelineSummary:
         """Return CRM-compatible KPI values without UI-side derivation."""
 
-        rows = (
-            db.query(
-                Lead.status,
-                func.count(Lead.id),
-                func.coalesce(func.sum(Lead.estimated_value), 0),
+        predicates = _lead_list_predicates(
+            _LeadListFilters(
+                search_term=None,
+                status=None,
+                pipeline_id=None,
+                stage_id=None,
+                owner_agent_id=None,
+                lead_source=None,
+                is_active=True,
             )
-            .filter(Lead.is_active.is_(True))
-            .group_by(Lead.status)
-            .all()
         )
-        by_status: dict[str, int] = {}
-        total = 0
-        pipeline_value = Decimal("0")
-        for status_value, count, value_sum in rows:
-            status_key = status_value or LeadStatus.new.value
-            status_count = int(count)
-            by_status[status_key] = by_status.get(status_key, 0) + status_count
-            total += status_count
-            if status_key in _OPEN_LEAD_STATUSES:
-                pipeline_value += Decimal(str(value_sum or 0))
-        return LeadPipelineSummary(
-            total_leads=total,
-            open_leads=sum(
-                by_status.get(status_key, 0) for status_key in _OPEN_LEAD_STATUSES
-            ),
-            won_leads=by_status.get(LeadStatus.won.value, 0),
-            pipeline_value=pipeline_value,
-            currency=_default_currency(db) or "NGN",
-        )
+        return _lead_summary_for_predicates(db, predicates)
 
     @staticmethod
     def update(db: Session, lead_id: str, payload):

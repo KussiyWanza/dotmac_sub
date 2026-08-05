@@ -57,20 +57,20 @@
     {% endif %}
 
     <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <a href="/admin/sales/leads" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-cyan-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-cyan-700">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Total Leads</p>
-            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ lead_stats.total if lead_stats.total is not none else 'Unavailable' }}</p>
-        </a>
         <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Open Leads</p>
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ 'Matching Leads' if filters_active else 'Total Leads' }}</p>
+            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ lead_stats.total if lead_stats.total is not none else 'Unavailable' }}</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ 'Matching Open Leads' if filters_active else 'Open Leads' }}</p>
             <p class="mt-1 font-display text-2xl font-bold text-cyan-600 dark:text-cyan-400">{{ lead_stats.open if lead_stats.open is not none else 'Unavailable' }}</p>
         </div>
-        <a href="/admin/sales/leads?status=won&sort=created_at&dir=desc&page=1&per_page={{ list_query.per_page }}" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-emerald-300 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-emerald-700">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Won Leads</p>
-            <p class="mt-1 font-display text-2xl font-bold text-emerald-600 dark:text-emerald-400">{{ lead_stats.won if lead_stats.won is not none else 'Unavailable' }}</p>
-        </a>
         <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">Pipeline Value</p>
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ 'Matching Won Leads' if filters_active else 'Won Leads' }}</p>
+            <p class="mt-1 font-display text-2xl font-bold text-emerald-600 dark:text-emerald-400">{{ lead_stats.won if lead_stats.won is not none else 'Unavailable' }}</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <p class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ 'Matching Pipeline Value' if filters_active else 'Pipeline Value' }}</p>
             <p class="mt-1 font-display text-xl font-bold tabular-nums text-slate-900 dark:text-white">{% if lead_stats.total_value is not none %}{{ lead_stats.currency }} {{ "{:,.2f}".format(lead_stats.total_value) }}{% else %}Unavailable{% endif %}</p>
             <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Open statuses only</p>
         </div>
