@@ -52,8 +52,11 @@ from app.models.team_inbox import (
     InboxTeamSource,
 )
 from app.models.work_order import WorkOrder
-from app.services import service_team_lifecycle
-from app.services.team_inbox_assignment import assign_conversation_to_agent
+from app.services import service_team_lifecycle, team_inbox_status
+from app.services.team_inbox_assignment import (
+    assign_conversation_to_agent,
+    queue_conversation_for_team,
+)
 
 FIELD_JOB_CHANNEL = InboxChannelType.field_job.value
 
@@ -202,7 +205,15 @@ def open_for_departure(
         db.add(conversation)
         db.flush()
     else:
-        conversation.status = InboxConversationStatus.open.value
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.open,
+            actor_person_id=None,
+            reason=team_inbox_status.InboxStatusReason.field_job_open,
+            source_id=f"field-job-open:{work_order.id}:{moment.isoformat()}",
+            occurred_at=moment,
+        )
 
     metadata = dict(conversation.metadata_ or {})
     metadata["work_order_id"] = str(work_order.id)
@@ -288,7 +299,15 @@ def close(
 ) -> None:
     """Resolve a job chat, leaving its history readable."""
     moment = now or datetime.now(UTC)
-    conversation.status = InboxConversationStatus.resolved.value
+    team_inbox_status.apply_status_transition(
+        db,
+        conversation=conversation,
+        status=InboxConversationStatus.resolved,
+        actor_person_id=None,
+        reason=team_inbox_status.InboxStatusReason.field_job_complete,
+        source_id=f"field-job-close:{conversation.id}:{moment.isoformat()}",
+        occurred_at=moment,
+    )
     metadata = dict(conversation.metadata_ or {})
     metadata["closed_at"] = moment.isoformat()
     metadata["closed_reason"] = reason
@@ -349,12 +368,30 @@ def _hand_to_queue(
 ) -> InboxConversation:
     """Leave the chat open and make the triage queue show it."""
     moment = now or datetime.now(UTC)
-    conversation.status = InboxConversationStatus.open.value
-    for assignment in conversation.assignments:
-        if assignment.is_active:
-            # The technician has left the job; holding them to it would hide
-            # the message behind someone who is no longer working it.
-            assignment.is_active = False
+    team_inbox_status.apply_status_transition(
+        db,
+        conversation=conversation,
+        status=InboxConversationStatus.open,
+        actor_person_id=None,
+        reason=team_inbox_status.InboxStatusReason.field_job_queue,
+        source_id=f"field-job-queue-status:{conversation.id}:{moment.isoformat()}",
+        occurred_at=moment,
+    )
+    active_assignment = next(
+        (item for item in conversation.assignments if item.is_active), None
+    )
+    queue_team_id = conversation.primary_service_team_id or (
+        active_assignment.service_team_id if active_assignment else None
+    )
+    if queue_team_id is not None:
+        queue_conversation_for_team(
+            db,
+            conversation=conversation,
+            service_team_id=queue_team_id,
+            reason="field_job_followup",
+            source_id=f"field-job-queue:{conversation.id}:{moment.isoformat()}",
+            now=moment,
+        )
     metadata = dict(conversation.metadata_ or {})
     metadata[QUEUE_FOLLOWUP_KEY] = True
     metadata["queued_at"] = moment.isoformat()

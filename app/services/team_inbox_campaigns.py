@@ -25,6 +25,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
+from app.services import team_inbox_status
 
 
 def ensure_campaign_conversation(
@@ -49,7 +50,15 @@ def ensure_campaign_conversation(
     )
     if conversation is not None:
         if conversation.status == InboxConversationStatus.resolved.value:
-            conversation.status = InboxConversationStatus.open.value
+            team_inbox_status.apply_status_transition(
+                db,
+                conversation=conversation,
+                status=InboxConversationStatus.open,
+                actor_person_id=None,
+                reason=team_inbox_status.InboxStatusReason.campaign_reopen,
+                source_id=f"campaign-reopen:{campaign_recipient_id}",
+                occurred_at=now,
+            )
         return conversation
 
     conversation = InboxConversation(

@@ -30,6 +30,9 @@ combined Inbox/Support workspace.
 | Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
 | Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
 | Routing, assignment, and escalation | `communications.team_inbox_routing` | Applies configured team, availability, permission, and SLA policy |
+| Conversation status | `communications.team_inbox_status` | Owns every status transition and its immutable evidence |
+| Historical lifecycle reconstruction | `communications.team_inbox_audit_reconstruction` | Applies only reviewed, hash-bound, provenance-graded historical evidence |
+| Lifecycle audit timeline and drift | `communications.team_inbox_audit_projection` | Combines immutable evidence, exposes coverage, and reports current-state drift |
 | Operator read/unread state | `communications.team_inbox_operator_state` | Owns per-person monotonic read cursors and unread repair |
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
 | Provider receipts | `communications.team_inbox_delivery_receipts` | Applies timestamp-monotonic sent/delivered/read/failed projections |
@@ -119,6 +122,32 @@ The admin CRM-replication controls use these existing owners:
   metadata. SMTP places CC in the MIME header, never emits a BCC header, and
   sends the primary, CC and BCC addresses in the envelope.
 
+## Lifecycle audit evidence
+
+Routing, status, and presence transitions append immutable native evidence in
+the same transaction as current-state projection changes. Routing evidence is
+authoritative for why an assignment ended; an assignment interval stores only
+`ended_at` and `ended_by_event_id`, avoiding a second copy of the reason.
+Queueing always appends a routing event even though it creates no person
+assignment. Escalations are events rather than overwriteable conversation
+metadata. Status and presence JSON histories are compatibility projections and
+are not audit authority.
+
+Native evidence records typed source and reason codes, actor identity when
+known, occurrence and recording time, and a unique source identity. Automatic
+routing additionally preserves the selected assignment outcome; candidate
+decision evidence remains bounded and excludes message content and customer
+identity.
+
+Historical reconstruction is a separate reviewed reconciler. Preview scans
+the complete eligible source set, emits explicit unknown exceptions, binds a
+source watermark and canonical SHA-256, and performs no writes. Apply refuses
+changed evidence, a mismatched hash, missing approval reference, or duplicate
+source identity. Reconstructed events retain an evidence grade and
+`historical_backfill` provenance. The process never invents an actor, reason,
+queue interval, or assignment ending timestamp. See
+`docs/runbooks/TEAM_INBOX_AUDIT_RECONSTRUCTION.md`.
+
 ## Derived state and repair
 
 | Projection | Inputs | Canonical writer | Repair |
@@ -129,6 +158,7 @@ The admin CRM-replication controls use these existing owners:
 | Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
+| Lifecycle audit timeline | Immutable routing/status events and assignment intervals | audit-projection owner | Recompute on query; findings identify status mismatch and missing assignment-end evidence |
 
 Database reads remain authoritative when Redis realtime is unavailable or
 stale. Realtime has no replay authority.

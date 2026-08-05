@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Enum,
     Float,
     ForeignKey,
     Index,
@@ -69,6 +70,36 @@ class InboxTeamSource(enum.Enum):
     routing_rule = "routing_rule"
     escalation = "escalation"
     manual = "manual"
+
+
+class InboxRoutingEventType(enum.Enum):
+    assigned = "assigned"
+    reassigned = "reassigned"
+    queued = "queued"
+    unassigned = "unassigned"
+    escalated = "escalated"
+    auto_assignment_declined = "auto_assignment_declined"
+
+
+class InboxAuditEvidenceGrade(enum.Enum):
+    native = "native"
+    authoritative_historical = "authoritative_historical"
+    strongly_inferred = "strongly_inferred"
+    weakly_inferred = "weakly_inferred"
+    unknown = "unknown"
+
+
+class InboxAuditSource(enum.Enum):
+    routing_command = "routing_command"
+    status_command = "status_command"
+    presence_command = "presence_command"
+    historical_backfill = "historical_backfill"
+
+
+class InboxRoutingDecisionMode(enum.Enum):
+    manual = "manual"
+    automatic = "automatic"
+    system = "system"
 
 
 class InboxObservationKind(enum.Enum):
@@ -1118,6 +1149,11 @@ class InboxConversationAssignment(Base):
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_by_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_routing_events.id", ondelete="RESTRICT"),
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     metadata_: Mapped[dict | None] = mapped_column(
         "metadata", MutableDict.as_mutable(JSON())
@@ -1134,3 +1170,196 @@ class InboxConversationAssignment(Base):
 
     conversation = relationship("InboxConversation", back_populates="assignments")
     service_team = relationship("ServiceTeam")
+
+
+class InboxRoutingEvent(Base):
+    """Append-only authority for assignment, queue and escalation decisions."""
+
+    __tablename__ = "inbox_routing_events"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_inbox_routing_event_source"),
+        CheckConstraint(
+            "event_type IN ('assigned', 'reassigned', 'queued', 'unassigned', "
+            "'escalated', 'auto_assignment_declined')",
+            name="ck_inbox_routing_event_type",
+        ),
+        CheckConstraint(
+            "source IN ('routing_command', 'historical_backfill')",
+            name="ck_inbox_routing_event_source",
+        ),
+        CheckConstraint(
+            "evidence_grade IN ('native', 'authoritative_historical', "
+            "'strongly_inferred', 'weakly_inferred', 'unknown')",
+            name="ck_inbox_routing_event_evidence_grade",
+        ),
+        CheckConstraint(
+            "decision_mode IN ('manual', 'automatic', 'system')",
+            name="ck_inbox_routing_event_decision_mode",
+        ),
+        Index(
+            "ix_inbox_routing_event_conversation_time", "conversation_id", "occurred_at"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[InboxRoutingEventType] = mapped_column(
+        Enum(InboxRoutingEventType), nullable=False
+    )
+    previous_service_team_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    service_team_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    previous_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    actor_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    decision_mode: Mapped[InboxRoutingDecisionMode] = mapped_column(
+        Enum(InboxRoutingDecisionMode), nullable=False
+    )
+    presence_status: Mapped[str | None] = mapped_column(String(40))
+    presence_observed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    active_conversation_count: Mapped[int | None] = mapped_column(Integer)
+    max_concurrent_conversations: Mapped[int | None] = mapped_column(Integer)
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    source: Mapped[InboxAuditSource] = mapped_column(
+        Enum(InboxAuditSource), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    evidence_grade: Mapped[InboxAuditEvidenceGrade] = mapped_column(
+        Enum(InboxAuditEvidenceGrade), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class InboxStatusTransitionEvent(Base):
+    """Append-only authority for conversation lifecycle status transitions."""
+
+    __tablename__ = "inbox_status_transition_events"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_inbox_status_event_source"),
+        CheckConstraint(
+            "status IN ('open', 'pending', 'snoozed', 'resolved')",
+            name="ck_inbox_status_event_status",
+        ),
+        CheckConstraint(
+            "source IN ('status_command', 'historical_backfill')",
+            name="ck_inbox_status_event_source_kind",
+        ),
+        CheckConstraint(
+            "evidence_grade IN ('native', 'authoritative_historical', "
+            "'strongly_inferred', 'weakly_inferred', 'unknown')",
+            name="ck_inbox_status_event_evidence_grade",
+        ),
+        Index(
+            "ix_inbox_status_event_conversation_time", "conversation_id", "occurred_at"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    previous_status: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    source: Mapped[InboxAuditSource] = mapped_column(
+        Enum(InboxAuditSource), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    evidence_grade: Mapped[InboxAuditEvidenceGrade] = mapped_column(
+        Enum(InboxAuditEvidenceGrade), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class InboxAgentPresenceEvent(Base):
+    """Append-only authority for agent availability changes."""
+
+    __tablename__ = "inbox_agent_presence_events"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_inbox_presence_event_source"),
+        CheckConstraint(
+            "status IN ('online', 'away', 'on_break', 'offline')",
+            name="ck_inbox_presence_event_status",
+        ),
+        CheckConstraint(
+            "source IN ('presence_command', 'historical_backfill')",
+            name="ck_inbox_presence_event_source_kind",
+        ),
+        CheckConstraint(
+            "evidence_grade IN ('native', 'authoritative_historical', "
+            "'strongly_inferred', 'weakly_inferred', 'unknown')",
+            name="ck_inbox_presence_event_evidence_grade",
+        ),
+        Index("ix_inbox_presence_event_person_time", "person_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    person_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    previous_status: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    reason_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    source: Mapped[InboxAuditSource] = mapped_column(
+        Enum(InboxAuditSource), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    evidence_grade: Mapped[InboxAuditEvidenceGrade] = mapped_column(
+        Enum(InboxAuditEvidenceGrade), nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class InboxAuditReconstructionRun(Base):
+    """Immutable receipt for one reviewed historical reconstruction batch."""
+
+    __tablename__ = "inbox_audit_reconstruction_runs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_inbox_audit_reconstruction_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_watermark: Mapped[str] = mapped_column(String(240), nullable=False)
+    approval_reference: Mapped[str] = mapped_column(String(160), nullable=False)
+    actor_person_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    applied_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    exception_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )

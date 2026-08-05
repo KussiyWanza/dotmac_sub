@@ -9,6 +9,9 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationTeam,
+    InboxRoutingDecisionMode,
+    InboxRoutingEvent,
+    InboxRoutingEventType,
     InboxTeamRole,
 )
 from app.services import team_inbox_assignment
@@ -114,12 +117,17 @@ def test_assign_conversation_escalates_to_team_and_online_agent(db_session):
 
     link = db_session.query(InboxConversationTeam).one()
     assignment = db_session.query(InboxConversationAssignment).one()
+    event = db_session.query(InboxRoutingEvent).one()
     assert result.kind == "assigned"
     assert result.assigned_person_id == str(agent)
     assert conversation.primary_service_team_id == team.id
     assert link.role == InboxTeamRole.owner.value
     assert assignment.person_id == agent
     assert assignment.is_active is True
+    assert event.decision_mode is InboxRoutingDecisionMode.automatic
+    assert event.presence_status == InboxAgentPresenceStatus.online.value
+    assert event.active_conversation_count == 0
+    assert event.max_concurrent_conversations == 3
 
 
 def test_assign_conversation_queues_when_no_agent_available(db_session):
@@ -142,6 +150,9 @@ def test_assign_conversation_queues_when_no_agent_available(db_session):
         db_session.query(InboxConversationTeam).one().role == InboxTeamRole.owner.value
     )
     assert db_session.query(InboxConversationAssignment).count() == 0
+    event = db_session.query(InboxRoutingEvent).one()
+    assert event.event_type is InboxRoutingEventType.auto_assignment_declined
+    assert event.decision_mode is InboxRoutingDecisionMode.automatic
 
 
 def test_set_agent_presence_creates_manual_override(db_session):
