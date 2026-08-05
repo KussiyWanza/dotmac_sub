@@ -50,20 +50,21 @@
                            value="{{ form.account_label if form else '' }}"
                            placeholder="Search by name, email, or account number..."
                            class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:bg-white focus:text-slate-900 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white dark:focus:bg-slate-700 dark:focus:text-white">
-                    <input type="hidden" name="account_id" data-typeahead-hidden value="{{ form.account_id if form else '' }}">
+                    <input type="hidden"
+                           id="modal_account_id"
+                           name="account_id"
+                           data-typeahead-hidden
+                           value="{{ form.account_id if form else '' }}"
+                           hx-get="/admin/network/ont-assignment/subscriptions"
+                           hx-trigger="change"
+                           hx-target="#modal_subscription_field"
+                           hx-swap="innerHTML">
                     <div data-typeahead-results></div>
                 </div>
             </div>
 
-            <div class="mt-4">
-                <label for="modal_subscription_search" class="block text-sm font-medium text-slate-700 dark:text-slate-300">Service Subscription <span class="text-red-500">*</span></label>
-                <div class="relative mt-1" data-typeahead-url="/api/v1/search/subscriptions" data-typeahead-min="2" data-typeahead-limit="10">
-                    <input type="text" id="modal_subscription_search" autocomplete="off"
-                           data-typeahead-input value="{{ form.subscription_label if form else '' }}"
-                           class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-cyan-500 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-                    <input type="hidden" name="subscription_id" data-typeahead-hidden value="{{ form.subscription_id if form else '' }}" required>
-                    <div data-typeahead-results></div>
-                </div>
+            <div class="mt-4" id="modal_subscription_field">
+                {% include "admin/network/onts/_assignment_subscription_options.html" %}
             </div>
 
             <div class="mt-6 flex items-center justify-end gap-3">
