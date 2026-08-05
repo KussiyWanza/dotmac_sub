@@ -235,6 +235,7 @@ DOMAIN = DomainSOT(
                 "explicit integration manifest adoption",
                 "immutable integration configuration revisions",
                 "integration capability grants and bindings",
+                "Meta social installation configuration",
             ),
             depends_on=("integration.registry", "secrets.reference_store"),
             notes=(
@@ -281,6 +282,17 @@ DOMAIN = DomainSOT(
                         role=OwnerRole.AUTHORITATIVE_RECORD,
                         input_names=(
                             "deployed connector manifest",
+                            "integration installation protocol",
+                            "canonical integration installation aggregate",
+                        ),
+                        canonical_writer="integration.installations",
+                    ),
+                    ConcernContract(
+                        name="Meta social installation configuration",
+                        role=OwnerRole.COMMAND_WRITER,
+                        input_names=(
+                            "deployed connector manifest",
+                            "approved integration secret references",
                             "integration installation protocol",
                             "canonical integration installation aggregate",
                         ),
@@ -366,6 +378,9 @@ DOMAIN = DomainSOT(
                         "integration.installations.nested_owner_command",
                         "integration.installations.active_caller_transaction",
                         "integration.installations.nested_transaction_completion",
+                        "integration.installations.meta_configuration_ambiguous",
+                        "integration.installations.meta_configuration_invalid",
+                        "integration.installations.meta_configuration_scope_invalid",
                     ),
                     mapping_owner=(
                         "app.api.integrations and integration admin web adapters"
@@ -383,6 +398,7 @@ DOMAIN = DomainSOT(
                         "integration.installation.lifecycle.v1",
                         "integration.installation.manifest_adopted",
                         "integration.installation.capability_provisioned",
+                        "integration.installation.meta_social_configured",
                     ),
                     schema_version=1,
                     delivery_owner="events.dispatcher",
@@ -428,6 +444,7 @@ DOMAIN = DomainSOT(
                 test_refs=(
                     "tests/test_integration_installations.py",
                     "tests/test_integration_installation_api.py",
+                    "tests/test_integration_meta_social.py",
                     "tests/test_integration_manifest_deployment_gate.py",
                     "tests/architecture/test_integration_platform_boundary.py",
                 ),

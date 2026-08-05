@@ -294,9 +294,13 @@ def build_marketplace_data(db) -> dict[str, object]:
                     "/admin/integrations/whatsapp"
                     if entry.key == "whatsapp"
                     else (
-                        f"/admin/integrations/payment-gateways/{entry.key}"
-                        if entry.key in {"paystack", "flutterwave"}
-                        else None
+                        "/admin/crm/meta"
+                        if entry.key == "meta.social"
+                        else (
+                            f"/admin/integrations/payment-gateways/{entry.key}"
+                            if entry.key in {"paystack", "flutterwave"}
+                            else None
+                        )
                     )
                 ),
                 "installable": (definition.runtime.type.value != "catalogue_only"),
@@ -318,6 +322,8 @@ def _installation_manage_url(installation: IntegrationInstallation) -> str:
         return f"/admin/integrations/webhooks/{installation.id}"
     if installation.connector_key == "whatsapp":
         return "/admin/integrations/whatsapp"
+    if installation.connector_key == "meta.social":
+        return "/admin/crm/meta"
     if installation.connector_key in {"paystack", "flutterwave"}:
         return f"/admin/integrations/payment-gateways/{installation.connector_key}"
     return "/admin/integrations/jobs"

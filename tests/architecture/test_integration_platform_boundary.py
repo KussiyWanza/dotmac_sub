@@ -385,3 +385,21 @@ def test_new_connector_modules_cannot_import_sub_persistence() -> None:
         "Connector modules must consume typed integration/domain ports and may "
         f"not import Sub persistence directly: {violations}"
     )
+
+
+def test_meta_social_inbox_uses_one_typed_platform_boundary() -> None:
+    webhook = _read(PROJECT_ROOT / "app/api/meta_inbox_webhooks.py")
+    outbound = _read(PROJECT_ROOT / "app/tasks/notifications.py")
+    connector = _read(
+        PROJECT_ROOT / "app/services/integrations/connectors/meta_social_runtime.py"
+    )
+
+    assert "from app.services.integrations.meta_social_capability import (" in webhook
+    assert "inbound_secret_material(db)" in webhook
+    assert "whatsapp_capability" not in webhook
+    assert "meta_social_capability.send_direct_message" in outbound
+    assert "meta_pages.send_direct_message" not in outbound
+    assert 'FACEBOOK_TOKEN_BINDING = "facebook_page_access_token"' in connector
+    assert 'INSTAGRAM_TOKEN_BINDING = "instagram_login_access_token"' in connector
+    assert "graph.facebook.com" in connector
+    assert "graph.instagram.com" in connector

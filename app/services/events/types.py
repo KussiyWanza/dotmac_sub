@@ -68,6 +68,9 @@ class EventType(enum.Enum):
     integration_installation_capability_provisioned = (
         "integration.installation.capability_provisioned"
     )
+    integration_installation_meta_social_configured = (
+        "integration.installation.meta_social_configured"
+    )
     integration_job_capability_activated = "integration.job.capability_activated"
     oauth_token_refreshed = "oauth_token.refreshed"
     oauth_token_refresh_failed = "oauth_token.refresh_failed"

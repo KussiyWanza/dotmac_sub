@@ -32,6 +32,7 @@ from app.services.web_integrations import build_marketplace_data
 EXPECTED_MARKETPLACE = {
     "lead.capture.http": ("Lead Capture Webhook", "1.0.0", "sales"),
     "whatsapp": ("WhatsApp", "1.0.0", "messaging"),
+    "meta.social": ("Meta Social Inbox", "1.0.0", "messaging"),
     "paystack": ("Paystack", "1.0.1", "payment"),
     "flutterwave": ("Flutterwave", "1.0.0", "payment"),
     "3cx": ("3CX", "1.0.0", "voice"),
@@ -56,6 +57,7 @@ def test_explicit_registry_preserves_marketplace_catalogue_parity() -> None:
         "webhook.http",
         "dotmac.crm",
         "whatsapp",
+        "meta.social",
         "dotmac.erp",
         "paystack",
         "flutterwave",
@@ -67,7 +69,7 @@ def test_explicit_registry_preserves_marketplace_catalogue_parity() -> None:
 def test_marketplace_projection_exposes_all_available_cards(db_session) -> None:
     data = build_marketplace_data(db_session)
 
-    assert data["stats"] == {"available": 6, "installed": 0, "updates": 0}
+    assert data["stats"] == {"available": 7, "installed": 0, "updates": 0}
     assert {card["key"] for card in data["marketplace_cards"]} == set(
         EXPECTED_MARKETPLACE
     )
