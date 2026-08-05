@@ -92,6 +92,8 @@ from app.schemas.project import (
     ProjectUpdate,
 )
 from app.services import domain_settings as domain_settings_service
+from app.services import numbering as numbering_service
+from app.services import settings_spec
 from app.services.common import (
     apply_ordering,
     apply_pagination,
@@ -141,6 +143,65 @@ def active_project_task_status_values() -> tuple[str, ...]:
         for status in ProjectTaskStatus
         if status not in {ProjectTaskStatus.done, ProjectTaskStatus.canceled}
     )
+
+
+def _resolve_project_number(db: Session) -> str | None:
+    """Reserve a free project number after reconciling preserved imports."""
+
+    enabled = settings_spec.resolve_value(
+        db, SettingDomain.projects, "project_number_enabled"
+    )
+    if enabled is False:
+        return None
+    prefix = settings_spec.resolve_value(
+        db, SettingDomain.projects, "project_number_prefix"
+    )
+    start = settings_spec.resolve_value(
+        db, SettingDomain.projects, "project_number_start"
+    )
+    try:
+        start_value = max(int(start) if start is not None else 1, 1)
+    except (TypeError, ValueError):
+        start_value = 1
+    prefix_text = prefix if isinstance(prefix, str) else ""
+
+    sequence = numbering_service.lock_sequence(db, "project_number", start_value)
+    max_value: int | None = None
+    for (number,) in db.query(Project.number).filter(Project.number.isnot(None)):
+        number_text = str(number)
+        if prefix_text:
+            if not number_text.startswith(prefix_text):
+                continue
+            number_text = number_text[len(prefix_text) :]
+        if not number_text.isdecimal():
+            continue
+        value = int(number_text)
+        if max_value is None or value > max_value:
+            max_value = value
+
+    minimum_next = max(start_value, (max_value or 0) + 1)
+    if sequence.next_value < minimum_next:
+        sequence.next_value = minimum_next
+        db.flush()
+
+    for _attempt in range(10_000):
+        candidate = numbering_service.generate_number(
+            db=db,
+            domain=SettingDomain.projects,
+            sequence_key="project_number",
+            enabled_key="project_number_enabled",
+            prefix_key="project_number_prefix",
+            padding_key="project_number_padding",
+            start_key="project_number_start",
+        )
+        if candidate is None:
+            return None
+        occupied = db.scalar(
+            select(Project.id).where(Project.number == candidate).limit(1)
+        )
+        if occupied is None:
+            return candidate
+    raise RuntimeError("project number sequence could not find a free value")
 
 
 @dataclass(frozen=True)
@@ -1553,15 +1614,7 @@ def prepare_sales_project(
         ProjectPriority,
         "default_project_priority",
     ).value
-    number = generate_number(
-        db=db,
-        domain=SettingDomain.projects,
-        sequence_key="project_number",
-        enabled_key="project_number_enabled",
-        prefix_key="project_number_prefix",
-        padding_key="project_number_padding",
-        start_key="project_number_start",
-    )
+    number = _resolve_project_number(db)
     now = datetime.now(UTC)
     duration_days = Projects._duration_days_for_type(normalized_type)
     project = Project(
@@ -1653,15 +1706,7 @@ def prepare_buildout_project(
         ProjectPriority,
         "default_project_priority",
     ).value
-    number = generate_number(
-        db=db,
-        domain=SettingDomain.projects,
-        sequence_key="project_number",
-        enabled_key="project_number_enabled",
-        prefix_key="project_number_prefix",
-        padding_key="project_number_padding",
-        start_key="project_number_start",
-    )
+    number = _resolve_project_number(db)
     now = datetime.now(UTC)
     duration_days = Projects._duration_days_for_type(normalized_type)
     project = Project(
@@ -2308,15 +2353,7 @@ class Projects(ListResponseMixin):
         if payload.project_template_id:
             _ensure_project_template(db, str(payload.project_template_id))
         data = _model_data(payload.model_dump())
-        number = generate_number(
-            db=db,
-            domain=SettingDomain.projects,
-            sequence_key="project_number",
-            enabled_key="project_number_enabled",
-            prefix_key="project_number_prefix",
-            padding_key="project_number_padding",
-            start_key="project_number_start",
-        )
+        number = _resolve_project_number(db)
         if number:
             data["number"] = number
         from app.services.ticket_assignment import (

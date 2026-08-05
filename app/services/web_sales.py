@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, case, cast, func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.field_material import FieldInventoryItem
@@ -38,7 +38,6 @@ from app.models.sales import (
     LeadStatus,
     Pipeline,
     PipelineStage,
-    Quote,
     QuoteStatus,
     SalesOrder,
     SalesOrderPaymentStatus,
@@ -1793,47 +1792,6 @@ def bulk_assign_leads(
 # ---------------------------------------------------------------------------
 
 
-def _count_quotes(
-    db: Session,
-    *,
-    status: str | None,
-    lead_id: str | None,
-    search: str | None,
-) -> int:
-    query = db.query(func.count(func.distinct(Quote.id))).select_from(Quote)
-    query = query.filter(Quote.is_active.is_(True))
-    if status:
-        query = query.filter(Quote.status == status)
-    if lead_id:
-        query = query.filter(Quote.lead_id == coerce_uuid(lead_id))
-    if search:
-        like = f"%{search.strip()}%"
-        query = (
-            query.outerjoin(Subscriber, Quote.subscriber_id == Subscriber.id)
-            .outerjoin(Lead, Quote.lead_id == Lead.id)
-            .outerjoin(Party, Lead.party_id == Party.id)
-            .outerjoin(
-                PartyContactPoint,
-                (PartyContactPoint.party_id == Party.id)
-                & PartyContactPoint.is_active.is_(True),
-            )
-            .filter(
-                or_(
-                    Subscriber.display_name.ilike(like),
-                    Subscriber.first_name.ilike(like),
-                    Subscriber.last_name.ilike(like),
-                    Subscriber.email.ilike(like),
-                    Party.display_name.ilike(like),
-                    PartyContactPoint.display_value.ilike(like),
-                    PartyContactPoint.normalized_value.ilike(like),
-                    Lead.title.ilike(like),
-                    cast(Quote.id, String).ilike(like),
-                )
-            )
-        )
-    return int(query.scalar() or 0)
-
-
 def _coordinate(
     value: str | None, *, field: str, low: float, high: float
 ) -> float | None:
@@ -2561,45 +2519,34 @@ def build_quotes_list_context(
     page: int,
     per_page: int,
 ) -> dict[str, Any]:
-    requested_status = status
-    requested_lead_id = lead_id
-    status = _clean_choice(status, quote_status_values())
-    lead_id = _clean_uuid(lead_id)
-    safe_sort = (
-        sort_by
-        if sort_by in QUOTE_LIST_DEFINITION.sortable_keys
-        else QUOTE_LIST_DEFINITION.default_sort
-    )
-    safe_dir = sort_dir if sort_dir in ("asc", "desc") else None
-    safe_per_page = (
-        per_page
-        if per_page in QUOTE_LIST_DEFINITION.per_page_options
-        else QUOTE_LIST_DEFINITION.default_per_page
-    )
-    requested_query = QUOTE_LIST_DEFINITION.build_query(
-        search=search,
-        filters={"status": status, "lead_id": lead_id},
-        sort_by=safe_sort,
-        sort_dir=safe_dir,
-        page=max(1, page),
-        per_page=safe_per_page,
-    )
-    total = _count_quotes(
-        db, status=status, lead_id=lead_id, search=requested_query.search
-    )
-    page_meta = PageMeta.from_query(requested_query, total)
-    list_query = requested_query.with_page(page_meta.page)
-    quotes = sales_service.quotes.list(
+    requested_filters = {"status": status, "lead_id": lead_id}
+    result = sales_service.quotes.query(
         db,
-        lead_id=lead_id or None,
-        status=status,
-        is_active=None,
-        order_by=list_query.sort_by,
-        order_dir=list_query.sort_dir,
-        limit=list_query.per_page,
-        offset=(page_meta.page - 1) * list_query.per_page,
-        search=list_query.search,
+        sales_service.QuoteListQueryInput(
+            search_term=search,
+            status=status,
+            lead_id=lead_id,
+            sort_field=sort_by,
+            sort_direction=sort_dir,
+            page=page,
+            page_size=per_page,
+        ),
     )
+    normalized = result.query
+    normalized_filters = {
+        "status": normalized.status.value if normalized.status is not None else None,
+        "lead_id": str(normalized.lead_id) if normalized.lead_id is not None else None,
+    }
+    list_query = QUOTE_LIST_DEFINITION.build_query(
+        search=normalized.search_term,
+        filters=normalized_filters,
+        sort_by=normalized.sort_field.value,
+        sort_dir=normalized.sort_direction.value,
+        page=normalized.page,
+        per_page=normalized.page_size,
+    )
+    page_meta = PageMeta.from_query(list_query, result.total_count)
+    quotes = list(result.items)
 
     leads = sales_service.leads.list(
         db,
@@ -2613,6 +2560,12 @@ def build_quotes_list_context(
         limit=500,
         offset=0,
     )
+    if normalized.lead_id is not None and all(
+        lead.id != normalized.lead_id for lead in leads
+    ):
+        selected_lead = db.get(Lead, normalized.lead_id)
+        if selected_lead is not None and selected_lead.is_active:
+            leads.append(selected_lead)
     subscriber_map = _subscriber_map(db, [quote.subscriber_id for quote in quotes])
 
     return {
@@ -2621,7 +2574,7 @@ def build_quotes_list_context(
         "canonicalization_needed": request_needs_canonicalization(
             list_query,
             search=search,
-            filters={"status": requested_status, "lead_id": requested_lead_id},
+            filters=requested_filters,
             sort_by=sort_by,
             sort_dir=sort_dir,
             page=page,
@@ -2632,8 +2585,8 @@ def build_quotes_list_context(
         "per_page": page_meta.per_page,
         "total": page_meta.total_items,
         "total_pages": page_meta.total_pages,
-        "status": status or "",
-        "lead_id": lead_id or "",
+        "status": normalized_filters["status"] or "",
+        "lead_id": normalized_filters["lead_id"] or "",
         "search": list_query.search or "",
         "quote_statuses": quote_status_values(),
         "leads": leads,
@@ -2641,6 +2594,66 @@ def build_quotes_list_context(
         "subscriber_map": subscriber_map,
         "stats": sales_service.quotes.count_by_status(db),
         "today": datetime.now(UTC),
+        "filters_active": bool(list_query.search or list_query.filters),
+        "api_error": None,
+    }
+
+
+def build_quotes_failure_context(
+    *,
+    status: str | None,
+    lead_id: str | None,
+    search: str | None,
+    sort_by: str | None,
+    sort_dir: str | None,
+    page: int,
+    per_page: int,
+) -> dict[str, Any]:
+    """Build a truthful, retryable Quote-list state without touching the database."""
+
+    normalized_status = _clean_choice(status, quote_status_values())
+    normalized_lead_id = _clean_uuid(lead_id)
+    safe_sort = (
+        sort_by
+        if sort_by in QUOTE_LIST_DEFINITION.sortable_keys
+        else QUOTE_LIST_DEFINITION.default_sort
+    )
+    safe_dir = sort_dir if sort_dir in ("asc", "desc") else None
+    safe_per_page = (
+        per_page
+        if per_page in QUOTE_LIST_DEFINITION.per_page_options
+        else QUOTE_LIST_DEFINITION.default_per_page
+    )
+    list_query = QUOTE_LIST_DEFINITION.build_query(
+        search=sales_service.normalize_quote_search(search),
+        filters={"status": normalized_status, "lead_id": normalized_lead_id},
+        sort_by=safe_sort,
+        sort_dir=safe_dir,
+        page=max(1, page),
+        per_page=safe_per_page,
+    )
+    page_meta = PageMeta.from_query(list_query, 0)
+    return {
+        "quotes": [],
+        "list_query": list_query,
+        "canonicalization_needed": False,
+        "page_meta": page_meta,
+        "page": page_meta.page,
+        "per_page": page_meta.per_page,
+        "total": 0,
+        "total_pages": page_meta.total_pages,
+        "status": normalized_status or "",
+        "lead_id": normalized_lead_id or "",
+        "search": list_query.search or "",
+        "quote_statuses": quote_status_values(),
+        "leads": [],
+        "lead_map": {},
+        "subscriber_map": {},
+        "stats": {status.value: None for status in QuoteStatus} | {"total": None},
+        "today": datetime.now(UTC),
+        "filters_active": bool(list_query.search or list_query.filters),
+        "api_error": "Quotes could not be loaded. No CRM data was changed.",
+        "retry_url": list_query.url("/admin/sales/quotes"),
     }
 
 
