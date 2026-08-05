@@ -222,7 +222,10 @@ def test_customer_infrastructure_filter_is_lazy_and_bounded():
     )
 
     assert "/admin/customers/infrastructure-options" in template
-    assert "@input.debounce.300ms" in template
+    assert '@input="queueLookup()"' in template
+    assert "window.setTimeout(() => this.lookup(), 300)" in template
+    assert "@input.debounce.300ms" not in template
+    assert "Infrastructure search could not be loaded" in template
     assert "Type at least 2 characters" in template
     assert "limit: '20'" in template
     assert "nas_options" not in template

@@ -35,6 +35,7 @@ from app.services import conversation_lead_relationships
 from app.services import web_sales as web_sales_service
 from app.services import web_sales_dashboard as dashboard_service
 from app.services.auth_dependencies import can, require_permission
+from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
@@ -1107,16 +1108,35 @@ def quotes_list(
     per_page: int = Query(default=25),
     db: Session = Depends(get_db),
 ):
-    state = web_sales_service.build_quotes_list_context(
-        db,
-        status=status,
-        lead_id=lead_id,
-        search=search,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        page=page,
-        per_page=per_page,
-    )
+    try:
+        state = web_sales_service.build_quotes_list_context(
+            db,
+            status=status,
+            lead_id=lead_id,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            page=page,
+            per_page=per_page,
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "sales_quotes_list_load_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "route": "/admin/sales/quotes",
+            },
+        )
+        db_session_adapter.release_read_transaction(db)
+        state = web_sales_service.build_quotes_failure_context(
+            status=status,
+            lead_id=lead_id,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            page=page,
+            per_page=per_page,
+        )
     if state["canonicalization_needed"]:
         return RedirectResponse(
             url=state["list_query"].url("/admin/sales/quotes"), status_code=307

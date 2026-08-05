@@ -17,11 +17,19 @@
         </a>
     </div>
 
+    {% if api_error %}
+    <div class="flex flex-col gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between dark:border-red-800 dark:bg-red-950/40 dark:text-red-200" role="alert">
+        <span>{{ api_error }}</span>
+        <a href="{{ retry_url or '/admin/sales/quotes' }}" class="font-semibold underline">Retry</a>
+    </div>
+    {% endif %}
+
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {% for key, label in [('total', 'Total'), ('draft', 'Draft'), ('sent', 'Sent'), ('accepted', 'Accepted'), ('rejected', 'Rejected')] %}
         <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
             <p class="text-sm font-medium text-slate-500 dark:text-slate-400">{{ label }}</p>
-            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ stats.get(key, 0) }}</p>
+            {% set stat_value = stats.get(key) %}
+            <p class="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white">{{ stat_value if stat_value is not none else 'Unavailable' }}</p>
         </div>
         {% endfor %}
     </div>
@@ -34,8 +42,9 @@
             <input type="hidden" name="per_page" value="{{ list_query.per_page }}">
             <div class="grid gap-2 lg:grid-cols-12">
                 <div class="lg:col-span-5">
-                    <label class="sr-only" for="quote-search">Search</label>
+                    <label class="sr-only" for="quote-search">Search quotes</label>
                     <input id="quote-search" type="text" name="search" value="{{ search }}"
+                           autocomplete="off"
                            placeholder="Search by subscriber name, email, or quote ID..."
                            class="w-full rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-white">
                 </div>
@@ -77,6 +86,15 @@
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-200 bg-white dark:divide-slate-700 dark:bg-slate-800">
+                {% if api_error %}
+                <tr>
+                    <td colspan="7" class="px-4 py-12 text-center">
+                        <p class="font-semibold text-slate-900 dark:text-white">Quotes are temporarily unavailable</p>
+                        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">The list query failed; no CRM data was changed.</p>
+                        <a href="{{ retry_url }}" class="mt-3 inline-flex rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 dark:border-slate-600 dark:text-slate-200">Retry</a>
+                    </td>
+                </tr>
+                {% else %}
                 {% for quote in quotes %}
                 {% set subscriber = subscriber_map.get(quote.subscriber_id|string) %}
                 {% set lead = lead_map.get(quote.lead_id|string) if quote.lead_id else None %}
@@ -107,6 +125,7 @@
                     <td colspan="7" class="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">No quotes found for the current filters.</td>
                 </tr>
                 {% endfor %}
+                {% endif %}
             </tbody>
         </table>
     </div>

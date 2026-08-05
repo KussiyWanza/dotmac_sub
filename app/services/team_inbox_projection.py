@@ -56,6 +56,11 @@ class InboxSortDirection(StrEnum):
     descending = "desc"
 
 
+class InboxQueueComposition(StrEnum):
+    full_workspace = "full_workspace"
+    sidebar = "sidebar"
+
+
 INBOX_LIST_DEFINITION = ListDefinition(
     key="team_inbox",
     fields=(
@@ -120,6 +125,7 @@ class InboxQueueRequest:
     per_page: int = 25
     selected_conversation_id: str | UUID | None = None
     actor_person_id: UUID | None = None
+    composition: InboxQueueComposition = InboxQueueComposition.full_workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +284,7 @@ class InboxQueueProjection:
     channel_options: tuple[str, ...]
     label_options: tuple[team_inbox_operations.LabelOption, ...]
     saved_filters: tuple[team_inbox_operations.SavedFilterOption, ...]
+    selected_id: str | None
     selected: InboxConversationProjection | None
     canonical_url: str | None
 
@@ -1078,7 +1085,10 @@ def build_queue_projection(
             conversation_id=selected_id,
             actor_person_id=request.actor_person_id,
         )
-        if selected_id is not None
+        if (
+            selected_id is not None
+            and request.composition is InboxQueueComposition.full_workspace
+        )
         else None
     )
     service_teams = team_inbox_metrics.active_service_team_options(db)
@@ -1131,6 +1141,7 @@ def build_queue_projection(
                 db, person_id=request.actor_person_id
             )
         ),
+        selected_id=str(selected_id) if selected_id is not None else None,
         selected=selected,
         canonical_url=canonical_url,
     )

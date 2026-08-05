@@ -156,6 +156,43 @@ depend on HTTP request/response or exception types.
   history, import/export, bulk Lead commands, aging analytics, or parallel
   Lead persistence is introduced by these screens.
 
+## Selfcare CRM Quotes list page contract
+
+- Screen identifier and route: `sales-quotes-list` at
+  `/admin/sales/quotes`.
+- Audience and job: authorized sales staff find and compare active commercial
+  proposals by Quote identity, status, Lead, Party, contact, and optional
+  Subscriber context.
+- Authoritative owner: `sales.service` accepts one typed Quote list input and
+  returns one typed outcome containing the normalized scope, exact unique
+  count, and deterministically ordered page. `app.services.web_sales`, the
+  route, and the template translate and render that contract; none owns a
+  parallel search predicate.
+- Search contract: whitespace is collapsed and an empty result means no
+  search. Quote UUID (including partial UUID), Lead title, Party display name,
+  every active Party contact-point display/normalized value, and optional
+  Subscriber display/first/last/email values are matched case-insensitively.
+  Inactive Party contact points never match. LIKE metacharacters are escaped
+  and bound as parameters.
+- Query shape: the outer result and count select directly from active Quotes.
+  Related-record matches use correlated `EXISTS`; one-to-many contact points
+  never multiply Quote rows, and PostgreSQL never applies full-row `DISTINCT`
+  to the Quote's `json` metadata column. The exact same predicate tuple drives
+  count and rows before stable created/updated ordering, Quote-ID tie-breaking,
+  and pagination.
+- Filters and state: status and Lead filters work independently and combine
+  with search using AND semantics. Unknown status, malformed/stale Lead,
+  sort, direction, page, and page-size values canonicalize to the owner-defined
+  safe URL. Search/filter/sort/page-size state remains URL-addressable; changing
+  the form resets page to one and Reset clears the complete scope.
+- States and recovery: empty and database-failure states are distinct. A failed
+  read reports that Quotes could not be loaded and no CRM data was changed,
+  offers a retry using safe normalized list state, emits a structured diagnostic
+  without the search term, and performs no writes.
+- Responsive projection: filters stack on narrow screens and the table retains
+  Quote identity, status, value, related Lead/customer context, and its direct
+  detail link.
+
 ## Selfcare New Quote page contract
 
 - Screen identifier and route: `sales-quote-create` at

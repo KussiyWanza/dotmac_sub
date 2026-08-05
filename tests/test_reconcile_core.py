@@ -650,7 +650,11 @@ def test_olt_unreachable_fast_fails_before_writes(
     result = reconcile_ont(
         db_session,
         ont.id,
-        proposed_change={"wifi_ssid": "NEW_SSID"},
+        # Must not be a WiFi-only change: those are scoped to ACS writes and
+        # would not require the OLT surface at all, so there would be nothing
+        # for OLT unreachability to fast-fail. Pairing it with an OLT-side
+        # field keeps this a test of the fast-fail, not of plan scoping.
+        proposed_change={"wifi_ssid": "NEW_SSID", "description": "NEW_DESC"},
         mode="bootstrap",  # ensures a non-empty plan
         olt_adapter=olt,
         acs_client=acs,
@@ -918,7 +922,10 @@ def test_verification_re_read_marks_out_of_sync_when_drift_remains(
         db_session,
         ont.id,
         mode="bootstrap",
-        proposed_change={"wifi_enabled": False},
+        # Must not be a WiFi-only change: those are scoped to ACS writes, and
+        # this test needs the OLT-side description write in the plan so the
+        # post-apply re-read has something to still report as drifted.
+        proposed_change={"wifi_enabled": False, "description": "NEW_DESC"},
         olt_adapter=olt,
         acs_client=acs,
     )

@@ -149,6 +149,20 @@ notice. `Refresh list` refetches and swaps only
 boundary and preserves the selected conversation in the URL. Thread refresh
 remains independent, so a focused composer is never replaced.
 
+All list-changing interactions use one latest-request-wins coordinator: sidebar
+filters and KPI links, search, saved views, pagination, browser history, manual
+refresh, read-state refresh, realtime refresh, and fallback polling. Each
+request receives a monotonic client sequence; a newer operator action aborts
+older list work, and an obsolete response is refused at the swap boundary even
+if transport cancellation loses a race. Background work yields to operator
+navigation. The UI exposes immediate accessible busy/error state and restores
+the last successfully rendered URL after a real request failure.
+
+Sidebar- and queue-targeted requests preserve the selected conversation
+identifier but do not rebuild its detail projection, the new-conversation
+template catalog, or the manager dashboard. A normal full-page request remains
+the deterministic rebuild path for those projections.
+
 Each queue row displays only projected facts. Contact display identity resolves
 in this order: the linked canonical Party name, the linked legacy Subscriber
 name, the latest inbound provider-observed name, an operator/provider name on

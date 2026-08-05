@@ -268,8 +268,7 @@
                                         id="infrastructure-search"
                                         type="search"
                                         x-model="search"
-                                        @input="handleInput()"
-                                        @input.debounce.300ms="lookup()"
+                                        @input="queueLookup()"
                                         @focus="lookup()"
                                         @keydown.escape="open = false"
                                         :disabled="!type"
@@ -294,7 +293,8 @@
                                     >
                                     <div x-show="open" x-cloak @click.outside="open = false" id="infrastructure-results" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl dark:border-slate-700 dark:bg-slate-900">
                                         <p x-show="loading" class="px-3 py-2 text-sm text-slate-500">Searching…</p>
-                                        <p x-show="!loading && search.length >= 2 && results.length === 0" class="px-3 py-2 text-sm text-slate-500">No matching infrastructure.</p>
+                                        <p x-show="!loading && error" class="px-3 py-2 text-sm text-rose-600 dark:text-rose-400" x-text="error"></p>
+                                        <p x-show="!loading && !error && search.length >= 2 && results.length === 0" class="px-3 py-2 text-sm text-slate-500">No matching infrastructure.</p>
                                         <template x-for="option in results" :key="option.id">
                                             <button type="button" @click="choose(option)" class="block w-full rounded-lg px-3 py-2 text-left hover:bg-amber-50 dark:hover:bg-slate-800">
                                                 <span class="block text-sm font-medium text-slate-900 dark:text-white" x-text="option.label"></span>
@@ -734,14 +734,18 @@ function infrastructurePicker(initial) {
         results: [],
         open: false,
         loading: false,
+        error: '',
         requestController: null,
+        lookupTimer: null,
 
         changeType() {
             if (this.requestController) this.requestController.abort();
+            if (this.lookupTimer) window.clearTimeout(this.lookupTimer);
             this.id = '';
             this.search = '';
             this.selectedLabel = '';
             this.results = [];
+            this.error = '';
             this.open = false;
             this.$nextTick(() => {
                 const hidden = this.$root.querySelector('input[name="infrastructure_id"]');
@@ -749,20 +753,25 @@ function infrastructurePicker(initial) {
             });
         },
 
-        handleInput() {
+        queueLookup() {
             if (this.id && this.search.trim() !== this.selectedLabel) this.id = '';
+            if (this.lookupTimer) window.clearTimeout(this.lookupTimer);
+            this.lookupTimer = window.setTimeout(() => this.lookup(), 300);
         },
 
         async lookup() {
             const term = this.search.trim();
             if (!this.type || term.length < 2 || (this.id && this.selectedLabel === term)) {
                 this.results = [];
+                this.error = '';
                 this.open = false;
                 return;
             }
             if (this.requestController) this.requestController.abort();
-            this.requestController = new AbortController();
+            const controller = new AbortController();
+            this.requestController = controller;
             this.loading = true;
+            this.error = '';
             this.open = true;
             try {
                 const params = new URLSearchParams({
@@ -772,15 +781,21 @@ function infrastructurePicker(initial) {
                 });
                 const response = await fetch(`/admin/customers/infrastructure-options?${params}`, {
                     headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                    signal: this.requestController.signal
+                    signal: controller.signal
                 });
                 if (!response.ok) throw new Error('Infrastructure search failed');
                 const payload = await response.json();
                 this.results = Array.isArray(payload.results) ? payload.results.slice(0, 20) : [];
             } catch (error) {
-                if (error.name !== 'AbortError') this.results = [];
+                if (error.name !== 'AbortError') {
+                    this.results = [];
+                    this.error = 'Infrastructure search could not be loaded. Please try again.';
+                }
             } finally {
-                this.loading = false;
+                if (this.requestController === controller) {
+                    this.loading = false;
+                    this.requestController = null;
+                }
             }
         },
 
@@ -789,6 +804,7 @@ function infrastructurePicker(initial) {
             this.search = option.label;
             this.selectedLabel = option.label;
             this.results = [];
+            this.error = '';
             this.open = false;
             this.$nextTick(() => {
                 const hidden = this.$root.querySelector('input[name="infrastructure_id"]');

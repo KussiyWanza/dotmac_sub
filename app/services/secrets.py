@@ -12,6 +12,7 @@ import os
 import time
 from functools import lru_cache
 from pathlib import Path
+from typing import NewType
 from urllib.parse import urlparse
 
 import httpx
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 # the cache key expires entries even when rotation happens in another process.
 _CACHE_SIZE = 128
 _DEFAULT_CACHE_TTL_SECONDS = 60
+_MAX_SECRET_PATH_DEPTH = 16
+_MAX_SECRET_PATHS = 2048
+
+SecretPath = NewType("SecretPath", str)
 
 
 def _read_openbao_token() -> str | None:
@@ -244,22 +249,93 @@ def clear_cache() -> None:
 # ── OpenBao KV management (for admin UI) ────────────────────────────
 
 
-def list_secret_paths() -> list[str]:
-    """List all secret paths under the ``secret/`` mount."""
+def _metadata_list_url(addr: str, prefix: str) -> str:
+    normalized_prefix = prefix.strip("/")
+    suffix = f"/{normalized_prefix}" if normalized_prefix else "/"
+    return f"{addr}/v1/secret/metadata{suffix}?list=true"
+
+
+def _normalized_metadata_child(prefix: str, key: object) -> tuple[str, bool] | None:
+    if not isinstance(key, str):
+        return None
+    is_directory = key.endswith("/")
+    name = key.rstrip("/")
+    if not name or "/" in name or name in {".", ".."}:
+        return None
+    child = f"{prefix}/{name}" if prefix else name
+    return child, is_directory
+
+
+def list_secret_paths() -> tuple[SecretPath, ...]:
+    """List leaf secret paths under the ``secret/`` mount.
+
+    OpenBao KV v2 returns folders with a trailing slash and requires another
+    LIST request for their contents. The admin inventory needs the leaf paths
+    so a nested secret such as ``integrations/meta_social`` remains editable.
+    Subtrees the application token cannot list are omitted without converting
+    an otherwise valid inventory into an unavailable state.
+    """
     try:
-        addr, token, namespace, kv_version = _openbao_config()
-        url = f"{addr}/v1/secret/metadata/?list=true"
+        addr, token, namespace, _kv_version = _openbao_config()
         headers: dict[str, str] = {"X-Vault-Token": token}
         if namespace:
             headers["X-Vault-Namespace"] = namespace
-        resp = httpx.get(url, headers=headers, timeout=5.0)
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-        return resp.json().get("data", {}).get("keys", [])
+
+        pending: list[tuple[str, int]] = [("", 0)]
+        visited: set[str] = set()
+        leaves: set[SecretPath] = set()
+        while (
+            pending
+            and len(visited) < _MAX_SECRET_PATHS
+            and len(leaves) < _MAX_SECRET_PATHS
+        ):
+            prefix, depth = pending.pop()
+            if prefix in visited:
+                continue
+            visited.add(prefix)
+            response = httpx.get(
+                _metadata_list_url(addr, prefix),
+                headers=headers,
+                timeout=5.0,
+            )
+            if response.status_code in (403, 404):
+                if prefix:
+                    logger.debug("OpenBao metadata subtree is not listable: %s", prefix)
+                    continue
+                return ()
+            response.raise_for_status()
+            raw_keys = response.json().get("data", {}).get("keys", [])
+            if not isinstance(raw_keys, list):
+                logger.warning(
+                    "OpenBao metadata LIST returned invalid keys for %s", prefix
+                )
+                continue
+            for raw_key in raw_keys:
+                normalized = _normalized_metadata_child(prefix, raw_key)
+                if normalized is None:
+                    logger.warning(
+                        "OpenBao metadata LIST returned an invalid child key"
+                    )
+                    continue
+                child, is_directory = normalized
+                if is_directory:
+                    if depth >= _MAX_SECRET_PATH_DEPTH:
+                        logger.warning(
+                            "OpenBao metadata path depth limit reached at %s", child
+                        )
+                        continue
+                    pending.append((child, depth + 1))
+                else:
+                    leaves.add(SecretPath(child))
+                if len(leaves) >= _MAX_SECRET_PATHS:
+                    logger.warning("OpenBao metadata path limit reached")
+                    break
+        if pending:
+            logger.warning("OpenBao metadata inventory limit reached")
+        return tuple(sorted(leaves, key=str))
     except Exception as exc:
         logger.warning("Failed to list OpenBao paths: %s", exc)
-        return []
+        return ()
 
 
 def read_secret_metadata(path: str) -> dict:

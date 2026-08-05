@@ -164,6 +164,10 @@ def team_inbox_queue(
     conversation_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
+    htmx_target = getattr(request, "headers", {}).get("hx-target")
+    is_sidebar_request = htmx_target == "inbox-sidebar-content"
+    is_queue_request = htmx_target == "inbox-conversation-queue"
+    is_list_fragment_request = is_sidebar_request or is_queue_request
     actor_id = _actor_id_from_request(request)
     try:
         actor_person_id = UUID(actor_id) if actor_id else None
@@ -201,6 +205,11 @@ def team_inbox_queue(
             per_page=_query_int(per_page, default=25) or 25,
             selected_conversation_id=(_query_text(conversation_id) or _query_text(c)),
             actor_person_id=actor_person_id,
+            composition=(
+                team_inbox_projection.InboxQueueComposition.sidebar
+                if is_list_fragment_request
+                else team_inbox_projection.InboxQueueComposition.full_workspace
+            ),
         ),
     )
     if projection.canonical_url is not None:
@@ -212,7 +221,7 @@ def team_inbox_queue(
             queue_metrics=projection.queue_metrics,
             needs_attention=projection.assignment_counts.needs_attention,
         )
-        if can_manage_inbox
+        if can_manage_inbox and not is_list_fragment_request
         else None
     )
     context = _ctx(request, db)
@@ -254,8 +263,10 @@ def team_inbox_queue(
             "channel_options": projection.channel_options,
             "label_options": projection.label_options,
             "saved_filters": projection.saved_filters,
-            "new_conversation_template_options": tuple(
-                team_inbox_operations.list_templates(db)
+            "new_conversation_template_options": (
+                tuple(team_inbox_operations.list_templates(db))
+                if not is_list_fragment_request
+                else ()
             ),
             "can_manage_inbox": can_manage_inbox,
             "manager_dashboard": manager_dashboard,
@@ -264,6 +275,7 @@ def team_inbox_queue(
                 if projection.selected is not None
                 else None
             ),
+            "selected_id": projection.selected_id or "",
             "actor_person_id": str(actor_person_id) if actor_person_id else "",
         }
     )
@@ -281,7 +293,7 @@ def team_inbox_queue(
                 "priority_options": projection.selected.priority_options,
             }
         )
-    if getattr(request, "headers", {}).get("hx-target") == "inbox-sidebar-content":
+    if is_list_fragment_request:
         return templates.TemplateResponse("admin/inbox/_sidebar.html", context)
     return templates.TemplateResponse("admin/inbox/index.html", context)
 

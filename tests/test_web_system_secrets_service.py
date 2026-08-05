@@ -1,4 +1,36 @@
-from app.services import web_system_secrets
+from app.services import secrets, web_system_secrets
+
+
+def test_secret_index_uses_nested_leaf_path_and_field_names(monkeypatch):
+    monkeypatch.setattr("app.services.secrets.is_openbao_available", lambda: True)
+    monkeypatch.setattr(
+        "app.services.secrets.list_secret_paths",
+        lambda: (secrets.SecretPath("integrations/meta_social"),),
+    )
+    monkeypatch.setattr(
+        "app.services.secrets.list_secret_field_names",
+        lambda path: ["facebook_page_access_token"] if path else [],
+    )
+    monkeypatch.setattr(
+        "app.services.secrets.read_secret_metadata",
+        lambda path: {"current_version": 1} if path else {},
+    )
+
+    context = web_system_secrets.build_secrets_index_context(
+        status=None,
+        message=None,
+    )
+
+    assert context["secrets_list"] == [
+        {
+            "path": "integrations/meta_social",
+            "fields": ["facebook_page_access_token"],
+            "field_count": 1,
+            "version": 1,
+            "created_time": "",
+            "updated_time": "",
+        }
+    ]
 
 
 def test_secret_edit_context_never_contains_existing_values(monkeypatch):
