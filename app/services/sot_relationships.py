@@ -33845,9 +33845,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="ui.customer_timeline_projection",
                 module="app.services.customer_timeline",
-                owns=(
-                    "admin customer timeline attribution and evidence projection",
-                ),
+                owns=("admin customer timeline attribution and evidence projection",),
                 depends_on=(
                     "customer.accounts",
                     "access.subscription_lifecycle",

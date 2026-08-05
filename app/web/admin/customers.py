@@ -55,6 +55,7 @@ from app.services.auth_dependencies import (
 )
 from app.services.bandwidth import bandwidth_samples
 from app.services.customer_portal_context import resolve_customer_subscription
+from app.services.customer_timeline import CustomerTimelineItem
 from app.services.domain_errors import DomainError
 from app.services.queue_adapter import enqueue_task
 from app.services.subscription_change_execution import (
@@ -212,7 +213,7 @@ def _billing_form_defaults(db: Session, customer_type: str, customer) -> dict[st
 
 def _customer_audit_items(
     db: Session, customer, limit: int = 5
-) -> list[dict[str, Any]]:
+) -> list[CustomerTimelineItem]:
     if not customer:
         return []
     try:

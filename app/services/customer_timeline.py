@@ -455,9 +455,7 @@ def build_customer_timeline(
             description = (
                 f"{description} · {account_label}" if description else account_label
             )
-        object_label = (
-            subscription.offer.name if subscription.offer else "Subscription"
-        )
+        object_label = subscription.offer.name if subscription.offer else "Subscription"
         items.append(
             _record_item(
                 key=f"subscription:{subscription.id}:record",

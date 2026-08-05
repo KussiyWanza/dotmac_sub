@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -23,8 +22,7 @@ def test_customer_detail_delegates_timeline_projection_to_registered_owner():
     assert 'module="app.services.customer_timeline"' in registry
 
 
-def test_customer_timeline_ui_shows_attribution_result_and_evidence_without_controls(
-):
+def test_customer_timeline_ui_shows_attribution_result_and_evidence_without_controls():
     template = _source("templates/admin/customers/detail.html")
 
     assert "data-customer-timeline-item" in template
