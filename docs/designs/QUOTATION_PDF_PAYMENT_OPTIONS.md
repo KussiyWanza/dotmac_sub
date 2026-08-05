@@ -63,6 +63,23 @@ streams its stored file. Quote email delivery records the same export id, and
 the communication attachment resolver streams that exact stored artifact. It
 does not rebuild the PDF at send time.
 
+Before queuing delivery, `sales.quote_delivery` consumes the typed
+`sales.quote_payment_eligibility` query. The query rechecks exact Subscriber
+ownership, active Draft/Sent state, expiry, paid deposit evidence, a positive
+server-derived deposit amount, and installation-backed Paystack availability.
+The email then reuses the immutable snapshot's exact HTTPS
+`/portal/quotes/{quote_id}/pay` URL in both its HTML anchor and text/plain
+alternative. It never sends an amount in the URL, calls Paystack directly, or
+duplicates the protected POST initiation owner.
+
+The branded email preserves the communication-intent, suppression, attachment,
+audit, event, and idempotency workflow. Its subject comes from the snapshot's
+legal company name; its customer name, Quote total, reference, primary colour,
+application URL, logo, and support email come from the same owned Quote, Party,
+and brand inputs used by the immutable document. Missing legal name or payment
+eligibility fails the delivery command before an intent is queued. A suppressed
+intent remains suppressed and never marks the Quote Sent.
+
 ## Business limitation
 
 An otherwise valid Lead/Party quotation without an exact Subscriber/customer
@@ -70,3 +87,8 @@ portal identity cannot safely enter the authenticated Paystack flow. Document
 creation fails with `sales.quote_documents.payment_identity_required`; the
 implementation does not assign another account, create a duplicate identity,
 or introduce a public signed-payment-link contract.
+
+Delivery also remains unavailable for Quotes with no positive authoritative
+deposit, a paid deposit, an ineligible lifecycle state, expiry, or unavailable
+Paystack capability. These are honest fail-closed states; the email does not
+fall back to a generic provider URL or omit its mandatory payment action.

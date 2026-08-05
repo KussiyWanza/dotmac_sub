@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import pytest
@@ -33,9 +35,12 @@ from app.models.sales import (
     QuoteStatus,
 )
 from app.models.stored_file import StoredFile
+from app.services import quote_deposits
 from app.services.billing.collection_accounts import CollectionAccounts
 from app.services.brand_profiles import ResolvedBrand
+from app.services.brand_theme import contrast_ratio
 from app.services.communication_intents import CommunicationIntentResult
+from app.services.email_template import html_to_text
 from app.services.owner_commands import CommandContext
 from app.services.sales import quote_activity, quote_delivery, quote_documents
 
@@ -178,6 +183,26 @@ def _stub_pdf_storage(monkeypatch) -> None:
     monkeypatch.setattr(quote_documents, "emit_event", lambda *_args, **_kwargs: None)
 
 
+def _stub_payment_eligibility(monkeypatch, quote: Quote):
+    observed: list[quote_deposits.QuotePaymentQuery] = []
+
+    def resolve(_db, query: quote_deposits.QuotePaymentQuery):
+        observed.append(query)
+        assert quote.subscriber_id is not None
+        return quote_deposits.QuotePaymentPage(
+            quote_id=quote.id,
+            subscriber_id=quote.subscriber_id,
+            status=QuoteStatus(quote.status),
+            currency=quote.currency,
+            payable_amount=Decimal("53750.00"),
+            expires_at=quote.expires_at,
+            provider_type="paystack",
+        )
+
+    monkeypatch.setattr(quote_deposits, "quote_payment_page", resolve)
+    return observed
+
+
 def test_recipient_uses_primary_active_party_email(db_session, subscriber):
     quote, primary, _quote_id = _quote(db_session, subscriber)
     recipient = quote_documents.resolve_quote_recipient(db_session, quote)
@@ -239,8 +264,9 @@ def test_pdf_export_is_content_addressed_and_audited_once(
 def test_send_email_queues_one_pdf_intent_and_replays(
     db_session, subscriber, monkeypatch
 ):
-    _quote_record, primary, quote_id = _quote(db_session, subscriber)
+    quote, primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)
+    payment_queries = _stub_payment_eligibility(monkeypatch, quote)
     captured = []
 
     def submit(db, intent):
@@ -316,6 +342,64 @@ def test_send_email_queues_one_pdf_intent_and_replays(
     assert len(captured[0].attachments) == 1
     assert captured[0].attachments[0].kind.value == "quote_pdf"
     assert captured[0].attachments[0].entity_id == downloaded.export_id
+    assert len(payment_queries) == 1
+    assert payment_queries[0].quote_id == quote_id
+    assert payment_queries[0].authorized_subscriber_ids == (subscriber.id,)
+
+    intent = captured[0]
+    payment_url = f"https://selfcare.example.com/portal/quotes/{quote_id}/pay"
+    parsed_payment_url = urlsplit(payment_url)
+    assert intent.subject == "Quote from Dotmac Technologies Ltd"
+    assert intent.metadata["quote_payment_url"] == payment_url
+    assert intent.metadata["body_text"] == intent.body
+    assert payment_url in intent.metadata["body_html"]
+    assert payment_url in intent.metadata["body_text"]
+    assert parsed_payment_url.scheme == "https"
+    assert parsed_payment_url.netloc == "selfcare.example.com"
+    assert parsed_payment_url.path == f"/portal/quotes/{quote_id}/pay"
+    assert parsed_payment_url.query == ""
+    assert "paystack.com" not in payment_url
+
+    body_html = intent.metadata["body_html"]
+    body_text = intent.metadata["body_text"]
+    for content in (
+        "Your quotation is ready",
+        "Dear Amina Bello,",
+        "Please find attached your quotation for",
+        "NGN 107,500.00",
+        f"Quote reference:</strong> {quote_id}",
+        "Make payment for this quotation",
+        "make the required payment for this quotation through Paystack",
+        "Pay Now",
+        "bank-transfer details in the attached quotation PDF",
+        "Please reply to this email if you have any questions.",
+    ):
+        assert content in body_html
+    assert f'href="{payment_url}"' in body_html
+    assert "background-color:#008000" in body_html
+    assert contrast_ratio("#008000", "#ffffff") >= 4.5
+    assert "Dotmac Technologies Ltd logo" in body_html
+    assert "&copy; Dotmac Technologies Ltd" in body_html
+    assert "support@example.com" in body_html
+    assert "1016946461" not in body_html
+    assert "Zenith Bank" not in body_html
+    assert "Pay Now" in html_to_text(body_html)
+
+    for content in (
+        "Your quotation is ready",
+        "Dear Amina Bello,",
+        "Please find attached your quotation for NGN 107,500.00.",
+        f"Quote reference: {quote_id}",
+        "Make payment for this quotation",
+        "make the required payment through Paystack",
+        f"Pay Now: {payment_url}",
+        "bank-transfer details in the attached quotation PDF",
+        "Please reply to this email if you have any questions.",
+    ):
+        assert content in body_text
+    assert "1016946461" not in body_text
+    assert "Zenith Bank" not in body_text
+
     persisted_quote = db_session.get(Quote, quote_id)
     assert persisted_quote.status == QuoteStatus.sent.value
     assert persisted_quote.sent_at is not None
@@ -333,8 +417,9 @@ def test_send_email_queues_one_pdf_intent_and_replays(
 
 
 def test_suppressed_email_does_not_mark_quote_sent(db_session, subscriber, monkeypatch):
-    _quote_record, _primary, quote_id = _quote(db_session, subscriber)
+    quote, _primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)
+    _stub_payment_eligibility(monkeypatch, quote)
 
     def submit_suppressed(db, intent):
         record = CommunicationIntentRecord(
@@ -379,6 +464,71 @@ def test_suppressed_email_does_not_mark_quote_sent(db_session, subscriber, monke
     assert db_session.get(Quote, quote_id).status == QuoteStatus.draft.value
     request = db_session.get(QuoteDeliveryRequest, outcome.delivery_request_id)
     assert request.request_status == QuoteDeliveryRequestStatus.suppressed.value
+
+
+def test_ineligible_payment_link_prevents_quote_delivery_queue(
+    db_session, subscriber, monkeypatch
+):
+    _quote_record, _primary, quote_id = _quote(db_session, subscriber)
+
+    def reject(_db, _query):
+        raise quote_deposits.QuoteDepositError(
+            code="sales.quote_deposits.paystack_unavailable",
+            message="Paystack payment is unavailable for this Quote",
+        )
+
+    monkeypatch.setattr(quote_deposits, "quote_payment_page", reject)
+    monkeypatch.setattr(
+        quote_delivery,
+        "submit",
+        lambda *_args, **_kwargs: pytest.fail("delivery must not be queued"),
+    )
+
+    with pytest.raises(quote_delivery.QuoteDeliveryError) as exc:
+        quote_delivery.send_quote_email(
+            db_session,
+            quote_delivery.SendQuoteEmailCommand(
+                context=_context(key=f"pytest-quote-ineligible:{uuid4()}"),
+                quote_id=quote_id,
+            ),
+        )
+
+    assert exc.value.code == "sales.quote_delivery.payment_link_unavailable"
+    assert exc.value.details["reason"] == ("sales.quote_deposits.paystack_unavailable")
+    assert db_session.query(QuoteDeliveryRequest).count() == 0
+    assert db_session.query(CommunicationIntentRecord).count() == 0
+    assert db_session.get(Quote, quote_id).status == QuoteStatus.draft.value
+
+
+def test_quote_email_requires_authoritative_legal_name(db_session, subscriber):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    recipient = quote_documents.resolve_quote_recipient(db_session, quote)
+    snapshot, _logo_src = quote_documents._snapshot(db_session, quote)
+    assert recipient is not None
+
+    with pytest.raises(quote_delivery.QuoteDeliveryError) as exc:
+        quote_delivery.render_quote_email(
+            snapshot=replace(snapshot, brand=replace(snapshot.brand, legal_name="")),
+            recipient=recipient,
+        )
+
+    assert exc.value.code == "sales.quote_delivery.brand_legal_name_required"
+
+
+def test_stored_quote_payment_url_must_match_secure_company_route(
+    db_session, subscriber
+):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    snapshot, _logo_src = quote_documents._snapshot(db_session, quote)
+    stored = snapshot.to_storage()
+    stored["payment"]["paystack_url"] = (
+        f"https://checkout.paystack.com/portal/quotes/{quote.id}/pay"
+    )
+
+    with pytest.raises(quote_documents.QuoteDocumentError) as exc:
+        quote_documents.load_quote_document_snapshot(stored)
+
+    assert exc.value.code == "sales.quote_documents.invalid_snapshot"
 
 
 def test_payment_section_follows_totals_and_precedes_footer(db_session, subscriber):

@@ -234,7 +234,7 @@ def load_quote_document_snapshot(value: object) -> QuoteDocumentSnapshot:
                 )
             )
         expires_value = value.get("expires_at")
-        return QuoteDocumentSnapshot(
+        snapshot = QuoteDocumentSnapshot(
             quote_id=UUID(str(value["quote_id"])),
             status=str(value["status"]),
             currency=str(value["currency"]),
@@ -271,6 +271,12 @@ def load_quote_document_snapshot(value: object) -> QuoteDocumentSnapshot:
                 paystack_url=str(payment_value["paystack_url"]),
             ),
         )
+        _validate_quote_payment_url(
+            app_url=snapshot.brand.app_url,
+            quote_id=snapshot.quote_id,
+            payment_url=snapshot.payment.paystack_url,
+        )
+        return snapshot
     except (KeyError, TypeError, ValueError) as exc:
         raise _error(
             "invalid_snapshot", "Stored Quote PDF snapshot is invalid"
@@ -377,14 +383,32 @@ def _logo_data_uri(db: Session, logo_url: str) -> str | None:
     return value
 
 
+def _validate_quote_payment_url(
+    *, app_url: str, quote_id: UUID, payment_url: str
+) -> str:
+    company = urlsplit(str(app_url or "").strip())
+    payment = urlsplit(str(payment_url or "").strip())
+    expected_path = f"/portal/quotes/{quote_id}/pay"
+    if (
+        company.scheme != "https"
+        or not company.netloc
+        or company.username is not None
+        or company.password is not None
+        or payment.scheme != "https"
+        or payment.netloc.casefold() != company.netloc.casefold()
+        or payment.username is not None
+        or payment.password is not None
+        or payment.path != expected_path
+        or payment.query
+        or payment.fragment
+    ):
+        raise ValueError("invalid company-hosted Quote payment URL")
+    return urlunsplit(("https", company.netloc, expected_path, "", ""))
+
+
 def _quote_payment_url(brand: ResolvedBrand, quote_id: UUID) -> str:
     parsed = urlsplit(str(brand.app_url or "").strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise _error(
-            "payment_url_unavailable",
-            "The company portal URL is unavailable for this Quote",
-        )
-    return urlunsplit(
+    candidate = urlunsplit(
         (
             parsed.scheme,
             parsed.netloc,
@@ -393,6 +417,17 @@ def _quote_payment_url(brand: ResolvedBrand, quote_id: UUID) -> str:
             "",
         )
     )
+    try:
+        return _validate_quote_payment_url(
+            app_url=brand.app_url,
+            quote_id=quote_id,
+            payment_url=candidate,
+        )
+    except ValueError as exc:
+        raise _error(
+            "payment_url_unavailable",
+            "A secure company portal URL is unavailable for this Quote",
+        ) from exc
 
 
 def _snapshot(db: Session, quote: Quote) -> tuple[QuoteDocumentSnapshot, str | None]:

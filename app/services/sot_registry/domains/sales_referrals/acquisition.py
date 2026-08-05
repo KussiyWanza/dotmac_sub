@@ -890,6 +890,124 @@ SERVICES: tuple[SOTService, ...] = (
         ),
     ),
     SOTService(
+        name="sales.quote_payment_eligibility",
+        module="app.services.quote_deposits",
+        owns=("authenticated customer Quote payment eligibility and payable amount",),
+        depends_on=(
+            "financial.invoices",
+            "financial.payment_routing",
+            "sales.service",
+        ),
+        notes=(
+            "This read owner resolves authorized Subscriber ownership, active "
+            "Draft/Sent state, expiry, paid-deposit evidence, the authoritative "
+            "deposit amount, and Paystack availability. Quote email delivery "
+            "consumes the same typed query before presenting the immutable PDF "
+            "payment route; GET rendering creates no invoice or payment intent."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name=(
+                        "authenticated customer Quote payment eligibility and "
+                        "payable amount"
+                    ),
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "authorized customer Quote payment scope",
+                        "canonical Quote commercial state",
+                        "canonical Quote deposit settlement state",
+                        "installation-backed Paystack availability",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="authorized customer Quote payment scope",
+                    owner="sales.quote_payment_eligibility",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed Quote id, authorized Subscriber ids, and observed "
+                        "eligibility time"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Quote commercial state",
+                    owner="sales.service",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "active Quote ownership, status, expiry, currency, and "
+                        "server-derived deposit policy inputs"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Quote deposit settlement state",
+                    owner="financial.invoices",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="paid native Quote-deposit Invoice evidence",
+                ),
+                AuthorityInput(
+                    name="installation-backed Paystack availability",
+                    owner="financial.payment_routing",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source="healthy enabled Paystack payments.intent.v1 binding",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "quote_payment_page resolves authorization, state, amount, "
+                    "settlement, and provider eligibility without writing state"
+                ),
+                locking=(
+                    "The query takes no lock; the protected POST command locks and "
+                    "rechecks the Quote before payment initiation."
+                ),
+                idempotency=(
+                    "The same committed Quote, Invoice, provider, authorization, "
+                    "and observed time inputs produce the same eligibility outcome."
+                ),
+                retries="Adapters may safely repeat the complete read query.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "sales.quote_deposits.already_paid",
+                    "sales.quote_deposits.amount_unavailable",
+                    "sales.quote_deposits.paystack_unavailable",
+                    "sales.quote_deposits.quote_expired",
+                    "sales.quote_deposits.quote_not_found",
+                    "sales.quote_deposits.status_ineligible",
+                ),
+                mapping_owner=(
+                    "customer Quote payment and admin Quote delivery adapters"
+                ),
+                retryable_codes=(),
+                fail_closed_on=(
+                    "missing or unauthorized customer portal identity",
+                    "inactive, rejected, expired, cancelled, or paid Quote",
+                    "missing positive authoritative deposit amount",
+                    "unavailable Paystack capability",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="sales.quote_payment_eligibility",
+            ),
+            steward="sales and finance operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                "docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md",
+                "docs/designs/PAYMENT_GATEWAY_CONTROL_PLANE_SOT.md",
+            ),
+            test_refs=(
+                "tests/test_customer_quote_payments.py",
+                "tests/test_quote_documents_and_delivery.py",
+                "tests/architecture/test_quote_document_delivery_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
         name="sales.quote_delivery",
         module="app.services.sales.quote_delivery",
         owns=("idempotent branded Quote email request",),
@@ -900,6 +1018,7 @@ SERVICES: tuple[SOTService, ...] = (
             "observability.audit_log",
             "party.registry",
             "sales.quote_documents",
+            "sales.quote_payment_eligibility",
             "sales.service",
         ),
         notes=(
@@ -918,6 +1037,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical Quote commercial state",
                         "canonical Party recipient state",
                         "canonical Quote PDF artifact",
+                        "canonical Quote payment eligibility",
                     ),
                     canonical_writer="sales.quote_delivery",
                 ),
@@ -953,6 +1073,15 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source="immutable branded Quote snapshot and stored PDF",
                 ),
+                AuthorityInput(
+                    name="canonical Quote payment eligibility",
+                    owner="sales.quote_payment_eligibility",
+                    kind=AuthorityKind.DERIVED_PROJECTION,
+                    source=(
+                        "authorized active unpaid Quote, positive authoritative "
+                        "deposit, and available Paystack capability"
+                    ),
+                ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
@@ -977,6 +1106,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_delivery.idempotency_conflict",
                     "sales.quote_delivery.idempotency_key_required",
                     "sales.quote_delivery.line_items_required",
+                    "sales.quote_delivery.brand_legal_name_required",
+                    "sales.quote_delivery.payment_link_unavailable",
                     "sales.quote_delivery.quote_expired",
                     "sales.quote_delivery.quote_not_found",
                     "sales.quote_delivery.recipient_email_required",
@@ -987,6 +1118,8 @@ SERVICES: tuple[SOTService, ...] = (
                     "missing, inactive, rejected, or expired Quote",
                     "Quote without line items",
                     "missing authoritative active recipient email",
+                    "missing authoritative company legal name",
+                    "ineligible or unavailable secure Paystack payment link",
                     "idempotency key reuse for another Quote",
                 ),
             ),
@@ -1011,6 +1144,7 @@ SERVICES: tuple[SOTService, ...] = (
             design_refs=(
                 "docs/SOT_RELATIONSHIP_MAP.md",
                 "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                "docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md",
             ),
             test_refs=(
                 "tests/test_quote_documents_and_delivery.py",
