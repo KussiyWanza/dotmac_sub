@@ -547,7 +547,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from app.services.sot_relationships import DOMAIN_SOT_RELATIONSHIPS
+    from app.services.sot_registry.registry import DOMAIN_SOT_RELATIONSHIPS
 
     indent = None if args.compact else 2
     print(

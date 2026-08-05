@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 
 PILOT_SERVICES = (
@@ -29,12 +31,11 @@ def test_pilot_services_delegate_multi_currency_display_to_named_owner() -> None
 
 
 def test_checked_in_sources_name_display_format_owner_and_migration() -> None:
-    registry = _read("app/services/sot_relationships.py")
+    owner = service_relationship("ui.display_formatting")
     relationships = _read("docs/SOT_RELATIONSHIP_MAP.md")
     frontend = _read("docs/FRONTEND_SPEC.md")
 
-    assert 'name="ui.display_formatting"' in registry
-    assert 'module="app.services.display_format"' in registry
+    assert owner.module == "app.services.display_format"
     assert "## UI Display Formatting" in relationships
     assert "four billing web projection modules" in relationships
     assert "app.services.display_format" in frontend

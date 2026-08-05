@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from app.services.sot_registry.registry import service_relationship
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP = PROJECT_ROOT / "app"
 
@@ -296,9 +298,10 @@ def test_retired_zabbix_provenance_module_is_gone() -> None:
 
 
 def test_ownership_is_recorded_in_the_map_and_registry() -> None:
-    registry = _source("app/services/sot_relationships.py")
-    assert "monitoring device admission lifecycle transitions" in registry
-    assert TRANSITION in registry
+    owner = service_relationship("network.monitoring_inventory")
+    assert "monitoring device admission lifecycle transitions" in owner.owns
+    assert owner.notes is not None
+    assert TRANSITION in owner.notes
 
     relationship_map = _source("docs/SOT_RELATIONSHIP_MAP.md")
     assert TRANSITION in relationship_map
@@ -306,7 +309,7 @@ def test_ownership_is_recorded_in_the_map_and_registry() -> None:
 
     # The rejected alternative is recorded, not just the chosen one. Both
     # documents wrap their prose, so compare on normalised whitespace.
-    for document in (registry, relationship_map):
+    for document in (owner.notes, relationship_map):
         prose = " ".join(document.split())
         assert "data-integrity alert" in prose
         assert "Inventory absence must not open a customer-facing outage" in prose

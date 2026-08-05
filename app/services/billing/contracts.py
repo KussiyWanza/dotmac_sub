@@ -9,9 +9,9 @@ subscription, and catalog rows.
 Phase 1 is expand-and-shadow. While the registry declares this owner's
 migration state as ``shadowing``, every row it writes is
 ``BillingRecordAuthority.shadow`` and must produce no financial effect. The
-authority flag is not a feature toggle: it is read from the executable manifest
-in ``app/services/sot_relationships.py``, so promoting rows to authoritative
-requires the registry change that records the passed cutover gate.
+authority flag is not a feature toggle: it is read from the canonical aggregate
+in ``app/services/sot_registry/registry.py``, so promoting rows to authoritative
+requires the owning declaration change that records the passed cutover gate.
 """
 
 from __future__ import annotations

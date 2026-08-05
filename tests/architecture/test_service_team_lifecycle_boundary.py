@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 
 from app.services.sot_manifest import AuthorityMigrationState, OwnerRole
+from app.services.sot_registry.registry import DOMAIN_SOT_RELATIONSHIPS
 from app.services.sot_relationships import service_relationship
 from app.web.admin import service_teams
 from scripts.seed import seed_rbac
@@ -184,6 +185,4 @@ def test_historical_party_adoption_path_cannot_return() -> None:
     assert not (
         ROOT / "scripts/migration/execute_service_team_party_cutover.py"
     ).exists()
-    assert "service_team_party_cutover" not in _source(
-        "app/services/sot_relationships.py"
-    )
+    assert "service_team_party_cutover" not in repr(DOMAIN_SOT_RELATIONSHIPS)

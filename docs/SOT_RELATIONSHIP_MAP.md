@@ -10,9 +10,16 @@ errors with stable codes/context; HTTP routes translate those outcomes. Tasks,
 webhooks, commands, and reconcilers call the same owners without inheriting HTTP
 semantics.
 
-The executable registry is `app/services/sot_relationships.py`. When a domain
-is harmonised, add or update its service boundary there and cover it with tests
-before migrating more callers.
+The executable registry is the explicit aggregate in
+`app/services/sot_registry/registry.py`. Its ownership-aligned declarations live
+under `app/services/sot_registry/domains/`; large domains are divided into
+capability shards. `app/services/sot_relationships.py` is a compatibility facade,
+not a declaration source. When a domain is harmonised, update its owning shard
+and cover the aggregate boundary with tests before migrating more callers.
+
+The manifest has one canonical graph. Domain, capability/module, and journey
+hierarchies are derived navigation views; they do not own parallel dependency
+lists or service declarations.
 
 ## UI Projection Boundary
 
@@ -251,9 +258,9 @@ OpenBao settings migration boundary. Bootstrap writes defaults through
 <!-- BEGIN GENERATED SOT MANIFEST -->
 ## Contracted Ownership Manifest
 
-This section is generated from the typed contracts in
-`app/services/sot_relationships.py`. Edit the registry and regenerate;
-do not hand-edit these rows.
+This section is generated from the canonical aggregate in
+`app/services/sot_registry/registry.py` and its domain declarations.
+Edit the owning domain shard and regenerate; do not hand-edit these rows.
 
 | Service | Concern | Role | Authoritative inputs | Transaction | Migration | Steward | Evidence |
 | --- | --- | --- | --- | --- | --- | --- | --- |

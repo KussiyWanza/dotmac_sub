@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -37,8 +39,9 @@ def test_erp_write_back_emits_allocation_evidence():
 def test_consumption_owner_is_registered_and_emits_evidence():
     src = _source("app/services/field/materials.py")
     assert "EventType.field_material_consumption_recorded" in src
-    registry = _source("app/services/sot_relationships.py")
-    assert '"operations.material_consumption"' in registry
+    assert service_relationship("operations.material_consumption").module == (
+        "app.services.field.materials"
+    )
     baseline = _source("tests/architecture/sot_writer_baseline.txt")
     assert "field/materials.py" not in baseline
 

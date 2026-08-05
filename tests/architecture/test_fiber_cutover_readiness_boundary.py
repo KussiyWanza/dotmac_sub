@@ -3,11 +3,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVICE = PROJECT_ROOT / "app/services/network/fiber_topology_cutover_readiness.py"
 COMMAND = PROJECT_ROOT / "scripts/network/audit_fiber_cutover_readiness.py"
 TOPOLOGY_OWNER = PROJECT_ROOT / "app/services/fiber_topology.py"
-REGISTRY = PROJECT_ROOT / "app/services/sot_relationships.py"
 SOT_MAP = PROJECT_ROOT / "docs/SOT_RELATIONSHIP_MAP.md"
 DESIGN = PROJECT_ROOT / "docs/designs/FIBER_TOPOLOGY_SOT.md"
 
@@ -110,12 +111,11 @@ def test_cutover_readiness_adds_no_schema_migration():
 
 
 def test_cutover_readiness_owner_and_numeric_policy_are_checked_in_sot():
-    registry_source = REGISTRY.read_text()
+    owner = service_relationship("network.fiber_cutover_readiness")
     sot_map = SOT_MAP.read_text()
     design = DESIGN.read_text()
 
-    assert 'name="network.fiber_cutover_readiness"' in registry_source
-    assert '"versioned numeric fiber cutover-readiness policy"' in registry_source
+    assert "versioned numeric fiber cutover-readiness policy" in owner.owns
     assert "`network.fiber_cutover_readiness`" in sot_map
     assert "`fiber_topology_cutover_v1`" in sot_map
     assert "100% exact-current" in sot_map

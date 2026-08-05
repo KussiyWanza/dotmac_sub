@@ -167,13 +167,17 @@ def test_complete_history_reader_and_retired_quarantine_name_have_one_app_home()
     None
 ):
     root = Path(__file__).resolve().parents[2]
-    app_files = tuple((root / "app").rglob("*.py"))
+    registry_declarations = root / "app/services/sot_registry/domains"
+    app_files = tuple(
+        path
+        for path in (root / "app").rglob("*.py")
+        if registry_declarations not in path.parents
+    )
 
     history_readers = [
         path.relative_to(root).as_posix()
         for path in app_files
         if "audit_splynx_final_balances" in path.read_text(encoding="utf-8")
-        and path.name != "sot_relationships.py"
     ]
     quarantine_name_homes = [
         path.relative_to(root).as_posix()

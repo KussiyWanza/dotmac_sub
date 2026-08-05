@@ -26,9 +26,9 @@ def render_manifest_block(services: Iterable[Any]) -> str:
         BEGIN_MARKER,
         "## Contracted Ownership Manifest",
         "",
-        "This section is generated from the typed contracts in",
-        "`app/services/sot_relationships.py`. Edit the registry and regenerate;",
-        "do not hand-edit these rows.",
+        "This section is generated from the canonical aggregate in",
+        "`app/services/sot_registry/registry.py` and its domain declarations.",
+        "Edit the owning domain shard and regenerate; do not hand-edit these rows.",
         "",
         "| Service | Concern | Role | Authoritative inputs | Transaction | Migration | Steward | Evidence |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -90,7 +90,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from app.services.sot_relationships import all_services
+    from app.services.sot_registry.registry import all_services
 
     expected = render_manifest_block(all_services())
     if args.print_block:

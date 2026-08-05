@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = PROJECT_ROOT / "app"
 
@@ -79,16 +81,16 @@ def test_writer_baseline_only_shrinks() -> None:
 
 def test_concurrency_policy_stays_inside_the_projection_owner() -> None:
     owner_source = (PROJECT_ROOT / OWNER).read_text(encoding="utf-8")
-    registry = (PROJECT_ROOT / "app/services/sot_relationships.py").read_text(
-        encoding="utf-8"
-    )
+    owner = service_relationship("access.radius_projection")
     relationship_map = (PROJECT_ROOT / "docs/SOT_RELATIONSHIP_MAP.md").read_text(
         encoding="utf-8"
     )
 
     assert "def _radcheck_policy_attrs(" in owner_source
     assert "simultaneous_use_enforcement_enabled" in owner_source
-    assert "RADIUS simultaneous-session check/control placement" in registry
+    assert "RADIUS simultaneous-session check/control placement and cutover" in (
+        owner.owns
+    )
     assert "Simultaneous-Use` is a FreeRADIUS check/control attribute" in (
         relationship_map
     )

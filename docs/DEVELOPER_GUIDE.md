@@ -464,8 +464,10 @@ def create(db: Session, command: CreateEquipment) -> EquipmentCreated:
 ```
 
 Register the owner, its concerns, dependencies, entrypoints, and migration
-state in `app/services/sot_relationships.py`. Add the matching relationship-map
-entry and architecture tests in the same change.
+state in its ownership-aligned module under
+`app/services/sot_registry/domains/`. The canonical aggregate in
+`app/services/sot_registry/registry.py`, relationship map, and architecture
+tests must agree in the same change.
 
 #### Step 3: Create Web Routes
 

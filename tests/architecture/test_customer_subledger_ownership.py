@@ -11,6 +11,7 @@ from pathlib import Path
 
 _APP = Path(__file__).resolve().parents[2] / "app"
 _OWNER = _APP / "services" / "billing" / "customer_subledger.py"
+_REGISTRY_DECLARATIONS = _APP / "services" / "sot_registry" / "domains"
 
 
 def _offenders(needles: tuple[str, ...], *, skip_models: bool = False) -> list[str]:
@@ -18,9 +19,12 @@ def _offenders(needles: tuple[str, ...], *, skip_models: bool = False) -> list[s
     models = _APP / "models" / "customer_subledger.py"
     # The SoT registry cites table names as descriptive authoritative-input
     # text; it is documentation, not a write form.
-    registry = _APP / "services" / "sot_relationships.py"
     for path in _APP.rglob("*.py"):
-        if path == _OWNER or path == registry or (skip_models and path == models):
+        if (
+            path == _OWNER
+            or _REGISTRY_DECLARATIONS in path.parents
+            or (skip_models and path == models)
+        ):
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()

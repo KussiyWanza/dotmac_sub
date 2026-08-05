@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -31,13 +33,13 @@ def test_pipeline_settings_stays_native_and_uses_the_canonical_route() -> None:
 
 def test_stage_presentation_is_a_governed_versioned_contract() -> None:
     contract = _read("app/services/sales/pipeline_configuration.py")
-    registry = _read("app/services/sot_relationships.py")
+    owner = service_relationship("sales.service")
     relationship_map = _read("docs/SOT_RELATIONSHIP_MAP.md")
 
     assert 'METADATA_KEY = "pipeline_stage_presentation_v1"' in contract
     assert "class PipelineStageType(StrEnum)" in contract
     assert "STAGE_ICON_OPTIONS" in contract
-    assert "governed pipeline stage presentation and ordering" in registry
+    assert "governed pipeline stage presentation and ordering" in owner.owns
     assert "atomic stage ordering" in relationship_map
 
 

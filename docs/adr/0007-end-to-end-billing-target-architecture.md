@@ -26,7 +26,7 @@ Current checked-in owner contracts remain authoritative for each concern until
 that concern's migration phase passes its explicit cutover gate. A phase that is
 implemented but has not passed its gate is shadow evidence, not authority. The
 per-concern migration state is observable in
-`app/services/sot_relationships.py` through each owner's `MigrationContract`.
+`app/services/sot_registry/registry.py` through each owner's `MigrationContract`.
 
 ## Architecture goal
 

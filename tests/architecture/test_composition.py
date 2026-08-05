@@ -11,7 +11,7 @@ claim"):
 - duplicate-capability, missing-provider, missing-module, forbidden-module,
   and unknown-profile failures all fail closed (negative tests);
 - every capability code names exactly one owner that EXISTS in the executable
-  SOT registry (``app/services/sot_relationships.py``) — no orphan codes;
+  SOT registry (``app/services/sot_registry/registry.py``) — no orphan codes;
 - manifests are pure metadata (no routers/nav/seed — nothing mountable);
 - no file under ``app/`` outside the composition module mentions the profile
   code or a capability code (capability codes are product vocabulary, never
@@ -264,7 +264,7 @@ def test_profile_declares_only_declared_provider_implementations() -> None:
 def test_every_capability_names_exactly_one_registered_sot_owner() -> None:
     """No orphan codes: each capability maps to one EXISTING registry owner.
 
-    ``app/services/sot_relationships.py`` stays the owner authority; the
+    ``app/services/sot_registry/registry.py`` stays the owner authority; the
     composition module may only reference exact registered service names.
     """
     from app.composition import CAPABILITY_CATALOGUE, CAPABILITY_OWNERS

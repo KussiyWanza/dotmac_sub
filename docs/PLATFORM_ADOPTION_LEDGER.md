@@ -11,10 +11,10 @@ authorized by this document alone.
 and the execution plan
 `dotmac_starter_mt/docs/superpowers/plans/2026-08-02-dotmac-sub-kernel-improvements.md`
 (non-authoritative intent; this repo's checked-in docs and registries govern).
-**Companion sources of truth in this repo:** `docs/SOT_RELATIONSHIP_MAP.md` and its
-executable registry `app/services/sot_relationships.py` — the per-domain owners named
-there remain authoritative. This ledger classifies kernel surfaces *against* those
-owners; it does not re-assign ownership.
+**Companion sources of truth in this repo:** `docs/SOT_RELATIONSHIP_MAP.md` and
+the executable aggregate `app/services/sot_registry/registry.py` — the
+per-domain owners named there remain authoritative. This ledger classifies
+kernel surfaces *against* those owners; it does not re-assign ownership.
 **Recon basis:** repo state at `origin/dev` `0d045baae05c91fb9307772d7aaad181b928715f`,
 surveyed 2026-08-02, against released `dotmac-kernel==0.1.0a7` (source of record:
 `dotmac_starter_mt/packages/dotmac-kernel/src/dotmac_kernel/`, package
@@ -55,9 +55,10 @@ Sub authoritative intent
 - The ISP **operator** deployment eventually maps to exactly one platform `Tenant`
   (S7 ADR gate). Subscribers, resellers, customer organizations, and staff are
   never platform tenants.
-- **Kernel adapters get NO owner rows.** `app/services/sot_relationships.py` is the
-  owner registry; an adapter over a kernel contract calls a registered Sub owner
-  through `app.services.owner_commands.execute_owner_command` and is never itself
+- **Kernel adapters get NO owner rows.**
+  `app/services/sot_registry/registry.py` is the owner aggregate; an adapter over
+  a kernel contract calls a registered Sub owner through
+  `app.services.owner_commands.execute_owner_command` and is never itself
   registered as an owner, never commits, and never becomes a transaction authority.
 
 ## Classification of every kernel public module
@@ -242,7 +243,7 @@ a colliding `audit_events` table — deferred behind the existing surfaces.
 
 ## Owner registry
 
-The executable owner registry is `app/services/sot_relationships.py` (with
+The executable owner registry is `app/services/sot_registry/registry.py` (with
 `docs/SOT_RELATIONSHIP_MAP.md` as its narrative map). All adoption slices leave
 it authoritative and unchanged in meaning:
 
@@ -263,8 +264,8 @@ middleware-for-middleware identical).
 
 **What was declared** — the four coarse SOT domains the S4–S6/S8 slices need,
 one `FeatureManifest` per domain (never one per service), five capability
-codes, each naming exactly one existing owner registered in
-`app/services/sot_relationships.py`:
+codes, each naming exactly one existing owner registered in the canonical
+aggregate:
 
 | Module (manifest) | Capability code | Registered SOT owner |
 | --- | --- | --- |
@@ -302,7 +303,7 @@ capability code, with a red-sensitivity negative control.
 
 **No-orphan rule** — every declared capability code must map, in
 `app/composition.py::CAPABILITY_OWNERS`, to a service name that resolves in
-`app/services/sot_relationships.py::service_relationship`; a code pointing at
+`app/services/sot_registry/registry.py::service_relationship`; a code pointing at
 a nonexistent owner is a test failure. The registry stays the ownership
 authority; the composition module only references it and holds no owner rows.
 
@@ -361,7 +362,7 @@ Adding `dotmac-kernel==0.1.0a8` as a dependency, by itself:
   kernel's own manifest (no `DATABASE_URL` read); `dotmac_kernel.db` and bare
   `import dotmac_kernel` are rejected by the guard;
 - **changes no Sub transaction or owner** — `app/db.py`,
-  `execute_owner_command`, and `app/services/sot_relationships.py` are
+  `execute_owner_command`, and `app/services/sot_registry/registry.py` are
   untouched; no adapter holds an owner row.
 
 The guard proving the import half of this claim is

@@ -47,9 +47,12 @@ second interpretation or writer.
 
 ### Executable architecture manifest
 
-`app/services/sot_relationships.py` is the canonical architecture manifest.
-New and migrated owners use the typed contracts in
-`app/services/sot_manifest.py` to declare:
+`app/services/sot_registry/registry.py` is the canonical assembled architecture
+manifest. Each owner is declared exactly once in its ownership-aligned module
+under `app/services/sot_registry/domains/`; large domains use explicit
+capability shards. `app/services/sot_relationships.py` is a compatibility
+facade and never contains declarations. New and migrated owners use the typed
+contracts in `app/services/sot_manifest.py` to declare:
 
 - the role and authoritative inputs of every exact owned concern;
 - the canonical writer for writer concerns;
@@ -63,6 +66,10 @@ Uncontracted registry entries are shrink-only migration debt. Never add a new
 service to `tests/architecture/sot_manifest_legacy_baseline.txt`. Generated
 manifest rows in `docs/SOT_RELATIONSHIP_MAP.md` must exactly match the registry;
 verify them with `python -m scripts.architecture.sot_manifest_docs`.
+
+The aggregate is a directed dependency graph, not a tree. Domain, capability,
+implementation-module, and end-to-end journey views may be generated from it,
+but none may maintain a second set of owner or dependency declarations.
 
 ## 2. Commands, queries, and coordinators
 

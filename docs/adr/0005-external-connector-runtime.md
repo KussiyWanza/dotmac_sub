@@ -370,7 +370,7 @@ escalation recorded in resolved decision 1.
 
 **Phase 5b onward.** Each audit must show the runner does not become a
 parallel authority, must update `docs/SOT_RELATIONSHIP_MAP.md` and
-`app/services/sot_relationships.py` where a phase changes an ownership boundary,
+the owning `app/services/sot_registry/domains/` declaration where a phase changes an ownership boundary,
 and must add or adjust an architecture guard test that prevents a parallel path
 from returning. Deviations are recorded as explicit decisions, not absorbed
 silently.
