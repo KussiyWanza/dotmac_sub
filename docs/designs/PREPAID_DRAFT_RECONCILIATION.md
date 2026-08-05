@@ -75,6 +75,15 @@ draft reconciliation command. A failure between the commands leaves a valid,
 visible prepaid draft that can be safely replayed; it never leaves an issued or
 partially settled invoice.
 
+When an onboarding proforma belongs to a native-after-handoff account that
+existed before customer-subledger authority activation but entered the prepaid
+funding cohort later, the opening prerequisite may be completed through the
+separately approved single-account post-cutover opening command. That command
+uses the immutable original authority cutoff, ignores no evidence for the
+selected account, and leaves unrelated opening debt unchanged. Proforma
+adoption remains blocked until the opening is captured; deployment alone never
+repairs the invoice.
+
 The owner separately repairs an already-paid unlinked document only when the
 operator supplies the exact invoice/subscription pair and the current snapshot
 proves one positive line, one active full-value allocation, one successful

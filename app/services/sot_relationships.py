@@ -3117,7 +3117,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "Splynx only when account provenance proves the customer was "
                     "created after the fixed legacy handoff with no Splynx identity. "
                     "The zero history component and canonical native facts are "
-                    "fingerprinted before normal approval and capture."
+                    "fingerprinted before normal approval and capture. After "
+                    "authority activation, a separate single-account preview derives "
+                    "the immutable original cutoff and evaluates only the explicitly "
+                    "selected eligible native account; it cannot satisfy initial "
+                    "complete-cohort cutover evidence."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3223,7 +3227,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "reviewed reconstruction/opening positions, or a "
                                 "typed native-after-handoff target proven from the "
                                 "account creation instant, absent Splynx identity, "
-                                "fixed handoff, and canonical native financial facts"
+                                "fixed handoff, and canonical native financial facts; "
+                                "post-cutover single-account evidence is bounded at "
+                                "the original authority verification cutoff"
                             ),
                         ),
                         AuthorityInput(
@@ -3257,19 +3263,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     transaction=TransactionContract(
                         mode=TransactionMode.OWNER_MANAGED,
                         boundary=(
-                            "Each terminal consumption, complete-cohort run, or "
-                            "approval enters execute_owner_command once on a "
-                            "transaction-free session."
+                            "Each terminal consumption, complete-cohort run, explicit "
+                            "post-cutover account run, or approval enters "
+                            "execute_owner_command once on a transaction-free session."
                         ),
                         locking=(
                             "Terminal delivery uniqueness is database-enforced; "
                             "verification locks the complete selected Subscription, "
                             "contract-version, and obligation cohort; approvals lock "
-                            "one run."
+                            "one run. Post-cutover capture separately locks and "
+                            "revalidates the one selected customer account."
                         ),
                         idempotency=(
                             "One terminal evidence row per event and one run per "
-                            "business idempotency key. Replays return stored evidence."
+                            "business idempotency key. The post-cutover account ID is "
+                            "part of run identity; replays return stored evidence."
                         ),
                         retries=(
                             "Delivery and run commands are retryable. Expected new-"
@@ -3295,6 +3303,27 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                                 "billing.shadow_verification."
                                 "opening_position_already_captured"
                             ),
+                            "billing.shadow_verification.account_not_found",
+                            (
+                                "billing.shadow_verification."
+                                "account_not_in_funding_cohort"
+                            ),
+                            "billing.shadow_verification.corrupt_authority_evidence",
+                            "billing.shadow_verification.opening_not_required",
+                            (
+                                "billing.shadow_verification."
+                                "post_cutover_scope_requires_native_account"
+                            ),
+                            (
+                                "billing.shadow_verification."
+                                "post_cutover_scope_unavailable"
+                            ),
+                            (
+                                "billing.shadow_verification."
+                                "shadow_fact_after_authority_cutoff"
+                            ),
+                            "billing.shadow_verification.source_cohort_incomplete",
+                            "billing.shadow_verification.stale_reviewed_preview",
                             "billing.shadow_verification.verification_blockers_present",
                             "billing.shadow_verification.verification_run_not_found",
                         ),
@@ -3303,6 +3332,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "an incomplete or non-timezone-aware observation window",
                             "any unresolved, ambiguous, unlinked, duplicate, gap, "
                             "overlap, or variance category",
+                            "a selected account outside the native post-cutover "
+                            "completion contract or changed after preview",
                             "finance approval without operator approval",
                         ),
                     ),
@@ -3352,6 +3383,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     test_refs=(
                         "tests/test_billing_shadow_pipeline.py",
                         "tests/test_billing_phase2_shadow.py",
+                        "tests/test_subledger_opening_positions.py",
                         "tests/architecture/test_billing_target_architecture.py",
                     ),
                 ),
@@ -3656,7 +3688,12 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "shadow position at the preview cutoff, so forward groups are not "
                     "double-counted. The complete source cohort is mandatory. A later "
                     "completion run preserves existing immutable openings and captures "
-                    "only missing accounts; no account is permanently excluded."
+                    "only missing accounts; no account is permanently excluded. After "
+                    "authority activation, a distinct single-account completion may "
+                    "capture one explicitly selected native-after-handoff account "
+                    "against the original cutoff without reading or changing unrelated "
+                    "opening debt. It is forbidden before activation and cannot support "
+                    "the initial cutover gate."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -3694,7 +3731,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             kind=AuthorityKind.AUTHORITATIVE_RECORD,
                             source=(
                                 "immutable phase_3_opening_preview run with exact "
-                                "result fingerprint plus operator and finance approval"
+                                "result fingerprint plus operator and finance approval, "
+                                "or one immutable phase_3_post_cutover_opening_preview "
+                                "bound to an explicit account and the active authority "
+                                "record"
                             ),
                         ),
                         AuthorityInput(
@@ -3738,17 +3778,21 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         boundary=(
                             "The fingerprint-bound capture enters execute_owner_command "
                             "once; every opening evidence row, posting group, and capture "
-                            "event commits or rolls back as one transaction."
+                            "event commits or rolls back as one transaction. A bounded "
+                            "post-cutover capture uses the same owner transaction and "
+                            "never updates the authority record."
                         ),
                         locking=(
                             "The approved verification run is locked before capture; "
+                            "a post-cutover run then locks and recomputes its one selected "
+                            "account against the immutable original cutoff; "
                             "unique account/currency and posting idempotency constraints "
                             "arbitrate concurrent attempts."
                         ),
                         idempotency=(
                             "One immutable opening per account/currency. Exact replay of "
                             "the same reviewed run returns the recorded cohort; changed "
-                            "rows or fingerprints fail closed."
+                            "rows, selected-account evidence, or fingerprints fail closed."
                         ),
                         retries=(
                             "Retry the complete command with the same approved run and "
@@ -3810,6 +3854,7 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "missing operator or finance approval",
                             "changed or corrupt reviewed fingerprint",
                             "an incomplete source cohort",
+                            "a stale or ineligible selected post-cutover account",
                             "an existing account/currency opening",
                         ),
                     ),
@@ -3839,7 +3884,8 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         new_owner=("financial.customer_subledger_opening_positions"),
                         verification=(
                             "Fingerprint-bound complete-cohort preview/capture, "
-                            "atomic rollback, idempotency, and cohort parity tests."
+                            "post-cutover single-account revalidation, atomic rollback, "
+                            "idempotency, and cohort parity tests."
                         ),
                         cutover_gate=(
                             "Every account present at subledger activation has one "
@@ -4666,7 +4712,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "the fixed legacy handoff with no Splynx identity has a typed "
                     "zero history component plus canonical native facts; runtime "
                     "money actions remain quarantined until approved immutable "
-                    "opening capture. This reconstruction owner never rewrites an "
+                    "opening capture. A post-cutover single-account review bounds "
+                    "those native facts at the immutable original authority cutoff so "
+                    "later authoritative postings are not absorbed twice. This "
+                    "reconstruction owner never rewrites an "
                     "opening or posts money."
                 ),
             ),

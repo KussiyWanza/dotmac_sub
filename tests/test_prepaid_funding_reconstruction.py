@@ -511,6 +511,7 @@ def test_native_after_handoff_target_needs_no_splynx_snapshot(
             currency="NGN",
             status=PaymentStatus.succeeded,
             paid_at=position_at + timedelta(days=10),
+            created_at=position_at + timedelta(days=10),
         )
     )
     db_session.commit()
@@ -526,6 +527,12 @@ def test_native_after_handoff_target_needs_no_splynx_snapshot(
     assert target.origin is PrepaidOpeningTargetOrigin.native_after_handoff
     assert target.source_position_at == LEGACY_FINANCIAL_HANDOFF_AT
     assert target.amount == Decimal("18812.50")
+    cutoff_target = preview_prepaid_opening_targets(
+        db_session,
+        [native.id],
+        as_of=position_at + timedelta(days=5),
+    )[native.id]
+    assert cutoff_target.amount == Decimal("0.00")
     with pytest.raises(PrepaidFundingBaselineMissingError, match="baseline missing"):
         prepaid_available_balance(db_session, native.id)
 
