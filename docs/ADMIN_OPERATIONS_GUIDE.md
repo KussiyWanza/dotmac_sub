@@ -1111,6 +1111,12 @@ Permission format: `resource:action`
 | secret/s3 | access_key, secret_key | MinIO storage |
 | secret/migration | smartolt_api_key | Data migration |
 | secret/notifications | smtp_host, smtp_port, smtp_username, smtp_password, sms_api_key, sms_api_secret | Email/SMS when configured |
+| secret/integrations/meta_social | facebook_page_access_token, instagram_login_access_token, webhook_signing_secret, webhook_verify_token | Facebook Page and Instagram inbox transport |
+
+The inventory expands OpenBao KV v2 folders and displays editable leaf paths.
+For example, `integrations/` appears as
+`secret/integrations/meta_social`, with field names only; existing values remain
+masked and are never returned to the browser.
 
 ### Reference Format
 
