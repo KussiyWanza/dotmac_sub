@@ -68,6 +68,9 @@ class EventType(enum.Enum):
     integration_installation_capability_provisioned = (
         "integration.installation.capability_provisioned"
     )
+    integration_installation_meta_social_configured = (
+        "integration.installation.meta_social_configured"
+    )
     integration_job_capability_activated = "integration.job.capability_activated"
     oauth_token_refreshed = "oauth_token.refreshed"
     oauth_token_refresh_failed = "oauth_token.refresh_failed"
@@ -129,6 +132,7 @@ class EventType(enum.Enum):
     service_extension_created = "billing.service_extension_created"
     service_extension_applied = "billing.service_extension_applied"
     service_extension_canceled = "billing.service_extension_canceled"
+    service_extension_reversed = "billing.service_extension_reversed"
     service_extension_anchor_repaired = "billing.service_extension_anchor_repaired"
     service_extended = "billing.service_extended"
 

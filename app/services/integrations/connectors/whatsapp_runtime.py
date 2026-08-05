@@ -109,6 +109,7 @@ def normalize_inbound_webhook(
             "provider": provider,
             "from": sender,
             "normalized_from": normalize_phone_identifier(sender),
+            "contact_name": payload.get("contact_name"),
             "text": message.get("text") or payload.get("text"),
             "external_id": message.get("id") or payload.get("id"),
             "raw": payload,

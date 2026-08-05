@@ -22,6 +22,7 @@ from app.models.network import (
 )
 from app.models.ont_observation import OntObservation
 from app.models.tr069 import Tr069AcsServer
+from app.services.control_plane_intent import DesiredValueProvenance
 from app.services.network.reconcile import (
     AcsObservedFields,
     OltObservedFields,
@@ -291,7 +292,15 @@ def test_desired_dual_stack_is_loaded_from_wan_intent(db_session, ont):
     desired = desired_from_ont_unit(db_session, ont)
 
     assert desired.ipv6_enabled is True
+    assert desired.ipv6_enabled_provenance is DesiredValueProvenance.explicit
     assert desired.tr069_data_model_root == "Device"
+
+
+def test_missing_ipv6_intent_remains_provenance_unknown(db_session, ont):
+    desired = desired_from_ont_unit(db_session, ont)
+
+    assert desired.ipv6_enabled is False
+    assert desired.ipv6_enabled_provenance is DesiredValueProvenance.unknown
 
 
 def test_device_root_is_inferred_from_model_capability_before_first_inform(
@@ -343,6 +352,7 @@ def test_apply_writes_wifi_to_desired_config(db_session, ont):
 
     assert ont.desired_config["wifi"]["ssid"] == "NEW_SSID"
     assert ont.desired_config["wifi"]["password"] == "new-pass"
+    assert "ip_protocol" not in ont.desired_config.get("wan", {})
 
 
 def test_apply_persists_dual_stack_intent(db_session, ont):
@@ -351,7 +361,11 @@ def test_apply_persists_dual_stack_intent(db_session, ont):
     target = dataclasses.replace(
         desired_from_ont_unit(db_session, ont), ipv6_enabled=True
     )
-    apply_proposed_change(ont, target)
+    apply_proposed_change(
+        ont,
+        target,
+        changed_fields=frozenset({"ipv6_enabled"}),
+    )
 
     assert ont.desired_config["wan"]["ip_protocol"] == "dual_stack"
 

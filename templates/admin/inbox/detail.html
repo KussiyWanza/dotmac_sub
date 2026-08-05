@@ -15,7 +15,7 @@
 
     {% call(content) page_header(
         title=timeline.subject or "Inbox Conversation",
-        subtitle=(timeline.contact_address or "No contact address") ~ " · " ~ (timeline.channel_type | replace('_', ' ') | title),
+        subtitle=timeline.contact_name ~ " · " ~ (timeline.channel_type | replace('_', ' ') | title),
         icon='<svg class="h-6 w-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h8M8 14h5m8-2a9 9 0 11-4.5-7.8L21 3v5h-5"/></svg>',
         color="cyan",
         color2="slate",

@@ -1,7 +1,7 @@
 # Integration Platform Source-of-Truth Design
 
 Status: implemented source-of-truth architecture, 2026-07-20. The first-party
-CRM, ERP, direct Meta WhatsApp, Paystack, Flutterwave, and HTTP webhook paths
+CRM, ERP, direct Meta WhatsApp, Meta social inbox, Paystack, Flutterwave, and HTTP webhook paths
 have completed cutover. Their former direct transports and duplicate delivery
 stores are retired by migration `380_integration_platform_cutover`.
 
@@ -33,7 +33,8 @@ The integration surface now has one executable connector contract:
 - `integration.installations` owns immutable configuration revisions, secret
   references, installation lifecycle, and enabled capability bindings.
 - `integration.runtime` is the only execution path for CRM, ERP, direct Meta
-  WhatsApp, Paystack, and Flutterwave transport operations.
+  WhatsApp, Facebook Messenger, Instagram Login, Paystack, and Flutterwave
+  transport operations.
 - `integration.delivery` is the only outbound HTTP webhook subscription,
   delivery, retry, dead-letter, and replay owner.
 - `integration.inbox` is the only durable receipt and replay-evidence owner for
@@ -420,6 +421,7 @@ interactive traffic uses typed service ports.
 | CRM | Direct `CRMClient` construction and CRM-specific delivery records | `dotmac.crm` capabilities plus `integration.inbox` | All subscriber, ticket, operational, portal, quote, and inbound-event calls use the runtime; enabled ticket pull additionally requires one connection-validated ticket binding and one active bound manual job |
 | Outbound webhooks and hooks | `events.webhook_deliveries`, webhook endpoint tables, and `integration.hooks` | `integration.delivery` using `events.deliver.v1` | Duplicate tables, services, routes, tasks, and CLI execution are removed |
 | WhatsApp messaging | Settings-backed provider client | Direct Meta `messaging.send.v1`, `messaging.receive.v1`, and `messaging.templates.read.v1` bindings | Outbound callers and the verified inbound route use one installation |
+| Meta social inbox | Settings-backed app secrets, expired OAuth projections, and direct `meta_pages` delivery | `meta.social` with separate Facebook Page and Instagram Login credentials behind `messaging.send.v1` and `messaging.receive.v1` | New delivery and webhook verification use one version-pinned installation; production traffic cutover remains operator-gated |
 | ERP | Direct ERP client construction | `dotmac.erp` versioned capabilities | Outbox, inventory, operations, expense, purchasing, and regulatory calls use the runtime |
 | Payments | Direct Paystack and Flutterwave services plus a payment-specific webhook dead-letter store | Billing-owned decisions using typed payment capabilities and `integration.inbox` | Intent, signature verification, reconciliation, refund, and replay evidence use one binding |
 
@@ -446,6 +448,9 @@ delivery/inbox evidence remain intact.
 9. Explicit CRM ticket-observation provisioning, exact job activation, and a
    deployment/scheduler readiness invariant preventing an enabled control from
    running without its binding and job.
+10. Meta social inbox transport with distinct Facebook Page and Instagram
+    Login account bindings, Meta-owned webhook verification, and no WhatsApp or
+    expired-OAuth credential fallback.
 
 Signed external artifacts and OAuth installation grants require separate
 approved designs before they can become live owners. They are not implicit

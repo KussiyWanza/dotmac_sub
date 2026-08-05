@@ -27,7 +27,7 @@
 
     <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-            <a href="/admin/sales/leads" class="inline-flex items-center gap-1 text-sm font-medium text-cyan-700 hover:text-cyan-800 dark:text-cyan-400"><span aria-hidden="true">&larr;</span> Back to Leads</a>
+            <a href="{% if inbox_conversation_id %}/admin/inbox?c={{ inbox_conversation_id }}{% else %}/admin/sales/leads{% endif %}" class="inline-flex items-center gap-1 text-sm font-medium text-cyan-700 hover:text-cyan-800 dark:text-cyan-400"><span aria-hidden="true">&larr;</span> {% if inbox_conversation_id %}Back to conversation{% else %}Back to Leads{% endif %}</a>
             <div class="mt-2 flex flex-wrap items-center gap-3">
                 <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ lead.title or ('Lead ' ~ lead.id|string|truncate(8, True, '')) }}</h1>
                 {{ status_badge(status_label, lead_status_variants.get(status_val, 'default'), size='sm') }}

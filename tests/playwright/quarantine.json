@@ -107,14 +107,6 @@
     "review_by": "2026-09-30"
   },
   {
-    "spec": "tests/playwright/e2e/test_sales_leads.py::TestSalesLeads::test_mobile_list_keeps_primary_workflow_usable",
-    "reason": "Page-object drift under investigation; fails with the harness repaired",
-    "issue": "#1895",
-    "category": "tail",
-    "owner": "unassigned",
-    "review_by": "2026-09-30"
-  },
-  {
     "spec": "tests/playwright/e2e/test_system.py::TestModuleManager::test_feature_controls_show_tri_state_provenance",
     "reason": "Page-object drift under investigation; fails with the harness repaired",
     "issue": "#1895",

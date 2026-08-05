@@ -149,13 +149,16 @@ notice. `Refresh list` refetches and swaps only
 boundary and preserves the selected conversation in the URL. Thread refresh
 remains independent, so a focused composer is never replaced.
 
-Each queue row displays only projected facts. Contact display name is sourced
-from bounded conversation metadata when available, unread count is the number
-of inbound messages after the operator's authoritative read cursor, and ticket,
-status, priority, assignment/team, and label badges come from the existing
-queue projection. Only the first two labels render, with a numeric remainder.
-The receiving Inbox badge remains absent until a real provider account/mailbox
-identity is projected.
+Each queue row displays only projected facts. Contact display identity resolves
+in this order: the linked canonical Party name, the linked legacy Subscriber
+name, the latest inbound provider-observed name, an operator/provider name on
+the conversation, then the channel address. The same projected name and
+initials drive the queue, detail header, contact drawer, and avatar hover text.
+Unread count is the number of inbound messages after the operator's
+authoritative read cursor, and ticket, status, priority, assignment/team, and
+label badges come from the existing queue projection. Only the first two labels
+render, with a numeric remainder. The receiving Inbox badge remains absent
+until a real provider account/mailbox identity is projected.
 
 `Needs attention` is a live, counted cohort distinct from Unreplied. It selects
 an active conversation only after a customer message, a successful human-agent
@@ -197,17 +200,29 @@ a persisted UI flag.
 - Tablet: fixed list and thread; context is an overlay drawer.
 - Mobile: list or thread, never squeezed columns. Thread provides a back action.
 
-## CRM inbox replication previews
+## Authoritative customer context
 
 The CRM visual structure is replicated inside the admin page-content boundary.
 Existing queue, conversation, contact, ticket, assignment, status, note,
 attachment, transcript, and outbound-message actions continue to use their
 registered backend owners.
 
-UI whose backend contract does not yet exist is marked
-`data-replica-placeholder` and visibly labelled as dummy or preview data.
-Contextual examples appear only in their relevant panel, while event-only
-surfaces remain hidden by default. The `crm_preview` query parameter may show
+The contact drawer contains no CRM customer placeholders. Party profile,
+Lead, active Ticket, recent conversation, Project, and Project Task sections
+are composed by `communications.team_inbox_contact_context` from exact
+structural relationships and permission-scoped owner queries. A successful
+empty query renders `0`; missing/not-applicable values render `—`; unavailable,
+not-calculated, stale, and restricted outcomes remain distinct and are never
+coerced to zero. Sections fail independently.
+
+`communications.inbox_lead_actions` resolves the profile and Lead controls.
+It reuses a direct Lead, requires an authoritative pipeline before examining
+Party Leads, requires explicit selection when several are eligible, creates a
+Lead without replacing an exact Party, and sends ambiguous identities to
+review. New-prospect authoring creates Party, Lead, origin evidence, and both
+conversation relationships in one owner transaction.
+
+Event-only replica surfaces remain hidden by default. The `crm_preview` query parameter may show
 an event preview (`comment`, `reply-failed`, `notifications`, `incoming-call`,
 or `active-call`) or `all`. Preview values are not submitted and must not be
 treated as customer facts.
@@ -219,9 +234,6 @@ The following remain non-authoritative preview UI:
 - social-post comment thread and public comment reply;
 - AI reply generation and voice capture;
 - fine-grained WhatsApp template parameter fields;
-- CRM-only profile completion, merge/convert/new-lead actions, demographic and
-  masked identity fields, retention indicator, activity statistics, embedded
-  conversation history, projects, and tasks.
 - The document does not scroll; list, timeline, context, and long overlays
   scroll independently.
 

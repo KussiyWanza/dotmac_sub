@@ -61,6 +61,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.services.control_plane_intent import (
+    DesiredValueProvenance,
+    has_executable_desired_provenance,
+)
+
 from .actions import (
     AcsAddObject,
     AcsDeleteObject,
@@ -287,6 +292,8 @@ def _plan_tr069_profile_only(
     drifts: list[Drift],
 ) -> None:
     """Plan only the requested OLT TR-069 profile binding."""
+    if not is_deliverable("tr069_profile_id", desired.tr069_profile_id):
+        return
     if observed.olt.olt_tr069_profile_id == desired.tr069_profile_id:
         return
     actions.append(
@@ -415,7 +422,9 @@ def _plan_olt_side(
                 )
             )
 
-        if _observed_differs(olt_obs.olt_tr069_profile_id, desired.tr069_profile_id):
+        if is_deliverable(
+            "tr069_profile_id", desired.tr069_profile_id
+        ) and _observed_differs(olt_obs.olt_tr069_profile_id, desired.tr069_profile_id):
             actions.append(
                 OltTr069ServerConfig(
                     fsp=desired.fsp,
@@ -476,7 +485,9 @@ def _plan_olt_side(
 
     # 4. Fresh authorization always needs the TR-069 binding. Existing ONTs
     # are handled by the observed-profile diff above.
-    if not olt_obs.olt_present:
+    if not olt_obs.olt_present and is_deliverable(
+        "tr069_profile_id", desired.tr069_profile_id
+    ):
         actions.append(
             OltTr069ServerConfig(
                 fsp=desired.fsp,
@@ -555,6 +566,7 @@ def _plan_service_ports(
         desired.wan_service_port_index is not None
         and desired.wan_service_port_index not in observed_indices
         and desired.wan_vlan is not None
+        and is_deliverable("wan_vlan", desired.wan_vlan)
         and desired.wan_mode == "pppoe"
     ):
         actions.append(
@@ -585,6 +597,8 @@ def _plan_olt_omci_wan(
         or desired.wan_config_profile_id is None
         or desired.wan_config_profile_id <= 0
         or desired.wan_internet_config_ip_index is None
+        or desired.wan_vlan is None
+        or not is_deliverable("wan_vlan", desired.wan_vlan)
     ):
         return False
 
@@ -594,7 +608,7 @@ def _plan_olt_omci_wan(
             fsp=desired.fsp,
             ont_id=desired.olt_ont_id,
             ip_index=ip_index,
-            vlan=desired.wan_vlan or 0,
+            vlan=desired.wan_vlan,
             username=desired.wan_pppoe_username or "",
             password_ref=desired.wan_pppoe_password_ref or "",
         )
@@ -666,7 +680,16 @@ def _plan_acs_side(
     # ``acs_present``: this code only runs for devices the ACS can deliver to.
     fresh_bring_up = not observed.olt.olt_present
 
-    if not narrow_feature_change and desired.wan_mode in {"dhcp", "static"}:
+    wan_wcd_index = desired.wan_pppoe_wcd_index
+    wan_vlan = desired.wan_vlan
+    if (
+        not narrow_feature_change
+        and desired.wan_mode in {"dhcp", "static"}
+        and wan_wcd_index is not None
+        and is_deliverable("wan_pppoe_wcd_index", wan_wcd_index)
+        and wan_vlan is not None
+        and is_deliverable("wan_vlan", wan_vlan)
+    ):
         if fresh_bring_up or _wan_ip_differs(desired, observed):
             actions.append(
                 AcsSetWanIp(
@@ -676,10 +699,10 @@ def _plan_acs_side(
                         or desired.tr069_data_model_root
                         or "InternetGatewayDevice"
                     ),
-                    wcd_index=desired.wan_pppoe_wcd_index,
+                    wcd_index=wan_wcd_index,
                     instance_index=desired.wan_pppoe_instance_index,
                     mode=desired.wan_mode,
-                    vlan=desired.wan_vlan or 0,
+                    vlan=wan_vlan,
                     nat_enabled=desired.nat_enabled,
                     ip_address=desired.wan_static_ip,
                     subnet_mask=desired.wan_static_subnet,
@@ -764,7 +787,12 @@ def _plan_acs_side(
         return identity
 
     # Defensive NAT on routed mode (Fix #4 follow-up).
-    if desired.wan_mode == "pppoe" and not omci_wan_planned:
+    if (
+        desired.wan_mode == "pppoe"
+        and not omci_wan_planned
+        and desired.wan_pppoe_wcd_index is not None
+        and is_deliverable("wan_pppoe_wcd_index", desired.wan_pppoe_wcd_index)
+    ):
         wcd = desired.wan_pppoe_wcd_index
         inst = (
             _desired_wan_ppp_instance(desired, observed)
@@ -803,7 +831,16 @@ def _plan_acs_side(
                 )
             )
 
-    if not wifi_only_change and (fresh_bring_up or _ipv6_differs(desired, observed)):
+    ipv6_provenance = (
+        DesiredValueProvenance.explicit
+        if "ipv6_enabled" in proposed_fields
+        else desired.ipv6_enabled_provenance
+    )
+    if (
+        not wifi_only_change
+        and has_executable_desired_provenance(ipv6_provenance)
+        and (fresh_bring_up or _ipv6_differs(desired, observed))
+    ):
         data_model_root = (
             observed.acs.acs_data_model_root or desired.tr069_data_model_root
         )
@@ -824,6 +861,7 @@ def _plan_acs_side(
                     interface_index=desired.wan_pppoe_instance_index,
                     enabled=desired.ipv6_enabled,
                     request_prefixes=desired.ipv6_enabled,
+                    provenance=ipv6_provenance,
                 )
             )
 
@@ -854,12 +892,24 @@ def _plan_acs_side(
     force_endpoint_write = bool(proposed_fields & _ACS_ENDPOINT_FIELDS) and (
         force_proposed_writes
     )
-    if force_endpoint_write or _management_server_differs(desired, observed):
+    cr_username = desired.cr_username
+    cr_password_ref = desired.cr_password_ref
+    cr_credentials_ready = (
+        isinstance(cr_username, str)
+        and isinstance(cr_password_ref, str)
+        and is_deliverable("cr_username", cr_username)
+        and is_deliverable("cr_password_ref", cr_password_ref)
+    )
+    if cr_credentials_ready and (
+        force_endpoint_write or _management_server_differs(desired, observed)
+    ):
+        assert isinstance(cr_username, str)
+        assert isinstance(cr_password_ref, str)
         actions.append(
             AcsSetManagementServer(
                 device_id=device_id,
-                cr_username=desired.cr_username or "admin",
-                cr_password_ref=desired.cr_password_ref or "",
+                cr_username=cr_username,
+                cr_password_ref=cr_password_ref,
                 inform_interval_sec=desired.periodic_inform_interval_sec,
                 data_model_root=(
                     observed.acs.acs_data_model_root
@@ -898,6 +948,13 @@ def _plan_acs_wan_ppp(
     live device has no WANPPPConnection under the desired WCD", not "we have
     never heard from this device".
     """
+    if (
+        desired.wan_pppoe_wcd_index is None
+        or not is_deliverable("wan_pppoe_wcd_index", desired.wan_pppoe_wcd_index)
+        or desired.wan_vlan is None
+        or not is_deliverable("wan_vlan", desired.wan_vlan)
+    ):
+        return
     target_inst = _desired_wan_ppp_instance(desired, observed)
     # If ACS doesn't have a WAN PPP instance, addObject first.
     created = target_inst is None
@@ -910,6 +967,7 @@ def _plan_acs_wan_ppp(
                     f"WANConnectionDevice.{desired.wan_pppoe_wcd_index}."
                     f"WANPPPConnection"
                 ),
+                wcd_index=desired.wan_pppoe_wcd_index,
             )
         )
         drifts.append(
@@ -939,7 +997,7 @@ def _plan_acs_wan_ppp(
                 instance_index=target_inst,
                 username=desired.wan_pppoe_username or "",
                 password_ref=desired.wan_pppoe_password_ref or "",
-                vlan=desired.wan_vlan or 0,
+                vlan=desired.wan_vlan,
             )
         )
         drifts.append(
@@ -1346,6 +1404,8 @@ def _target_wan_ppp_location(
     desired: OntDesiredState,
     observed: OntObservedState,
 ) -> tuple[int, int] | None:
+    if desired.wan_pppoe_wcd_index is None:
+        return None
     inst = _desired_wan_ppp_instance(desired, observed)
     if inst is None:
         return None

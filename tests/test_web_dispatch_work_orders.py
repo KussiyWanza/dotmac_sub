@@ -123,7 +123,11 @@ def test_list_page_counts_filters_and_options(db_session):
 
 def test_task_deep_link_prefills_and_creates_authoritative_bindings(db_session):
     sub = _subscriber(db_session)
-    project = Project(name="Gudu install", subscriber_id=sub.id)
+    project = Project(
+        name="Gudu install",
+        subscriber_id=sub.id,
+        customer_address="17 Gudu Crescent, Abuja",
+    )
     db_session.add(project)
     db_session.flush()
     task = ProjectTask(
@@ -152,6 +156,7 @@ def test_task_deep_link_prefills_and_creates_authoritative_bindings(db_session):
     assert prefill.description == task.description
     assert prefill.priority == "high"
     assert prefill.work_type == "install"
+    assert prefill.address == "17 Gudu Crescent, Abuja"
 
     work_order = web_dispatch.create_from_form(
         db_session,
@@ -162,11 +167,13 @@ def test_task_deep_link_prefills_and_creates_authoritative_bindings(db_session):
             "project_task_id": str(prefill.project_task_id),
             "title": prefill.title,
             "status": "scheduled",
+            "address": prefill.address,
         },
     )
 
     assert work_order.project_id == project.id
     assert work_order.project_task_id == task.id
+    assert work_order.address == "17 Gudu Crescent, Abuja"
 
 
 def test_task_deep_link_fails_closed_without_project_subscriber(db_session):

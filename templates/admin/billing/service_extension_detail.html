@@ -84,10 +84,10 @@
             <p class="mt-1 text-sm font-medium text-slate-900 dark:text-white">{{ detail.impact.outcome_message }}</p>
             {% endif %}
             {% if detail.can_apply %}
-            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">A future billing date is extended from that date. An expired billing date is extended from the time this is applied. Applying may restore access held only by billing locks. This cannot be undone in bulk.</p>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">A future billing date is extended from that date. An expired billing date is extended from the time this is applied. Applying may restore access held only by billing locks. An applied extension can only be reversed through a separate reviewed impact preview.</p>
             {% endif %}
         </div>
-        {% if detail.can_apply or detail.can_cancel %}
+        {% if detail.can_apply or detail.can_cancel or detail.can_reverse %}
         <div class="flex flex-col gap-2 sm:flex-row">
             {% if detail.can_apply %}
             <form method="post" action="/admin/billing/service-extensions/{{ detail.summary.id }}/apply"
@@ -105,10 +105,32 @@
                 <button type="submit" class="w-full rounded-lg px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700 sm:w-auto">Cancel extension</button>
             </form>
             {% endif %}
+            {% if detail.can_reverse %}
+            <form method="post" action="/admin/billing/service-extensions/{{ detail.summary.id }}/reverse/preview" class="w-full space-y-2 sm:w-80">
+                {% include "components/forms/csrf_input.html" %}
+                <label for="reversal-reason" class="block text-xs font-medium text-slate-600 dark:text-slate-300">Reviewed reversal reason</label>
+                <textarea id="reversal-reason" name="reason" rows="2" maxlength="2000" required class="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white" placeholder="Why must this applied grant be reversed?"></textarea>
+                <button type="submit" class="w-full rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700">Preview reversal impact</button>
+            </form>
+            {% endif %}
         </div>
         {% endif %}
     </div>
     {% endcall %}
+
+    {% if detail.reversal %}
+    {% call card("Reversal evidence", color="red") %}
+    <p class="text-sm text-slate-700 dark:text-slate-300">{{ detail.reversal.reason }}</p>
+    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Reversed by {{ detail.reversal.reversed_by_label }} at {{ detail.reversal.reversed_at_display }}.</p>
+    <dl class="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div><dt class="text-slate-500 dark:text-slate-400">Subscriptions inspected</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ detail.reversal.inspected_count }}</dd></div>
+        <div><dt class="text-slate-500 dark:text-slate-400">Prior anchors restored</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ detail.reversal.restored_anchor_count }}</dd></div>
+        <div><dt class="text-slate-500 dark:text-slate-400">Later/lower anchors preserved</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ detail.reversal.preserved_later_anchor_count + detail.reversal.preserved_lower_anchor_count }}</dd></div>
+        <div><dt class="text-slate-500 dark:text-slate-400">Terminal services preserved</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ detail.reversal.preserved_terminal_count }}</dd></div>
+    </dl>
+    <p class="mt-3 text-xs text-slate-500 dark:text-slate-400">The original grant entries remain immutable evidence but no longer provide coverage or an enforcement shield. Financial access returns to the normal account-scoped policy workflow.</p>
+    {% endcall %}
+    {% endif %}
 
     {% call card("Recent activity", color="amber") %}
     <div aria-label="Service extension recent activity">

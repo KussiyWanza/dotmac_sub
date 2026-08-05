@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+from app.services.control_plane_intent import DesiredValueProvenance
+
 from .state import (
     Tr069RemoteAccessParameterPaths,
     Tr069WifiParameterPaths,
@@ -287,6 +289,10 @@ class AcsAddObject:
 
     device_id: str
     object_path: str  # e.g. "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection"
+    # Required for WANPPPConnection targets so desired layout provenance is
+    # checked independently of the rendered object path. Other object kinds
+    # leave it None.
+    wcd_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -428,6 +434,7 @@ class AcsSetIpv6:
     interface_index: int
     enabled: bool
     request_prefixes: bool
+    provenance: DesiredValueProvenance = DesiredValueProvenance.explicit
 
 
 @dataclass(frozen=True)

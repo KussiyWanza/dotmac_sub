@@ -15,6 +15,7 @@ from app.models.audit import AuditActorType, AuditEvent
 from app.models.catalog import SubscriptionStatus
 from app.models.service_extension import (
     ServiceExtension,
+    ServiceExtensionReversal,
     ServiceExtensionScope,
     ServiceExtensionStatus,
 )
@@ -33,6 +34,7 @@ _ACTIVITY_ACTIONS = {
     "billing.service_extension_created",
     "billing.service_extension_applied",
     "billing.service_extension_canceled",
+    "billing.service_extension_reversed",
 }
 
 
@@ -103,10 +105,35 @@ class ServiceExtensionDetailProjection:
     selected_customers: tuple[ServiceExtensionCustomerItem, ...]
     sample_subscriptions: tuple[ServiceExtensionSubscriptionItem, ...]
     activity: tuple[ServiceExtensionActivityItem, ...]
+    reversal: ServiceExtensionReversalSummaryProjection | None
     can_apply: bool
     can_cancel: bool
+    can_reverse: bool
     apply_idempotency_key: str
     cancel_idempotency_key: str
+    reverse_idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionReversalSummaryProjection:
+    reason: str
+    reversed_by_label: str
+    reversed_at_display: str
+    inspected_count: int
+    restored_anchor_count: int
+    preserved_later_anchor_count: int
+    preserved_lower_anchor_count: int
+    preserved_terminal_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionReversalConfirmationProjection:
+    extension_id: UUID
+    extension_reason: str
+    reversal_reason: str
+    days: int
+    scope_label: str
+    preview: service_extensions_service.ServiceExtensionReversalPreview
 
 
 _STATUS_PRESENTATIONS = {
@@ -128,6 +155,12 @@ _STATUS_PRESENTATIONS = {
         tone=StatusTone.neutral,
         icon=StatusIcon.x,
     ),
+    ServiceExtensionStatus.reversed: StatusPresentation(
+        value=ServiceExtensionStatus.reversed.value,
+        label="Reversed",
+        tone=StatusTone.negative,
+        icon=StatusIcon.x,
+    ),
 }
 
 _SCOPE_LABELS = {
@@ -141,12 +174,14 @@ _ACTION_LABELS = {
     "billing.service_extension_created": "Created",
     "billing.service_extension_applied": "Applied",
     "billing.service_extension_canceled": "Canceled",
+    "billing.service_extension_reversed": "Reversed",
 }
 
 _ACTION_TONES = {
     "billing.service_extension_created": StatusTone.info,
     "billing.service_extension_applied": StatusTone.positive,
     "billing.service_extension_canceled": StatusTone.neutral,
+    "billing.service_extension_reversed": StatusTone.negative,
 }
 
 
@@ -248,6 +283,17 @@ def _activity_details(event: AuditEvent, extension: ServiceExtension) -> str:
         if resumed:
             details += f"; {resumed} restored"
         return details + "."
+    if event.action == "billing.service_extension_reversed":
+        restored = _metadata_count(metadata, "anchors_restored")
+        preserved = (
+            _metadata_count(metadata, "later_anchors_preserved")
+            + _metadata_count(metadata, "lower_anchors_preserved")
+            + _metadata_count(metadata, "terminal_subscriptions_preserved")
+        )
+        return (
+            f"Grant invalidated; {restored} billing anchor(s) restored and "
+            f"{preserved} preserved for safety."
+        )
     return "Pending extension canceled without changing subscription validity."
 
 
@@ -314,7 +360,8 @@ def _legacy_activity(
             )
         )
     if (
-        extension.status == ServiceExtensionStatus.applied
+        extension.status
+        in {ServiceExtensionStatus.applied, ServiceExtensionStatus.reversed}
         and extension.applied_at is not None
         and "billing.service_extension_applied" not in canonical_actions
     ):
@@ -388,6 +435,12 @@ def _impact_projection(
         if extension.skipped_count:
             outcome_message += f"; {extension.skipped_count} skipped"
         outcome_message += "."
+    elif extension.status == ServiceExtensionStatus.reversed:
+        decision_message = (
+            "This extension has been reversed. Its grant intervals no longer "
+            "provide service coverage or an enforcement shield."
+        )
+        outcome_message = None
     else:
         decision_message = "This extension is canceled and cannot be applied."
         outcome_message = None
@@ -460,12 +513,49 @@ def build_service_extension_detail(
         ),
         reverse=True,
     )
+    reversal = db.scalar(
+        select(ServiceExtensionReversal).where(
+            ServiceExtensionReversal.extension_id == extension.id
+        )
+    )
+    reversal_projection: ServiceExtensionReversalSummaryProjection | None = None
+    if reversal is not None:
+        reversed_event = next(
+            (
+                event
+                for event in events
+                if event.action == "billing.service_extension_reversed"
+            ),
+            None,
+        )
+        reversal_projection = ServiceExtensionReversalSummaryProjection(
+            reason=reversal.reason,
+            reversed_by_label=(
+                _actor_label(reversed_event, staff_labels)
+                if reversed_event is not None
+                else _legacy_actor_label(reversal.reversed_by, staff_labels)
+            ),
+            reversed_at_display=display_format.format_timestamp(
+                reversal.reversed_at,
+                db,
+            ),
+            inspected_count=int(reversal.inspected_count),
+            restored_anchor_count=int(reversal.restored_anchor_count),
+            preserved_later_anchor_count=int(reversal.preserved_later_anchor_count),
+            preserved_lower_anchor_count=int(reversal.preserved_lower_anchor_count),
+            preserved_terminal_count=int(reversal.preserved_terminal_count),
+        )
 
     eligibility = service_extensions_service.transition_eligibility(extension.status)
-    can_transition = auth is not None and has_permission(
+    can_apply_or_cancel = auth is not None and has_permission(
         auth,
         db,
         service_extensions_service.APPLY_SCOPE,
+    )
+    can_reverse = auth is not None and has_permission(
+        auth,
+        db,
+        service_extensions_service.REVERSE_SCOPE,
     )
     status_presentation = _STATUS_PRESENTATIONS[extension.status]
     outage_window = (
@@ -545,8 +635,10 @@ def build_service_extension_detail(
             )
         ),
         activity=tuple(activity),
-        can_apply=eligibility.can_apply and can_transition,
-        can_cancel=eligibility.can_cancel and can_transition,
+        reversal=reversal_projection,
+        can_apply=eligibility.can_apply and can_apply_or_cancel,
+        can_cancel=eligibility.can_cancel and can_apply_or_cancel,
+        can_reverse=eligibility.can_reverse and can_reverse,
         apply_idempotency_key=(
             service_extensions_service.transition_idempotency_key(
                 extension.id,
@@ -559,4 +651,34 @@ def build_service_extension_detail(
                 "cancel",
             )
         ),
+        reverse_idempotency_key=(
+            service_extensions_service.transition_idempotency_key(
+                extension.id,
+                "reverse",
+            )
+        ),
+    )
+
+
+def build_service_extension_reversal_confirmation(
+    db: Session,
+    *,
+    extension_id: UUID,
+    reason: str,
+) -> ServiceExtensionReversalConfirmationProjection:
+    """Compose the destructive-action preview from the reversal owner."""
+
+    extension = service_extensions_service.get_extension(db, extension_id)
+    preview = service_extensions_service.preview_service_extension_reversal(
+        db,
+        extension_id=extension.id,
+        reason=reason,
+    )
+    return ServiceExtensionReversalConfirmationProjection(
+        extension_id=extension.id,
+        extension_reason=extension.reason,
+        reversal_reason=preview.reason,
+        days=int(extension.days),
+        scope_label=_SCOPE_LABELS[extension.scope_type],
+        preview=preview,
     )

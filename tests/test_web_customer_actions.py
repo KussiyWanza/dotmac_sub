@@ -17,7 +17,12 @@ from app.models.catalog import (
 )
 from app.models.collections import DunningCase, DunningCaseStatus
 from app.models.enforcement_lock import EnforcementLock, EnforcementReason
-from app.models.subscriber import Subscriber, SubscriberCategory, SubscriberStatus
+from app.models.subscriber import (
+    Reseller,
+    Subscriber,
+    SubscriberCategory,
+    SubscriberStatus,
+)
 from app.services import web_customer_actions as actions
 from app.services.account_lifecycle import has_active_lock
 from app.services.radius import (
@@ -373,6 +378,9 @@ def test_create_person_rejects_overlong_name(db_session):
 
 
 def test_create_person_trims_surrounding_whitespace(db_session):
+    house = Reseller(name="House", code="HOUSE", is_active=True, is_house=True)
+    db_session.add(house)
+    db_session.commit()
     _, created_id = actions.create_customer_from_form(
         db=db_session,
         customer_type="person",
@@ -386,6 +394,40 @@ def test_create_person_trims_surrounding_whitespace(db_session):
     created = db_session.get(Subscriber, created_id)
     assert created.first_name == "John"
     assert created.last_name == "Smith"
+    assert created.reseller_id == house.id
+
+
+def test_create_person_assigns_selected_reseller(db_session):
+    reseller = Reseller(
+        name="Customer Form Partner",
+        contact_email="partner@example.com",
+        is_active=True,
+        is_house=False,
+    )
+    db_session.add(reseller)
+    db_session.commit()
+    _, created_id = actions.create_customer_from_form(
+        db=db_session,
+        customer_type="person",
+        form_data=_person_form_data(
+            email="managed@example.com",
+            managed_by_reseller=True,
+            reseller_id=str(reseller.id),
+        ),
+        contact_columns=_EMPTY_CONTACTS,
+    )
+    created = db_session.get(Subscriber, created_id)
+    assert created.reseller_id == reseller.id
+
+
+def test_create_person_requires_reseller_when_management_is_enabled(db_session):
+    with pytest.raises(ValueError, match="Select the reseller"):
+        actions.create_customer_from_form(
+            db=db_session,
+            customer_type="person",
+            form_data=_person_form_data(managed_by_reseller=True),
+            contact_columns=_EMPTY_CONTACTS,
+        )
 
 
 def test_create_business_rejects_blank_name(db_session):

@@ -23,9 +23,9 @@ from app.services.network.radius_sessions import (
     resolve_subscriber_radius_sessions,
     subscription_session_snapshots,
 )
-from app.services.network.sot_relationships import (
+from app.services.sot_registry.registry import (
     dependencies_for,
-    dependency_order,
+    service_names_for_domain,
 )
 
 
@@ -48,32 +48,41 @@ def _nas_node(db_session, *, pop: PopSite | None = None):
     return nas, node
 
 
-def test_network_sot_relationships_are_ordered():
-    assert dependency_order() == [
-        "identity",
-        "access_path",
-        "radius_sessions",
-        "device_state",
-        "nas_inventory",
-        "subscription_nas_assignment",
-        "nas_lifecycle",
-        "nas_access_path_evidence",
-        "outage_impact",
-        "outage_lifecycle",
-    ]
-    assert dependencies_for("nas_lifecycle") == (
-        "identity",
-        "access_path",
-        "radius_sessions",
-        "nas_inventory",
-        "subscription_nas_assignment",
+def test_network_sot_relationships_come_from_the_canonical_graph():
+    names = service_names_for_domain("network")
+
+    assert names[0] == "network.identity"
+    assert {
+        "network.access_path",
+        "network.nas_lifecycle",
+        "network.outage_lifecycle",
+    } <= set(names)
+    assert dependencies_for("network.access_path") == (
+        "network.identity",
+        "network.fiber_topology",
+        "network.ont_assignment_commands",
+        "network.ont_assignment_identity",
+        "network.fiber_access_attachments",
+        "network.fiber_physical_continuity",
+        "network.forwarding_topology",
     )
-    assert dependencies_for("nas_access_path_evidence") == (
-        "radius_sessions",
-        "nas_lifecycle",
+    assert dependencies_for("network.nas_lifecycle") == (
+        "network.identity",
+        "network.access_path",
+        "network.radius_sessions",
+        "network.nas_inventory",
+        "service_intent.subscription_nas_assignment",
+        "access.radius_state",
+        "runtime.db_sessions",
+        "observability.recording",
     )
-    assert dependencies_for("outage_impact") == ("access_path",)
-    assert dependencies_for("outage_lifecycle") == ("outage_impact",)
+    assert dependencies_for("network.outage_lifecycle") == (
+        "network.outage_impact",
+        "events.dispatcher",
+        "events.owner_outputs",
+        "operations.sla_escalation",
+        "support.ticket_lifecycle",
+    )
 
 
 def test_identity_and_access_path_resolve_subscription_nas_node(

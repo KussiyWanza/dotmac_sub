@@ -480,7 +480,7 @@ def pop_sites_response(db: Session, query: str, limit: int) -> dict:
 
 
 def resellers(db: Session, query: str, limit: int) -> list[dict]:
-    """Search reseller accounts by name."""
+    """Search active external reseller accounts by name, email, or code."""
     term = (query or "").strip()
     if not term:
         return []
@@ -491,13 +491,25 @@ def resellers(db: Session, query: str, limit: int) -> list[dict]:
             or_(
                 Reseller.name.ilike(like_term),
                 Reseller.code.ilike(like_term),
+                Reseller.contact_email.ilike(like_term),
             )
         )
-        .filter(Reseller.is_active == True)
+        .filter(Reseller.is_active == True, Reseller.is_house == False)
+        .order_by(Reseller.name.asc(), Reseller.id.asc())
         .limit(limit)
         .all()
     )
-    return [{"id": r.id, "label": r.name} for r in results]
+    return [
+        {
+            "id": r.id,
+            "label": (
+                f"{r.name} ({r.contact_email})"
+                if r.contact_email
+                else (f"{r.name} ({r.code})" if r.code else r.name)
+            ),
+        }
+        for r in results
+    ]
 
 
 def resellers_response(db: Session, query: str, limit: int) -> dict:

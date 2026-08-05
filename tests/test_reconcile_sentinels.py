@@ -22,10 +22,16 @@ import pytest
 from app.services.control_plane_intent import DesiredValueAuthority
 from app.services.network import effective_ont_config as composer
 from app.services.network.reconcile import (
+    AcsAddObject,
+    AcsSetManagementServer,
+    AcsSetPppoe,
+    AcsSetWanIp,
     AcsSetWifiConfig,
     OltAuthorize,
+    OltCreateServicePort,
     OltModifyLineProfile,
     OltModifyServiceProfile,
+    OltTr069ServerConfig,
     compute_plan,
 )
 from app.services.network.reconcile import adapters as reconcile_adapters
@@ -67,10 +73,11 @@ def _tree(func) -> ast.AST:
 
 
 def _composer_defaults() -> set[str]:
-    """Dotted config paths that ``cfg(..., default=<literal>)`` fills in.
+    """Dotted config paths that ``cfg(..., default=<value>)`` fills in.
 
     A default of ``None`` is not a sentinel — it preserves "unknown" — so it is
-    correctly excluded.
+    correctly excluded. Named-owner calls count too: restricting this audit to
+    literals would let an undeclared default hide behind a helper function.
     """
     found: set[str] = set()
     for node in ast.walk(_tree(composer._values_from_assignment)):
@@ -82,7 +89,9 @@ def _composer_defaults() -> set[str]:
             (kw.value for kw in node.keywords if kw.arg == "default"),
             None,
         )
-        if not isinstance(default, ast.Constant) or default.value is None:
+        if default is None or (
+            isinstance(default, ast.Constant) and default.value is None
+        ):
             continue
         path = [a.value for a in node.args if isinstance(a, ast.Constant)]
         if path:
@@ -204,10 +213,15 @@ def test_inadmissible_entries_are_the_customer_visible_ones():
         rule.field for rule in rules_by_authority(DesiredValueAuthority.inadmissible)
     }
     assert refused == {
+        "cr_password_ref",
+        "cr_username",
         "wifi_ssid",
         "wifi_password_ref",
         "line_profile_id",
         "service_profile_id",
+        "tr069_profile_id",
+        "wan_pppoe_wcd_index",
+        "wan_vlan",
     }
 
 
@@ -283,18 +297,21 @@ def test_fires_for_distinguishes_falsy_from_absent():
     assert absent.fires_for({"lan_dhcp_enabled": True}, keys) is False
 
 
-def test_composer_rule_is_measured_against_config_keys_not_values():
-    """The whole point of the layer distinction.
-
-    ``values["ip_protocol"]`` is always populated because the composer already
-    defaulted it, so measuring there would report zero affected devices for a
-    rule that fires on every unconfigured ONT.
-    """
-    rule = next(rule for rule in RULES if rule.field == "ipv6_enabled")
-    values = {"ip_protocol": "ipv4"}
+def test_declared_composer_default_is_measured_against_config_keys_not_values():
+    rule = next(rule for rule in RULES if rule.field == "wan_pppoe_instance_index")
+    values = {"wan_instance_index": 1}
 
     assert rule.fires_for(values, frozenset()) is True
-    assert rule.fires_for(values, frozenset({"wan.ip_protocol"})) is False
+    assert rule.fires_for(values, frozenset({"wan.instance_index"})) is False
+
+
+def test_pppoe_instance_default_names_the_registered_policy_owner():
+    rule = next(rule for rule in RULES if rule.field == "wan_pppoe_instance_index")
+
+    assert rule.authority is DesiredValueAuthority.declared_default
+    assert rule.adjudication.value == "approved"
+    assert rule.declared_by == "network.ont_provisioning_defaults"
+    assert is_deliverable(rule.field, 1)
 
 
 def test_unmeasurable_rule_refuses_to_report_a_count():
@@ -429,6 +446,41 @@ def test_real_profile_drift_still_repairs(field, action_type, attr):
     emitted = [a for a in plan.actions if isinstance(a, action_type)]
     assert emitted
     assert getattr(emitted[0], attr) == 99
+
+
+def test_unset_tr069_profile_emits_no_binding_action():
+    plan = compute_plan(
+        _desired(tr069_profile_id=0),
+        _observed(olt=_present_olt(olt_tr069_profile_id=2)),
+        "sweep",
+    )
+
+    assert not any(isinstance(action, OltTr069ServerConfig) for action in plan.actions)
+
+
+def test_unset_wan_layout_emits_no_customer_wan_action():
+    plan = compute_plan(
+        _desired(wan_pppoe_wcd_index=None, wan_vlan=None),
+        _observed(olt=_present_olt(), acs=_informed_acs_observed()),
+        "sweep",
+    )
+    assert not any(
+        isinstance(action, (AcsAddObject, AcsSetPppoe, AcsSetWanIp))
+        or (isinstance(action, OltCreateServicePort) and action.slot == "wan")
+        for action in plan.actions
+    )
+
+
+def test_unset_cr_credentials_emit_no_management_server_action():
+    plan = compute_plan(
+        _desired(cr_username="", cr_password_ref=""),
+        _observed(olt=_present_olt(), acs=_informed_acs_observed()),
+        "sweep",
+    )
+
+    assert not any(
+        isinstance(action, AcsSetManagementServer) for action in plan.actions
+    )
 
 
 # ── Planner guards: fresh authorization ─────────────────────────────────────

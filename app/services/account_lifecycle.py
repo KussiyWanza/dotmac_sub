@@ -58,7 +58,14 @@ from app.models.enforcement_lock import (
 from app.models.subscriber import Subscriber, SubscriberStatus
 from app.services.events import emit_event
 from app.services.events.types import EventType
+from app.services.owner_commands import CommandContext
 from app.services.prepaid_enforcement_state import clear_prepaid_enforcement_timers
+from app.services.subscription_lifecycle_evidence import (
+    LifecycleEvidenceGrade,
+    LifecycleEvidenceSource,
+    RecordLifecycleEvidenceCommand,
+    record_lifecycle_evidence,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -133,6 +140,39 @@ class AccountUnsuspendResult:
     status: SubscriberStatus
     resolved_lock_ids: tuple[UUID, ...]
     restored_subscription_ids: tuple[UUID, ...]
+
+
+def _record_subscription_transition(
+    db: Session,
+    *,
+    subscription: Subscription,
+    from_status: SubscriptionStatus,
+    to_status: SubscriptionStatus,
+    source: str,
+    reason: str,
+    effective_at: datetime | None = None,
+    context: CommandContext | None = None,
+) -> None:
+    """Append evidence inside the lifecycle owner's open transaction."""
+
+    resolved_context = context or CommandContext.system(
+        actor=source,
+        scope=f"subscription:{subscription.id}",
+        reason=reason,
+    )
+    record_lifecycle_evidence(
+        db,
+        RecordLifecycleEvidenceCommand(
+            subscription_id=subscription.id,
+            from_status=from_status,
+            to_status=to_status,
+            effective_at=effective_at or datetime.now(UTC),
+            evidence_source=LifecycleEvidenceSource.lifecycle_command,
+            evidence_grade=LifecycleEvidenceGrade.transition_evidence,
+            context=resolved_context,
+            reason=reason,
+        ),
+    )
 
 
 def is_terminal_status(status: SubscriptionStatus | None) -> bool:
@@ -276,6 +316,8 @@ def suspend_subscription(
     access_mode: AccessRestrictionMode = AccessRestrictionMode.hard_reject,
     notes: str | None = None,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> EnforcementLock:
     """Create an enforcement lock and suspend the subscription.
 
@@ -338,6 +380,18 @@ def suspend_subscription(
             status_changed = True
         db.flush()
 
+        if status_changed:
+            _record_subscription_transition(
+                db,
+                subscription=subscription,
+                from_status=prev_status,
+                to_status=SubscriptionStatus.suspended,
+                source=source,
+                reason=notes or reason.value,
+                effective_at=evidence_effective_at,
+                context=evidence_context,
+            )
+
         if emit and status_changed:
             emit_event(
                 db,
@@ -388,6 +442,18 @@ def suspend_subscription(
         status_changed = True
 
     db.flush()
+
+    if status_changed:
+        _record_subscription_transition(
+            db,
+            subscription=subscription,
+            from_status=prev_status,
+            to_status=SubscriptionStatus.suspended,
+            source=source,
+            reason=notes or reason.value,
+            effective_at=evidence_effective_at,
+            context=evidence_context,
+        )
 
     if emit:
         if status_changed:
@@ -651,6 +717,8 @@ def restore_subscription_detailed(
     reason: EnforcementReason | None = None,
     notes: str | None = None,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> SubscriptionRestorationResult:
     """Resolve enforcement locks, restore if clear, and say exactly what happened.
 
@@ -751,6 +819,16 @@ def restore_subscription_detailed(
         prev_status = subscription.status
         subscription.status = SubscriptionStatus.active
         db.flush()
+        _record_subscription_transition(
+            db,
+            subscription=subscription,
+            from_status=prev_status,
+            to_status=SubscriptionStatus.active,
+            source=resolved_by,
+            reason=notes or trigger,
+            effective_at=evidence_effective_at,
+            context=evidence_context,
+        )
         restored = True
         outcome = RestorationOutcome.restored
 
@@ -809,6 +887,8 @@ def restore_subscription(
     reason: EnforcementReason | None = None,
     notes: str | None = None,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> bool:
     """Boolean facade over :func:`restore_subscription_detailed`.
 
@@ -835,6 +915,8 @@ def restore_subscription(
         reason=reason,
         notes=notes,
         emit=emit,
+        evidence_context=evidence_context,
+        evidence_effective_at=evidence_effective_at,
     ).subscription_reactivated
 
 
@@ -883,6 +965,8 @@ def activate_subscription(
     *,
     start_at: datetime | None = None,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> None:
     """Transition subscription from pending to active.
 
@@ -895,7 +979,9 @@ def activate_subscription(
     Raises:
         ValueError: If the subscription is not in pending status.
     """
-    subscription = db.get(Subscription, subscription_id)
+    subscription = db.execute(
+        select(Subscription).where(Subscription.id == subscription_id).with_for_update()
+    ).scalar_one_or_none()
     if not subscription:
         raise ValueError(f"Subscription {subscription_id} not found")
 
@@ -937,6 +1023,16 @@ def activate_subscription(
         subscription.start_at = datetime.now(UTC)
 
     db.flush()
+    _record_subscription_transition(
+        db,
+        subscription=subscription,
+        from_status=prev_status,
+        to_status=SubscriptionStatus.active,
+        source="account_lifecycle.activate_subscription",
+        reason="Subscription activated",
+        effective_at=evidence_effective_at,
+        context=evidence_context,
+    )
 
     subscriber = subscription.subscriber
     if subscriber is not None and subscriber.party_id is not None:
@@ -990,6 +1086,8 @@ def expire_subscription(
     subscription_id: str,
     *,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> None:
     """Transition subscription to expired (terminal state).
 
@@ -998,7 +1096,9 @@ def expire_subscription(
     Raises:
         ValueError: If the subscription is already in a terminal state.
     """
-    subscription = db.get(Subscription, subscription_id)
+    subscription = db.execute(
+        select(Subscription).where(Subscription.id == subscription_id).with_for_update()
+    ).scalar_one_or_none()
     if not subscription:
         raise ValueError(f"Subscription {subscription_id} not found")
 
@@ -1012,6 +1112,16 @@ def expire_subscription(
     prev_status = subscription.status
     subscription.status = SubscriptionStatus.expired
     db.flush()
+    _record_subscription_transition(
+        db,
+        subscription=subscription,
+        from_status=prev_status,
+        to_status=SubscriptionStatus.expired,
+        source="account_lifecycle.expire_subscription",
+        reason="Subscription expired",
+        effective_at=evidence_effective_at,
+        context=evidence_context,
+    )
 
     _release_service_ips(db, subscription)
     compute_account_status(db, str(subscription.subscriber_id))
@@ -1043,6 +1153,8 @@ def cancel_subscription(
     *,
     emit: bool = True,
     generate_credit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> None:
     """Transition subscription to canceled (terminal state).
 
@@ -1056,7 +1168,9 @@ def cancel_subscription(
     Raises:
         ValueError: If subscription is already canceled.
     """
-    subscription = db.get(Subscription, subscription_id)
+    subscription = db.execute(
+        select(Subscription).where(Subscription.id == subscription_id).with_for_update()
+    ).scalar_one_or_none()
     if not subscription:
         raise ValueError(f"Subscription {subscription_id} not found")
 
@@ -1080,6 +1194,16 @@ def cancel_subscription(
         sub_addon.end_at = subscription.canceled_at
 
     db.flush()
+    _record_subscription_transition(
+        db,
+        subscription=subscription,
+        from_status=prev_status,
+        to_status=SubscriptionStatus.canceled,
+        source=source,
+        reason=cancel_reason,
+        effective_at=evidence_effective_at or subscription.canceled_at,
+        context=evidence_context,
+    )
 
     _release_service_ips(db, subscription)
 
@@ -1137,6 +1261,8 @@ def disable_subscription(
     source: str,
     emit: bool = True,
     preserve_locks: bool = False,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> bool:
     """Pause billing and access while preserving service assignments.
 
@@ -1161,6 +1287,16 @@ def disable_subscription(
     previous_status = subscription.status
     subscription.status = SubscriptionStatus.disabled
     db.flush()
+    _record_subscription_transition(
+        db,
+        subscription=subscription,
+        from_status=previous_status,
+        to_status=SubscriptionStatus.disabled,
+        source=source,
+        reason=reason,
+        effective_at=evidence_effective_at,
+        context=evidence_context,
+    )
     compute_account_status(db, str(subscription.subscriber_id))
 
     if emit:
@@ -1195,6 +1331,8 @@ def enable_subscription(
     reason: str,
     source: str,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> bool:
     """Return a disabled subscription to active without rebuilding its service."""
     subscription = db.execute(
@@ -1212,6 +1350,16 @@ def enable_subscription(
     if active_locks:
         subscription.status = SubscriptionStatus.suspended
         db.flush()
+        _record_subscription_transition(
+            db,
+            subscription=subscription,
+            from_status=SubscriptionStatus.disabled,
+            to_status=SubscriptionStatus.suspended,
+            source=source,
+            reason=reason,
+            effective_at=evidence_effective_at,
+            context=evidence_context,
+        )
         compute_account_status(db, str(subscription.subscriber_id))
         if emit:
             emit_event(
@@ -1274,6 +1422,16 @@ def enable_subscription(
     else:
         subscription.next_billing_at = _compute_next_billing_at(resumed_at, cycle)
     db.flush()
+    _record_subscription_transition(
+        db,
+        subscription=subscription,
+        from_status=SubscriptionStatus.disabled,
+        to_status=SubscriptionStatus.active,
+        source=source,
+        reason=reason,
+        effective_at=evidence_effective_at or resumed_at,
+        context=evidence_context,
+    )
     compute_account_status(db, str(subscription.subscriber_id))
     if emit:
         emit_event(
@@ -1302,6 +1460,8 @@ def transition_subscription_status(
     reason: str,
     source: str,
     emit: bool = True,
+    evidence_context: CommandContext | None = None,
+    evidence_effective_at: datetime | None = None,
 ) -> bool:
     """Route an administrative status request through a legal domain command."""
     subscription = db.get(Subscription, subscription_id)
@@ -1313,7 +1473,13 @@ def transition_subscription_status(
 
     if target_status == SubscriptionStatus.active:
         if subscription.status == SubscriptionStatus.pending:
-            activate_subscription(db, subscription_id, emit=emit)
+            activate_subscription(
+                db,
+                subscription_id,
+                emit=emit,
+                evidence_context=evidence_context,
+                evidence_effective_at=evidence_effective_at,
+            )
             return True
         if subscription.status == SubscriptionStatus.disabled:
             return enable_subscription(
@@ -1322,6 +1488,8 @@ def transition_subscription_status(
                 reason=reason,
                 source=source,
                 emit=emit,
+                evidence_context=evidence_context,
+                evidence_effective_at=evidence_effective_at,
             )
         if subscription.status in SUSPENDED_EQUIVALENT:
             return restore_subscription(
@@ -1331,6 +1499,8 @@ def transition_subscription_status(
                 resolved_by=source,
                 notes=reason,
                 emit=emit,
+                evidence_context=evidence_context,
+                evidence_effective_at=evidence_effective_at,
             )
     elif target_status == SubscriptionStatus.suspended:
         suspend_subscription(
@@ -1340,13 +1510,29 @@ def transition_subscription_status(
             source=source,
             notes=reason,
             emit=emit,
+            evidence_context=evidence_context,
+            evidence_effective_at=evidence_effective_at,
         )
         return True
     elif target_status == SubscriptionStatus.canceled:
-        cancel_subscription(db, subscription_id, reason, source, emit=emit)
+        cancel_subscription(
+            db,
+            subscription_id,
+            reason,
+            source,
+            emit=emit,
+            evidence_context=evidence_context,
+            evidence_effective_at=evidence_effective_at,
+        )
         return True
     elif target_status == SubscriptionStatus.expired:
-        expire_subscription(db, subscription_id, emit=emit)
+        expire_subscription(
+            db,
+            subscription_id,
+            emit=emit,
+            evidence_context=evidence_context,
+            evidence_effective_at=evidence_effective_at,
+        )
         return True
     elif target_status == SubscriptionStatus.disabled:
         return disable_subscription(
@@ -1355,6 +1541,8 @@ def transition_subscription_status(
             reason=reason,
             source=source,
             emit=emit,
+            evidence_context=evidence_context,
+            evidence_effective_at=evidence_effective_at,
         )
     raise ValueError(f"Unsupported lifecycle target status {target_status.value}")
 
@@ -1471,6 +1659,7 @@ def unsuspend_account_override(
             select(Subscription)
             .where(Subscription.subscriber_id == subscriber.id)
             .order_by(Subscription.id)
+            .with_for_update()
         ).all()
     )
     now = datetime.now(UTC)
@@ -1486,6 +1675,7 @@ def unsuspend_account_override(
                     EnforcementLock.is_active.is_(True),
                 )
                 .order_by(EnforcementLock.id)
+                .with_for_update()
             ).all()
         )
         matching = [
@@ -1535,6 +1725,15 @@ def unsuspend_account_override(
         if would_restore:
             previous = subscription.status
             subscription.status = SubscriptionStatus.active
+            _record_subscription_transition(
+                db,
+                subscription=subscription,
+                from_status=previous,
+                to_status=SubscriptionStatus.active,
+                source=source,
+                reason=reason,
+                effective_at=now,
+            )
             restored_subscription_ids.append(subscription.id)
             if emit:
                 emit_event(

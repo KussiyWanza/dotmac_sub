@@ -1,23 +1,18 @@
-"""Lifecycle handler for the event system.
-
-Records SubscriptionLifecycleEvent records for subscription state changes.
-"""
+"""Read-only lifecycle consequences for the event transport."""
 
 import logging
 
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Subscription
-from app.models.lifecycle import LifecycleEventType
 from app.services.connectivity_reconciler import connectivity_shadow_diff
 from app.services.events.types import SUBSCRIPTION_LIFECYCLE_MAP, Event
-from app.services.subscription_lifecycle_events import create_from_event
 
 logger = logging.getLogger(__name__)
 
 
 class LifecycleHandler:
-    """Handler that records subscription lifecycle events."""
+    """Observe lifecycle events without creating authoritative history."""
 
     def _observe_connectivity_shadow_diff(self, db: Session, event: Event) -> None:
         """Record desired-vs-actual connectivity drift after a lifecycle event.
@@ -45,10 +40,11 @@ class LifecycleHandler:
             )
 
     def handle(self, db: Session, event: Event) -> None:
-        """Process an event by creating lifecycle records.
+        """Run read-only consequences for a mapped lifecycle event.
 
-        Only subscription-related events that map to lifecycle types
-        will create records. Other events are ignored.
+        The lifecycle command appends evidence atomically with status. Events
+        are asynchronous transport and therefore cannot reconstruct either the
+        authoritative effective time or the command's replay identity.
 
         Args:
             db: Database session
@@ -67,17 +63,10 @@ class LifecycleHandler:
             )
             return
 
-        # Map to LifecycleEventType enum
-        try:
-            lifecycle_type = LifecycleEventType(lifecycle_type_str)
-        except ValueError:
-            logger.warning(f"Unknown lifecycle type: {lifecycle_type_str}")
-            return
-
-        create_from_event(db, event, lifecycle_type=lifecycle_type)
         self._observe_connectivity_shadow_diff(db, event)
 
         logger.info(
-            f"Recorded lifecycle event {lifecycle_type.value} for "
-            f"subscription {event.subscription_id}"
+            "Observed lifecycle event %s for subscription %s",
+            lifecycle_type_str,
+            event.subscription_id,
         )

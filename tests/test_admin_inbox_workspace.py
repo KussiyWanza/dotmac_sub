@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
+from app.models.party import Party, PartyType
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
+from app.models.subscriber import Subscriber
 from app.models.team_inbox import (
     InboxAgentPresence,
     InboxAgentPresenceStatus,
@@ -55,7 +57,8 @@ def test_inbox_workspace_templates_compile():
         "admin/inbox/_conversation.html",
         "admin/inbox/_comment_thread.html",
         "admin/inbox/_contact_drawer.html",
-        "admin/inbox/_contact_preview.html",
+        "admin/inbox/_authoritative_context.html",
+        "admin/inbox/action_resolver.html",
         "admin/inbox/_empty_state.html",
         "admin/inbox/_floating_surfaces.html",
         "admin/inbox/_overlays.html",
@@ -240,6 +243,82 @@ def test_queue_row_projects_real_contact_name_and_unread_message_count(db_sessio
     assert projection.rows[0].contact_name == "Amina Customer"
     assert projection.rows[0].is_unread is True
     assert projection.rows[0].unread_count == 2
+
+
+def test_queue_row_prefers_canonical_party_name_over_provider_name(db_session):
+    party = Party(
+        party_type=PartyType.person.value,
+        display_name="Canonical Customer",
+    )
+    db_session.add(party)
+    db_session.flush()
+    subscriber = Subscriber(
+        party_id=party.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="test",
+        party_binding_reason="verified test identity",
+        first_name="Legacy",
+        last_name="Customer",
+        email="canonical-customer@example.test",
+    )
+    db_session.add(subscriber)
+    db_session.flush()
+    conversation = InboxConversation(
+        subscriber_id=subscriber.id,
+        channel_type="whatsapp",
+        contact_address="+2348000000000",
+        metadata_={"contact_name": "Provider Customer"},
+    )
+    db_session.add(conversation)
+    db_session.commit()
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(actor_person_id=uuid.uuid4()),
+    )
+
+    row = next(item for item in projection.rows if item.id == str(conversation.id))
+    assert row.contact_name == "Canonical Customer"
+    assert row.contact_initials == "CC"
+    assert row.contact_name_source == "party"
+
+
+def test_queue_and_detail_use_email_from_name_when_contact_is_unlinked(db_session):
+    conversation = InboxConversation(
+        channel_type="email",
+        contact_address="unlinked@example.test",
+    )
+    db_session.add(conversation)
+    db_session.flush()
+    db_session.add(
+        InboxMessage(
+            conversation_id=conversation.id,
+            channel_type="email",
+            direction="inbound",
+            body="Hello",
+            from_address="unlinked@example.test",
+            received_at=datetime.now(UTC),
+            metadata_={"from_name": "Email Sender"},
+        )
+    )
+    db_session.commit()
+
+    projection = team_inbox_projection.build_queue_projection(
+        db_session,
+        team_inbox_projection.InboxQueueRequest(actor_person_id=uuid.uuid4()),
+    )
+    row = next(item for item in projection.rows if item.id == str(conversation.id))
+    timeline = team_inbox_read.get_conversation_timeline(
+        db_session,
+        conversation.id,
+    )
+
+    assert row.contact_name == "Email Sender"
+    assert row.contact_initials == "ES"
+    assert row.contact_name_source == "provider"
+    assert timeline is not None
+    assert timeline.contact_name == row.contact_name
+    assert timeline.contact_initials == row.contact_initials
 
 
 def test_manager_dashboard_projects_presence_load_status_and_channels(db_session):

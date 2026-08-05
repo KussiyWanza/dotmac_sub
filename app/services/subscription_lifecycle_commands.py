@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from app.models.enforcement_lock import EnforcementReason
 from app.models.idempotency import IdempotencyKey
 from app.services.audit_adapter import record_audit_event
 from app.services.common import coerce_uuid
+from app.services.owner_commands import CommandContext
 from app.services.subscription_lifecycle import (
     ServiceChangeDeliveryMode,
     SubscriptionCommandKind,
@@ -613,6 +615,11 @@ def _dispatch_command(
     )
 
     reason = command.reason or f"{command.kind.value} lifecycle command"
+    evidence_context = _lifecycle_evidence_context(
+        command,
+        actor_id=actor_id,
+        reason=reason,
+    )
     if command.kind == SubscriptionCommandKind.suspend:
         lock = suspend_subscription(
             db,
@@ -620,6 +627,8 @@ def _dispatch_command(
             reason=EnforcementReason.admin,
             source=command.source,
             notes=reason,
+            evidence_context=evidence_context,
+            evidence_effective_at=preview.effective_at,
         )
         return (
             SubscriptionCommandOutcomeStatus.applied,
@@ -634,6 +643,8 @@ def _dispatch_command(
             reason=EnforcementReason.customer_hold,
             source=command.source,
             notes=reason,
+            evidence_context=evidence_context,
+            evidence_effective_at=preview.effective_at,
         )
         assert command.vacation_hold_days is not None
         lock.resume_at = preview.effective_at + timedelta(
@@ -670,6 +681,8 @@ def _dispatch_command(
             resolved_by=command.source,
             reason=EnforcementReason.customer_hold,
             notes=reason,
+            evidence_context=evidence_context,
+            evidence_effective_at=preview.effective_at,
         )
         return (
             SubscriptionCommandOutcomeStatus.applied,
@@ -698,6 +711,8 @@ def _dispatch_command(
         target_status,
         reason=reason,
         source=command.source,
+        evidence_context=evidence_context,
+        evidence_effective_at=preview.effective_at,
     )
     if not changed:
         raise SubscriptionCommandExecutionRejected(
@@ -708,6 +723,34 @@ def _dispatch_command(
         SubscriptionCommandOutcomeStatus.applied,
         (),
         f"Subscription {command.kind.value} command applied",
+    )
+
+
+def _lifecycle_evidence_context(
+    command: SubscriptionLifecycleCommand,
+    *,
+    actor_id: str | None,
+    reason: str,
+) -> CommandContext:
+    """Derive stable evidence identity from the command replay contract."""
+
+    if command.idempotency_key is None:
+        raise SubscriptionCommandExecutionRejected(
+            "idempotency_key_required",
+            "Lifecycle evidence requires the command idempotency key",
+        )
+    command_id = uuid5(
+        NAMESPACE_URL,
+        "dotmac:subscription-lifecycle:"
+        f"{command.subscription_id}:{command.idempotency_key}",
+    )
+    return CommandContext.system(
+        command_id=command_id,
+        correlation_id=command_id,
+        actor=actor_id or command.source,
+        scope=f"subscription:{command.subscription_id}",
+        reason=reason,
+        idempotency_key=command.idempotency_key,
     )
 
 

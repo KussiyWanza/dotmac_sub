@@ -24,9 +24,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models.subscriber import SubscriberCategory
+from app.models.subscriber import Reseller, SubscriberCategory
+from app.services import conversation_lead_relationships, customer_portal
 from app.services import customer_network_path as customer_network_path_service
-from app.services import customer_portal
 from app.services import network_monitoring as network_monitoring_service
 from app.services import subscriber as subscriber_service
 from app.services import web_billing_invoices as web_billing_invoices_service
@@ -49,6 +49,7 @@ from app.services.audit_helpers import (
     log_audit_event,
 )
 from app.services.auth_dependencies import (
+    can,
     has_permission,
     require_any_permission,
     require_permission,
@@ -73,6 +74,22 @@ register_customer_portal_filters(templates)
 router = APIRouter(prefix="/customers", tags=["web-admin-customers"])
 
 _NOTIFICATION_QUEUE_TASK = "app.tasks.notifications.deliver_notification_queue"
+
+
+def _reseller_form_context(
+    db: Session, reseller_id: object | None
+) -> dict[str, object]:
+    reseller = db.get(Reseller, reseller_id) if reseller_id else None
+    managed = bool(reseller and not reseller.is_house)
+    return {
+        "managed_by_reseller": managed,
+        "selected_reseller_id": str(reseller.id) if managed and reseller else "",
+        "selected_reseller_label": (
+            f"{reseller.name} ({reseller.contact_email})"
+            if managed and reseller and reseller.contact_email
+            else (reseller.name if managed and reseller else "")
+        ),
+    }
 
 
 def _safe_form_error(exc: Exception) -> str:
@@ -340,6 +357,39 @@ def contacts_convert_to_subscriber(
 
 
 @router.get(
+    "/infrastructure-options",
+    dependencies=[Depends(require_permission("customer:read"))],
+)
+def customer_infrastructure_options(
+    infrastructure_type: str = Query(..., min_length=1, max_length=40),
+    q: str = Query("", max_length=120),
+    limit: int = Query(20, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    """Bounded lazy options for the customer infrastructure typeahead."""
+
+    try:
+        options = web_customer_lists_service.search_customer_infrastructure_options(
+            db,
+            infrastructure_type=infrastructure_type,
+            query=q,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "results": [
+            {
+                "id": str(option.id),
+                "label": option.label,
+                "context": option.context,
+            }
+            for option in options
+        ]
+    }
+
+
+@router.get(
     "",
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("customer:read"))],
@@ -351,6 +401,8 @@ def customers_list(
     customer_type: str | None = None,  # 'person' or 'business'
     nas_id: str | None = None,
     pop_site_id: str | None = None,
+    infrastructure_type: str | None = None,
+    infrastructure_id: str | None = None,
     sort: Literal["created_at", "name", "status"] = Query("created_at"),
     direction: Literal["asc", "desc"] = Query("desc", alias="dir"),
     page: int = Query(1, ge=1),
@@ -358,6 +410,15 @@ def customers_list(
     db: Session = Depends(get_db),
 ):
     """List all customers with search and filtering."""
+    if not infrastructure_type and not infrastructure_id:
+        if nas_id:
+            infrastructure_type = "nas"
+            infrastructure_id = nas_id
+            nas_id = None
+        elif pop_site_id:
+            infrastructure_type = "location"
+            infrastructure_id = pop_site_id
+            pop_site_id = None
     try:
         list_query = web_customer_lists_service.build_customer_list_query(
             search=search,
@@ -365,6 +426,8 @@ def customers_list(
             customer_type=customer_type,
             nas_id=nas_id,
             pop_site_id=pop_site_id,
+            infrastructure_type=infrastructure_type,
+            infrastructure_id=infrastructure_id,
             sort_by=sort,
             sort_dir=direction,
             page=page,
@@ -535,6 +598,7 @@ def customer_new(
             "pop_sites": pop_sites,
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, None),
         },
     )
 
@@ -591,6 +655,9 @@ def customer_create(
     contact_email: list[str] = Form([]),
     contact_phone: list[str] = Form([]),
     contact_is_primary: list[str] = Form([]),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
+    reseller_label: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Create a new customer (person or business)."""
@@ -641,6 +708,8 @@ def customer_create(
             "metadata_json": web_customer_actions_service.parse_json_object(
                 metadata, "metadata"
             ),
+            "managed_by_reseller": managed_by_reseller is not None,
+            "reseller_id": reseller_id,
         }
         created_type, created_id = (
             web_customer_actions_service.create_customer_from_form(
@@ -703,6 +772,9 @@ def customer_create(
                 },
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                "managed_by_reseller": managed_by_reseller is not None,
+                "selected_reseller_id": reseller_id or "",
+                "selected_reseller_label": reseller_label or "",
             },
             status_code=400,
         )
@@ -1437,6 +1509,7 @@ def business_impersonate(
 def person_edit(
     request: Request,
     customer_id: str,
+    inbox_conversation_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """Edit person form."""
@@ -1451,6 +1524,21 @@ def person_edit(
     except Exception:
         logger.exception("Error loading person edit for %s", customer_id)
         raise
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = (
+                conversation_lead_relationships.conversation_links_subscriber(
+                    db,
+                    conversation_id=uuid.UUID(inbox_conversation_id),
+                    subscriber_id=uuid.UUID(customer_id),
+                )
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
 
     from app.web.admin import get_current_user, get_sidebar_stats
 
@@ -1469,6 +1557,8 @@ def person_edit(
             "customer_audit_items": _customer_audit_items(db, customer),
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, customer.reseller_id),
+            "inbox_conversation_id": inbox_conversation_id,
         },
     )
 
@@ -1514,6 +1604,7 @@ def business_edit(
             "customer_audit_items": _customer_audit_items(db, customer),
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, customer.reseller_id),
         },
     )
 
@@ -1560,9 +1651,27 @@ def person_update(
     vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     metadata: str | None = Form(None),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
+    inbox_conversation_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Update a person."""
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = (
+                conversation_lead_relationships.conversation_links_subscriber(
+                    db,
+                    conversation_id=uuid.UUID(inbox_conversation_id),
+                    subscriber_id=uuid.UUID(customer_id),
+                )
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
     try:
         before, after = web_customer_actions_service.update_person_customer(
             db=db,
@@ -1605,6 +1714,8 @@ def person_update(
             if metadata is not None
             else None,
             actor_id=_get_actor_id(request),
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
         )
         metadata_payload = build_changes_metadata(before, after)
         from app.web.admin import get_current_user
@@ -1619,10 +1730,13 @@ def person_update(
             actor_id=str(current_user.get("subscriber_id")) if current_user else None,
             metadata=metadata_payload,
         )
-        return RedirectResponse(
-            url=f"/admin/customers/person/{customer_id}",
-            status_code=303,
+        destination = (
+            f"/admin/inbox?c={inbox_conversation_id}"
+            "&status=success&message=Profile%20updated"
+            if inbox_conversation_id
+            else f"/admin/customers/person/{customer_id}"
         )
+        return RedirectResponse(url=destination, status_code=303)
     except HTTPException:
         raise
     except Exception as e:
@@ -1651,6 +1765,10 @@ def person_update(
                 "customer_audit_items": _customer_audit_items(db, customer),
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                **_reseller_form_context(
+                    db, customer.reseller_id if customer is not None else None
+                ),
+                "inbox_conversation_id": inbox_conversation_id,
             },
             status_code=400,
         )
@@ -1681,6 +1799,8 @@ def business_update(
     withholding_tax_enabled: str | None = Form(None),
     vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Update a business customer."""
@@ -1706,6 +1826,8 @@ def business_update(
             vat_exempt=vat_exempt,
             payment_method=payment_method,
             actor_id=_get_actor_id(request),
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
         )
         metadata_payload = build_changes_metadata(before, after)
         from app.web.admin import get_current_user
@@ -1750,6 +1872,9 @@ def business_update(
                 "customer_audit_items": _customer_audit_items(db, customer),
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                **_reseller_form_context(
+                    db, customer.reseller_id if customer is not None else None
+                ),
             },
             status_code=400,
         )

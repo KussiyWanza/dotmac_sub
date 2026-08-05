@@ -31,13 +31,19 @@ _REJECTED = IntegrityError
 
 @pytest.fixture
 def transition(db_session, subscription):
+    evidence_id = uuid.uuid4()
     row = SubscriptionLifecycleEvent(
-        id=uuid.uuid4(),
+        id=evidence_id,
         subscription_id=subscription.id,
         event_type=LifecycleEventType.activate,
         to_status=SubscriptionStatus.active,
         created_at=NOW,
         evidence_grade="transition_evidence",
+        evidence_source="lifecycle_command",
+        source_id=f"test:{evidence_id}",
+        evidence_fingerprint=f"sha256:{'a' * 64}",
+        effective_at=NOW,
+        recorded_at=NOW,
         notes="original",
     )
     db_session.add(row)
@@ -104,27 +110,68 @@ def test_deleting_a_transition_is_rejected(db_session, transition):
     db_session.rollback()
 
 
-def test_inserting_a_new_transition_is_still_allowed(db_session, subscription):
-    """Append-only, not read-only — corrections are new transitions."""
+def test_inserting_an_untrusted_observation_is_still_allowed(db_session, subscription):
+    """Append-only, not read-only; raw inserts are admitted only as unsupported."""
 
+    evidence_id = uuid.uuid4()
     db_session.execute(
         text(
             "INSERT INTO subscription_lifecycle_events "
-            "(id, subscription_id, event_type, to_status, created_at, "
-            " evidence_grade) "
-            "VALUES (:id, :sub, 'activate', 'active', :when, "
-            "'transition_evidence')"
+            "(id, subscription_id, event_type, to_status, created_at) "
+            "VALUES (:id, :sub, 'activate', 'active', :when)"
         ),
-        {"id": str(uuid.uuid4()), "sub": str(subscription.id), "when": NOW},
+        {"id": str(evidence_id), "sub": str(subscription.id), "when": NOW},
     )
-    count = db_session.execute(
+    grades = db_session.execute(
         text(
-            "SELECT count(*) FROM subscription_lifecycle_events "
-            "WHERE subscription_id = :sub"
+            "SELECT evidence_grade, evidence_source "
+            "FROM subscription_lifecycle_events WHERE id = :id"
         ),
-        {"sub": str(subscription.id)},
-    ).scalar()
-    assert count >= 1
+        {"id": str(evidence_id)},
+    ).one()
+    assert grades == ("unsupported_observation", "untrusted_observation")
+
+
+def test_a_raw_writer_cannot_claim_trusted_evidence_without_the_full_shape(
+    db_session, subscription
+):
+    with pytest.raises(_REJECTED) as caught:
+        db_session.execute(
+            text(
+                "INSERT INTO subscription_lifecycle_events "
+                "(id, subscription_id, event_type, to_status, created_at, "
+                " evidence_grade, evidence_source) "
+                "VALUES (:id, :sub, 'activate', 'active', :when, "
+                "'transition_evidence', 'lifecycle_command')"
+            ),
+            {"id": str(uuid.uuid4()), "sub": str(subscription.id), "when": NOW},
+        )
+    assert "ck_subscription_lifecycle_events_trusted_shape" in str(caught.value)
+    db_session.rollback()
+
+
+def test_source_identity_arbitrates_replay(db_session, subscription, transition):
+    with pytest.raises(_REJECTED) as caught:
+        db_session.execute(
+            text(
+                "INSERT INTO subscription_lifecycle_events "
+                "(id, subscription_id, event_type, to_status, created_at, "
+                " evidence_grade, evidence_source, source_id, "
+                " evidence_fingerprint, effective_at, recorded_at) "
+                "VALUES (:id, :sub, 'activate', 'active', :when, "
+                "'transition_evidence', 'lifecycle_command', :source_id, "
+                ":fingerprint, :when, :when)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "sub": str(subscription.id),
+                "when": NOW,
+                "source_id": transition.source_id,
+                "fingerprint": f"sha256:{'b' * 64}",
+            },
+        )
+    assert "uq_subscription_lifecycle_events_source_identity" in str(caught.value)
+    db_session.rollback()
 
 
 def test_the_evidence_grade_is_constrained(db_session, subscription):

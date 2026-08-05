@@ -18,13 +18,14 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditActorType, AuditEvent
-from app.models.project import ProjectTask
+from app.models.project import Project, ProjectTask
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.support import Ticket, TicketStatus
 from app.models.system_user import SystemUser
 from app.models.work_order import WorkOrder
 from app.schemas.dispatch import WorkOrderHeaderCreate
 from app.schemas.support import TicketWorkOrderIssueRequest
+from app.services import service_address as service_address_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
 from app.services.domain_errors import DomainError
@@ -306,6 +307,16 @@ def _issue_work_order(
             )
         project_id = project_task.project_id
 
+    address = payload.address
+    if not str(address or "").strip() and project_id is not None:
+        project = db.get(Project, project_id)
+        if project is not None and str(project.customer_address or "").strip():
+            address = str(project.customer_address).strip()
+    if not str(address or "").strip():
+        address = service_address_service.format_address(
+            service_address_service.service_address(db, subscriber_id)
+        )
+
     work_order = work_order_commands.work_order_commands.create(
         db,
         WorkOrderHeaderCreate(
@@ -318,7 +329,7 @@ def _issue_work_order(
             status="draft",
             priority=payload.priority or ticket.priority,
             work_type=payload.work_type,
-            address=payload.address,
+            address=address,
             scheduled_start=payload.scheduled_start,
             scheduled_end=payload.scheduled_end,
             estimated_duration_minutes=payload.estimated_duration_minutes,

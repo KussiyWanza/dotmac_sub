@@ -74,6 +74,29 @@ class DesiredValueAdjudication(enum.StrEnum):
     refused = "refused"
 
 
+class DesiredValueProvenance(enum.StrEnum):
+    """How a desired value acquired its concrete representation.
+
+    ``unknown`` is deliberately distinct from a concrete false/zero/empty
+    value.  A provider may keep such a representation in a typed state object,
+    but neither planning nor applying may treat it as executable intent.
+    """
+
+    explicit = "explicit"
+    declared_default = "declared_default"
+    unknown = "unknown"
+
+
+def has_executable_desired_provenance(
+    provenance: DesiredValueProvenance,
+) -> bool:
+    """Whether provenance is sufficient to execute the represented value."""
+    return isinstance(provenance, DesiredValueProvenance) and provenance in {
+        DesiredValueProvenance.explicit,
+        DesiredValueProvenance.declared_default,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class DesiredValueDeclaration:
     """One provider's declaration about one substituted default."""

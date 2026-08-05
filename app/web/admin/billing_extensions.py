@@ -30,6 +30,9 @@ def _extension_http_error(exc: DomainError) -> HTTPException:
         (
             "transition_conflict",
             "idempotency_conflict",
+            "stale_reversal_preview",
+            "reversal_evidence_conflict",
+            "reversal_evidence_incomplete",
             "active_caller_transaction",
         )
     ):
@@ -433,6 +436,87 @@ def service_extension_cancel(
                     idempotency_key=idempotency_key,
                 ),
                 extension_id=uuid.UUID(extension_id),
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Service extension identifier is invalid.",
+        ) from exc
+    except DomainError as exc:
+        raise _extension_http_error(exc) from exc
+    return RedirectResponse(
+        url=f"/admin/billing/service-extensions/{extension_id}",
+        status_code=303,
+    )
+
+
+@router.post(
+    "/service-extensions/{extension_id}/reverse/preview",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("billing:extension:reverse"))],
+)
+def service_extension_reverse_preview(
+    request: Request,
+    extension_id: str,
+    reason: str = Form(..., min_length=1, max_length=2000),
+    db: Session = Depends(get_db),
+):
+    try:
+        projection = web_billing_service_extensions.build_service_extension_reversal_confirmation(
+            db,
+            extension_id=uuid.UUID(extension_id),
+            reason=reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Service extension identifier is invalid.",
+        ) from exc
+    except DomainError as exc:
+        raise _extension_http_error(exc) from exc
+    return templates.TemplateResponse(
+        "admin/billing/service_extension_reversal_confirm.html",
+        _context(
+            request,
+            db,
+            {
+                "confirmation": projection,
+                "idempotency_key": (
+                    service_extensions_service.transition_idempotency_key(
+                        projection.extension_id,
+                        "reverse",
+                    )
+                ),
+            },
+        ),
+    )
+
+
+@router.post(
+    "/service-extensions/{extension_id}/reverse/confirm",
+    dependencies=[Depends(require_permission("billing:extension:reverse"))],
+)
+def service_extension_reverse_confirm(
+    request: Request,
+    extension_id: str,
+    reason: str = Form(..., min_length=1, max_length=2000),
+    preview_fingerprint: str = Form(..., min_length=64, max_length=64),
+    idempotency_key: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        service_extensions_service.reverse_service_extension(
+            db,
+            service_extensions_service.ReverseServiceExtensionCommand(
+                context=_command_context(
+                    request,
+                    scope=service_extensions_service.REVERSE_SCOPE,
+                    reason=reason,
+                    idempotency_key=idempotency_key,
+                ),
+                extension_id=uuid.UUID(extension_id),
+                preview_fingerprint=preview_fingerprint,
             ),
         )
     except ValueError as exc:

@@ -26,7 +26,7 @@ from app.models.sales import (
     SalesOrder,
     SalesOrderLine,
 )
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Reseller, Subscriber
 from app.models.work_order import WorkOrder
 from app.schemas.dispatch import WorkOrderHeaderCreate
 from app.schemas.project import ProjectTaskUpdate
@@ -231,6 +231,33 @@ def test_quote_acceptance_converts_every_record_in_one_workflow(db_session):
         .count()
         == 1
     )
+
+
+def test_quote_acceptance_carries_lead_reseller_to_subscriber_and_fulfillment(
+    db_session,
+):
+    _template(db_session)
+    reseller = Reseller(
+        name=f"Acceptance Partner {uuid4().hex[:8]}",
+        contact_email="partner@example.com",
+        is_active=True,
+        is_house=False,
+    )
+    db_session.add(reseller)
+    db_session.commit()
+    lead = _lead(db_session, "reseller-owned")
+    lead.reseller_id = reseller.id
+    db_session.commit()
+    quote = _quote(db_session, lead)
+
+    outcome = _accept(db_session, quote.id)
+
+    subscriber = db_session.get(Subscriber, outcome.subscriber_id)
+    order = db_session.get(SalesOrder, outcome.sales_order_id)
+    project = db_session.get(Project, outcome.project_id)
+    assert subscriber.reseller_id == reseller.id
+    assert order.subscriber_id == subscriber.id
+    assert project.subscriber_id == subscriber.id
 
 
 def test_expired_quote_cannot_be_accepted(db_session, monkeypatch):

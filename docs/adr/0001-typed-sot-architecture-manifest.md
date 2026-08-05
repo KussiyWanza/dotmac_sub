@@ -4,17 +4,20 @@ Status: accepted
 
 Date: 2026-07-19
 
+Representation amended: 2026-08-05
+
 Decision owner: Michael / Dotmac architecture
 
 Affected systems and domains: Dotmac Sub; all registered domains and adapters
 
 ## Context
 
-`app/services/sot_relationships.py` names domains, service modules, free-text
-concerns, and dependency edges. That index catches some missing or dead owners,
-but it cannot prove what role owns each concern, which facts are authoritative,
-where the transaction lives, how events and errors behave, how projections are
-repaired, or whether an authority migration has actually cut over.
+The original `app/services/sot_relationships.py` named domains, service modules,
+free-text concerns, and dependency edges in one file. That index caught some
+missing or dead owners, but it could not prove what role owned each concern,
+which facts were authoritative, where the transaction lived, how events and
+errors behaved, how projections were repaired, or whether an authority
+migration had actually cut over.
 
 The repository has substantial indexed legacy debt. Requiring complete
 contracts for all entries in one mechanical rewrite would create unverified
@@ -33,6 +36,23 @@ contracted service declares, with typed values:
   ownership for projections;
 - native or explicit old-owner/new-owner migration and cutover state;
 - accountable stewardship plus checked-in design and test evidence.
+
+The canonical representation is modular but singular:
+
+- `app/services/sot_manifest.py` owns the typed manifest schema and contract
+  validation;
+- each service declaration lives exactly once in an ownership-aligned module
+  under `app/services/sot_registry/domains/`, with explicit capability shards
+  for domains too large to review coherently as one module;
+- `app/services/sot_registry/registry.py` explicitly assembles the ordered
+  domains and owns global uniqueness, dependency, cycle, and query behavior;
+- `app/services/sot_relationships.py` is an identity-preserving compatibility
+  facade and contains no declarations.
+
+Dependencies remain one directed cross-domain graph. Domain, capability/module,
+and end-to-end journey hierarchies are derived views, not independent
+registries. A domain-local relationship list may not duplicate dependency
+edges from the aggregate.
 
 Uncontracted entries are temporary indexed legacy debt. Their service names are
 recorded in a shrink-only baseline. A new service cannot enter that baseline;
@@ -53,6 +73,12 @@ typed registry and checked for exact parity.
 - Projection writers and reconcilers name drift detection and repair.
 - New and migrated owners are fully contracted; the legacy baseline only
   shrinks.
+- Every domain name has one explicit declaration module or package, and every
+  service is assembled exactly once.
+- The compatibility facade re-exports the canonical objects by identity and
+  never carries a second declaration.
+- No domain-local `sot_relationships.py` may maintain a parallel owner or
+  dependency graph.
 
 ## Consequences
 
@@ -61,10 +87,34 @@ Declarations become more verbose because authority evidence is explicit.
 The baseline permits incremental migration but does not approve existing
 architecture debt.
 
+The declaration corpus is navigable by ownership domain and capability without
+weakening global validation. Changes in unrelated domains no longer collide in
+one 40,000-line source file. Callers retain the old import path during the
+compatibility window, while new architecture code imports the canonical
+aggregate directly.
+
 Free-text descriptions remain useful context, but they cannot satisfy a typed
 contract field or suppress a validation failure.
 
 ## Migration and cutover
+
+The 2026-08-05 representation cutover is behavior-preserving:
+
+- Old representation: declarations, assembly, and queries in
+  `app/services/sot_relationships.py`, plus an independently maintained network
+  relationship list.
+- New representation: ownership-aligned declarations and one explicit aggregate
+  under `app/services/sot_registry/`; the old path is a thin facade and the
+  network-local list is retired.
+- Cutover gate: exact equality of ordered domains, services, concerns,
+  dependencies, notes, contracts, entrypoints, and rules; zero registry
+  validation errors; generated-map parity; and focused architecture tests.
+- Backfill: none. This changes code organization only and moves no persisted
+  authority or runtime state.
+- Fallback retirement: architecture guards prevent declarations from returning
+  to the facade and prevent a second `sot_relationships.py` graph.
+
+Owner-contract migration continues under the existing rules:
 
 - Old owner and paths: existing uncontracted `SOTService` entries and their
   callers.
@@ -86,14 +136,18 @@ contract field or suppress a validation failure.
 - Architecture tests reject new legacy entries and require the baseline to
   shrink after a contract is added.
 - Design/test paths and generated relationship-map content must exist and match.
+- Architecture tests enforce the explicit domain-module inventory, thin facade,
+  facade/canonical object identity, and absence of parallel relationship modules.
 - Domain behavior tests remain required; manifest validity alone does not prove
   correct implementation.
 
 ## Rollback or forward-fix
 
-The schema and checks are additive. A faulty contract is forward-fixed against
-the implementation and evidence. Re-adding a migrated service to the legacy
-baseline is not an accepted rollback because it discards an enforced boundary.
+The schema and checks are additive. A faulty contract or declaration shard is
+forward-fixed against the implementation and evidence. Rebuilding the
+monolithic declaration file or restoring a domain-local dependency list is not
+an accepted rollback because either recreates a parallel authority path.
+Re-adding a migrated service to the legacy baseline is likewise not accepted.
 
 ## Review and retirement
 

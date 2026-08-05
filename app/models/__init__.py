@@ -822,6 +822,9 @@ from app.models.service_extension import (  # noqa: F401
     ServiceExtension,
     ServiceExtensionAnchorBasis,
     ServiceExtensionEntry,
+    ServiceExtensionReversal,
+    ServiceExtensionReversalAnchorDisposition,
+    ServiceExtensionReversalEntry,
     ServiceExtensionScope,
     ServiceExtensionStatus,
 )
@@ -927,6 +930,7 @@ from app.models.team_inbox import (  # noqa: F401
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationLeadLink,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -12,7 +14,6 @@ def _source(relative: str) -> str:
 def test_quote_document_and_delivery_are_registered_owner_commands():
     documents = _source("app/services/sales/quote_documents.py")
     delivery = _source("app/services/sales/quote_delivery.py")
-    registry = _source("app/services/sot_relationships.py")
 
     assert 'owner="sales.quote_documents"' in documents
     assert "execute_owner_command(" in documents
@@ -26,9 +27,15 @@ def test_quote_document_and_delivery_are_registered_owner_commands():
     assert "EventType.quote_delivery_requested" in delivery
     assert "db.commit(" not in delivery
     assert "db.rollback(" not in delivery
-    assert 'name="sales.quote_documents"' in registry
-    assert 'name="sales.quote_delivery"' in registry
-    assert 'name="ui.quote_detail_projection"' in registry
+    assert service_relationship("sales.quote_documents").module == (
+        "app.services.sales.quote_documents"
+    )
+    assert service_relationship("sales.quote_delivery").module == (
+        "app.services.sales.quote_delivery"
+    )
+    assert service_relationship("ui.quote_detail_projection").module == (
+        "app.services.web_sales"
+    )
 
 
 def test_quote_email_attachment_resolves_only_the_owned_pdf_artifact():

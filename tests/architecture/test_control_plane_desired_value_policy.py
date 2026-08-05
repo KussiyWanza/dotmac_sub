@@ -22,6 +22,8 @@ from app.services.control_plane_intent import (
     DesiredValueAdjudication,
     DesiredValueAuthority,
     DesiredValueDeclaration,
+    DesiredValueProvenance,
+    has_executable_desired_provenance,
     is_executable_desired_value,
 )
 from app.services.network.reconcile.sentinels import (
@@ -83,6 +85,13 @@ def test_policy_concern_declares_its_provider_input():
 def test_policy_fails_closed_on_an_undeclared_default():
     service = _service("network.control_plane_intent")
     assert "undeclared unset desired value" in service.contract.errors.fail_closed_on
+
+
+def test_provenance_policy_fails_closed_on_unknown_or_untyped_input():
+    assert has_executable_desired_provenance(DesiredValueProvenance.explicit)
+    assert has_executable_desired_provenance(DesiredValueProvenance.declared_default)
+    assert not has_executable_desired_provenance(DesiredValueProvenance.unknown)
+    assert not has_executable_desired_provenance("explicit")  # type: ignore[arg-type]
 
 
 def test_design_rule_is_checked_in():
@@ -225,14 +234,19 @@ def test_debt_baseline_is_sorted_and_unique():
 # ── Delegation names a real owner and does not double-guard ─────────────────
 
 
-def test_delegated_entries_name_a_registered_owner():
+def test_named_authority_entries_name_a_registered_owner():
     registered = {
         service.name
         for domain in DOMAIN_SOT_RELATIONSHIPS
         for service in domain.services
     }
-    for rule in rules_by_authority(DesiredValueAuthority.delegated):
-        assert rule.declared_by in registered, rule.field
+    named_authorities = (
+        DesiredValueAuthority.delegated,
+        DesiredValueAuthority.declared_default,
+    )
+    for authority in named_authorities:
+        for rule in rules_by_authority(authority):
+            assert rule.declared_by in registered, rule.field
 
 
 def test_delegated_fields_are_not_guarded_in_this_provider():

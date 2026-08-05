@@ -12,13 +12,24 @@ from app.models.catalog import (
     Subscription,
     SubscriptionStatus,
 )
-from app.models.network import IPAssignment, IPv4Address, IPVersion
-from app.models.network_monitoring import PopSite
+from app.models.network import (
+    CPEDevice,
+    DeviceStatus,
+    IPAssignment,
+    IPv4Address,
+    IPVersion,
+    OLTDevice,
+    OntAssignment,
+    OntUnit,
+    PonPort,
+)
+from app.models.network_monitoring import DeviceType, NetworkDevice, PopSite
 from app.models.subscriber import Subscriber, SubscriberStatus, UserType
 from app.services.web_customer_lists import (
     CUSTOMER_LIST_DEFINITION,
     build_customer_list_query,
     build_customers_index_context,
+    search_customer_infrastructure_options,
 )
 
 
@@ -435,7 +446,173 @@ def test_customer_nas_filter_still_uses_subscription_nas(db_session):
 
     emails = {item["email"] for item in context["customers"]}
     assert karu_customer.email in emails
-    assert any(str(nas.id) == str(afr_nas.id) for nas in context["nas_options"])
+    assert "nas_options" not in context
+    assert "pop_site_options" not in context
+
+
+def test_infrastructure_typeahead_is_bounded_and_requires_two_characters(db_session):
+    for index in range(25):
+        db_session.add(
+            NetworkDevice(
+                name=f"Karu AP {index:02d}",
+                device_type=DeviceType.access_point,
+                is_active=True,
+            )
+        )
+    db_session.commit()
+
+    assert (
+        search_customer_infrastructure_options(
+            db_session,
+            infrastructure_type="access_point",
+            query="K",
+        )
+        == ()
+    )
+    options = search_customer_infrastructure_options(
+        db_session,
+        infrastructure_type="access_point",
+        query="Karu",
+        limit=20,
+    )
+
+    assert len(options) == 20
+    assert all(option.label.startswith("Karu AP") for option in options)
+
+
+def test_customer_infrastructure_filter_resolves_access_point_audience(db_session):
+    selected_ap = NetworkDevice(
+        name="Selected AP",
+        device_type=DeviceType.access_point,
+        is_active=True,
+    )
+    other_ap = NetworkDevice(
+        name="Other AP",
+        device_type=DeviceType.access_point,
+        is_active=True,
+    )
+    db_session.add_all([selected_ap, other_ap])
+    db_session.flush()
+    selected_customer = _make_customer(db_session, "selected-ap@example.com")
+    selected_subscription = _make_subscription(
+        db_session, selected_customer, status=SubscriptionStatus.active
+    )
+    other_customer = _make_customer(db_session, "other-ap@example.com")
+    other_subscription = _make_subscription(
+        db_session, other_customer, status=SubscriptionStatus.active
+    )
+    db_session.add_all(
+        [
+            CPEDevice(
+                subscriber_id=selected_customer.id,
+                subscription_id=selected_subscription.id,
+                parent_network_device_id=selected_ap.id,
+                status=DeviceStatus.active,
+            ),
+            CPEDevice(
+                subscriber_id=other_customer.id,
+                subscription_id=other_subscription.id,
+                parent_network_device_id=other_ap.id,
+                status=DeviceStatus.active,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    context = _build_context(
+        db_session,
+        search=None,
+        status=None,
+        customer_type=None,
+        nas_id=None,
+        pop_site_id=None,
+        infrastructure_type="access_point",
+        infrastructure_id=str(selected_ap.id),
+        page=1,
+        per_page=25,
+    )
+
+    assert {item["email"] for item in context["customers"]} == {
+        "selected-ap@example.com"
+    }
+    assert context["selected_infrastructure"]["label"] == "Selected AP"
+
+
+def test_customer_infrastructure_filter_resolves_olt_and_pon_port(db_session):
+    olt = OLTDevice(name="Karu GPON", is_active=True)
+    db_session.add(olt)
+    db_session.flush()
+    selected_port = PonPort(olt_id=olt.id, name="0/1/2", is_active=True)
+    other_port = PonPort(olt_id=olt.id, name="0/1/3", is_active=True)
+    db_session.add_all([selected_port, other_port])
+    db_session.flush()
+
+    selected_customer = _make_customer(db_session, "selected-pon@example.com")
+    selected_subscription = _make_subscription(
+        db_session, selected_customer, status=SubscriptionStatus.active
+    )
+    other_customer = _make_customer(db_session, "other-pon@example.com")
+    other_subscription = _make_subscription(
+        db_session, other_customer, status=SubscriptionStatus.active
+    )
+    selected_ont = OntUnit(
+        serial_number=f"ONT-{uuid.uuid4().hex}", olt_device_id=olt.id
+    )
+    other_ont = OntUnit(serial_number=f"ONT-{uuid.uuid4().hex}", olt_device_id=olt.id)
+    db_session.add_all([selected_ont, other_ont])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OntAssignment(
+                ont_unit_id=selected_ont.id,
+                pon_port_id=selected_port.id,
+                subscriber_id=selected_customer.id,
+                subscription_id=selected_subscription.id,
+                active=True,
+            ),
+            OntAssignment(
+                ont_unit_id=other_ont.id,
+                pon_port_id=other_port.id,
+                subscriber_id=other_customer.id,
+                subscription_id=other_subscription.id,
+                active=True,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    olt_context = _build_context(
+        db_session,
+        search=None,
+        status=None,
+        customer_type=None,
+        nas_id=None,
+        pop_site_id=None,
+        infrastructure_type="olt",
+        infrastructure_id=str(olt.id),
+        page=1,
+        per_page=25,
+    )
+    port_context = _build_context(
+        db_session,
+        search=None,
+        status=None,
+        customer_type=None,
+        nas_id=None,
+        pop_site_id=None,
+        infrastructure_type="pon_port",
+        infrastructure_id=str(selected_port.id),
+        page=1,
+        per_page=25,
+    )
+
+    assert {item["email"] for item in olt_context["customers"]} == {
+        "selected-pon@example.com",
+        "other-pon@example.com",
+    }
+    assert {item["email"] for item in port_context["customers"]} == {
+        "selected-pon@example.com"
+    }
 
 
 def test_customer_list_declares_search_filter_and_sort_capabilities():
@@ -452,6 +629,8 @@ def test_customer_list_declares_search_filter_and_sort_capabilities():
         "status",
         "nas_id",
         "pop_site_id",
+        "infrastructure_type",
+        "infrastructure_id",
     )
     assert CUSTOMER_LIST_DEFINITION.sortable_keys == (
         "name",

@@ -1,8 +1,8 @@
-"""Step 2d (#306): the lifecycle-transition shadow-diff hook.
+"""The lifecycle event transport's read-only connectivity shadow hook.
 
-Observability only — the LifecycleHandler runs the READ-ONLY connectivity
-shadow diff after recording a transition, and a failure in the diff must never
-block the lifecycle audit write. No writer migration here.
+The status owner has already appended lifecycle evidence before publishing the
+event. The handler may observe connectivity drift, but redelivery must never
+append a second lifecycle row.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _lifecycle_rows(db, sub):
     )
 
 
-def test_hook_records_lifecycle_and_calls_shadow_diff(
+def test_hook_does_not_reconstruct_lifecycle_and_calls_shadow_diff(
     db_session, subscriber, catalog_offer, monkeypatch
 ):
     sub = _active_sub(db_session, subscriber, catalog_offer)
@@ -62,11 +62,7 @@ def test_hook_records_lifecycle_and_calls_shadow_diff(
 
     LifecycleHandler().handle(db_session, _suspend_event(sub))
 
-    # Audit record persisted...
-    rows = _lifecycle_rows(db_session, sub)
-    assert len(rows) == 1
-    assert rows[0].to_status == SubscriptionStatus.suspended
-    # ...and the shadow diff ran for this subscriber.
+    assert _lifecycle_rows(db_session, sub) == []
     assert seen == [subscriber.id]
 
 
@@ -83,23 +79,20 @@ def test_shadow_diff_failure_is_isolated(
     # Must not raise — failure is swallowed/logged.
     LifecycleHandler().handle(db_session, _suspend_event(sub))
 
-    # The audit write survived the swallowed failure, and the session is still
-    # usable afterwards (the savepoint rolled back only the diff).
-    rows = _lifecycle_rows(db_session, sub)
-    assert len(rows) == 1
+    # Redelivery still created no evidence, and the session remains usable.
+    assert _lifecycle_rows(db_session, sub) == []
     assert db_session.query(Subscription).filter(Subscription.id == sub.id).one()
 
 
 def test_real_shadow_diff_runs_read_only(db_session, subscriber, catalog_offer):
-    """End-to-end with the real (read-only) shadow diff: no error, record kept,
-    and nothing on the subscription is mutated by the observation."""
+    """The real shadow diff creates no evidence and mutates no subscription."""
     sub = _active_sub(db_session, subscriber, catalog_offer)
     before_status = sub.status
     before_ip = sub.ipv4_address
 
     LifecycleHandler().handle(db_session, _suspend_event(sub))
 
-    assert len(_lifecycle_rows(db_session, sub)) == 1
+    assert _lifecycle_rows(db_session, sub) == []
     db_session.refresh(sub)
     assert sub.status == before_status  # handler records, does not transition
     assert sub.ipv4_address == before_ip  # shadow diff wrote nothing

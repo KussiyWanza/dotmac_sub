@@ -31,9 +31,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.services import conversation_lead_relationships
 from app.services import web_sales as web_sales_service
 from app.services import web_sales_dashboard as dashboard_service
-from app.services.auth_dependencies import require_permission
+from app.services.auth_dependencies import can, require_permission
 from app.services.domain_errors import DomainError
 from app.services.file_storage import build_content_disposition
 from app.services.owner_commands import CommandContext
@@ -261,13 +262,27 @@ def leads_list(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
 )
-def lead_new(request: Request, db: Session = Depends(get_db)):
+def lead_new(
+    request: Request,
+    inbox_conversation_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if inbox_conversation_id and not can(request, "support:ticket:read"):
+        raise HTTPException(status_code=403, detail="Inbox access is required.")
+    if inbox_conversation_id:
+        try:
+            UUID(inbox_conversation_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=404, detail="Conversation not found."
+            ) from exc
     context = _ctx(request, db, "sales-leads")
     context.update(
         web_sales_service.build_lead_new_context(
             db, actor_system_user_id=_lead_actor_system_user_id(request)
         )
     )
+    context["inbox_conversation_id"] = inbox_conversation_id
     return templates.TemplateResponse("admin/sales/leads/new_form.html", context)
 
 
@@ -297,6 +312,9 @@ def lead_create(
     country_code: str | None = Form(default=None),
     organization_id: str | None = Form(default=None),
     organization_label: str | None = Form(default=None),
+    managed_by_reseller: str | None = Form(default=None),
+    reseller_id: str | None = Form(default=None),
+    reseller_label: str | None = Form(default=None),
     pipeline_id: str | None = Form(default=None),
     stage_id: str | None = Form(default=None),
     lead_source: str | None = Form(default=None),
@@ -308,8 +326,11 @@ def lead_create(
     lost_reason: str | None = Form(default=None),
     notes: str | None = Form(default=None),
     is_active: str | None = Form(default=None),
+    inbox_conversation_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    if inbox_conversation_id and not can(request, "support:ticket:read"):
+        raise HTTPException(status_code=403, detail="Inbox access is required.")
     active = is_active is not None
     actor_system_user_id = _lead_actor_system_user_id(request)
     fields: dict[str, object] = {
@@ -332,6 +353,9 @@ def lead_create(
         "country_code": country_code,
         "organization_id": organization_id,
         "organization_label": organization_label,
+        "managed_by_reseller": managed_by_reseller is not None,
+        "reseller_id": reseller_id,
+        "reseller_label": reseller_label,
         "pipeline_id": pipeline_id,
         "stage_id": stage_id,
         "lead_source": lead_source,
@@ -343,6 +367,7 @@ def lead_create(
         "lost_reason": lost_reason,
         "notes": notes,
         "is_active": active,
+        "inbox_conversation_id": inbox_conversation_id,
     }
     try:
         outcome = web_sales_service.author_lead_from_form(
@@ -366,6 +391,8 @@ def lead_create(
             postal_code=postal_code,
             country_code=country_code,
             organization_id=organization_id,
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
             pipeline_id=pipeline_id,
             stage_id=stage_id,
             lead_source=lead_source,
@@ -377,8 +404,17 @@ def lead_create(
             lost_reason=lost_reason,
             notes=notes,
             is_active=active,
+            inbox_conversation_id=inbox_conversation_id,
         )
         result = "existing" if outcome.replayed else "created"
+        if inbox_conversation_id:
+            return RedirectResponse(
+                url=(
+                    f"/admin/inbox?c={inbox_conversation_id}"
+                    f"&status=success&message=Lead%20{result}"
+                ),
+                status_code=303,
+            )
         return RedirectResponse(
             url=f"/admin/sales/leads/{outcome.lead_id}?result={result}",
             status_code=303,
@@ -442,9 +478,28 @@ def legacy_leads_board_redirect(
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:read"))],
 )
-def lead_detail(request: Request, lead_id: str, db: Session = Depends(get_db)):
+def lead_detail(
+    request: Request,
+    lead_id: str,
+    inbox_conversation_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = conversation_lead_relationships.conversation_links_lead(
+                db,
+                conversation_id=UUID(inbox_conversation_id),
+                lead_id=UUID(lead_id),
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
     context = _ctx(request, db, "sales-leads")
     context.update(web_sales_service.build_lead_detail_context(db, lead_id=lead_id))
+    context["inbox_conversation_id"] = inbox_conversation_id
     result = request.query_params.get("result")
     if result == "created":
         context["success"] = "Lead created successfully."
@@ -462,9 +517,28 @@ def lead_detail(request: Request, lead_id: str, db: Session = Depends(get_db)):
     response_class=HTMLResponse,
     dependencies=[Depends(require_permission("crm:lead:write"))],
 )
-def lead_edit(request: Request, lead_id: str, db: Session = Depends(get_db)):
+def lead_edit(
+    request: Request,
+    lead_id: str,
+    inbox_conversation_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = conversation_lead_relationships.conversation_links_lead(
+                db,
+                conversation_id=UUID(inbox_conversation_id),
+                lead_id=UUID(lead_id),
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
     context = _ctx(request, db, "sales-leads")
     context.update(web_sales_service.build_lead_edit_context(db, lead_id=lead_id))
+    context["inbox_conversation_id"] = inbox_conversation_id
     return templates.TemplateResponse("admin/sales/leads/form.html", context)
 
 
@@ -493,8 +567,22 @@ def lead_update(
     lost_reason: str | None = Form(default=None),
     notes: str | None = Form(default=None),
     is_active: str | None = Form(default=None),
+    inbox_conversation_id: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = conversation_lead_relationships.conversation_links_lead(
+                db,
+                conversation_id=UUID(inbox_conversation_id),
+                lead_id=UUID(lead_id),
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
     active = is_active is not None
     fields: dict[str, str | bool | None] = {
         "title": title,
@@ -514,6 +602,7 @@ def lead_update(
         "lost_reason": lost_reason,
         "notes": notes,
         "is_active": active,
+        "inbox_conversation_id": inbox_conversation_id,
     }
     try:
         web_sales_service.update_lead_from_form(
@@ -537,9 +626,13 @@ def lead_update(
             notes=notes,
             is_active=active,
         )
-        return RedirectResponse(
-            url=f"/admin/sales/leads/{lead_id}?result=updated", status_code=303
+        destination = (
+            f"/admin/inbox?c={inbox_conversation_id}"
+            "&status=success&message=Lead%20updated"
+            if inbox_conversation_id
+            else f"/admin/sales/leads/{lead_id}?result=updated"
         )
+        return RedirectResponse(url=destination, status_code=303)
     except (
         web_sales_service.LeadFormValidationError,
         ValidationError,
@@ -555,6 +648,7 @@ def lead_update(
                 **fields,
             )
         )
+        context["inbox_conversation_id"] = inbox_conversation_id
         return templates.TemplateResponse(
             "admin/sales/leads/form.html", context, status_code=400
         )

@@ -3322,23 +3322,6 @@ SETTINGS_SPECS: list[SettingSpec] = [
         allowed={"running", "success", "failed"},
     ),
     SettingSpec(
-        domain=SettingDomain.lifecycle,
-        key="default_event_type",
-        env_var="LIFECYCLE_DEFAULT_EVENT_TYPE",
-        value_type=SettingValueType.string,
-        default="other",
-        allowed={
-            "activate",
-            "suspend",
-            "resume",
-            "cancel",
-            "upgrade",
-            "downgrade",
-            "change_address",
-            "other",
-        },
-    ),
-    SettingSpec(
         domain=SettingDomain.comms,
         key="default_notification_status",
         env_var="COMMS_DEFAULT_NOTIFICATION_STATUS",

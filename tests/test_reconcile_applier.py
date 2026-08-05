@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+from app.services.control_plane_intent import DesiredValueProvenance
 from app.services.network.reconcile import (
     AcsAddObject,
     AcsDeleteObject,
@@ -286,6 +287,27 @@ def test_tr181_ipv6_action_enables_dhcpv6_prefix_delegation():
         "Device.DHCPv6.Client.2.RequestPrefixes": True,
         "Device.RouterAdvertisement.InterfaceSettings.2.Enable": True,
     }
+
+
+def test_ipv6_action_refuses_unknown_provenance_before_acs_contact():
+    acs = _StubAcsClient()
+    result = apply_plan(
+        _plan(
+            AcsSetIpv6(
+                device_id="dev",
+                interface_index=2,
+                enabled=False,
+                request_prefixes=False,
+                provenance=DesiredValueProvenance.unknown,
+            )
+        ),
+        _ctx(acs_client=acs),
+    )
+
+    assert result.success is False
+    assert result.halted_by is not None
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert acs.calls == []
 
 
 def test_tr098_static_wan_action_writes_routed_nat_addressing():
@@ -639,6 +661,7 @@ def test_acs_add_object_calls_client():
         AcsAddObject(
             device_id="00259E-HG8546M-HWTC1",
             object_path="InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection",
+            wcd_index=1,
         )
     )
     apply_plan(plan, ctx)
@@ -1208,6 +1231,7 @@ def test_acs_add_object_records_device_returned_wan_ppp_instance_for_downstream_
         AcsAddObject(
             device_id="00259E-HG8546M-HWTC7C7E1D92",
             object_path="InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection",
+            wcd_index=2,
         ),
         AcsSetPppoe(
             device_id="00259E-HG8546M-HWTC7C7E1D92",
@@ -1252,6 +1276,7 @@ def test_acs_add_object_falls_back_to_planned_index_when_discovery_unavailable()
         AcsAddObject(
             device_id="dev",
             object_path="InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection",
+            wcd_index=1,
         ),
         AcsSetPppoe(
             device_id="dev",
@@ -1289,6 +1314,7 @@ def test_acs_add_object_swallows_refresh_failures_silently():
         AcsAddObject(
             device_id="dev",
             object_path="InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection",
+            wcd_index=2,
         ),
         AcsSetPppoe(
             device_id="dev",
@@ -1461,6 +1487,66 @@ def test_olt_modify_service_profile_refuses_an_unset_profile():
         _plan(OltModifyServiceProfile(fsp="0/1/3", ont_id=11, service_profile_id=0)),
         _ctx(olt_adapter=olt),
     )
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not olt.calls
+
+
+def test_acs_add_object_refuses_missing_wcd_evidence_before_contact():
+    acs = _StubAcsClient()
+    result = apply_plan(
+        _plan(
+            AcsAddObject(
+                device_id="dev",
+                object_path=(
+                    "InternetGatewayDevice.WANDevice.1."
+                    "WANConnectionDevice.1.WANPPPConnection"
+                ),
+            )
+        ),
+        _ctx(acs_client=acs),
+    )
+
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not acs.calls
+
+
+def test_management_server_refuses_missing_cr_credentials_before_contact():
+    acs = _StubAcsClient()
+    result = apply_plan(
+        _plan(
+            AcsSetManagementServer(
+                device_id="dev",
+                cr_username="",
+                cr_password_ref="",
+                inform_interval_sec=300,
+            )
+        ),
+        _ctx(acs_client=acs),
+    )
+
+    assert result.success is False
+    assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
+    assert not acs.calls
+
+
+def test_wan_service_port_refuses_vlan_zero_before_olt_contact():
+    olt = _StubOltAdapter()
+    result = apply_plan(
+        _plan(
+            OltCreateServicePort(
+                fsp="0/1/3",
+                ont_id=11,
+                service_port_index=22,
+                vlan=0,
+                gem_index=1,
+                slot="wan",
+            )
+        ),
+        _ctx(olt_adapter=olt),
+    )
+
     assert result.success is False
     assert result.halted_by.reason == ReconcileFailureReason.INVALID_CHANGE
     assert not olt.calls

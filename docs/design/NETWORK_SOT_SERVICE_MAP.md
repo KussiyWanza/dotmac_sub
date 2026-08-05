@@ -1,7 +1,7 @@
 # Network UI — SOT service → surface map
 
 Drives the network admin redesign from the **authoritative owners** in the SOT
-registry (`app/services/sot_relationships.py`, `DOMAIN_SOT_RELATIONSHIPS`), not
+registry (`app/services/sot_registry/registry.py`, `DOMAIN_SOT_RELATIONSHIPS`), not
 from the legacy templates. Each redesigned surface is a **complete projection of
 its owning services' contracts** — so we surface what the owner exposes, not
 whatever fields a legacy page happened to pick. Companion to

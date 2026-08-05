@@ -24,8 +24,10 @@ from app.services.domain_errors import DomainError
 from app.services.network.ont_reconcile_eligibility import (
     HoldRefusal,
     HoldSpec,
+    OverdueHoldAlertSeverity,
     ReconcileHoldError,
     held_ont_ids,
+    overdue_hold_alerts,
     overdue_holds,
     place_reconcile_hold,
     reconcile_eligibility,
@@ -219,6 +221,11 @@ def test_overdue_holds_are_reported_for_escalation(db_session):
 
     assert [h.id for h in overdue] == [hold.id]
     assert all(h.status is OntReconcileHoldStatus.active for h in overdue)
+
+    alerts = overdue_hold_alerts(db_session)
+    assert len(alerts) == 1
+    assert alerts[0].severity is OverdueHoldAlertSeverity.critical
+    assert alerts[0].target_url == f"/admin/network/onts/{ont.id}"
 
 
 def test_nothing_releases_a_hold_but_the_release_command(db_session):

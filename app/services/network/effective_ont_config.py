@@ -30,6 +30,9 @@ from app.services.network.ont_desired_config import (
     get_desired_config_value,
 )
 from app.services.network.ont_management_ipam import get_ont_management_ip_record
+from app.services.network.ont_provisioning_defaults import (
+    default_pppoe_instance_index,
+)
 from app.services.network.profile_sync import (
     resolve_profile_bundle_for_active_subscription,
 )
@@ -355,7 +358,10 @@ def _values_from_assignment(
     values = {
         "config_method": None,
         "onu_mode": asn_wan_mode,
-        "ip_protocol": cfg("wan", "ip_protocol", default="ipv4"),
+        # Missing protocol intent stays unknown. The reconciler carries its
+        # provenance separately so absence cannot be turned into an IPv4
+        # device write.
+        "ip_protocol": cfg("wan", "ip_protocol"),
         "wan_mode": asn_ip_mode,
         "wan_vlan": internet_vlan_tag,
         "wan_vlan_id": str(wan_vlan.id) if wan_vlan and wan_vlan.id else None,
@@ -373,7 +379,11 @@ def _values_from_assignment(
             if primary_wan_instance is not None
             else cfg("wan", "nat_enabled")
         ),
-        "wan_instance_index": cfg("wan", "instance_index", default=1),
+        "wan_instance_index": cfg(
+            "wan",
+            "instance_index",
+            default=default_pppoe_instance_index(),
+        ),
         "wan_gem_index": internet_gem_index,
         "mgmt_ip_mode": asn_mgmt_ip_mode,
         "mgmt_vlan": mgmt_vlan.tag if mgmt_vlan else None,

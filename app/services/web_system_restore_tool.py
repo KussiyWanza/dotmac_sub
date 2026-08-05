@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,11 @@ from app.models.subscription_engine import SettingValueType
 from app.schemas.settings import DomainSettingUpdate
 from app.services import domain_settings as domain_settings_service
 from app.services.catalog import access_credentials as access_credential_service
+from app.services.owner_commands import CommandContext
+from app.services.subscription_lifecycle_evidence import (
+    LifecycleEvidenceSource,
+    record_current_state_baseline,
+)
 
 DELETED_AT_KEY = "recovery_deleted_at"
 DELETED_BY_KEY = "recovery_deleted_by"
@@ -333,6 +338,12 @@ def restore_subscriber(
             status_code=409, detail="Subscriber is not marked as deleted."
         )
 
+    restored_at = _now()
+    restore_command_id = uuid5(
+        NAMESPACE_URL,
+        f"dotmac:system-restore:{subscriber.id}:{metadata.get(DELETED_AT_KEY)}",
+    )
+
     snapshot = (
         metadata.get(SNAPSHOT_KEY)
         if isinstance(metadata.get(SNAPSHOT_KEY), dict)
@@ -363,7 +374,10 @@ def restore_subscriber(
     subscriber.is_active = True
 
     subscriptions = db.scalars(
-        select(Subscription).where(Subscription.subscriber_id == subscriber.id)
+        select(Subscription)
+        .where(Subscription.subscriber_id == subscriber.id)
+        .order_by(Subscription.id)
+        .with_for_update()
     ).all()
     for subscription in subscriptions:
         row_snapshot = subscription_snapshot.get(str(subscription.id), {})
@@ -382,6 +396,26 @@ def restore_subscriber(
             subscription_status = SubscriptionStatus.active
         if subscription.status != subscription_status:
             subscription.status = subscription_status
+            record_current_state_baseline(
+                db,
+                subscription=subscription,
+                effective_at=restored_at,
+                evidence_source=LifecycleEvidenceSource.reconciliation_baseline,
+                context=CommandContext.system(
+                    command_id=uuid5(
+                        restore_command_id,
+                        f"subscription:{subscription.id}",
+                    ),
+                    correlation_id=restore_command_id,
+                    actor=str(actor_id or "system_restore_tool"),
+                    scope=f"subscription:{subscription.id}",
+                    reason="Restore subscription state from recovery snapshot",
+                    idempotency_key=(
+                        f"system-restore:{restore_command_id}:{subscription.id}"
+                    ),
+                    causation_id=restore_command_id,
+                ),
+            )
             touched["subscriptions"] += 1
         subscription.canceled_at = _parse_dt(canceled_value)
 
@@ -494,7 +528,7 @@ def restore_subscriber(
     metadata.pop(DELETED_BY_KEY, None)
     metadata.pop(PURGE_DUE_AT_KEY, None)
     metadata.pop(PURGED_AT_KEY, None)
-    metadata[LAST_RESTORED_AT_KEY] = _now().isoformat()
+    metadata[LAST_RESTORED_AT_KEY] = restored_at.isoformat()
     metadata[LAST_RESTORED_BY_KEY] = actor_id
     subscriber.metadata_ = metadata
 

@@ -87,6 +87,23 @@ def pick_service_address(addresses: list[Address] | None) -> Address | None:
     return items[0]
 
 
+def format_address(address: Address | None) -> str | None:
+    """Render one canonical address for operational display and dispatch."""
+
+    if address is None:
+        return None
+    parts = (
+        address.address_line1,
+        address.address_line2,
+        address.city,
+        address.region,
+        address.postal_code,
+        address.country_code,
+    )
+    rendered = ", ".join(str(part).strip() for part in parts if str(part or "").strip())
+    return rendered or None
+
+
 class AddressParts(NamedTuple):
     address_line1: str | None
     address_line2: str | None

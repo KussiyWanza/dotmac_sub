@@ -18,7 +18,6 @@ from app.models.catalog import RegionZone
 from app.models.organization import Organization, OrganizationAccountType
 from app.models.party import (
     Party,
-    PartyContactPoint,
     PartyContactPointType,
     PartyIdentityStatus,
     PartyRelationshipType,
@@ -35,7 +34,9 @@ from app.models.sales import (
     PipelineStage,
 )
 from app.models.service_team import ServiceTeamMember
+from app.models.subscriber import Reseller
 from app.models.system_user import SystemUser
+from app.services import conversation_lead_relationships
 from app.services import party as party_service
 from app.services.audit_adapter import stage_audit_event
 from app.services.credential_crypto import encrypt_credential
@@ -92,6 +93,7 @@ class LeadPersonDraft:
     postal_code: str | None
     country_code: str | None
     organization_id: UUID | None
+    reseller_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +115,7 @@ class AuthorLeadCommand:
     notes: str | None
     is_active: bool
     person: LeadPersonDraft
+    origin_conversation_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +179,11 @@ def _fingerprint(command: AuthorLeadCommand) -> str:
         "lost_reason": command.lost_reason,
         "notes": command.notes,
         "is_active": command.is_active,
+        "origin_conversation_id": (
+            str(command.origin_conversation_id)
+            if command.origin_conversation_id is not None
+            else None
+        ),
         "person": {
             "display_name": command.person.display_name,
             "emails": command.person.emails.values,
@@ -195,6 +203,9 @@ def _fingerprint(command: AuthorLeadCommand) -> str:
             "country_code": command.person.country_code,
             "organization_id": str(command.person.organization_id)
             if command.person.organization_id
+            else None,
+            "reseller_id": str(command.person.reseller_id)
+            if command.person.reseller_id
             else None,
         },
     }
@@ -323,6 +334,27 @@ def _organization(db: Session, organization_id: UUID | None) -> Organization | N
     return organization
 
 
+def _reseller(db: Session, reseller_id: UUID | None) -> Reseller | None:
+    if reseller_id is None:
+        return None
+    reseller = db.scalars(
+        select(Reseller)
+        .where(
+            Reseller.id == reseller_id,
+            Reseller.is_active.is_(True),
+            Reseller.is_house.is_(False),
+        )
+        .with_for_update()
+    ).one_or_none()
+    if reseller is None:
+        raise _error(
+            "reseller_not_active",
+            "Select an active reseller.",
+            field="reseller_id",
+        )
+    return reseller
+
+
 def _stable_unique(values: tuple[str, ...]) -> tuple[tuple[int, str], ...]:
     seen: set[str] = set()
     result: list[tuple[int, str]] = []
@@ -333,7 +365,7 @@ def _stable_unique(values: tuple[str, ...]) -> tuple[tuple[int, str], ...]:
     return tuple(result)
 
 
-def _emails(db: Session, draft: LeadContactDraft) -> tuple[tuple[str, ...], int]:
+def _emails(draft: LeadContactDraft) -> tuple[tuple[str, ...], int]:
     normalized: list[str] = []
     for raw in draft.values:
         value = normalize_email_identifier(raw)
@@ -357,24 +389,8 @@ def _emails(db: Session, draft: LeadContactDraft) -> tuple[tuple[str, ...], int]
         else ""
     )
     primary = values.index(selected_value) if selected_value in values else 0
-    if values:
-        existing = db.scalars(
-            select(PartyContactPoint.id)
-            .join(Party, Party.id == PartyContactPoint.party_id)
-            .where(
-                Party.party_type == PartyType.person.value,
-                PartyContactPoint.channel_type == PartyContactPointType.email.value,
-                PartyContactPoint.normalized_value == values[primary],
-                PartyContactPoint.is_primary.is_(True),
-                PartyContactPoint.is_active.is_(True),
-            )
-        ).first()
-        if existing is not None:
-            raise _error(
-                "primary_email_in_use",
-                "The primary email already belongs to another Person.",
-                field="emails",
-            )
+    # Email is contact information rather than identity. Multiple People may
+    # legitimately share one address, especially customers managed by a reseller.
     return values, primary
 
 
@@ -473,6 +489,17 @@ def _validate_scalar_fields(
     return currency, country_code
 
 
+def _inbox_lead_source(channel_type: str) -> str:
+    return {
+        "email": "Email",
+        "whatsapp": "Whatsapp",
+        "facebook_messenger": "Facebook",
+        "facebook_comment": "Facebook",
+        "instagram_dm": "Instagram",
+        "instagram_comment": "Instagram",
+    }.get(channel_type, "Website")
+
+
 def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
     actor = _active_actor(db, command.actor_system_user_id)
     fingerprint = _fingerprint(command)
@@ -490,6 +517,19 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             raise _error(
                 "replay_party_missing", "The saved Lead is missing its Person."
             )
+        if command.origin_conversation_id is not None:
+            conversation_lead_relationships.link_conversation_lead_participant(
+                db,
+                conversation_lead_relationships.ConversationLeadLinkCommand(
+                    context=command.context,
+                    conversation_id=command.origin_conversation_id,
+                    lead_id=replay.id,
+                    party_id=replay.party_id,
+                    actor_person_id=actor.person_party_id,
+                    source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_authoring,
+                    reason="Inbox Party and Lead authoring replay restored exact provenance",
+                ),
+            )
         return AuthorLeadOutcome(
             lead_id=replay.id,
             party_id=replay.party_id,
@@ -497,16 +537,27 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             reseller_routed=bool(metadata.get("communication_routed_through_reseller")),
         )
 
+    conversation = (
+        conversation_lead_relationships.require_new_prospect_conversation(
+            db, command.origin_conversation_id
+        )
+        if command.origin_conversation_id is not None
+        else None
+    )
     currency, country_code = _validate_scalar_fields(command)
     owner_id = _eligible_owner(db, command.owner_system_user_id)
     pipeline_id, stage_id = _pipeline_stage(db, command.pipeline_id, command.stage_id)
     region = _region(db, command.region_zone_id)
     organization = _organization(db, command.person.organization_id)
+    reseller = _reseller(db, command.person.reseller_id)
     reseller_routed = bool(
-        organization
-        and organization.account_type == OrganizationAccountType.reseller.value
+        reseller
+        or (
+            organization
+            and organization.account_type == OrganizationAccountType.reseller.value
+        )
     )
-    emails, primary_email = _emails(db, command.person.emails)
+    emails, primary_email = _emails(command.person.emails)
     phones, primary_phone, phone_indexes = _phones(db, command.person.phones)
     whatsapp_indexes = tuple(
         dict.fromkeys(
@@ -534,6 +585,7 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
         "postal_code": command.person.postal_code,
         "country_code": country_code,
         "organization_id": str(organization.id) if organization else None,
+        "reseller_id": str(reseller.id) if reseller else None,
         "primary_email": emails[primary_email] if emails else None,
         "primary_phone": phones[primary_phone] if phones else None,
         "identity_managed_by": "sub",
@@ -553,37 +605,36 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
         status=PartyRoleStatus.active,
         source="sales.lead_authoring",
     )
-    if not reseller_routed:
-        for index, email in enumerate(emails):
+    for index, email in enumerate(emails):
+        party_service.add_contact_point(
+            db,
+            party_id=party.id,
+            channel_type=PartyContactPointType.email,
+            normalized_value=email,
+            display_value=email,
+            is_primary=index == primary_email,
+            metadata={"captured_by": "sales.lead_authoring"},
+        )
+    for index, phone in enumerate(phones):
+        party_service.add_contact_point(
+            db,
+            party_id=party.id,
+            channel_type=PartyContactPointType.phone,
+            normalized_value=phone,
+            display_value=phone,
+            is_primary=index == primary_phone,
+            metadata={"captured_by": "sales.lead_authoring"},
+        )
+        if index in whatsapp_indexes:
             party_service.add_contact_point(
                 db,
                 party_id=party.id,
-                channel_type=PartyContactPointType.email,
-                normalized_value=email,
-                display_value=email,
-                is_primary=index == primary_email,
-                metadata={"captured_by": "sales.lead_authoring"},
-            )
-        for index, phone in enumerate(phones):
-            party_service.add_contact_point(
-                db,
-                party_id=party.id,
-                channel_type=PartyContactPointType.phone,
+                channel_type=PartyContactPointType.whatsapp,
                 normalized_value=phone,
                 display_value=phone,
-                is_primary=index == primary_phone,
+                is_primary=False,
                 metadata={"captured_by": "sales.lead_authoring"},
             )
-            if index in whatsapp_indexes:
-                party_service.add_contact_point(
-                    db,
-                    party_id=party.id,
-                    channel_type=PartyContactPointType.whatsapp,
-                    normalized_value=phone,
-                    display_value=phone,
-                    is_primary=False,
-                    metadata={"captured_by": "sales.lead_authoring"},
-                )
     if organization and organization.party_id:
         party_service.relate_parties(
             db,
@@ -594,23 +645,51 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             metadata={"organization_profile_id": str(organization.id)},
         )
 
-    source = command.lead_source or "Portal"
+    source = (
+        _inbox_lead_source(conversation.channel_type)
+        if conversation is not None
+        else command.lead_source or "Portal"
+    )
     lead_metadata: dict[str, object] = {
         "authoring_key": str(command.lead_id),
         "authoring_fingerprint": fingerprint,
         "authoring_actor_system_user_id": str(actor.id),
         "person_party_id": str(party.id),
         "organization_id": str(organization.id) if organization else None,
+        "reseller_id": str(reseller.id) if reseller else None,
         "region_zone_id": str(region.id) if region else None,
         "communication_routed_through_reseller": reseller_routed,
+        "origin_conversation_id": (
+            str(conversation.id) if conversation is not None else None
+        ),
     }
     origin = {
-        "capture_method": LeadCaptureMethod.agent_declared.value,
-        "source_platform": LeadSourcePlatform.agent.value,
-        "source_interaction_id": f"admin-lead:{command.lead_id}",
+        "capture_method": (
+            LeadCaptureMethod.inbox_form.value
+            if conversation is not None
+            else LeadCaptureMethod.agent_declared.value
+        ),
+        "source_platform": (
+            LeadSourcePlatform.team_inbox.value
+            if conversation is not None
+            else LeadSourcePlatform.agent.value
+        ),
+        "source_interaction_id": (
+            f"inbox-conversation:{conversation.id}"
+            if conversation is not None
+            else f"admin-lead:{command.lead_id}"
+        ),
         "capture_fingerprint": fingerprint,
-        "capture_source": "admin_sales_lead_form",
-        "capture_reason": "Authenticated staff created the Lead",
+        "capture_source": (
+            "communications.inbox_lead_actions"
+            if conversation is not None
+            else "admin_sales_lead_form"
+        ),
+        "capture_reason": (
+            "Authorized operator created a new prospect from an Inbox conversation"
+            if conversation is not None
+            else "Authenticated staff created the Lead"
+        ),
     }
     lead = lifecycle.create_party_lead(
         db,
@@ -638,6 +717,7 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             else None
         ),
         is_active=command.is_active,
+        reseller_id=reseller.id if reseller else None,
     )
     emit_event(
         db,
@@ -667,6 +747,19 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
             "reseller_routed": reseller_routed,
         },
     )
+    if conversation is not None:
+        conversation_lead_relationships.link_conversation_lead_participant(
+            db,
+            conversation_lead_relationships.ConversationLeadLinkCommand(
+                context=command.context,
+                conversation_id=conversation.id,
+                lead_id=lead.id,
+                party_id=party.id,
+                actor_person_id=actor.person_party_id,
+                source=conversation_lead_relationships.ConversationLeadLinkSource.inbox_lead_authoring,
+                reason="Party and Lead created atomically from this Inbox conversation",
+            ),
+        )
     db.flush()
     return AuthorLeadOutcome(
         lead_id=lead.id,

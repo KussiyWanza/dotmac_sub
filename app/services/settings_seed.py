@@ -18,7 +18,6 @@ from app.services.domain_settings import (
     geocoding_settings,
     gis_settings,
     imports_settings,
-    lifecycle_settings,
     network_monitoring_settings,
     network_settings,
     notification_settings,
@@ -2442,15 +2441,6 @@ def seed_network_monitoring_settings(db: Session) -> None:
         key="default_sync_status",
         value_type=SettingValueType.string,
         value_text=os.getenv("RADIUS_DEFAULT_SYNC_STATUS", "running"),
-    )
-
-
-def seed_lifecycle_settings(db: Session) -> None:
-    lifecycle_settings.ensure_by_key(
-        db,
-        key="default_event_type",
-        value_type=SettingValueType.string,
-        value_text=os.getenv("LIFECYCLE_DEFAULT_EVENT_TYPE", "other"),
     )
 
 

@@ -18,7 +18,9 @@ from app.db import finish_read_transaction, get_db
 from app.models.audit import AuditActorType
 from app.models.team_inbox import InboxChannelType
 from app.services import (
+    conversation_lead_relationships,
     conversation_ticket_handoff,
+    inbox_lead_actions,
     lead_intake_ai,
     team_inbox_commands,
     team_inbox_contact_links,
@@ -31,7 +33,11 @@ from app.services import (
     team_inbox_routing,
 )
 from app.services import email as email_service
+from app.services import (
+    team_inbox_contact_context as contact_context_service,
+)
 from app.services.auth_dependencies import can, require_permission
+from app.services.domain_errors import DomainError
 from app.services.owner_commands import CommandContext
 from app.services.sales import lead_intake
 
@@ -437,6 +443,19 @@ def team_inbox_contact_context(
             '<p class="p-4 text-sm text-slate-500">Contact context unavailable.</p>',
             status_code=404,
         )
+    contact_context = contact_context_service.build_contact_context(
+        db,
+        conversation_id=conversation_id,
+        permissions=contact_context_service.InboxContactContextPermissions(
+            can_read_profile=can(request, "customer:read"),
+            can_edit_profile=can(request, "customer:write"),
+            can_read_leads=can(request, "crm:lead:read"),
+            can_write_leads=can(request, "crm:lead:write"),
+            can_read_tickets=can(request, "support:ticket:read"),
+            can_read_projects=can(request, "project:read"),
+            can_read_project_tasks=can(request, "project:task:read"),
+        ),
+    )
     context = _ctx(request, db)
     context.update(
         {
@@ -454,12 +473,151 @@ def team_inbox_contact_context(
             "can_view_financials": can(request, "billing:account:read"),
             "can_view_network_detail": can(request, "network:ip:read"),
             "can_manage_leads": can(request, "crm:lead:write"),
+            "contact_context": contact_context,
             "lead_intake_invitations": lead_intake.invitation_for_conversation(
                 db, conversation_id
             ),
         }
     )
     return templates.TemplateResponse("admin/inbox/_contact_drawer.html", context)
+
+
+def _inbox_action_permissions(
+    request: Request,
+) -> inbox_lead_actions.InboxActionPermissions:
+    return inbox_lead_actions.InboxActionPermissions(
+        can_read_profile=can(request, "customer:read"),
+        can_edit_profile=can(request, "customer:write"),
+        can_read_leads=can(request, "crm:lead:read"),
+        can_write_leads=can(request, "crm:lead:write"),
+    )
+
+
+@router.post(
+    "/{conversation_id}/actions/{intent}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("support:ticket:update"))],
+)
+def resolve_inbox_action(
+    conversation_id: UUID,
+    intent: inbox_lead_actions.InboxActionIntent,
+    request: Request,
+    pipeline_id: UUID | None = Form(default=None),
+    lead_id: UUID | None = Form(default=None),
+    create_confirmed: bool = Form(default=False),
+    title: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    permissions = _inbox_action_permissions(request)
+    action = inbox_lead_actions.resolve_action(
+        db,
+        conversation_id=conversation_id,
+        intent=intent,
+        permissions=permissions,
+        selected_pipeline_id=pipeline_id,
+    )
+    if action.action_type == inbox_lead_actions.InboxResolvedActionType.unauthorized:
+        return HTMLResponse("Action restricted.", status_code=403)
+    if action.destination and not action.requires_link:
+        return RedirectResponse(action.destination, status_code=303)
+    actor_system_user_id = _system_user_uuid_from_request(request)
+    actor_person_id = _actor_uuid_from_request(request)
+    if action.requires_link and action.party_id and action.lead_id:
+        finish_read_transaction(db)
+        try:
+            inbox_lead_actions.link_existing_lead(
+                db,
+                inbox_lead_actions.LinkExistingLeadCommand(
+                    context=CommandContext.system(
+                        actor=f"system-user:{actor_system_user_id}",
+                        scope="inbox:lead-link",
+                        reason="Authorized Inbox resolver reused the exact Party Lead",
+                        idempotency_key=f"inbox:{conversation_id}:lead:{action.lead_id}",
+                    ),
+                    conversation_id=conversation_id,
+                    party_id=action.party_id,
+                    lead_id=action.lead_id,
+                    actor_person_id=actor_person_id,
+                    source=conversation_lead_relationships.ConversationLeadLinkSource.exact_party_lead,
+                ),
+            )
+        except DomainError as exc:
+            return _detail_redirect(
+                conversation_id, status="error", message=exc.message
+            )
+        return _detail_redirect(
+            conversation_id, status="success", message="Conversation linked to Lead."
+        )
+    if (
+        lead_id is not None
+        and action.action_type == inbox_lead_actions.InboxResolvedActionType.select_lead
+        and action.party_id is not None
+        and any(option.id == lead_id for option in action.leads)
+    ):
+        finish_read_transaction(db)
+        try:
+            inbox_lead_actions.link_existing_lead(
+                db,
+                inbox_lead_actions.LinkExistingLeadCommand(
+                    context=CommandContext.system(
+                        actor=f"system-user:{actor_system_user_id}",
+                        scope="inbox:lead-selection",
+                        reason="Authorized operator selected an exact Party Lead",
+                        idempotency_key=f"inbox:{conversation_id}:lead:{lead_id}",
+                    ),
+                    conversation_id=conversation_id,
+                    party_id=action.party_id,
+                    lead_id=lead_id,
+                    actor_person_id=actor_person_id,
+                    source=conversation_lead_relationships.ConversationLeadLinkSource.reviewed_selection,
+                ),
+            )
+        except DomainError as exc:
+            return _detail_redirect(
+                conversation_id, status="error", message=exc.message
+            )
+        return _detail_redirect(
+            conversation_id, status="success", message="Conversation linked to Lead."
+        )
+    if (
+        create_confirmed
+        and action.action_type
+        == inbox_lead_actions.InboxResolvedActionType.create_lead_for_party
+        and action.party_id is not None
+        and action.pipeline_id is not None
+    ):
+        finish_read_transaction(db)
+        try:
+            inbox_lead_actions.create_lead_for_party(
+                db,
+                inbox_lead_actions.CreateLeadForPartyCommand(
+                    context=CommandContext.system(
+                        actor=f"system-user:{actor_system_user_id}",
+                        scope="inbox:lead-authoring",
+                        reason="Authorized operator created a Lead for an exact Inbox Party",
+                        idempotency_key=(
+                            f"inbox:{conversation_id}:pipeline:{action.pipeline_id}:create"
+                        ),
+                    ),
+                    conversation_id=conversation_id,
+                    party_id=action.party_id,
+                    pipeline_id=action.pipeline_id,
+                    stage_id=None,
+                    actor_system_user_id=actor_system_user_id,
+                    actor_person_id=actor_person_id,
+                    title=title or "Inbox prospect",
+                ),
+            )
+        except DomainError as exc:
+            return _detail_redirect(
+                conversation_id, status="error", message=exc.message
+            )
+        return _detail_redirect(
+            conversation_id, status="success", message="Lead created and linked."
+        )
+    context = _ctx(request, db)
+    context.update({"action": action, "timeline_id": conversation_id})
+    return templates.TemplateResponse("admin/inbox/action_resolver.html", context)
 
 
 def _actor_id_from_request(request: Request) -> str | None:
@@ -2188,6 +2346,24 @@ async def team_inbox_voice_transcription(
         voice_transcription.release_actor_slot(actor_id)
 
 
+async def _read_new_conversation_uploads(
+    files: list[UploadFile],
+) -> list[tuple[str, str | None, bytes]]:
+    """Normalize browser multipart file parts for the Inbox command owner."""
+    uploads: list[tuple[str, str | None, bytes]] = []
+    for upload in files:
+        data = await upload.read()
+        filename = str(upload.filename or "").strip()
+        if not filename and not data:
+            # Browsers may serialize an untouched file input as an empty
+            # multipart part. That is transport-level "no attachment", not a
+            # selected zero-byte file. Named empty files still reach the media
+            # owner and retain its fail-closed validation.
+            continue
+        uploads.append((filename or "attachment", upload.content_type, data))
+    return uploads
+
+
 @router.post(
     "/conversations",
     dependencies=[Depends(require_permission("support:ticket:update"))],
@@ -2213,10 +2389,7 @@ async def team_inbox_start_conversation(
     db: Session = Depends(get_db),
 ):
     """Open a new conversation and send its first message."""
-    uploads: list[tuple[str, str | None, bytes]] = []
-    for upload in files:
-        data = await upload.read()
-        uploads.append((upload.filename or "attachment", upload.content_type, data))
+    uploads = await _read_new_conversation_uploads(files)
     _prepare_mutation(db)
     try:
         outcome = team_inbox_commands.start_conversation(

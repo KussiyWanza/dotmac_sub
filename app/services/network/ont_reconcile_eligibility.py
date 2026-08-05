@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 OWNER = "network.ont_reconcile_eligibility"
 _CONCERN = "per-ONT automatic reconciliation eligibility"
+OVERDUE_ALERT_PREFIX = "ont-reconcile-hold-overdue:"
 
 PLACE_COMMAND = OwnerCommandDefinition(
     owner=OWNER, concern=_CONCERN, name="place_reconcile_hold"
@@ -137,6 +138,32 @@ class EligibilityVerdict:
     @property
     def held(self) -> bool:
         return not self.eligible
+
+
+class OverdueHoldAlertSeverity(StrEnum):
+    critical = "critical"
+
+
+@dataclass(frozen=True, slots=True)
+class OverdueHoldAlert:
+    """Owner-decided alert consequence for one overdue active hold.
+
+    The transport may choose how to persist and deliver this projection, but
+    it does not decide severity, wording, identity, or the operator target.
+    Actor/reviewer identities deliberately stay out of the alert payload; the
+    authoritative hold remains available on the linked ONT.
+    """
+
+    fingerprint: str
+    severity: OverdueHoldAlertSeverity
+    title: str
+    summary: str
+    hold_id: str
+    ont_unit_id: str
+    scope: str
+    reason_code: str
+    review_due_at: str
+    target_url: str
 
 
 def _require(value: Any, *, code: HoldRefusal, message: str) -> None:
@@ -506,3 +533,31 @@ def overdue_holds(db: Session) -> Sequence[OntReconcileHold]:
         .scalars()
         .all()
     )
+
+
+def overdue_hold_alerts(db: Session) -> tuple[OverdueHoldAlert, ...]:
+    """Project active overdue holds into idempotent operational alerts."""
+    alerts: list[OverdueHoldAlert] = []
+    for hold in overdue_holds(db):
+        hold_id = str(hold.id)
+        ont_unit_id = str(hold.ont_unit_id)
+        due = hold.review_due_at
+        due_text = due.isoformat() if due is not None else "unknown"
+        alerts.append(
+            OverdueHoldAlert(
+                fingerprint=f"{OVERDUE_ALERT_PREFIX}{hold_id}",
+                severity=OverdueHoldAlertSeverity.critical,
+                title="ONT reconcile hold review is overdue",
+                summary=(
+                    f"Review was due {due_text}; automatic reconciliation "
+                    "remains suppressed until an explicit release."
+                ),
+                hold_id=hold_id,
+                ont_unit_id=ont_unit_id,
+                scope=hold.scope.value,
+                reason_code=hold.reason_code,
+                review_due_at=due_text,
+                target_url=f"/admin/network/onts/{ont_unit_id}",
+            )
+        )
+    return tuple(alerts)

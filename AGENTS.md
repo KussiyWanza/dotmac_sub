@@ -8,7 +8,8 @@ security, or validation rules below.
 
 - `docs/CODING_STANDARD.md`
 - `docs/SOT_RELATIONSHIP_MAP.md`
-- `app/services/sot_relationships.py`
+- `app/services/sot_registry/registry.py` and the owning declaration under
+  `app/services/sot_registry/domains/`
 - `docs/UI_INFORMATION_AND_ACTION_STANDARD.md` for UI-facing work
 - The owning domain design and migration documents
 

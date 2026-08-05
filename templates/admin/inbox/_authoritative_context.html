@@ -1,0 +1,81 @@
+{% from "components/ui/triage.html" import ctx_section, ts %}
+{% macro state(section, empty_label) %}
+    {% if section.availability.value == 'empty' %}
+    <p class="text-xs text-slate-500"><strong class="text-slate-800 dark:text-slate-200">0</strong> · {{ section.message or empty_label }}</p>
+    {% elif section.availability.value == 'restricted' %}
+    <p class="text-xs text-slate-500">Restricted</p>
+    {% elif section.availability.value == 'unavailable' %}
+    <p class="text-xs text-slate-500">Unavailable</p>
+    {% elif section.availability.value == 'not_calculated' %}
+    <p class="text-xs text-slate-500">Not calculated</p>
+    {% elif section.availability.value == 'not_applicable' %}
+    <p class="text-xs text-slate-500">—{% if section.message %} · {{ section.message }}{% endif %}</p>
+    {% endif %}
+{% endmacro %}
+
+{% if contact_context %}
+{% call ctx_section("Customer actions") %}
+    <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {% for action in [contact_context.profile_action, contact_context.lead_action] %}
+            {% if action.action_type.value not in ['unauthorized', 'unavailable'] %}
+                {% if action.destination and not action.requires_link %}
+                <a href="{{ action.destination }}" class="inline-flex min-h-10 items-center justify-center rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-200">{{ action.label }}</a>
+                {% else %}
+                <form method="post" action="/admin/inbox/{{ contact_context.conversation_id }}/actions/{{ action.intent.value }}">
+                    {% include "components/forms/csrf_input.html" %}
+                    <button class="min-h-10 w-full rounded-lg border border-cyan-300 px-3 text-xs font-semibold text-cyan-800 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-200">{{ action.label }}</button>
+                </form>
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    </div>
+{% endcall %}
+
+{% call ctx_section("Party profile") %}
+    {% if contact_context.profile.availability.value == 'available' %}
+        {% set profile = contact_context.profile.items[0] %}
+        <dl class="space-y-2 text-xs">
+            <div class="flex justify-between gap-2"><dt class="text-slate-500">Name</dt><dd class="text-right font-semibold">{{ profile.display_name }}</dd></div>
+            <div class="flex justify-between gap-2"><dt class="text-slate-500">Email</dt><dd class="truncate text-right">{{ profile.email or '—' }}</dd></div>
+            <div class="flex justify-between gap-2"><dt class="text-slate-500">Phone</dt><dd class="text-right">{{ profile.phone or '—' }}</dd></div>
+        </dl>
+    {% else %}{{ state(contact_context.profile, "No profile data.") }}{% endif %}
+{% endcall %}
+
+{% call ctx_section("Leads") %}
+    {% if contact_context.leads.availability.value == 'available' %}
+        <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.leads.total_count }} authoritative record{{ '' if contact_context.leads.total_count == 1 else 's' }}</p>
+        <div class="space-y-2">{% for lead in contact_context.leads.items %}<a href="{{ lead.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ lead.title }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ lead.status | replace('_', ' ') | title }} · {{ lead.pipeline_name or '—' }}{% if lead.is_conversation_lead %} · Origin Lead{% endif %}</span></a>{% endfor %}</div>
+    {% else %}{{ state(contact_context.leads, "No Leads.") }}{% endif %}
+{% endcall %}
+
+{% call ctx_section("Active tickets") %}
+    {% if contact_context.tickets.availability.value == 'available' %}
+        <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.tickets.total_count }} active</p>
+        <div class="space-y-2">{% for ticket in contact_context.tickets.items %}<a href="{{ ticket.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ ticket.number or 'Ticket' }} · {{ ticket.title }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ ticket.status | replace('_', ' ') | title }}{% if ticket.issued_from_conversation %} · From this conversation{% endif %}</span></a>{% endfor %}</div>
+    {% else %}{{ state(contact_context.tickets, "No active Tickets.") }}{% endif %}
+{% endcall %}
+
+{% call ctx_section("Recent conversations") %}
+    {% if contact_context.recent_conversations.availability.value == 'available' %}
+        <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.recent_conversations.total_count }} previous</p>
+        <div class="space-y-2">{% for item in contact_context.recent_conversations.items %}<a href="{{ item.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ item.subject }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ item.channel_type | replace('_', ' ') | title }}{% if item.last_message_at %} · {{ ts(item.last_message_at) }}{% endif %}</span></a>{% endfor %}</div>
+    {% else %}{{ state(contact_context.recent_conversations, "No previous conversations.") }}{% endif %}
+{% endcall %}
+
+{% call ctx_section("Projects") %}
+    {% if contact_context.projects.availability.value == 'available' %}
+        <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.projects.total_count }} active</p>
+        <div class="space-y-2">{% for item in contact_context.projects.items %}<a href="{{ item.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ item.reference }} · {{ item.name }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ item.status | replace('_', ' ') | title }}</span></a>{% endfor %}</div>
+    {% else %}{{ state(contact_context.projects, "No active Projects.") }}{% endif %}
+{% endcall %}
+
+{% call ctx_section("Project tasks") %}
+    {% if contact_context.project_tasks.availability.value == 'available' %}
+        <p class="mb-2 text-[11px] text-slate-500">{{ contact_context.project_tasks.total_count }} active</p>
+        <div class="space-y-2">{% for item in contact_context.project_tasks.items %}<a href="{{ item.url }}" class="block rounded-lg border border-slate-200 p-2 text-xs dark:border-slate-700"><strong>{{ item.reference }} · {{ item.title }}</strong><span class="mt-1 block text-[11px] text-slate-500">{{ item.status | replace('_', ' ') | title }}</span></a>{% endfor %}</div>
+    {% else %}{{ state(contact_context.project_tasks, "No active Project Tasks.") }}{% endif %}
+{% endcall %}
+{% else %}
+<div class="p-4 text-xs text-slate-500">Customer context unavailable.</div>
+{% endif %}

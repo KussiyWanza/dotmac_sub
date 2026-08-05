@@ -27,6 +27,13 @@
         status=ticket_status_badge(status_presentations.get(ticket.status))
     ) %}
         {{ ticket_priority_badge(ticket.priority) }}
+        {% if can(request, 'support:ticket:update') and can(request, 'operations:dispatch:write') %}
+            {% if issue_work_order_action.allowed %}
+            <a href="#field-work-orders" class="inline-flex items-center rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700">Create Work Order</a>
+            {% else %}
+            <a href="#field-work-orders" title="{{ issue_work_order_action.reason }}" class="inline-flex items-center rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">Work Order Requirements</a>
+            {% endif %}
+        {% endif %}
         {{ action_button('Edit Ticket', '/admin/support/tickets/' ~ ticket.id ~ '/edit', icon_edit(), 'secondary', 'amber') }}
     {% endcall %}
 
@@ -75,6 +82,7 @@
             {% endcall %}
             {% endif %}
 
+            <span id="field-work-orders" class="block scroll-mt-24"></span>
             {% call support_card(title='Field Work Orders', subtitle='Explicit field-action scopes issued by the assigned team.', icon='<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 6h6M9 12h6m-6 6h6M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>') %}
             <div class="space-y-3">
                 {% for work_order in linked_work_orders %}
@@ -116,7 +124,7 @@
                 {% endif %}
                 <div>
                     <label class="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Site</label>
-                    <input name="address" maxlength="255" class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    <input name="address" value="{{ customer_details.service_address if customer_details and customer_details.service_address else '' }}" maxlength="255" class="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
                 </div>
                 <div class="sm:col-span-2">
                     <label class="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Reason for field action</label>
@@ -292,7 +300,10 @@
 
             {% call support_card(title='Customer / Subscriber', subtitle='Linked account context.') %}
             <dl class="space-y-2 text-xs">
-                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Customer</dt><dd class="break-all text-right">{{ subscriber_lookup.get(ticket.customer_person_id|string, ticket.customer_person_id or '-') if subscriber_lookup is defined else (ticket.customer_person_id or '-') }}</dd></div>
+                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Customer</dt><dd class="break-all text-right">{{ customer_details.name if customer_details else (subscriber_lookup.get(ticket.customer_person_id|string, ticket.customer_person_id or '-') if subscriber_lookup is defined else (ticket.customer_person_id or '-')) }}</dd></div>
+                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Phone</dt><dd class="break-all text-right">{{ (customer_details.phone or '-') if customer_details else '-' }}</dd></div>
+                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Email</dt><dd class="break-all text-right">{{ (customer_details.email or '-') if customer_details else '-' }}</dd></div>
+                <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Service address</dt><dd class="text-right">{{ (customer_details.service_address or '-') if customer_details else '-' }}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Customer ID</dt><dd class="break-all text-right">{{ subscriber_lookup.get(ticket.customer_account_id|string, ticket.customer_account_id or '-') if subscriber_lookup is defined else (ticket.customer_account_id or '-') }}</dd></div>
                 <div class="flex justify-between gap-4"><dt class="text-slate-500 dark:text-slate-400">Subscriber</dt><dd class="break-all text-right">{{ subscriber_lookup.get(ticket.subscriber_id|string, ticket.subscriber_id or '-') if subscriber_lookup is defined else (ticket.subscriber_id or '-') }}</dd></div>
             </dl>

@@ -986,11 +986,30 @@ class Subscriptions(ListResponseMixin):
                     reason="Subscription created",
                     source="catalog:subscription_create",
                 )
+            db.flush()
+            from app.services.owner_commands import CommandContext
+            from app.services.subscription_lifecycle_evidence import (
+                LifecycleEvidenceSource,
+                record_current_state_baseline,
+            )
+
+            creation_evidence_at = datetime.now(UTC)
+            record_current_state_baseline(
+                db,
+                subscription=subscription,
+                effective_at=creation_evidence_at,
+                evidence_source=LifecycleEvidenceSource.subscription_creation,
+                context=CommandContext.system(
+                    command_id=subscription.id,
+                    correlation_id=subscription.id,
+                    actor="service_intent.catalog_policy",
+                    scope=f"subscription:{subscription.id}",
+                    reason="Subscription created",
+                    idempotency_key=f"subscription-created:{subscription.id}",
+                ),
+            )
             if activating:
-                db.flush()
                 _auto_generate_pppoe(db, subscription)
-            else:
-                db.flush()
             compute_account_status(db, str(payload.subscriber_id))
             if commit:
                 db.commit()
@@ -1498,6 +1517,22 @@ class Subscriptions(ListResponseMixin):
         subscription = db.get(Subscription, subscription_id)
         if not subscription:
             raise HTTPException(status_code=404, detail="Subscription not found")
+        from app.services.subscription_lifecycle_evidence import (
+            lifecycle_evidence_retention,
+        )
+
+        retained_evidence = lifecycle_evidence_retention(
+            db,
+            subscription_id=subscription.id,
+        )
+        if retained_evidence.blocks_deletion:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot delete a subscription with retained lifecycle evidence; "
+                    "use a lifecycle transition instead"
+                ),
+            )
         subscriber_id = subscription.subscriber_id
         offer_id = subscription.offer_id
         db.delete(subscription)

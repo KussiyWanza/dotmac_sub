@@ -20,8 +20,10 @@ from app.models.party import (
 )
 from app.models.sales import Lead, Pipeline, PipelineStage
 from app.models.service_team import ServiceTeam, ServiceTeamMember
+from app.models.subscriber import Reseller
 from app.models.system_user import SystemUser
-from app.services import web_sales
+from app.models.team_inbox import InboxConversation
+from app.services import conversation_lead_relationships, web_sales
 from app.services.domain_errors import DomainError
 from app.services.sales import lead_authoring
 
@@ -122,6 +124,8 @@ def _author(db_session, actor: SystemUser, **overrides: object):
         "postal_code": "100001",
         "country_code": "ng",
         "organization_id": None,
+        "managed_by_reseller": False,
+        "reseller_id": None,
         "pipeline_id": None,
         "stage_id": None,
         "lead_source": "Website",
@@ -273,6 +277,33 @@ def test_exact_submission_replays_without_duplicates(db_session):
     assert db_session.query(Party).filter(Party.id == first.party_id).count() == 1
 
 
+def test_inbox_authoring_creates_party_lead_and_origin_link_atomically(db_session):
+    actor = _staff_owner(db_session)
+    conversation = InboxConversation(
+        channel_type="email",
+        contact_address=f"new-{uuid4()}@example.com",
+        subject="New service enquiry",
+        is_active=True,
+    )
+    db_session.add(conversation)
+    db_session.commit()
+
+    outcome = _author(
+        db_session,
+        actor,
+        inbox_conversation_id=str(conversation.id),
+        emails=[conversation.contact_address],
+    )
+
+    link = conversation_lead_relationships.active_link(db_session, conversation.id)
+    assert link is not None
+    assert link.lead_id == outcome.lead_id
+    assert link.party_id == outcome.party_id
+    lead = db_session.get(Lead, outcome.lead_id)
+    assert lead is not None
+    assert lead.metadata_["origin_conversation_id"] == str(conversation.id)
+
+
 def test_pipeline_stage_mismatch_rolls_back_person_and_lead(db_session):
     actor = _staff_owner(db_session)
     first_pipeline, _ = _pipeline(db_session)
@@ -305,7 +336,7 @@ def test_inactive_region_and_owner_are_rejected(db_session):
     assert actor_exc.value.code == "sales.lead_authoring.actor_not_eligible"
 
 
-def test_primary_email_already_owned_by_another_person_is_rejected(db_session):
+def test_primary_email_can_be_shared_by_multiple_people(db_session):
     actor = _staff_owner(db_session)
     existing = Party(party_type=PartyType.person.value, display_name="Existing")
     db_session.add(existing)
@@ -321,9 +352,13 @@ def test_primary_email_already_owned_by_another_person_is_rejected(db_session):
         )
     )
     db_session.commit()
-    with pytest.raises(DomainError) as exc:
-        _author(db_session, actor, emails=["taken@example.com"])
-    assert exc.value.code == "sales.lead_authoring.primary_email_in_use"
+    outcome = _author(db_session, actor, emails=["taken@example.com"])
+    created = db_session.query(PartyContactPoint).filter_by(
+        party_id=outcome.party_id,
+        normalized_value="taken@example.com",
+        is_primary=True,
+    )
+    assert created.one().channel_type == PartyContactPointType.email.value
 
 
 @pytest.mark.parametrize(
@@ -347,7 +382,7 @@ def test_private_and_scalar_validation_is_server_authoritative(
     assert exc.value.details["field"] == field
 
 
-def test_reseller_organization_discards_direct_channels(db_session):
+def test_reseller_organization_keeps_contacts_for_account_conversion(db_session):
     actor = _staff_owner(db_session)
     organization, _party = _organization(db_session, reseller=True)
     outcome = _author(
@@ -363,10 +398,34 @@ def test_reseller_organization_discards_direct_channels(db_session):
         db_session.query(PartyContactPoint)
         .filter(PartyContactPoint.party_id == outcome.party_id)
         .count()
-        == 0
+        == 3
     )
     party = db_session.get(Party, outcome.party_id)
     assert party.metadata_["communication_routed_through_reseller"] is True
+
+
+def test_selected_reseller_is_persisted_on_lead(db_session):
+    actor = _staff_owner(db_session)
+    reseller = Reseller(
+        name=f"Partner {uuid4().hex[:8]}",
+        contact_email="partner@example.com",
+        is_active=True,
+        is_house=False,
+    )
+    db_session.add(reseller)
+    db_session.commit()
+
+    outcome = _author(
+        db_session,
+        actor,
+        managed_by_reseller=True,
+        reseller_id=str(reseller.id),
+        emails=["shared@example.com"],
+    )
+
+    lead = db_session.get(Lead, outcome.lead_id)
+    assert lead.reseller_id == reseller.id
+    assert outcome.reseller_routed is True
 
 
 def test_new_context_defaults_owner_and_loads_configured_regions(db_session):

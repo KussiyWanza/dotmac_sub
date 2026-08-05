@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -97,12 +99,15 @@ def test_duplicate_proof_correction_composes_canonical_financial_owner() -> None
 
 
 def test_checked_in_sources_name_action_form_owner_and_migration() -> None:
-    registry = _read("app/services/sot_relationships.py")
     relationships = _read("docs/SOT_RELATIONSHIP_MAP.md")
     frontend = _read("docs/FRONTEND_SPEC.md")
 
-    assert 'name="ui.action_form_contracts"' in registry
-    assert 'name="ui.payment_proof_review_projection"' in registry
+    assert service_relationship("ui.action_form_contracts").module == (
+        "app.services.action_forms"
+    )
+    assert service_relationship("ui.payment_proof_review_projection").module == (
+        "app.services.web_billing_payment_proofs"
+    )
     assert "## UI Action Forms" in relationships
     assert "Old owner: payment-proof detail Jinja" in relationships
     assert "### Server-owned action forms" in frontend

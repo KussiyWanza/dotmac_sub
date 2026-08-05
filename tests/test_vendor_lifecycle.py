@@ -22,6 +22,7 @@ from app.models.vendor_routes import (
     InstallationProjectStatus,
     Vendor,
 )
+from app.services.sot_registry.registry import service_relationship
 from app.services.ui_contracts import Action
 from app.services.vendor_portal_operations import _serialize_project
 from app.services.vendor_project_lifecycle import (
@@ -247,6 +248,5 @@ def test_lifecycle_routes_and_template_are_thin_action_adapters():
     assert "installation_project_lifecycle_events_append_only" in migration
     assert "vendor_project.started" in sot
     assert "vendor_project.completed" in sot
-    registry = (root / "app/services/sot_relationships.py").read_text(encoding="utf-8")
-    assert 'name="operations.vendor_project_lifecycle"' in registry
-    assert 'module="app.services.vendor_project_lifecycle"' in registry
+    owner = service_relationship("operations.vendor_project_lifecycle")
+    assert owner.module == "app.services.vendor_project_lifecycle"

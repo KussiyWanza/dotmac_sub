@@ -16,7 +16,7 @@ single Sub-owned declaration of product vocabulary for releases and licences:
   catalogue of the whole repository. Their router/nav fields are deliberately
   empty tuples: in Sub a manifest is pure metadata, never a mount request.
 - Every capability code names exactly one existing domain owner registered in
-  ``app/services/sot_relationships.py`` (see ``CAPABILITY_OWNERS``; enforced
+  ``app/services/sot_registry/registry.py`` (see ``CAPABILITY_OWNERS``; enforced
   by ``tests/architecture/test_composition.py``). A capability code is a
   product-vocabulary statement that the capability exists and who owns it.
   It is NEVER an entitlement, a permission, an RBAC input, a subscriber
@@ -57,7 +57,7 @@ MODULE_BILLING_EXPORT: Final = "sub.billing_export"
 MODULE_LICENSING_RECEPTION: Final = "sub.licensing_reception"
 
 #: capability code -> the ONE existing owner in the executable SOT registry
-#: (``app/services/sot_relationships.py``). The registry stays authoritative;
+#: (``app/services/sot_registry/registry.py``). The registry stays authoritative;
 #: this mapping only references its exact service names and is cross-checked
 #: by the no-orphan architecture test. Codes here are product vocabulary for
 #: releases/licences — never entitlement or permission inputs.

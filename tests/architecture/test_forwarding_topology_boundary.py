@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from app.services.sot_registry.registry import service_relationship
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OWNER = PROJECT_ROOT / "app/services/network/forwarding_topology.py"
 COLLECTOR = PROJECT_ROOT / "app/services/network/forwarding_observation_collector.py"
@@ -15,7 +17,6 @@ AFFECTED = PROJECT_ROOT / "app/services/topology/affected.py"
 REACHABILITY = PROJECT_ROOT / "app/services/topology/reachability.py"
 OUTAGE = PROJECT_ROOT / "app/services/topology/outage.py"
 OUTAGE_RECONCILE = PROJECT_ROOT / "app/services/topology/outage_reconcile.py"
-REGISTRY = PROJECT_ROOT / "app/services/sot_relationships.py"
 SOT_MAP = PROJECT_ROOT / "docs/SOT_RELATIONSHIP_MAP.md"
 
 
@@ -160,10 +161,9 @@ def test_routeros_collector_is_a_read_only_observation_adapter():
 
 
 def test_forwarding_owner_is_checked_in_to_the_sot_registry_and_map():
-    registry = REGISTRY.read_text(encoding="utf-8")
+    owner = service_relationship("network.forwarding_topology")
     sot_map = SOT_MAP.read_text(encoding="utf-8")
 
-    assert 'name="network.forwarding_topology"' in registry
-    assert "reviewed downstream-to-upstream forwarding declarations" in registry
+    assert "reviewed downstream-to-upstream forwarding declarations" in owner.owns
     assert "`network.forwarding_topology`" in sot_map
     assert "LLDP, BGP, routing-table, and RADIUS" in sot_map

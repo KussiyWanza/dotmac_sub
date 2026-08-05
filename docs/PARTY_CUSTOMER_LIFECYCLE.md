@@ -95,6 +95,15 @@ is refused until a reviewed merge/repoint workflow exists. Legacy
 Subscriber-only Leads remain readable and auditable; revision 355 does not
 pretend they have already been classified.
 
+Admin-authored Leads may also carry an optional external `reseller_id`. The
+identifier is ownership staging evidence, not reseller access to the Lead and
+not an identity inference. Absence means the account conversion uses the House
+reseller; presence must resolve to an active non-House Reseller. Quote
+acceptance copies that exact value into the new Subscriber, after which reseller
+views continue to derive Quotes, Projects, and WorkOrders through
+`Subscriber.reseller_id`. Email remains non-unique contact information and
+never selects a reseller, merges Parties, or establishes account ownership.
+
 ## Origin and attribution contract
 
 `lead_origin_captures` records immutable, structured evidence at Lead creation.
@@ -208,6 +217,11 @@ WorkOrders are automatic only where a template-task automation policy enables
 them; users may otherwise create them from the Project or a Project Task. Those
 state changes plus audit and durable event records commit in one transaction
 and replay by Quote identity without duplicates.
+
+When the Lead carries reviewed external reseller ownership, the same atomic
+conversion creates the Subscriber under that reseller before the SalesOrder and
+implementation scope are staged. SalesOrder, Project, Task, and WorkOrder rows
+retain their structural Subscriber links and do not duplicate reseller state.
 
 ## Subscription and billing block independence
 

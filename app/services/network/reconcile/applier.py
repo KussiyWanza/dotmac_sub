@@ -61,6 +61,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from app.services.control_plane_intent import (
+    DesiredValueProvenance,
+    has_executable_desired_provenance,
+)
 from app.services.network.huawei_cli_response import project_huawei_result_evidence
 
 from .actions import (
@@ -447,6 +451,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltTr069ServerConfig():
+            _refuse_unset(action, ("tr069_profile_id", action.profile_id))
             result = ctx.olt_adapter.bind_tr069_profile(
                 action.fsp,
                 action.ont_id,
@@ -463,6 +468,10 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltCreateServicePort():
+            _refuse_unset(
+                action,
+                *(("wan_vlan", action.vlan),) if action.slot == "wan" else (),
+            )
             result = ctx.olt_adapter.create_service_port(
                 action.fsp,
                 action.ont_id,
@@ -494,6 +503,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case OltOmciPppoe():
+            _refuse_unset(action, ("wan_vlan", action.vlan))
             password = _resolve_or_fail(ctx, action, action.password_ref)
             result = ctx.olt_adapter.configure_pppoe(
                 action.fsp,
@@ -560,6 +570,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
 
         # ── ACS actions ───────────────────────────────────────────────────
         case AcsAddObject():
+            wcd_index = _require_add_object_layout(action)
             try:
                 ctx.acs_client.add_object(action.device_id, action.object_path)
             except Exception as exc:  # noqa: BLE001 — translate to ApplyError
@@ -576,7 +587,6 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             # may have just created .2/.3/etc. Writes to the planner's
             # hardcoded .1 would otherwise silently no-op (no CWMP fault on
             # HG8546M V5R019C10S100) and we'd cache new ghosts.
-            wcd_index = _wan_ppp_wcd_from_object_path(action.object_path)
             if wcd_index is not None:
                 discovered = _discover_wan_ppp_instance_index(
                     ctx.acs_client,
@@ -611,6 +621,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             )
 
         case AcsSetPppoe():
+            _refuse_unset(
+                action,
+                ("wan_pppoe_wcd_index", action.wcd_index),
+                ("wan_vlan", action.vlan),
+            )
             password = _resolve_or_fail(ctx, action, action.password_ref)
             inst = ctx.wan_ppp_instances.get(action.wcd_index, action.instance_index)
             params = {
@@ -729,6 +744,7 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_arm_diagnostic", None, action.label, started)
 
         case AcsSetNatEnabled():
+            _refuse_unset(action, ("wan_pppoe_wcd_index", action.wcd_index))
             inst = ctx.wan_ppp_instances.get(action.wcd_index, action.instance_index)
             params = {
                 f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{action.wcd_index}.WANPPPConnection.{inst}.NATEnabled": action.enabled
@@ -737,6 +753,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_nat_enabled", None, action.enabled, started)
 
         case AcsSetIpv6():
+            _refuse_unknown_provenance(
+                action,
+                field="ipv6_enabled",
+                provenance=action.provenance,
+            )
             params = {
                 f"Device.IP.Interface.{action.interface_index}.IPv6Enable": action.enabled,
                 f"Device.DHCPv6.Client.{action.interface_index}.Enable": action.enabled,
@@ -749,6 +770,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_ipv6_enabled", None, action.enabled, started)
 
         case AcsSetWanIp():
+            _refuse_unset(
+                action,
+                ("wan_pppoe_wcd_index", action.wcd_index),
+                ("wan_vlan", action.vlan),
+            )
             if action.data_model_root == "Device":
                 paths = action.tr181_paths
                 if paths is None:
@@ -817,6 +843,11 @@ def _execute(action: Action, ctx: ApplyContext) -> AppliedAction:
             return _ok(action, "acs_dhcp_server", None, action.enabled, started)
 
         case AcsSetManagementServer():
+            _refuse_unset(
+                action,
+                ("cr_username", action.cr_username),
+                ("cr_password_ref", action.cr_password_ref),
+            )
             cr_password = _resolve_or_fail(ctx, action, action.cr_password_ref)
             root = f"{action.data_model_root}.ManagementServer"
             connection_params = {
@@ -885,6 +916,37 @@ def _refuse_unset(action: Action, *fields: tuple[str, DesiredScalar]) -> None:
         ReconcileFailureReason.INVALID_CHANGE,
         f"refusing to write unset {', '.join(unset)}",
     )
+
+
+def _refuse_unknown_provenance(
+    action: Action,
+    *,
+    field: str,
+    provenance: DesiredValueProvenance,
+) -> None:
+    """Refuse a represented value whose source is still unknown."""
+    if has_executable_desired_provenance(provenance):
+        return
+    raise ApplyError(
+        action,
+        ReconcileFailureReason.INVALID_CHANGE,
+        f"refusing to write provenance-unknown {field}",
+    )
+
+
+def _require_add_object_layout(action: AcsAddObject) -> int | None:
+    """Validate WAN PPP layout evidence before ``addObject`` device contact."""
+    rendered_wcd = _wan_ppp_wcd_from_object_path(action.object_path)
+    if rendered_wcd is None:
+        return None
+    _refuse_unset(action, ("wan_pppoe_wcd_index", action.wcd_index))
+    if rendered_wcd != action.wcd_index:
+        raise ApplyError(
+            action,
+            ReconcileFailureReason.INVALID_CHANGE,
+            "WAN PPP addObject path does not match its typed WCD index",
+        )
+    return rendered_wcd
 
 
 def _resolve_or_fail(ctx: ApplyContext, action: Action, ref: str) -> str:

@@ -80,6 +80,7 @@ from app.services.collections import get_available_balance
 from app.services.credential_crypto import decrypt_credential
 from app.services.customer_network_path import (
     SubscriptionNetworkPath,
+    project_customer_network_map,
     project_subscription_network_path,
     unresolved_subscription_network_path,
 )
@@ -1778,6 +1779,7 @@ def build_customer_detail_snapshot(
     endpoints_by_subscription: dict[str, dict[str, object]] = {}
     traces_by_subscription: dict[str, dict[str, object] | None] = {}
     network_path_by_subscription: dict[str, dict[str, object] | None] = {}
+    network_path_projections: dict[str, SubscriptionNetworkPath] = {}
     access_state_by_subscription: dict[str, dict[str, object] | None] = {}
     incident_by_subscription: dict[str, dict[str, object] | None] = {}
     service_impact_by_subscription: dict[str, dict[str, object] | None] = {}
@@ -1794,6 +1796,7 @@ def build_customer_detail_snapshot(
         service_impact_by_subscription[str(sub.id)] = _build_service_impact(db, sub)
         service_level_by_subscription[str(sub.id)] = _build_service_level(db, sub)
         path_projection = _build_access_endpoint_projection(db, sub)
+        network_path_projections[str(sub.id)] = path_projection
         endpoints_by_subscription[str(sub.id)] = path_projection.endpoint.to_dict()
         traces_by_subscription[str(sub.id)] = path_projection.trace_dict
         network_path_by_subscription[str(sub.id)] = path_projection.view_dict
@@ -1818,6 +1821,19 @@ def build_customer_detail_snapshot(
     network_access_inactive_count = (
         len(network_access_cards) - network_access_active_count
     )
+    if map_data and primary_address:
+        map_data = project_customer_network_map(
+            db,
+            customer_name=customer_name,
+            customer_latitude=float(primary_address.latitude),
+            customer_longitude=float(primary_address.longitude),
+            subscriptions=[
+                subscription
+                for subscription in subscriptions
+                if subscription.status == SubscriptionStatus.active
+            ],
+            network_paths=network_path_projections,
+        ).to_dict()
     pending_location_request = (
         db.query(CustomerLocationChangeRequest)
         .filter(CustomerLocationChangeRequest.subscriber_id == customer.id)

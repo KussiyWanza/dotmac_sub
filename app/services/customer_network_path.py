@@ -13,8 +13,8 @@ an unavailable path must not take the customer record with it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -47,6 +47,352 @@ logger = logging.getLogger(__name__)
 _UNRESOLVED_SOURCE = "unresolved"
 
 _ONT_RX_DETAIL_KEY = "onu_rx_signal_dbm"
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNetworkMapPoint:
+    """One geographically located point from a proven customer path."""
+
+    latitude: float
+    longitude: float
+    kinds: tuple[str, ...]
+    labels: tuple[str, ...]
+    asset_ids: tuple[str, ...]
+    subscription_ids: tuple[str, ...]
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNetworkMapLine:
+    """Geographic rendering of one proven path edge or fiber segment."""
+
+    coordinates: tuple[tuple[float, float], ...]
+    label: str
+    subscription_id: str
+    source: str
+    dashed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNetworkMapGap:
+    """A topology or coordinate gap which the map refuses to bridge."""
+
+    code: str
+    message: str
+    subscription_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerNetworkMapView:
+    """Bounded customer-location map composed from authoritative path owners."""
+
+    center: tuple[float, float]
+    points: tuple[CustomerNetworkMapPoint, ...]
+    lines: tuple[CustomerNetworkMapLine, ...]
+    gaps: tuple[CustomerNetworkMapGap, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        features: list[dict[str, object]] = []
+        for point in self.points:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [point.longitude, point.latitude],
+                    },
+                    "properties": {
+                        "type": point.kinds[0],
+                        "kinds": list(point.kinds),
+                        "labels": list(point.labels),
+                        "asset_ids": list(point.asset_ids),
+                        "subscription_ids": list(point.subscription_ids),
+                        "source": point.source,
+                    },
+                }
+            )
+        for line in self.lines:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [list(pair) for pair in line.coordinates],
+                    },
+                    "properties": {
+                        "type": "network_path",
+                        "label": line.label,
+                        "subscription_id": line.subscription_id,
+                        "source": line.source,
+                        "dashed": line.dashed,
+                    },
+                }
+            )
+        return {
+            "center": list(self.center),
+            "geojson": {"type": "FeatureCollection", "features": features},
+            "gaps": [
+                {
+                    "code": gap.code,
+                    "message": gap.message,
+                    "subscription_id": gap.subscription_id,
+                }
+                for gap in self.gaps
+            ],
+            "schema_version": 1,
+        }
+
+
+def project_customer_network_map(
+    db: Session,
+    *,
+    customer_name: str,
+    customer_latitude: float,
+    customer_longitude: float,
+    subscriptions: Sequence[object],
+    network_paths: Mapping[str, SubscriptionNetworkPath] | None = None,
+) -> CustomerNetworkMapView:
+    """Project proven customer paths onto the customer's geographic map.
+
+    Coordinates never establish connectivity. ``network.fiber_topology`` owns
+    every rendered path and gap; inventory coordinates only locate its proven
+    assets. An incomplete passive trace may render one dashed electronic
+    customer-to-POP line when that electronic relationship is complete.
+    """
+
+    from app.models.network import (
+        FdhCabinet,
+        FiberSegment,
+        FiberTerminationPoint,
+        Splitter,
+    )
+    from app.models.network_monitoring import PopSite
+    from app.services.fiber_topology import trace_fiber_subscription
+
+    customer_coordinates = (float(customer_longitude), float(customer_latitude))
+    points_by_coordinate: dict[tuple[float, float], CustomerNetworkMapPoint] = {}
+    lines: list[CustomerNetworkMapLine] = []
+    gaps: list[CustomerNetworkMapGap] = []
+
+    def add_point(
+        *,
+        coordinates: tuple[float, float],
+        kind: str,
+        label: str,
+        asset_id: object,
+        subscription_id: str,
+        source: str,
+    ) -> None:
+        key = (round(coordinates[0], 7), round(coordinates[1], 7))
+        existing = points_by_coordinate.get(key)
+        if existing is None:
+            points_by_coordinate[key] = CustomerNetworkMapPoint(
+                latitude=coordinates[1],
+                longitude=coordinates[0],
+                kinds=(kind,),
+                labels=(label,),
+                asset_ids=(str(asset_id),),
+                subscription_ids=(subscription_id,),
+                source=source,
+            )
+            return
+        points_by_coordinate[key] = replace(
+            existing,
+            kinds=tuple(dict.fromkeys((*existing.kinds, kind))),
+            labels=tuple(dict.fromkeys((*existing.labels, label))),
+            asset_ids=tuple(dict.fromkeys((*existing.asset_ids, str(asset_id)))),
+            subscription_ids=tuple(
+                dict.fromkeys((*existing.subscription_ids, subscription_id))
+            ),
+        )
+
+    add_point(
+        coordinates=customer_coordinates,
+        kind="customer",
+        label=customer_name,
+        asset_id="customer",
+        subscription_id="",
+        source="customer primary service address",
+    )
+
+    for subscription in subscriptions:
+        subscription_id = str(getattr(subscription, "id", ""))
+        network_path = network_paths.get(subscription_id) if network_paths else None
+        electronic_view = network_path.view if network_path else None
+        try:
+            trace = trace_fiber_subscription(db, subscription_id)
+        except ValueError:
+            continue
+        pop_coordinates: tuple[float, float] | None = None
+        physical_line_count = 0
+        for hop in trace.hops:
+            coordinates: tuple[float, float] | None = None
+            source = hop.evidence
+            if hop.kind == "pop" and hop.asset_id is not None:
+                pop_asset = db.get(PopSite, hop.asset_id)
+                if (
+                    pop_asset
+                    and pop_asset.latitude is not None
+                    and pop_asset.longitude is not None
+                ):
+                    coordinates = (
+                        float(pop_asset.longitude),
+                        float(pop_asset.latitude),
+                    )
+                    pop_coordinates = coordinates
+            elif hop.kind in {"olt", "pon_port"} and pop_coordinates is not None:
+                # The fiber owner explicitly orders the resolved POP immediately
+                # before its OLT/PON equipment; colocating these logical assets
+                # describes containment and does not invent connectivity.
+                coordinates = pop_coordinates
+            elif hop.kind == "fdh" and hop.asset_id is not None:
+                fdh_asset = db.get(FdhCabinet, hop.asset_id)
+                if (
+                    fdh_asset
+                    and fdh_asset.latitude is not None
+                    and fdh_asset.longitude is not None
+                ):
+                    coordinates = (
+                        float(fdh_asset.longitude),
+                        float(fdh_asset.latitude),
+                    )
+            elif hop.kind == "splitter" and hop.asset_id is not None:
+                splitter = db.get(Splitter, hop.asset_id)
+                splitter_fdh = (
+                    db.get(FdhCabinet, splitter.fdh_id)
+                    if splitter is not None and splitter.fdh_id is not None
+                    else None
+                )
+                if (
+                    splitter_fdh
+                    and splitter_fdh.latitude is not None
+                    and splitter_fdh.longitude is not None
+                ):
+                    coordinates = (
+                        float(splitter_fdh.longitude),
+                        float(splitter_fdh.latitude),
+                    )
+            elif hop.kind == "termination" and hop.asset_id is not None:
+                termination = db.get(FiberTerminationPoint, hop.asset_id)
+                if (
+                    termination
+                    and termination.latitude is not None
+                    and termination.longitude is not None
+                ):
+                    coordinates = (
+                        float(termination.longitude),
+                        float(termination.latitude),
+                    )
+            elif hop.kind in {"ont", "customer"}:
+                coordinates = customer_coordinates
+            elif hop.kind.endswith("_segment") and hop.asset_id is not None:
+                segment = db.get(FiberSegment, hop.asset_id)
+                start = (
+                    db.get(FiberTerminationPoint, segment.from_point_id)
+                    if segment is not None and segment.from_point_id is not None
+                    else None
+                )
+                end = (
+                    db.get(FiberTerminationPoint, segment.to_point_id)
+                    if segment is not None and segment.to_point_id is not None
+                    else None
+                )
+                if (
+                    start
+                    and end
+                    and start.latitude is not None
+                    and start.longitude is not None
+                    and end.latitude is not None
+                    and end.longitude is not None
+                ):
+                    lines.append(
+                        CustomerNetworkMapLine(
+                            coordinates=(
+                                (float(start.longitude), float(start.latitude)),
+                                (float(end.longitude), float(end.latitude)),
+                            ),
+                            label=hop.label,
+                            subscription_id=subscription_id,
+                            source="validated fiber segment termination coordinates",
+                        )
+                    )
+                    physical_line_count += 1
+                else:
+                    gaps.append(
+                        CustomerNetworkMapGap(
+                            code="map.segment_coordinates_missing",
+                            message=f"{hop.label} has no complete endpoint coordinates.",
+                            subscription_id=subscription_id,
+                        )
+                    )
+
+            if coordinates is not None:
+                add_point(
+                    coordinates=coordinates,
+                    kind=hop.kind,
+                    label=hop.label,
+                    asset_id=hop.asset_id or hop.kind,
+                    subscription_id=subscription_id,
+                    source=source,
+                )
+            elif hop.kind in {"pop", "fdh", "splitter", "termination"}:
+                gaps.append(
+                    CustomerNetworkMapGap(
+                        code="map.asset_coordinates_missing",
+                        message=f"{hop.label} has no recorded coordinates.",
+                        subscription_id=subscription_id,
+                    )
+                )
+
+        gaps.extend(
+            CustomerNetworkMapGap(
+                code=gap.code,
+                message=gap.message,
+                subscription_id=subscription_id,
+            )
+            for gap in trace.gaps
+        )
+        electronic_kinds = (
+            {node.kind for node in electronic_view.nodes} if electronic_view else set()
+        )
+        if electronic_view:
+            for node in electronic_view.nodes:
+                if node.kind == "ont":
+                    add_point(
+                        coordinates=customer_coordinates,
+                        kind=node.kind,
+                        label=node.label,
+                        asset_id=node.asset_id or node.id,
+                        subscription_id=subscription_id,
+                        source=(
+                            node.evidence.owner
+                            if node.evidence
+                            else "network.access_path"
+                        ),
+                    )
+        electronic_complete = trace.electronic_complete or {
+            "ont",
+            "pon_port",
+            "olt",
+        }.issubset(electronic_kinds)
+        if electronic_complete and pop_coordinates and physical_line_count == 0:
+            lines.append(
+                CustomerNetworkMapLine(
+                    coordinates=(pop_coordinates, customer_coordinates),
+                    label="Electronic access path",
+                    subscription_id=subscription_id,
+                    source="validated POP, OLT, PON, ONT, and subscription path",
+                    dashed=True,
+                )
+            )
+
+    return CustomerNetworkMapView(
+        center=(float(customer_latitude), float(customer_longitude)),
+        points=tuple(points_by_coordinate.values()),
+        lines=tuple(lines),
+        gaps=tuple(gaps),
+    )
+
 
 # Canonical asset destinations per hop kind, with the permission each
 # destination requires. Renderers show a link only when the viewer holds the

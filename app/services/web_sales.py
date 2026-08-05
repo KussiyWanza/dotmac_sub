@@ -223,6 +223,9 @@ class NewLeadFormFields:
     country_code: str
     organization_id: str
     organization_label: str
+    managed_by_reseller: bool
+    reseller_id: str
+    reseller_label: str
     pipeline_id: str
     stage_id: str
     lead_source: str
@@ -451,29 +454,7 @@ def _sales_options(db: Session) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _count_leads(
-    db: Session,
-    *,
-    status: str | None,
-    pipeline_id: str | None,
-    stage_id: str | None,
-    owner_agent_id: str | None,
-    lead_source: str | None,
-    search: str | None,
-) -> int:
-    return sales_service.leads.count(
-        db,
-        status=status,
-        pipeline_id=pipeline_id,
-        stage_id=stage_id,
-        owner_agent_id=owner_agent_id,
-        lead_source=lead_source,
-        search=search,
-    )
-
-
-def _lead_stats(db: Session) -> dict[str, Any]:
-    summary = sales_service.leads.summary(db)
+def _lead_stats(summary: sales_service.LeadPipelineSummary) -> dict[str, Any]:
     return {
         "total": summary.total_leads,
         "open": summary.open_leads,
@@ -557,84 +538,57 @@ def build_leads_list_context(
     per_page: int,
     owner_agent_id: str | None = None,
 ) -> dict[str, Any]:
-    requested_status = status
-    requested_pipeline_id = pipeline_id
-    requested_stage_id = stage_id
-    requested_owner_agent_id = owner_agent_id
-    requested_lead_source = lead_source
-    status = _clean_choice(status, lead_status_values())
-    pipeline_id = _clean_uuid(pipeline_id)
-    stage_id = _clean_uuid(stage_id)
-    owner_agent_id = _clean_uuid(owner_agent_id)
+    requested_filters = {
+        "status": status,
+        "pipeline_id": pipeline_id,
+        "stage_id": stage_id,
+        "owner_agent_id": owner_agent_id,
+        "lead_source": lead_source,
+    }
     lead_source_options = list(sales_service.LEAD_SOURCE_OPTIONS)
-    lead_source = _clean_choice(lead_source, lead_source_options)
+    result = sales_service.leads.query(
+        db,
+        sales_service.LeadListQueryInput(
+            search_term=search,
+            status=status,
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            owner_agent_id=owner_agent_id,
+            lead_source=lead_source,
+            sort_field=sort_by,
+            sort_direction=sort_dir,
+            page=page,
+            page_size=per_page,
+        ),
+    )
+    normalized = result.query
+    normalized_filters = {
+        "status": normalized.status.value if normalized.status is not None else None,
+        "pipeline_id": str(normalized.pipeline_id) if normalized.pipeline_id else None,
+        "stage_id": str(normalized.stage_id) if normalized.stage_id else None,
+        "owner_agent_id": (
+            str(normalized.owner_agent_id) if normalized.owner_agent_id else None
+        ),
+        "lead_source": (
+            normalized.lead_source.value if normalized.lead_source is not None else None
+        ),
+    }
+    list_query = LEAD_LIST_DEFINITION.build_query(
+        search=normalized.search_term,
+        filters=normalized_filters,
+        sort_by=normalized.sort_field.value,
+        sort_dir=normalized.sort_direction.value,
+        page=normalized.page,
+        per_page=normalized.page_size,
+    )
+    page_meta = PageMeta.from_query(list_query, result.total_count)
     options = _sales_options(db)
-    selected_stage = options["stage_map"].get(stage_id or "")
-    if (
-        pipeline_id
-        and selected_stage is not None
-        and str(selected_stage.pipeline_id) != pipeline_id
-    ):
-        stage_id = None
     visible_stages = [
         stage
         for stage in options["stages"]
-        if not pipeline_id or str(stage.pipeline_id) == pipeline_id
+        if not normalized.pipeline_id or stage.pipeline_id == normalized.pipeline_id
     ]
-
-    # Stale sort/page-size params degrade to the default view rather than 500.
-    safe_sort = (
-        sort_by
-        if sort_by in LEAD_LIST_DEFINITION.sortable_keys
-        else LEAD_LIST_DEFINITION.default_sort
-    )
-    safe_dir = sort_dir if sort_dir in ("asc", "desc") else None
-    safe_per_page = (
-        per_page
-        if per_page in LEAD_LIST_DEFINITION.per_page_options
-        else LEAD_LIST_DEFINITION.default_per_page
-    )
-    requested_query = LEAD_LIST_DEFINITION.build_query(
-        search=search,
-        filters={
-            "status": status,
-            "pipeline_id": pipeline_id,
-            "stage_id": stage_id,
-            "owner_agent_id": owner_agent_id,
-            "lead_source": lead_source,
-        },
-        sort_by=safe_sort,
-        sort_dir=safe_dir,
-        page=max(1, page),
-        per_page=safe_per_page,
-    )
-
-    total = _count_leads(
-        db,
-        status=status,
-        pipeline_id=pipeline_id or None,
-        stage_id=stage_id or None,
-        owner_agent_id=owner_agent_id or None,
-        lead_source=lead_source,
-        search=requested_query.search,
-    )
-    page_meta = PageMeta.from_query(requested_query, total)
-    list_query = requested_query.with_page(page_meta.page)
-    leads = sales_service.leads.list(
-        db,
-        pipeline_id=pipeline_id or None,
-        stage_id=stage_id or None,
-        owner_agent_id=owner_agent_id or None,
-        status=status,
-        is_active=None,
-        order_by=list_query.sort_by,
-        order_dir=list_query.sort_dir,
-        limit=list_query.per_page,
-        offset=(page_meta.page - 1) * list_query.per_page,
-        lead_source=lead_source,
-        search=list_query.search,
-    )
-
+    leads = list(result.items)
     contact_map, subscriber_map = _lead_contact_views(db, leads)
 
     return {
@@ -643,13 +597,7 @@ def build_leads_list_context(
         "canonicalization_needed": request_needs_canonicalization(
             list_query,
             search=search,
-            filters={
-                "status": requested_status,
-                "pipeline_id": requested_pipeline_id,
-                "stage_id": requested_stage_id,
-                "owner_agent_id": requested_owner_agent_id,
-                "lead_source": requested_lead_source,
-            },
+            filters=requested_filters,
             sort_by=sort_by,
             sort_dir=sort_dir,
             page=page,
@@ -660,11 +608,11 @@ def build_leads_list_context(
         "per_page": page_meta.per_page,
         "total": page_meta.total_items,
         "total_pages": page_meta.total_pages,
-        "status": status or "",
-        "pipeline_id": pipeline_id or "",
-        "stage_id": stage_id or "",
-        "owner_agent_id": owner_agent_id or "",
-        "lead_source": lead_source or "",
+        "status": normalized_filters["status"] or "",
+        "pipeline_id": normalized_filters["pipeline_id"] or "",
+        "stage_id": normalized_filters["stage_id"] or "",
+        "owner_agent_id": normalized_filters["owner_agent_id"] or "",
+        "lead_source": normalized_filters["lead_source"] or "",
         "search": list_query.search or "",
         "lead_statuses": lead_status_values(),
         "lead_sources": lead_source_options,
@@ -677,7 +625,8 @@ def build_leads_list_context(
         "agent_map": options["agent_map"],
         "subscriber_map": subscriber_map,
         "contact_map": contact_map,
-        "lead_stats": _lead_stats(db),
+        "lead_stats": _lead_stats(result.summary),
+        "filters_active": bool(list_query.search or list_query.filters),
         "api_error": None,
     }
 
@@ -694,7 +643,7 @@ def build_leads_failure_context(
         else LEAD_LIST_DEFINITION.default_per_page
     )
     list_query = LEAD_LIST_DEFINITION.build_query(
-        search=search,
+        search=sales_service.normalize_lead_search(search),
         filters={},
         page=max(1, page),
         per_page=safe_per_page,
@@ -733,6 +682,7 @@ def build_leads_failure_context(
             "total_value": None,
             "currency": "",
         },
+        "filters_active": bool(list_query.search),
         "api_error": "Leads could not be loaded. No CRM data was changed.",
         "retry_url": list_query.url("/admin/sales/leads"),
     }
@@ -863,6 +813,9 @@ def _new_lead_fields(
     country_code: str | None = None,
     organization_id: str | None = None,
     organization_label: str | None = None,
+    managed_by_reseller: bool = False,
+    reseller_id: str | None = None,
+    reseller_label: str | None = None,
     pipeline_id: str | None = None,
     stage_id: str | None = None,
     lead_source: str | None = None,
@@ -899,6 +852,9 @@ def _new_lead_fields(
         country_code=(country_code or "").strip().upper(),
         organization_id=(organization_id or "").strip(),
         organization_label=(organization_label or "").strip(),
+        managed_by_reseller=managed_by_reseller,
+        reseller_id=(reseller_id or "").strip(),
+        reseller_label=(reseller_label or "").strip(),
         pipeline_id=(pipeline_id or "").strip(),
         stage_id=(stage_id or "").strip(),
         lead_source=(lead_source or "").strip(),
@@ -1004,6 +960,9 @@ def build_lead_create_error_context(
             country_code=str(fields.get("country_code") or ""),
             organization_id=str(fields.get("organization_id") or ""),
             organization_label=str(fields.get("organization_label") or ""),
+            managed_by_reseller=bool(fields.get("managed_by_reseller")),
+            reseller_id=str(fields.get("reseller_id") or ""),
+            reseller_label=str(fields.get("reseller_label") or ""),
             pipeline_id=str(fields.get("pipeline_id") or ""),
             stage_id=str(fields.get("stage_id") or ""),
             lead_source=str(fields.get("lead_source") or ""),
@@ -1220,6 +1179,8 @@ def author_lead_from_form(
     postal_code: str | None,
     country_code: str | None,
     organization_id: str | None,
+    managed_by_reseller: bool,
+    reseller_id: str | None,
     pipeline_id: str | None,
     stage_id: str | None,
     lead_source: str | None,
@@ -1231,6 +1192,7 @@ def author_lead_from_form(
     lost_reason: str | None,
     notes: str | None,
     is_active: bool,
+    inbox_conversation_id: str | None = None,
 ) -> lead_authoring.AuthorLeadOutcome:
     errors: dict[str, str] = {}
 
@@ -1271,6 +1233,9 @@ def author_lead_from_form(
 
     actor_id = required_uuid(actor_system_user_id, "form")
     lead_id = required_uuid(submission_id, "form")
+    origin_conversation_id = optional_uuid(
+        inbox_conversation_id, "inbox_conversation_id"
+    )
     try:
         lead_status = LeadStatus((status or LeadStatus.new.value).strip())
     except ValueError:
@@ -1301,6 +1266,12 @@ def author_lead_from_form(
             whatsapp_indexes.append(int(str(raw)))
         except ValueError:
             continue
+
+    selected_reseller_id = (
+        optional_uuid(reseller_id, "reseller_id") if managed_by_reseller else None
+    )
+    if managed_by_reseller and selected_reseller_id is None:
+        errors["reseller_id"] = "Select the reseller that manages this customer."
 
     if errors:
         raise LeadFormValidationError(errors)
@@ -1347,7 +1318,9 @@ def author_lead_from_form(
             postal_code=(postal_code or "").strip() or None,
             country_code=(country_code or "").strip().upper() or None,
             organization_id=optional_uuid(organization_id, "organization_id"),
+            reseller_id=selected_reseller_id,
         ),
+        origin_conversation_id=origin_conversation_id,
     )
     if errors:
         raise LeadFormValidationError(errors)

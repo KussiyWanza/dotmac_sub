@@ -38,6 +38,9 @@ from app.models.service_extension import (
     ServiceExtension,
     ServiceExtensionAnchorBasis,
     ServiceExtensionEntry,
+    ServiceExtensionReversal,
+    ServiceExtensionReversalAnchorDisposition,
+    ServiceExtensionReversalEntry,
     ServiceExtensionScope,
     ServiceExtensionStatus,
 )
@@ -68,6 +71,7 @@ _EXTENSION_ID_NAMESPACE = uuid.UUID("bf7a52db-180b-45b5-89c1-9aa235dd638b")
 CREATE_SCOPE = "billing:extension:create"
 APPLY_SCOPE = "billing:extension:apply"
 CANCEL_SCOPE = "billing:extension:apply"
+REVERSE_SCOPE = "billing:extension:reverse"
 
 _CREATE_COMMAND = OwnerCommandDefinition(
     owner="financial.service_extensions",
@@ -83,6 +87,11 @@ _CANCEL_COMMAND = OwnerCommandDefinition(
     owner="financial.service_extensions",
     concern="service-extension lifecycle and exact grant intervals",
     name="cancel_service_extension",
+)
+_REVERSE_COMMAND = OwnerCommandDefinition(
+    owner="financial.service_extensions",
+    concern="service-extension lifecycle and exact grant intervals",
+    name="reverse_service_extension",
 )
 _OWNER = "financial.service_extensions"
 _LIFECYCLE_CONCERN = "service-extension lifecycle and exact grant intervals"
@@ -127,6 +136,13 @@ class CancelServiceExtensionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ReverseServiceExtensionCommand:
+    context: CommandContext
+    extension_id: uuid.UUID
+    preview_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class RepairServiceExtensionAnchorProjectionCommand:
     context: CommandContext
     extension_id: uuid.UUID
@@ -162,6 +178,37 @@ class CancelServiceExtensionOutcome:
     status: ServiceExtensionStatus
     affected_count: int
     skipped_count: int
+    command_id: uuid.UUID
+    correlation_id: uuid.UUID
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceExtensionReversalPreview:
+    extension_id: uuid.UUID
+    reason: str
+    as_of: datetime
+    inspected_count: int
+    restored_anchor_count: int
+    preserved_later_anchor_count: int
+    preserved_lower_anchor_count: int
+    preserved_terminal_count: int
+    active_grant_count: int
+    future_grant_count: int
+    expired_grant_count: int
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReverseServiceExtensionOutcome:
+    extension_id: uuid.UUID
+    reversal_id: uuid.UUID
+    status: ServiceExtensionStatus
+    inspected_count: int
+    restored_anchor_count: int
+    preserved_later_anchor_count: int
+    preserved_lower_anchor_count: int
+    preserved_terminal_count: int
     command_id: uuid.UUID
     correlation_id: uuid.UUID
     replayed: bool
@@ -223,6 +270,22 @@ class ServiceExtensionScopeOptions:
 class ServiceExtensionTransitionEligibility:
     can_apply: bool
     can_cancel: bool
+    can_reverse: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ServiceExtensionReversalPlanRow:
+    entry: ServiceExtensionEntry
+    subscription: Subscription
+    observed_next_billing_at: datetime | None
+    resulting_next_billing_at: datetime | None
+    disposition: ServiceExtensionReversalAnchorDisposition
+
+
+@dataclass(frozen=True, slots=True)
+class _ServiceExtensionReversalPlan:
+    preview: ServiceExtensionReversalPreview
+    rows: tuple[_ServiceExtensionReversalPlanRow, ...]
 
 
 class ServiceExtensionError(DomainError):
@@ -1285,7 +1348,7 @@ def _transition_id(extension_id: uuid.UUID, action: str) -> uuid.UUID:
 
 
 def transition_idempotency_key(extension_id: uuid.UUID, action: str) -> str:
-    if action not in {"apply", "cancel"}:
+    if action not in {"apply", "cancel", "reverse"}:
         _error(
             "invalid_transition_action",
             "The service-extension transition action is invalid.",
@@ -1301,6 +1364,7 @@ def transition_eligibility(
     return ServiceExtensionTransitionEligibility(
         can_apply=pending,
         can_cancel=pending,
+        can_reverse=status == ServiceExtensionStatus.applied,
     )
 
 
@@ -1437,6 +1501,7 @@ def _stage_lifecycle_evidence(
     previous_status: ServiceExtensionStatus | None,
     idempotency_key_sha256: str,
     command_fingerprint_sha256: str | None = None,
+    extra_metadata: dict[str, object] | None = None,
 ) -> None:
     from app.services.audit_adapter import stage_audit_event
     from app.services.audit_helpers import resolve_actor_label_from_db
@@ -1468,6 +1533,8 @@ def _stage_lifecycle_evidence(
         metadata["previous_status"] = previous_status.value
     if command_fingerprint_sha256 is not None:
         metadata["command_fingerprint_sha256"] = command_fingerprint_sha256
+    if extra_metadata:
+        metadata.update(extra_metadata)
     stage_audit_event(
         db,
         action=action,
@@ -1626,7 +1693,10 @@ def preview_extension(
 ) -> ServiceExtensionPreview:
     """Typed preview: exact applied evidence, or a current proposal if pending."""
     scope_id = str(extension.scope_id) if extension.scope_id else None
-    if extension.status == ServiceExtensionStatus.applied:
+    if extension.status in {
+        ServiceExtensionStatus.applied,
+        ServiceExtensionStatus.reversed,
+    }:
         # Applied extensions report the immutable intervals actually recorded,
         # never a recomputed proposal.
         interval_sample = _applied_interval_sample(db, extension.id)
@@ -1754,10 +1824,10 @@ def cancel_service_extension(
         extension = get_extension(db, command.extension_id, lock=True)
         if extension.status == ServiceExtensionStatus.canceled:
             return _cancel_outcome(extension, replayed=True)
-        if extension.status == ServiceExtensionStatus.applied:
+        if extension.status != ServiceExtensionStatus.pending:
             _error(
                 "transition_conflict",
-                "An applied service extension cannot be canceled.",
+                "Only a pending service extension can be canceled.",
                 current_status=extension.status.value,
             )
         previous_status = extension.status
@@ -1784,6 +1854,366 @@ def cancel_service_extension(
     return execute_owner_command(
         db,
         definition=_CANCEL_COMMAND,
+        context=command.context,
+        operation=operation,
+    )
+
+
+def _normalize_reversal_reason(reason: str) -> str:
+    normalized = str(reason or "").strip()
+    if not normalized:
+        _error("missing_reversal_reason", "A reviewed reversal reason is required.")
+    if len(normalized) > 2000:
+        _error(
+            "reversal_reason_too_long",
+            "The reversal reason must not exceed 2,000 characters.",
+        )
+    return normalized
+
+
+def _same_datetime(left: datetime | None, right: datetime | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return _as_utc(left) == _as_utc(right)
+
+
+def _service_extension_reversal_plan(
+    db: Session,
+    *,
+    extension: ServiceExtension,
+    reason: str,
+    lock: bool,
+) -> _ServiceExtensionReversalPlan:
+    normalized_reason = _normalize_reversal_reason(reason)
+    if extension.status != ServiceExtensionStatus.applied:
+        _error(
+            "transition_conflict",
+            "Only an applied service extension can be reversed.",
+            current_status=extension.status.value,
+        )
+    entry_statement = (
+        select(ServiceExtensionEntry)
+        .where(ServiceExtensionEntry.extension_id == extension.id)
+        .order_by(
+            ServiceExtensionEntry.subscription_id,
+            ServiceExtensionEntry.id,
+        )
+    )
+    if lock:
+        entry_statement = entry_statement.with_for_update()
+    entries = list(db.scalars(entry_statement).all())
+    if len(entries) != int(extension.affected_count):
+        _error(
+            "reversal_evidence_incomplete",
+            "The applied extension entry evidence does not match its outcome count.",
+            expected_count=int(extension.affected_count),
+            actual_count=len(entries),
+        )
+    subscription_ids = sorted(
+        {entry.subscription_id for entry in entries},
+        key=str,
+    )
+    subscription_statement = (
+        select(Subscription)
+        .where(Subscription.id.in_(subscription_ids))
+        .order_by(Subscription.id)
+    )
+    if lock:
+        subscription_statement = subscription_statement.with_for_update()
+    subscriptions = {
+        subscription.id: subscription
+        for subscription in db.scalars(subscription_statement).all()
+    }
+    if len(subscriptions) != len(subscription_ids):
+        _error(
+            "reversal_evidence_incomplete",
+            "One or more affected subscriptions no longer exist.",
+            expected_count=len(subscription_ids),
+            actual_count=len(subscriptions),
+        )
+
+    terminal_statuses = {
+        SubscriptionStatus.hidden,
+        SubscriptionStatus.archived,
+        SubscriptionStatus.canceled,
+    }
+    rows: list[_ServiceExtensionReversalPlanRow] = []
+    active_grants = 0
+    future_grants = 0
+    expired_grants = 0
+    observed_at = _now_utc()
+    for entry in entries:
+        subscription = subscriptions[entry.subscription_id]
+        current = subscription.next_billing_at
+        target = entry.previous_next_billing_at
+        if subscription.status in terminal_statuses:
+            disposition = ServiceExtensionReversalAnchorDisposition.preserved_terminal_subscription
+            resulting = current
+        elif _same_datetime(current, entry.new_next_billing_at):
+            disposition = (
+                ServiceExtensionReversalAnchorDisposition.restored_previous_anchor
+            )
+            resulting = target
+        elif (
+            current is not None
+            and entry.new_next_billing_at is not None
+            and _as_utc(current) > _as_utc(entry.new_next_billing_at)
+        ):
+            disposition = (
+                ServiceExtensionReversalAnchorDisposition.preserved_later_anchor
+            )
+            resulting = current
+        else:
+            disposition = (
+                ServiceExtensionReversalAnchorDisposition.preserved_lower_anchor
+            )
+            resulting = current
+        rows.append(
+            _ServiceExtensionReversalPlanRow(
+                entry=entry,
+                subscription=subscription,
+                observed_next_billing_at=current,
+                resulting_next_billing_at=resulting,
+                disposition=disposition,
+            )
+        )
+        starts_at = entry.grant_starts_at
+        ends_at = entry.grant_ends_at
+        if starts_at is not None and ends_at is not None:
+            if _as_utc(ends_at) <= observed_at:
+                expired_grants += 1
+            elif _as_utc(starts_at) > observed_at:
+                future_grants += 1
+            else:
+                active_grants += 1
+
+    material = {
+        "kind": "service_extension_reversal",
+        "extension_id": str(extension.id),
+        "status": extension.status.value,
+        "reason": normalized_reason,
+        "rows": [
+            {
+                "entry_id": str(row.entry.id),
+                "subscription_id": str(row.entry.subscription_id),
+                "subscription_status": row.subscription.status.value,
+                "entry_previous_next_billing_at": _fingerprint_datetime(
+                    row.entry.previous_next_billing_at
+                ),
+                "entry_new_next_billing_at": _fingerprint_datetime(
+                    row.entry.new_next_billing_at
+                ),
+                "grant_starts_at": _fingerprint_datetime(row.entry.grant_starts_at),
+                "grant_ends_at": _fingerprint_datetime(row.entry.grant_ends_at),
+                "observed_next_billing_at": _fingerprint_datetime(
+                    row.observed_next_billing_at
+                ),
+                "resulting_next_billing_at": _fingerprint_datetime(
+                    row.resulting_next_billing_at
+                ),
+                "disposition": row.disposition.value,
+            }
+            for row in rows
+        ],
+    }
+    fingerprint = _sha256(json.dumps(material, sort_keys=True, separators=(",", ":")))
+    counts = {
+        disposition: sum(1 for row in rows if row.disposition is disposition)
+        for disposition in ServiceExtensionReversalAnchorDisposition
+    }
+    return _ServiceExtensionReversalPlan(
+        preview=ServiceExtensionReversalPreview(
+            extension_id=extension.id,
+            reason=normalized_reason,
+            as_of=observed_at,
+            inspected_count=len(rows),
+            restored_anchor_count=counts[
+                ServiceExtensionReversalAnchorDisposition.restored_previous_anchor
+            ],
+            preserved_later_anchor_count=counts[
+                ServiceExtensionReversalAnchorDisposition.preserved_later_anchor
+            ],
+            preserved_lower_anchor_count=counts[
+                ServiceExtensionReversalAnchorDisposition.preserved_lower_anchor
+            ],
+            preserved_terminal_count=counts[
+                ServiceExtensionReversalAnchorDisposition.preserved_terminal_subscription
+            ],
+            active_grant_count=active_grants,
+            future_grant_count=future_grants,
+            expired_grant_count=expired_grants,
+            fingerprint=fingerprint,
+        ),
+        rows=tuple(rows),
+    )
+
+
+def preview_service_extension_reversal(
+    db: Session,
+    *,
+    extension_id: uuid.UUID,
+    reason: str,
+) -> ServiceExtensionReversalPreview:
+    """Preview the exact append-only correction without changing state."""
+
+    extension = get_extension(db, extension_id)
+    return _service_extension_reversal_plan(
+        db,
+        extension=extension,
+        reason=reason,
+        lock=False,
+    ).preview
+
+
+def _reversal_outcome(
+    extension: ServiceExtension,
+    reversal: ServiceExtensionReversal,
+    *,
+    replayed: bool,
+) -> ReverseServiceExtensionOutcome:
+    return ReverseServiceExtensionOutcome(
+        extension_id=extension.id,
+        reversal_id=reversal.id,
+        status=extension.status,
+        inspected_count=int(reversal.inspected_count),
+        restored_anchor_count=int(reversal.restored_anchor_count),
+        preserved_later_anchor_count=int(reversal.preserved_later_anchor_count),
+        preserved_lower_anchor_count=int(reversal.preserved_lower_anchor_count),
+        preserved_terminal_count=int(reversal.preserved_terminal_count),
+        command_id=reversal.command_id,
+        correlation_id=reversal.correlation_id,
+        replayed=replayed,
+    )
+
+
+def reverse_service_extension(
+    db: Session,
+    command: ReverseServiceExtensionCommand,
+) -> ReverseServiceExtensionOutcome:
+    """Reverse one applied grant while preserving its immutable history."""
+
+    def operation() -> ReverseServiceExtensionOutcome:
+        idempotency_key = _require_command_context(
+            command.context,
+            expected_scope=REVERSE_SCOPE,
+        )
+        fingerprint = str(command.preview_fingerprint or "").strip().lower()
+        if len(fingerprint) != 64 or any(
+            character not in "0123456789abcdef" for character in fingerprint
+        ):
+            _error(
+                "invalid_reversal_preview",
+                "A valid service-extension reversal preview is required.",
+            )
+        extension = get_extension(db, command.extension_id, lock=True)
+        existing = db.scalar(
+            select(ServiceExtensionReversal).where(
+                ServiceExtensionReversal.extension_id == extension.id
+            )
+        )
+        if extension.status == ServiceExtensionStatus.reversed:
+            if existing is None:
+                _error(
+                    "reversal_evidence_incomplete",
+                    "The reversed extension has no linked reversal evidence.",
+                )
+            if (
+                existing.preview_fingerprint_sha256 != fingerprint
+                or existing.idempotency_key_sha256 != _sha256(idempotency_key)
+            ):
+                _error(
+                    "idempotency_conflict",
+                    "The extension was reversed with different confirmation evidence.",
+                )
+            return _reversal_outcome(extension, existing, replayed=True)
+        if existing is not None:
+            _error(
+                "reversal_evidence_conflict",
+                "Reversal evidence already exists for a non-reversed extension.",
+            )
+        plan = _service_extension_reversal_plan(
+            db,
+            extension=extension,
+            reason=command.context.reason,
+            lock=True,
+        )
+        if plan.preview.fingerprint != fingerprint:
+            _error(
+                "stale_reversal_preview",
+                "The extension impact changed after preview; review it again.",
+            )
+
+        now = _now_utc()
+        reversal_id = _transition_id(extension.id, "reverse")
+        actor_id = _actor(command.context)[1]
+        reversal = ServiceExtensionReversal(
+            id=reversal_id,
+            extension_id=extension.id,
+            reason=plan.preview.reason,
+            preview_fingerprint_sha256=plan.preview.fingerprint,
+            idempotency_key_sha256=_sha256(idempotency_key),
+            command_id=command.context.command_id,
+            correlation_id=command.context.correlation_id,
+            reversed_by=actor_id,
+            reversed_at=now,
+            inspected_count=plan.preview.inspected_count,
+            restored_anchor_count=plan.preview.restored_anchor_count,
+            preserved_later_anchor_count=(plan.preview.preserved_later_anchor_count),
+            preserved_lower_anchor_count=(plan.preview.preserved_lower_anchor_count),
+            preserved_terminal_count=plan.preview.preserved_terminal_count,
+        )
+        db.add(reversal)
+        for row in plan.rows:
+            if (
+                row.disposition
+                is ServiceExtensionReversalAnchorDisposition.restored_previous_anchor
+            ):
+                row.subscription.next_billing_at = row.resulting_next_billing_at
+            db.add(
+                ServiceExtensionReversalEntry(
+                    id=uuid.uuid5(
+                        _EXTENSION_ID_NAMESPACE,
+                        f"{reversal_id}:{row.entry.id}",
+                    ),
+                    reversal_id=reversal_id,
+                    extension_entry_id=row.entry.id,
+                    subscription_id=row.entry.subscription_id,
+                    observed_next_billing_at=row.observed_next_billing_at,
+                    resulting_next_billing_at=row.resulting_next_billing_at,
+                    disposition=row.disposition,
+                    created_at=now,
+                )
+            )
+        previous_status = extension.status
+        extension.status = ServiceExtensionStatus.reversed
+        db.flush()
+        _stage_lifecycle_evidence(
+            db,
+            extension=extension,
+            context=command.context,
+            action="billing.service_extension_reversed",
+            event_type=EventType.service_extension_reversed,
+            occurred_at=now,
+            previous_status=previous_status,
+            idempotency_key_sha256=_sha256(idempotency_key),
+            command_fingerprint_sha256=plan.preview.fingerprint,
+            extra_metadata={
+                "reversal_id": str(reversal.id),
+                "inspected": plan.preview.inspected_count,
+                "anchors_restored": plan.preview.restored_anchor_count,
+                "later_anchors_preserved": (plan.preview.preserved_later_anchor_count),
+                "lower_anchors_preserved": (plan.preview.preserved_lower_anchor_count),
+                "terminal_subscriptions_preserved": (
+                    plan.preview.preserved_terminal_count
+                ),
+                "access_consequence": ("normal_financial_policy_reevaluation_required"),
+            },
+        )
+        return _reversal_outcome(extension, reversal, replayed=False)
+
+    return execute_owner_command(
+        db,
+        definition=_REVERSE_COMMAND,
         context=command.context,
         operation=operation,
     )
@@ -1840,10 +2270,10 @@ def apply_service_extension(
         extension = get_extension(db, command.extension_id, lock=True)
         if extension.status == ServiceExtensionStatus.applied:
             return _apply_outcome(extension, replayed=True)
-        if extension.status == ServiceExtensionStatus.canceled:
+        if extension.status != ServiceExtensionStatus.pending:
             _error(
                 "transition_conflict",
-                "A canceled service extension cannot be applied.",
+                "Only a pending service extension can be applied.",
                 current_status=extension.status.value,
             )
 

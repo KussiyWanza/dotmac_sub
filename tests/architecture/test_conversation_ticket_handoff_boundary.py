@@ -12,19 +12,22 @@ ROOT = Path(__file__).resolve().parents[2]
 OWNER = "app/services/conversation_ticket_handoff.py"
 
 
+def _sets_ticket_origin(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call) or not any(
+        keyword.arg == "origin_conversation_id" for keyword in node.keywords
+    ):
+        return False
+    callee = ast.unparse(node.func)
+    return callee.endswith(".Tickets.create") or callee in {"Ticket", "support.Ticket"}
+
+
 def test_only_the_handoff_owner_passes_provenance_to_the_ticket_command():
     callsites = []
     for path in (ROOT / "app").rglob("*.py"):
         if path.as_posix().endswith("app/services/support.py"):
             continue
-        tree = ast.parse(path.read_text())
-        if any(
-            isinstance(node, ast.Call)
-            and any(
-                keyword.arg == "origin_conversation_id" for keyword in node.keywords
-            )
-            for node in ast.walk(tree)
-        ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(_sets_ticket_origin(node) for node in ast.walk(tree)):
             callsites.append(path.relative_to(ROOT).as_posix())
 
     assert callsites == [OWNER]
@@ -62,8 +65,22 @@ def test_no_direct_orm_write_of_the_provenance_column_outside_the_owner():
         rel = path.relative_to(ROOT).as_posix()
         if rel in {OWNER, "app/models/support.py", "app/services/support.py"}:
             continue
-        source = path.read_text()
-        if ".origin_conversation_id =" in source:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        writes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(
+                node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
+            )
+            and any(
+                isinstance(target, ast.Attribute)
+                and target.attr == "origin_conversation_id"
+                for target in (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+            )
+        ]
+        if writes:
             offenders.append(rel)
 
     assert offenders == []

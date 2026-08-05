@@ -101,6 +101,10 @@ DEFAULT_PERMISSIONS = [
     ("billing:extension:read", "View service extensions"),
     ("billing:extension:create", "Create service extensions"),
     ("billing:extension:apply", "Apply or cancel service extensions"),
+    (
+        "billing:extension:reverse",
+        "Reverse applied service extensions after reviewed impact preview",
+    ),
     ("billing:treatment:read", "View subscription billing treatments"),
     ("billing:treatment:write", "Approve and revoke billing treatments"),
     ("billing:credit_note:read", "View credit notes"),

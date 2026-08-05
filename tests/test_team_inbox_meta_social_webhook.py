@@ -11,7 +11,16 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.api import meta_inbox_webhooks
+from app.models.integration_platform import IntegrationInbox
 from app.models.team_inbox import InboxChannelType, InboxConversation, InboxMessage
+from app.services.integrations import installations
+from app.services.integrations.meta_social_installation import (
+    META_SOCIAL_CONFIGURATION_SCOPE,
+    ConfigureMetaSocialInstallationCommand,
+    configure_meta_social_installation,
+)
+from app.services.integrations.runtime import ValidationResult
+from app.services.owner_commands import CommandContext
 
 META_TEST_SECRET = "meta-secret"  # pragma: allowlist secret
 
@@ -58,6 +67,35 @@ def _sign(body: bytes, secret: str = META_TEST_SECRET) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _install_meta_social(db_session) -> None:
+    result = configure_meta_social_installation(
+        db_session,
+        ConfigureMetaSocialInstallationCommand(
+            app_id="app-1",
+            facebook_page_id="page-1",
+            instagram_account_id="ig-1",
+            graph_version="v21.0",
+            webhook_url="https://sub.example.test/api/v1/webhooks/meta",
+            facebook_page_access_token_ref="env://META_TEST_FACEBOOK_TOKEN",
+            instagram_login_access_token_ref="env://META_TEST_INSTAGRAM_TOKEN",
+            webhook_signing_secret_ref="env://META_TEST_SIGNING_SECRET",
+            webhook_verify_token_ref="env://META_TEST_VERIFY_TOKEN",
+            environment="test",
+        ),
+        context=CommandContext.system(
+            actor="test.meta",
+            scope=META_SOCIAL_CONFIGURATION_SCOPE,
+            reason="Install Meta social webhook test binding",
+        ),
+    )
+    installations.enable_after_connection_validation(
+        db_session,
+        installation_id=result.installation_id,
+        connection_result=ValidationResult(valid=True),
+    )
+    db_session.commit()
+
+
 def test_meta_inbox_webhook_verify_returns_challenge(db_session, monkeypatch):
     monkeypatch.setattr(meta_inbox_webhooks, "_verify_token", lambda db: "verify-token")
 
@@ -90,6 +128,7 @@ def test_meta_inbox_webhook_rejects_bad_signature(db_session, monkeypatch):
 
 
 def test_meta_inbox_webhook_creates_facebook_messenger_message(db_session, monkeypatch):
+    _install_meta_social(db_session)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -135,6 +174,7 @@ def test_meta_inbox_webhook_creates_facebook_messenger_message(db_session, monke
 
 
 def test_meta_inbox_webhook_creates_instagram_dm_message(db_session, monkeypatch):
+    _install_meta_social(db_session)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -175,6 +215,7 @@ def test_meta_inbox_webhook_creates_instagram_dm_message(db_session, monkeypatch
 
 
 def test_meta_inbox_webhook_deduplicates_external_message_id(db_session, monkeypatch):
+    _install_meta_social(db_session)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )
@@ -205,12 +246,14 @@ def test_meta_inbox_webhook_deduplicates_external_message_id(db_session, monkeyp
     )
 
     assert first["items"][0]["kind"] == "received"
-    assert second["items"][0]["kind"] == "duplicate"
+    assert second == first
     assert db_session.query(InboxConversation).count() == 1
     assert db_session.query(InboxMessage).count() == 1
+    assert db_session.query(IntegrationInbox).count() == 1
 
 
 def test_meta_inbox_webhook_preserves_attachment_messages(db_session, monkeypatch):
+    _install_meta_social(db_session)
     monkeypatch.setattr(
         meta_inbox_webhooks, "_verify_meta_signature", lambda db, body, sig: None
     )

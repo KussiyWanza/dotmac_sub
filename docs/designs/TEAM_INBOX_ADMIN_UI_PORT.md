@@ -61,7 +61,8 @@ unimportable. The other 20 files moved to gitignored
 
 1. **`app.web.admin.inbox` is the only named HTTP translator** for
    `communications.team_inbox` (SOT map note 9). New sibling modules must update
-   that note and `app/services/sot_relationships.py` in the same change.
+   that note and the owning `app/services/sot_registry/domains/` declaration in
+   the same change.
 2. **Every write goes through `team_inbox_commands`.** House rule confirmed in
    `inbox.py`: `team_inbox_operations` is imported for reads and its
    `InboxOperationError` type only; all 17 mutations call `team_inbox_commands`.
