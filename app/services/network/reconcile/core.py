@@ -43,7 +43,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.network import OLTDevice, OntSyncStatus, OntUnit
@@ -88,6 +89,42 @@ from .state import (
 from .validator import validate_desired
 
 logger = logging.getLogger(__name__)
+
+
+_IDLE_TIMEOUT_MARGIN_SEC = 30
+
+
+def _widen_idle_in_transaction_timeout(db: Session, timeout_sec: int) -> None:
+    """Let the lock-held transaction outlive its own device I/O.
+
+    A reconcile pass holds ``SELECT FOR UPDATE`` on the ONT row for the whole
+    read/plan/apply cycle — that row lock is what serializes concurrent passes,
+    so it cannot be released before the OLT SSH and TR-069 round-trips. Those
+    round-trips are slow (each Huawei command costs seconds under slow-send),
+    and the connection sits idle-in-transaction while they run.
+
+    Production sets ``idle_in_transaction_session_timeout`` well below a
+    realistic reconcile, so Postgres was terminating the connection mid-apply
+    and surfacing it as an opaque ``OperationalError``. The transaction must be
+    allowed to live at least as long as the reconciler's own deadline.
+
+    ``SET LOCAL`` scopes this to the current transaction, so it reverts on
+    commit or rollback and never leaks to the next user of a pooled connection.
+    Postgres-only; other dialects (SQLite in tests) have no such setting.
+    """
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return
+    budget_ms = (timeout_sec + _IDLE_TIMEOUT_MARGIN_SEC) * 1000
+    try:
+        db.execute(
+            text("SET LOCAL idle_in_transaction_session_timeout = :ms"),
+            {"ms": budget_ms},
+        )
+    except SQLAlchemyError:  # pragma: no cover - defensive, never fail the pass
+        logger.warning(
+            "Could not widen idle_in_transaction_session_timeout for reconcile",
+            exc_info=True,
+        )
 
 
 def reconcile_ont(
@@ -142,6 +179,7 @@ def reconcile_ont(
 
     try:
         with acquire_reconcile_lock(db, ont_unit_id) as ont:
+            _widen_idle_in_transaction_timeout(db, timeout_sec)
             # ── Mode guard ──────────────────────────────────────────────────
             if (
                 mode == "sync"
