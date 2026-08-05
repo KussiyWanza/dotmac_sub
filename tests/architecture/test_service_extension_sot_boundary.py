@@ -49,6 +49,15 @@ def test_service_extension_owners_have_complete_registered_contracts() -> None:
         ].canonical_writer
         == "financial.service_extensions"
     )
+    assert (
+        lifecycle_concerns[
+            "immutable service-extension reversal evidence"
+        ].canonical_writer
+        == "financial.service_extensions"
+    )
+    assert {concern.name for concern in detail.contract.concerns} >= {
+        "service-extension reversal confirmation projection"
+    }
 
 
 def test_lifecycle_owner_uses_one_boundary_per_public_command() -> None:
@@ -57,14 +66,16 @@ def test_lifecycle_owner_uses_one_boundary_per_public_command() -> None:
         "CreateServiceExtensionCommand",
         "ApplyServiceExtensionCommand",
         "CancelServiceExtensionCommand",
+        "ReverseServiceExtensionCommand",
         "CreateServiceExtensionOutcome",
         "ApplyServiceExtensionOutcome",
         "CancelServiceExtensionOutcome",
+        "ReverseServiceExtensionOutcome",
     ):
         assert f"class {command}:" in source
-    # create, apply, cancel, anchor-projection repair, and duplicate-entry
+    # create, apply, cancel, reverse, anchor-projection repair, and duplicate-entry
     # reconciliation (the last landed on main via #1593).
-    assert source.count("execute_owner_command(") == 5
+    assert source.count("execute_owner_command(") == 6
     for forbidden in (
         "HTTPException",
         ".commit(",
@@ -93,7 +104,7 @@ def test_lifecycle_evidence_and_idempotency_are_database_enforced() -> None:
     assert "uq_service_extension_entries_extension_subscription" in migration
     assert "canceled_by" in model
     assert "canceled_at" in model
-    for action in ("created", "applied", "canceled"):
+    for action in ("created", "applied", "canceled", "reversed"):
         assert f'billing.service_extension_{action}"' in events
 
 
@@ -117,6 +128,7 @@ def test_detail_route_is_a_thin_projection_and_command_adapter() -> None:
     assert "CreateServiceExtensionCommand(" in source
     assert "ApplyServiceExtensionCommand(" in source
     assert "CancelServiceExtensionCommand(" in source
+    assert "ReverseServiceExtensionCommand(" in source
 
 
 def test_projection_owns_exact_history_actor_and_action_presentation() -> None:
@@ -137,6 +149,7 @@ def test_template_only_renders_typed_status_activity_and_eligibility() -> None:
     assert "timeline_item(" in source
     assert "detail.can_apply" in source
     assert "detail.can_cancel" in source
+    assert "detail.can_reverse" in source
     assert "Created by" in source
     assert "Created at" in source
     assert "status_colors" not in source

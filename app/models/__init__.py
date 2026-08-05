@@ -822,6 +822,9 @@ from app.models.service_extension import (  # noqa: F401
     ServiceExtension,
     ServiceExtensionAnchorBasis,
     ServiceExtensionEntry,
+    ServiceExtensionReversal,
+    ServiceExtensionReversalAnchorDisposition,
+    ServiceExtensionReversalEntry,
     ServiceExtensionScope,
     ServiceExtensionStatus,
 )

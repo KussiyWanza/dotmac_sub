@@ -129,6 +129,7 @@ class EventType(enum.Enum):
     service_extension_created = "billing.service_extension_created"
     service_extension_applied = "billing.service_extension_applied"
     service_extension_canceled = "billing.service_extension_canceled"
+    service_extension_reversed = "billing.service_extension_reversed"
     service_extension_anchor_repaired = "billing.service_extension_anchor_repaired"
     service_extended = "billing.service_extended"
 

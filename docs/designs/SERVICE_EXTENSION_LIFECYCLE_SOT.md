@@ -5,8 +5,10 @@ Status: active
 ## Ownership
 
 `financial.service_extensions` is the sole owner of the `ServiceExtension`
-aggregate, immutable `ServiceExtensionEntry` evidence, and the billing-anchor
-changes caused by an applied extension. Its public create, apply, and cancel
+aggregate, immutable `ServiceExtensionEntry` evidence, linked immutable
+`ServiceExtensionReversal`/per-subscription outcome evidence, and the
+billing-anchor changes caused by an applied extension. Its public create,
+apply, cancel, and reverse
 interfaces accept immutable typed commands with `CommandContext` and return
 typed outcomes with stable extension, command, correlation, status, count, and
 replay evidence.
@@ -44,9 +46,10 @@ as a separate follow-up.
 
 ## Transaction boundary
 
-Each create, apply, or cancel command enters `execute_owner_command` once on a
-transaction-free adapter session. The owner locks the extension for apply and
-cancel, resolves and locks apply targets in stable UUID order, and uses
+Each create, apply, cancel, or reverse command enters `execute_owner_command`
+once on a transaction-free adapter session. The owner locks the extension for
+apply, cancel, and reverse; resolves and locks apply/reversal targets in stable
+UUID order; and uses
 flush-only helpers. Aggregate state, immutable entries, audit rows, and durable
 domain-event rows commit or roll back together.
 
@@ -55,6 +58,7 @@ The lifecycle audits are:
 - `billing.service_extension_created`
 - `billing.service_extension_applied`
 - `billing.service_extension_canceled`
+- `billing.service_extension_reversed`
 
 They use `entity_type=service_extension` and the exact extension UUID. Metadata
 contains bounded operational evidence: command and correlation IDs, hashed
@@ -81,6 +85,32 @@ without adding entries, audit rows, or events. Apply-after-cancel and
 cancel-after-apply fail with `transition_conflict`. The database unique
 constraint on `(extension_id, subscription_id)` is the final entry invariant.
 
+Reverse is preview-first. The preview fingerprints the normalized reviewed
+reason, exact applied entries, current subscription lifecycle/anchor facts, and
+the per-subscription correction disposition. Confirmation locks and recomputes
+that cohort; changed evidence fails with `stale_reversal_preview`. One unique
+reversal exists per extension, and exact retries return its stored outcome.
+
+## Applied-extension reversal
+
+Reversal is a linked correction, never deletion or historical rewriting:
+
+- the aggregate transitions `applied -> reversed`;
+- every original `ServiceExtensionEntry` remains immutable;
+- one `ServiceExtensionReversalEntry` records the observed and resulting
+  billing anchor for every applied entry;
+- the prior anchor is restored only when the current anchor still exactly
+  equals that entry's `new_next_billing_at`;
+- a later, lower, or terminal-service anchor is preserved with an explicit
+  disposition instead of guessing through later billing/service history; and
+- reversed entries cease to provide prepaid coverage or a billing-enforcement
+  shield because all grant consumers require aggregate status `applied`.
+
+The reversal does not mechanically re-suspend customers restored by apply.
+Removing the grant returns each account to the normal funding, grace, dunning,
+and most-restrictive access owners. This keeps the correction entity-scoped and
+prevents one administrative correction from bypassing financial policy.
+
 ## Projection and historical provenance
 
 The activity projection queries only exact `service_extension` entity events
@@ -101,10 +131,10 @@ actors use a safe human label and do not expose the UUID.
 
 ## Drift, repair, and cutover
 
-`ServiceExtensionEntry` is immutable extension evidence. Its
-`new_next_billing_at` is the minimum defensible anchor produced by that
-extension. Drift exists when an applied entry's resulting anchor is later than
-the current subscription anchor. A bounded repair must lock the extension,
+`ServiceExtensionEntry` and linked reversal outcome rows are immutable
+evidence. The `new_next_billing_at` is the minimum defensible anchor produced by
+that extension. Drift exists when an applied entry's resulting anchor is later
+than the current subscription anchor. A bounded repair must lock the extension,
 entry, and subscription cohort; advance only anchors below the immutable target;
 never shorten a later legitimate anchor; and stage reviewed repair evidence in
 the same owner transaction.

@@ -49,7 +49,7 @@ window, or `previous_next_billing_at + days`.
 
 ## Transaction, locking, and retry
 
-Create, apply, and cancel enter the `financial.service_extensions` owner
+Create, apply, cancel, and reverse enter the `financial.service_extensions` owner
 command boundary once. Apply and cancel lock the extension row before checking
 the pending transition. The unique `(extension_id, subscription_id)` entry
 identity prevents a concurrent command from recording the same grant twice.
@@ -58,6 +58,13 @@ same transaction and do not commit independently.
 
 Applying or canceling an extension that is no longer pending fails closed.
 Subscriptions without a billing anchor are skipped with durable batch counts.
+
+Reversal is the sole operation that invalidates an applied interval. It retains
+the interval as historical evidence while changing the aggregate to `reversed`,
+which removes that interval from coverage consumers. It restores
+`previous_next_billing_at` only when the visible anchor still equals the exact
+`new_next_billing_at` written by apply. A later, lower, or terminal-service
+anchor is preserved and receives a typed append-only reversal disposition.
 
 ## Historical migration
 

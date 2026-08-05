@@ -40,6 +40,7 @@ class ServiceExtensionStatus(enum.Enum):
     pending = "pending"
     applied = "applied"
     canceled = "canceled"
+    reversed = "reversed"
 
 
 class ServiceExtensionAnchorBasis(enum.Enum):
@@ -48,6 +49,15 @@ class ServiceExtensionAnchorBasis(enum.Enum):
     existing_billing_anchor = "existing_billing_anchor"
     application_time = "application_time"
     legacy_previous_anchor = "legacy_previous_anchor"
+
+
+class ServiceExtensionReversalAnchorDisposition(enum.Enum):
+    """How reversal handled one extension-owned billing-anchor projection."""
+
+    restored_previous_anchor = "restored_previous_anchor"
+    preserved_later_anchor = "preserved_later_anchor"
+    preserved_lower_anchor = "preserved_lower_anchor"
+    preserved_terminal_subscription = "preserved_terminal_subscription"
 
 
 class ServiceExtension(Base):
@@ -156,3 +166,105 @@ class ServiceExtensionEntry(Base):
     )
 
     extension = relationship("ServiceExtension", back_populates="entries")
+
+
+class ServiceExtensionReversal(Base):
+    """Append-only evidence that one applied extension was reversed."""
+
+    __tablename__ = "service_extension_reversals"
+    __table_args__ = (
+        UniqueConstraint(
+            "extension_id",
+            name="uq_service_extension_reversals_extension",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    extension_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_extensions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    preview_fingerprint_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    correlation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    reversed_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    reversed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    inspected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    restored_anchor_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    preserved_later_anchor_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    preserved_lower_anchor_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    preserved_terminal_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    extension = relationship("ServiceExtension", lazy="joined")
+    entries = relationship(
+        "ServiceExtensionReversalEntry",
+        back_populates="reversal",
+        lazy="noload",
+    )
+
+
+class ServiceExtensionReversalEntry(Base):
+    """Immutable per-subscription result of one extension reversal."""
+
+    __tablename__ = "service_extension_reversal_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "extension_entry_id",
+            name="uq_service_extension_reversal_entries_extension_entry",
+        ),
+        UniqueConstraint(
+            "reversal_id",
+            "subscription_id",
+            name="uq_service_extension_reversal_entries_subscription",
+        ),
+        Index(
+            "ix_service_extension_reversal_entries_reversal",
+            "reversal_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    reversal_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_extension_reversals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    extension_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("service_extension_entries.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscriptions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    observed_next_billing_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    resulting_next_billing_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    disposition: Mapped[ServiceExtensionReversalAnchorDisposition] = mapped_column(
+        Enum(
+            ServiceExtensionReversalAnchorDisposition,
+            native_enum=False,
+            length=40,
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    reversal = relationship(
+        "ServiceExtensionReversal",
+        back_populates="entries",
+    )
