@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from html import escape
 from typing import Any, TypeVar
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,7 @@ from app.services import (
     team_inbox_outbound,
     team_inbox_participants,
     team_inbox_routing,
+    team_inbox_status,
 )
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import coerce_uuid
@@ -814,6 +815,8 @@ def set_agent_presence(
             db,
             person_id=actor_uuid,
             status=clean_status,
+            actor_person_id=actor_uuid,
+            source_id=f"presence-command:{uuid4()}",
         )
         return AgentPresenceOutcome(
             person_id=str(actor_uuid),
@@ -1008,22 +1011,15 @@ def update_status(
                 status=clean_status,
                 already_set=True,
             )
-        metadata = dict(conversation.metadata_ or {})
-        history = metadata.get("status_history")
-        if not isinstance(history, list):
-            history = []
-        history.append(
-            {
-                "from": previous_status,
-                "to": clean_status,
-                "at": datetime.now(UTC).isoformat(),
-                "actor_id": str(actor_person_id) if actor_person_id else None,
-                "source": "admin_inbox_status_action",
-            }
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus(clean_status),
+            actor_person_id=coerce_uuid(actor_person_id),
+            reason=team_inbox_status.InboxStatusReason.operator_change,
+            source_id=f"operator-status:{uuid4()}",
+            compatibility_source="admin_inbox_status_action",
         )
-        metadata["status_history"] = history[-50:]
-        conversation.status = clean_status
-        conversation.metadata_ = metadata
         return StatusOutcome(
             conversation_id=str(conversation.id),
             status=clean_status,

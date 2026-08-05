@@ -1258,6 +1258,7 @@ DOMAIN = DomainSOT(
             owns=(
                 "routing assignment and escalation policy",
                 "routing assignment and escalation transitions",
+                "immutable routing assignment and escalation evidence",
             ),
             depends_on=(
                 "ai.intake",
@@ -1272,6 +1273,10 @@ DOMAIN = DomainSOT(
                     (
                         "routing assignment and escalation transitions",
                         OwnerRole.COMMAND_WRITER,
+                    ),
+                    (
+                        "immutable routing assignment and escalation evidence",
+                        OwnerRole.AUTHORITATIVE_RECORD,
                     ),
                 ),
                 inputs=(
@@ -1304,6 +1309,125 @@ DOMAIN = DomainSOT(
                 event_types=(
                     "team_inbox.assignment_changed.v1",
                     "team_inbox.escalated.v1",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_status",
+            module="app.services.team_inbox_status",
+            owns=("conversation status transitions and immutable evidence",),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_status",
+                concerns=(
+                    (
+                        "conversation status transitions and immutable evidence",
+                        OwnerRole.COMMAND_WRITER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="current conversation status",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Locked active conversation and current lifecycle status.",
+                    ),
+                    AuthorityInput(
+                        name="typed status transition command",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Actor, target status, typed reason, occurrence time and idempotency identity.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.PARTICIPANT,
+                event_types=("team_inbox.status_changed.v1",),
+                projections=("current conversation status",),
+                test_refs=(
+                    "tests/test_team_inbox_lifecycle_audit.py",
+                    "tests/architecture/test_team_inbox_lifecycle_audit_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_audit_reconstruction",
+            module="app.services.team_inbox_audit_reconstruction",
+            owns=("reviewed Team Inbox historical audit reconstruction",),
+            depends_on=(
+                "communications.team_inbox_routing",
+                "communications.team_inbox_status",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_audit_reconstruction",
+                concerns=(
+                    (
+                        "reviewed Team Inbox historical audit reconstruction",
+                        OwnerRole.RECONCILER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="reviewed historical evidence manifest",
+                        owner="communications.team_inbox_audit_reconstruction",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Complete deterministic source watermark, SHA-256, operator and approval reference.",
+                    ),
+                    AuthorityInput(
+                        name="legacy routing and status evidence",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Existing assignment rows and explicitly stored bounded history only; unknown facts remain unknown.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.OWNER_MANAGED,
+                event_types=("team_inbox.historical_evidence_recorded.v1",),
+                projections=("provenance-graded historical lifecycle evidence",),
+                test_refs=(
+                    "tests/test_team_inbox_lifecycle_audit.py",
+                    "tests/architecture/test_team_inbox_lifecycle_audit_boundary.py",
+                ),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_audit_projection",
+            module="app.services.team_inbox_audit",
+            owns=("Team Inbox lifecycle audit timeline and drift projection",),
+            depends_on=(
+                "communications.team_inbox_routing",
+                "communications.team_inbox_status",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_audit_projection",
+                concerns=(
+                    (
+                        "Team Inbox lifecycle audit timeline and drift projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="immutable routing evidence",
+                        owner="communications.team_inbox_routing",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Native and provenance-graded historical routing events plus assignment intervals.",
+                    ),
+                    AuthorityInput(
+                        name="immutable status evidence",
+                        owner="communications.team_inbox_status",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Native and provenance-graded historical status transition events.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.READ_ONLY,
+                projections=(
+                    "chronological lifecycle audit timeline",
+                    "current-state drift findings and audit coverage boundary",
+                ),
+                test_refs=(
+                    "tests/test_team_inbox_lifecycle_audit.py",
+                    "tests/architecture/test_team_inbox_lifecycle_audit_boundary.py",
                 ),
             ),
         ),
@@ -1433,6 +1557,7 @@ DOMAIN = DomainSOT(
                 "communications.team_inbox_threads",
                 "communications.team_inbox_contact_resolution",
                 "communications.team_inbox_routing",
+                "communications.team_inbox_status",
                 "communications.team_inbox_outbound_intents",
                 "communications.team_inbox_operator_state",
             ),

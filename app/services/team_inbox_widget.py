@@ -19,7 +19,7 @@ from app.models.team_inbox import (
     InboxMessageDirection,
 )
 from app.services import auth_flow as auth_flow_service
-from app.services import team_inbox_realtime
+from app.services import team_inbox_realtime, team_inbox_status
 from app.services.chat_session_authority import (
     ChatSessionAuthority,
     resolve_chat_session_authority,
@@ -567,7 +567,14 @@ def add_visitor_message(
     db.add(message)
     conversation.last_message_at = now
     if conversation.status == InboxConversationStatus.resolved.value:
-        conversation.status = InboxConversationStatus.open.value
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.open,
+            actor_person_id=None,
+            reason=team_inbox_status.InboxStatusReason.widget_reopen,
+            source_id=f"widget-reopen:{conversation.id}:{uuid.uuid4()}",
+        )
     db.flush()
     payload = team_inbox_realtime.message_event_payload(
         conversation_id=str(conversation.id),
