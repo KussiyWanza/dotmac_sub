@@ -753,14 +753,18 @@ SERVICES: tuple[SOTService, ...] = (
         depends_on=(
             "customer.branding",
             "events.dispatcher",
+            "financial.collection_accounts",
             "observability.audit_log",
             "sales.service",
         ),
         notes=(
             "This owner snapshots the authoritative Quote, lines, recipient "
-            "display identity, and resolved company brand into one immutable, "
-            "content-addressed PDF artifact. Repeated exports of the same "
-            "snapshot reuse the canonical artifact."
+            "display identity, resolved company brand, primary currency-eligible "
+            "Direct Transfer account, internal collection-account provenance, and "
+            "absolute company-hosted quotation payment URL into one immutable, "
+            "content-addressed PDF artifact. Repeated exports of the same snapshot "
+            "reuse the canonical artifact; rendering never rereads mutable account "
+            "configuration."
         ),
         contract=ServiceContract(
             concerns=(
@@ -771,6 +775,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "Quote document command evidence",
                         "canonical Quote commercial state",
                         "canonical company branding state",
+                        "canonical receiving-account presentment",
                     ),
                     canonical_writer="sales.quote_documents",
                 ),
@@ -800,6 +805,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "brand profile and immutable logo digest"
                     ),
                 ),
+                AuthorityInput(
+                    name="canonical receiving-account presentment",
+                    owner="financial.collection_accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "enabled, complete, highest-priority bank destination for "
+                        "the Quote currency, including internal account identity"
+                    ),
+                ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.OWNER_MANAGED,
@@ -810,8 +824,9 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
                 locking="The active Quote is selected FOR UPDATE before snapshotting.",
                 idempotency=(
-                    "A SHA-256 fingerprint of canonical Quote and brand inputs maps "
-                    "to one deterministic export UUID and unique Quote snapshot."
+                    "A SHA-256 fingerprint of canonical Quote, brand, bank-account, "
+                    "and company payment-URL inputs maps to one deterministic export "
+                    "UUID and unique Quote snapshot."
                 ),
                 retries=(
                     "Equivalent retries reuse the existing export; transient failures "
@@ -822,15 +837,22 @@ SERVICES: tuple[SOTService, ...] = (
                 domain_codes=(
                     *owner_command_boundary_error_codes("sales.quote_documents"),
                     "sales.quote_documents.artifact_missing",
+                    "sales.quote_documents.bank_details_unavailable",
                     "sales.quote_documents.export_not_found",
                     "sales.quote_documents.invalid_pdf",
+                    "sales.quote_documents.invalid_snapshot",
                     "sales.quote_documents.owner_command_required",
+                    "sales.quote_documents.payment_identity_required",
+                    "sales.quote_documents.payment_url_unavailable",
                     "sales.quote_documents.quote_not_found",
                     "sales.quote_documents.renderer_unavailable",
                 ),
                 mapping_owner="admin Quote detail adapter",
                 fail_closed_on=(
                     "missing or inactive Quote",
+                    "Quote without a compatible customer portal identity",
+                    "missing eligible Direct Transfer account for the Quote currency",
+                    "missing or invalid absolute company portal URL",
                     "missing stored artifact",
                     "unavailable or invalid PDF renderer output",
                 ),
@@ -856,9 +878,11 @@ SERVICES: tuple[SOTService, ...] = (
             design_refs=(
                 "docs/SOT_RELATIONSHIP_MAP.md",
                 "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                "docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md",
             ),
             test_refs=(
                 "tests/test_quote_documents_and_delivery.py",
+                "tests/test_customer_quote_payments.py",
                 "tests/architecture/test_quote_document_delivery_boundary.py",
             ),
         ),

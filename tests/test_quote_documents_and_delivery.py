@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import pytest
+
 from app.models.audit import AuditEvent
+from app.models.billing import CollectionAccount, CollectionAccountType
 from app.models.notification import (
     CommunicationIntentRecord,
     Notification,
@@ -30,6 +33,7 @@ from app.models.sales import (
     QuoteStatus,
 )
 from app.models.stored_file import StoredFile
+from app.services.billing.collection_accounts import CollectionAccounts
 from app.services.brand_profiles import ResolvedBrand
 from app.services.communication_intents import CommunicationIntentResult
 from app.services.owner_commands import CommandContext
@@ -60,7 +64,9 @@ def _brand() -> ResolvedBrand:
     )
 
 
-def _quote(db_session) -> tuple[Quote, PartyContactPoint, UUID]:
+def _quote(
+    db_session, subscriber, *, with_transfer_account: bool = True
+) -> tuple[Quote, PartyContactPoint, UUID]:
     party = Party(
         party_type=PartyType.person.value,
         display_name="Amina Bello",
@@ -93,6 +99,7 @@ def _quote(db_session) -> tuple[Quote, PartyContactPoint, UUID]:
     db_session.add_all([secondary, primary, lead])
     db_session.flush()
     quote = Quote(
+        subscriber_id=subscriber.id,
         lead_id=lead.id,
         status=QuoteStatus.draft.value,
         project_type="fiber_optics_installation",
@@ -114,6 +121,21 @@ def _quote(db_session) -> tuple[Quote, PartyContactPoint, UUID]:
             amount=Decimal("100000.00"),
         )
     )
+    if with_transfer_account:
+        db_session.add(
+            CollectionAccount(
+                name="Primary quotation transfer account",
+                account_type=CollectionAccountType.bank,
+                bank_name="Zenith Bank",
+                account_name="Dotmac Technologies Ltd.",
+                account_number="1016946461",
+                account_last4="6461",
+                sort_code="057150013",
+                currency="NGN",
+                presentment_priority=100,
+                is_active=True,
+            )
+        )
     quote_id = quote.id
     db_session.commit()
     return quote, primary, quote_id
@@ -156,8 +178,8 @@ def _stub_pdf_storage(monkeypatch) -> None:
     monkeypatch.setattr(quote_documents, "emit_event", lambda *_args, **_kwargs: None)
 
 
-def test_recipient_uses_primary_active_party_email(db_session):
-    quote, primary, _quote_id = _quote(db_session)
+def test_recipient_uses_primary_active_party_email(db_session, subscriber):
+    quote, primary, _quote_id = _quote(db_session, subscriber)
     recipient = quote_documents.resolve_quote_recipient(db_session, quote)
 
     assert recipient is not None
@@ -166,8 +188,10 @@ def test_recipient_uses_primary_active_party_email(db_session):
     assert recipient.display_name == "Amina Bello"
 
 
-def test_pdf_export_is_content_addressed_and_audited_once(db_session, monkeypatch):
-    _quote_record, _primary, quote_id = _quote(db_session)
+def test_pdf_export_is_content_addressed_and_audited_once(
+    db_session, subscriber, monkeypatch
+):
+    _quote_record, _primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)
 
     first = quote_documents.generate_quote_pdf(
@@ -191,6 +215,15 @@ def test_pdf_export_is_content_addressed_and_audited_once(db_session, monkeypatc
     export = db_session.get(QuotePdfExport, first.export_id)
     assert export.snapshot["brand"]["legal_name"] == "Dotmac Technologies Ltd"
     assert export.snapshot["customer_name"] == "Amina Bello"
+    assert export.snapshot["payment"] == {
+        "bank_transfer": {
+            "collection_account_id": str(db_session.query(CollectionAccount).one().id),
+            "bank_name": "Zenith Bank",
+            "account_number": "1016946461",
+            "account_name": "Dotmac Technologies Ltd.",
+        },
+        "paystack_url": f"https://selfcare.example.com/portal/quotes/{quote_id}/pay",
+    }
     assert (
         db_session.query(AuditEvent)
         .filter_by(
@@ -203,8 +236,10 @@ def test_pdf_export_is_content_addressed_and_audited_once(db_session, monkeypatc
     )
 
 
-def test_send_email_queues_one_pdf_intent_and_replays(db_session, monkeypatch):
-    _quote_record, primary, quote_id = _quote(db_session)
+def test_send_email_queues_one_pdf_intent_and_replays(
+    db_session, subscriber, monkeypatch
+):
+    _quote_record, primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)
     captured = []
 
@@ -254,6 +289,13 @@ def test_send_email_queues_one_pdf_intent_and_replays(db_session, monkeypatch):
         "emit_event",
         lambda *_args, **_kwargs: None,
     )
+    downloaded = quote_documents.generate_quote_pdf(
+        db_session,
+        quote_documents.GenerateQuotePdfCommand(
+            context=_context(),
+            quote_id=quote_id,
+        ),
+    )
     key = f"pytest-quote-email:{uuid4()}"
     command = quote_delivery.SendQuoteEmailCommand(
         context=_context(key=key),
@@ -264,6 +306,7 @@ def test_send_email_queues_one_pdf_intent_and_replays(db_session, monkeypatch):
     replay = quote_delivery.send_quote_email(db_session, command)
 
     assert first.queued is True
+    assert first.pdf_export_id == downloaded.export_id
     assert replay.replayed is True
     assert replay.delivery_request_id == first.delivery_request_id
     assert len(captured) == 1
@@ -272,6 +315,7 @@ def test_send_email_queues_one_pdf_intent_and_replays(db_session, monkeypatch):
     }
     assert len(captured[0].attachments) == 1
     assert captured[0].attachments[0].kind.value == "quote_pdf"
+    assert captured[0].attachments[0].entity_id == downloaded.export_id
     persisted_quote = db_session.get(Quote, quote_id)
     assert persisted_quote.status == QuoteStatus.sent.value
     assert persisted_quote.sent_at is not None
@@ -288,8 +332,8 @@ def test_send_email_queues_one_pdf_intent_and_replays(db_session, monkeypatch):
     assert "accepted by the configured mail transport" in delivered["description"]
 
 
-def test_suppressed_email_does_not_mark_quote_sent(db_session, monkeypatch):
-    _quote_record, _primary, quote_id = _quote(db_session)
+def test_suppressed_email_does_not_mark_quote_sent(db_session, subscriber, monkeypatch):
+    _quote_record, _primary, quote_id = _quote(db_session, subscriber)
     _stub_pdf_storage(monkeypatch)
 
     def submit_suppressed(db, intent):
@@ -335,3 +379,158 @@ def test_suppressed_email_does_not_mark_quote_sent(db_session, monkeypatch):
     assert db_session.get(Quote, quote_id).status == QuoteStatus.draft.value
     request = db_session.get(QuoteDeliveryRequest, outcome.delivery_request_id)
     assert request.request_status == QuoteDeliveryRequestStatus.suppressed.value
+
+
+def test_payment_section_follows_totals_and_precedes_footer(db_session, subscriber):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    snapshot, logo_src = quote_documents._snapshot(db_session, quote)
+
+    rendered = quote_documents._render_html(snapshot, logo_src)
+
+    assert rendered.index("class='totals'") < rendered.index("Ways to make payment")
+    assert rendered.index("Ways to make payment") < rendered.index("class='footer'")
+    assert "Bank Transfer" in rendered
+    assert "Bank</span>" in rendered
+    assert "Account Number</span>" in rendered
+    assert "Account Name</span>" in rendered
+    assert "Zenith Bank" in rendered
+    assert "1016946461" in rendered
+    assert "Dotmac Technologies Ltd." in rendered
+    assert "Sort code" not in rendered
+    assert "Payment reference" not in rendered
+    assert "Currency</span>" not in rendered
+    assert "collection_account_id" not in rendered
+    assert snapshot.payment.paystack_url.startswith("https://")
+    assert snapshot.payment.paystack_url.endswith(f"/portal/quotes/{quote.id}/pay")
+    assert f"href='{snapshot.payment.paystack_url}'" in rendered
+    assert ">Pay Now</a>" in rendered
+    assert "break-inside:avoid" in rendered
+    assert "overflow-wrap:anywhere" in rendered
+
+
+def test_quote_document_fails_closed_without_eligible_bank_details(
+    db_session, subscriber
+):
+    quote, _primary, _quote_id = _quote(
+        db_session,
+        subscriber,
+        with_transfer_account=False,
+    )
+
+    try:
+        quote_documents._snapshot(db_session, quote)
+    except quote_documents.QuoteDocumentError as exc:
+        assert exc.code == "sales.quote_documents.bank_details_unavailable"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("missing bank details must fail closed")
+
+
+def test_quote_document_fails_closed_without_customer_portal_identity(
+    db_session, subscriber
+):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    quote.subscriber_id = None
+    db_session.flush()
+
+    try:
+        quote_documents._snapshot(db_session, quote)
+    except quote_documents.QuoteDocumentError as exc:
+        assert exc.code == "sales.quote_documents.payment_identity_required"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("missing portal identity must fail closed")
+
+
+def test_primary_presentment_skips_disabled_incomplete_and_other_currency(
+    db_session,
+):
+    accounts = (
+        CollectionAccount(
+            name="Disabled higher priority",
+            account_type=CollectionAccountType.bank,
+            bank_name="Disabled Bank",
+            account_name="Dotmac Technologies Ltd.",
+            account_number="0000000001",
+            currency="NGN",
+            presentment_priority=999,
+            is_active=False,
+        ),
+        CollectionAccount(
+            name="Incomplete higher priority",
+            account_type=CollectionAccountType.bank,
+            bank_name="Incomplete Bank",
+            account_name="   ",
+            account_number="0000000002",
+            currency="NGN",
+            presentment_priority=998,
+            is_active=True,
+        ),
+        CollectionAccount(
+            name="USD higher priority",
+            account_type=CollectionAccountType.bank,
+            bank_name="Dollar Bank",
+            account_name="Dotmac Technologies Ltd.",
+            account_number="0000000003",
+            currency="USD",
+            presentment_priority=997,
+            is_active=True,
+        ),
+        CollectionAccount(
+            name="Eligible NGN account",
+            account_type=CollectionAccountType.bank,
+            bank_name="Zenith Bank",
+            account_name="Dotmac Technologies Ltd.",
+            account_number="1016946461",
+            currency="NGN",
+            presentment_priority=10,
+            is_active=True,
+        ),
+    )
+    db_session.add_all(accounts)
+    db_session.commit()
+
+    selected = CollectionAccounts.primary_presentment_account_projection(
+        db_session,
+        currency="NGN",
+    )
+
+    assert selected is not None
+    assert selected.account_id == accounts[-1].id
+    assert selected.bank_name == "Zenith Bank"
+    assert selected.account_number == "1016946461"
+    assert selected.account_name == "Dotmac Technologies Ltd."
+
+
+def test_payment_section_renders_long_values_and_page_boundary(db_session, subscriber):
+    quote, _primary, _quote_id = _quote(db_session, subscriber)
+    account = db_session.query(CollectionAccount).one()
+    account.account_name = (
+        "Dotmac Technologies Limited Enterprise Connectivity and Infrastructure "
+        "Settlement Account"
+    )
+    for index in range(35):
+        db_session.add(
+            QuoteLineItem(
+                quote_id=quote.id,
+                description=f"Additional installation item {index + 1}",
+                quantity=Decimal("1.000"),
+                unit_price=Decimal("1000.00"),
+                discount_percent=Decimal("0.00"),
+                amount=Decimal("1000.00"),
+            )
+        )
+    db_session.commit()
+    db_session.refresh(quote)
+
+    snapshot, logo_src = quote_documents._snapshot(db_session, quote)
+    rendered = quote_documents._render_html(snapshot, logo_src)
+    try:
+        pdf = quote_documents._render_pdf(snapshot, logo_src)
+    except quote_documents.QuoteDocumentError as exc:
+        if exc.code == "sales.quote_documents.renderer_unavailable":
+            pytest.skip("WeasyPrint native libraries are unavailable")
+        raise
+
+    assert account.account_name in rendered
+    assert "page-break-inside:avoid" in rendered
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 2000

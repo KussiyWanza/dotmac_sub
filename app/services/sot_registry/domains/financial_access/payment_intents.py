@@ -1581,9 +1581,12 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         notes=(
             "Portal, reseller, API, invoice, settings, proof, and "
-            "attribution adapters carry this identity and never maintain "
-            "parallel bank-detail copies. Legacy settings are only a "
-            "frozen rollback snapshot during A1 verification."
+            "quotation-document adapters consume the typed presentment projection; "
+            "attribution adapters carry this identity and never maintain parallel "
+            "bank-detail copies. The projection filters inactive, incomplete, and "
+            "currency-ineligible destinations before applying explicit priority. "
+            "Legacy settings are only a frozen rollback snapshot during A1 "
+            "verification."
         ),
     ),
     SOTService(

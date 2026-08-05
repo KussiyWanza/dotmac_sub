@@ -72,3 +72,46 @@ def test_quote_activity_does_not_overstate_mailbox_delivery():
 
     assert "accepted by the configured mail transport" in activity
     assert "mailbox" not in activity.lower()
+
+
+def test_quote_payment_details_keep_their_authoritative_owners():
+    documents = _source("app/services/sales/quote_documents.py")
+    accounts = _source("app/services/billing/collection_accounts.py")
+    routes = _source("app/web/customer/quotes.py")
+    template = _source("templates/customer/quotes/pay.html")
+
+    assert "class QuoteDocumentSnapshot" in documents
+    assert "class QuotePaymentSnapshot" in documents
+    assert "primary_presentment_account_projection" in documents
+    assert "CollectionAccountPresentment" in accounts
+    assert "1016946461" not in documents
+    assert "Zenith Bank" not in documents
+    assert "Dotmac Technologies Ltd." not in documents
+    assert '"/quotes/{quote_id}/pay"' in routes
+    assert '"/quotes/{quote_id}/pay/intent"' in routes
+    assert "quote_payment_page(" in routes
+    assert "initiate_quote_deposit(" in routes
+    assert "verify_quote_deposit(" in routes
+    assert ".with_for_update()" in _source("app/services/quote_deposits.py")
+    assert "Number(intent.amount)" in template
+    assert "body: { idempotency_key: key }" in template
+    assert (
+        "amount:"
+        not in template.split("body: { idempotency_key: key }")[0].split(
+            "submitPaymentIntent({"
+        )[-1]
+    )
+
+
+def test_quote_payment_get_is_not_a_financial_writer():
+    routes = _source("app/web/customer/quotes.py")
+    get_start = routes.index("def customer_quote_payment(")
+    post_start = routes.index("def customer_quote_payment_intent(")
+    get_body = routes[get_start:post_start]
+
+    assert "quote_payment_page(" in get_body
+    assert "initiate_quote_deposit(" not in get_body
+    assert "verify_quote_deposit(" not in get_body
+    assert "db.commit(" not in get_body
+    assert "db.flush(" not in get_body
+    assert "Invoice(" not in get_body

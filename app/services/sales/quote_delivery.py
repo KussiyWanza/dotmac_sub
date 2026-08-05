@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -177,13 +176,11 @@ def send_quote_email(
             quote=quote,
             requested_by_id=actor_id,
         )
-        snapshot = export.snapshot
-        brand = dict(snapshot.get("brand") or {})
-        currency = str(snapshot.get("currency") or quote.currency)
-        total = Decimal(str(snapshot.get("total") or "0.00"))
-        subject = (
-            f"Quote from {brand.get('legal_name') or brand.get('name') or 'Dotmac'}"
-        )
+        snapshot = quote_documents.load_quote_document_snapshot(export.snapshot)
+        brand = snapshot.brand
+        currency = snapshot.currency
+        total = snapshot.total
+        subject = f"Quote from {brand.legal_name or brand.name or 'Dotmac'}"
         body = (
             f"Dear {recipient.display_name},\n\n"
             f"Please find attached your Quote for {currency} {total:,.2f}.\n\n"
@@ -193,8 +190,8 @@ def send_quote_email(
         body_html, body_text = render_email_bodies(
             body,
             subject=subject,
-            base_url=str(brand.get("app_url") or ""),
-            brand=brand,
+            base_url=brand.app_url,
+            brand=brand.to_dict(),
         )
         request_id = uuid4()
         intent_result = submit(
