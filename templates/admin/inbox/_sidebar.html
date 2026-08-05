@@ -101,9 +101,9 @@
 
         <div id="inbox-stats-filters" x-show="filtersOpen" x-collapse x-cloak class="inbox-filter-scroll space-y-3 pt-2">
             <nav class="grid grid-cols-4 gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 text-center dark:border-slate-700 dark:bg-slate-700" aria-label="Inbox summary filters">
-                <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Open</span></a>
-                <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-amber-700 dark:text-amber-300">{{ queue_metrics.needs_response }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unreplied</span></a>
-                <a href="/admin/inbox?open_only=true&unassigned=true" hx-get="/admin/inbox?open_only=true&unassigned=true{% if selected %}&conversation_id={{ selected.id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unassigned</span></a>
+                <a href="/admin/inbox?open_only=true" hx-get="/admin/inbox?open_only=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.total_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Open</span></a>
+                <a href="/admin/inbox?needs_response=true" hx-get="/admin/inbox?needs_response=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-amber-700 dark:text-amber-300">{{ queue_metrics.needs_response }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unreplied</span></a>
+                <a href="/admin/inbox?open_only=true&unassigned=true" hx-get="/admin/inbox?open_only=true&unassigned=true{% if selected_id %}&conversation_id={{ selected_id }}{% endif %}" hx-target="#inbox-sidebar-content" hx-push-url="true" hx-sync="#inbox-sidebar-content:replace" @click="filterRequestStarted()" class="bg-white px-1 py-2 hover:bg-amber-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums text-slate-900 dark:text-white">{{ queue_metrics.unassigned_open }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Unassigned</span></a>
                 <a href="/admin/inbox/reports/outbox-failures" class="bg-white px-1 py-2 hover:bg-rose-50 dark:bg-slate-900 dark:hover:bg-slate-800"><strong class="block text-sm tabular-nums {% if queue_metrics.failed_outbound %}text-rose-600{% else %}text-slate-900 dark:text-white{% endif %}">{{ queue_metrics.failed_outbound }}</strong><span class="text-[9px] font-semibold uppercase text-slate-400">Failed</span></a>
             </nav>
             <nav class="flex min-h-10 items-center gap-4 rounded-lg border border-slate-200 px-3 text-[11px] dark:border-slate-700" aria-label="Secondary inbox filters">
@@ -113,23 +113,31 @@
             </nav>
             <form id="inbox-filter-form" method="get" action="/admin/inbox"
                   hx-get="/admin/inbox" hx-target="#inbox-sidebar-content" hx-swap="innerHTML" hx-push-url="true"
+                  hx-sync="this:replace"
                   class="space-y-3"
-                  @submit="filterRequestStarted()">
-            {% if selected %}<input type="hidden" name="conversation_id" value="{{ selected.id }}">{% endif %}
+                  :aria-busy="filterLoading.toString()"
+                  @submit="filterRequestStarted($event.submitter?.name === 'status' ? $event.submitter.value : null)">
+            {% if selected_id %}<input type="hidden" name="conversation_id" value="{{ selected_id }}">{% endif %}
             <input type="hidden" name="search" value="{{ search }}">
             {% if ai_handling is not none %}<input type="hidden" name="ai_handling" value="{{ 'true' if ai_handling else 'false' }}">{% endif %}
             <fieldset>
                 <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Status</legend>
                 <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/50">
                     <button type="submit" name="status" value=""
+                            :aria-pressed="(pendingStatusFilter === '' || (pendingStatusFilter === null && {{ 'true' if not status and not open_only and not has_ticket else 'false' }})).toString()"
+                            :class="pendingStatusFilter === '' && 'ring-2 ring-amber-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if not status and not open_only and not has_ticket %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         All
                     </button>
                     <button type="submit" name="status" value="open"
+                            :aria-pressed="(pendingStatusFilter === 'open' || (pendingStatusFilter === null && {{ 'true' if status == 'open' and not has_ticket else 'false' }})).toString()"
+                            :class="pendingStatusFilter === 'open' && 'ring-2 ring-emerald-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'open' and not has_ticket %}bg-white text-emerald-700 shadow-sm dark:bg-slate-700 dark:text-emerald-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-emerald-500" aria-hidden="true"></span>Open</span>
                     </button>
                     <button type="submit" name="status" value="pending"
+                            :aria-pressed="(pendingStatusFilter === 'pending' || (pendingStatusFilter === null && {{ 'true' if status == 'pending' and not has_ticket else 'false' }})).toString()"
+                            :class="pendingStatusFilter === 'pending' && 'ring-2 ring-amber-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'pending' and not has_ticket %}bg-white text-amber-700 shadow-sm dark:bg-slate-700 dark:text-amber-400{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         <span class="inline-flex items-center justify-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>Pending</span>
                     </button>
@@ -138,11 +146,21 @@
                         Sent to ticket
                     </button>
                     <button type="submit" name="status" value="resolved"
+                            :aria-pressed="(pendingStatusFilter === 'resolved' || (pendingStatusFilter === null && {{ 'true' if status == 'resolved' and not has_ticket else 'false' }})).toString()"
+                            :class="pendingStatusFilter === 'resolved' && 'ring-2 ring-slate-500'"
                             class="min-h-10 min-w-16 flex-1 rounded-lg px-2 text-xs font-semibold transition-colors {% if status == 'resolved' and not has_ticket %}bg-white text-slate-700 shadow-sm dark:bg-slate-700 dark:text-slate-300{% else %}text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200{% endif %}">
                         Done
                     </button>
                 </div>
+                <p x-show="filterLoading" x-cloak class="mt-1.5 flex items-center gap-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300" role="status">
+                    <span class="h-3 w-3 animate-spin rounded-full border-2 border-amber-300 border-t-amber-700" aria-hidden="true"></span>
+                    Updating conversations…
+                </p>
             </fieldset>
+            <p x-show="listRequestError" x-cloak class="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200" role="alert">
+                <span x-text="listRequestError"></span>
+                <button type="button" class="ml-1 underline" @click="refreshSidebar()">Retry</button>
+            </p>
 
             <fieldset>
                 <legend class="mb-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">Assignment</legend>
@@ -331,7 +349,7 @@
 
             <div class="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain" data-conversation-list aria-label="Conversations">
                 {% if rows %}
-                    {% for row in rows %}{{ conversation_queue_item(row, active_id=(selected.id if selected else ""), agent_options=agent_options) }}{% endfor %}
+                    {% for row in rows %}{{ conversation_queue_item(row, active_id=selected_id, agent_options=agent_options) }}{% endfor %}
                 {% else %}
                     <div class="flex min-h-64 flex-1 flex-col items-center justify-center px-6 py-10 text-center">
                         <div class="flex h-16 w-16 items-center justify-center rounded-xl border border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800">
@@ -346,6 +364,6 @@
             </div>
         </form>
 
-        {{ inbox_pagination(list_query, page_meta, '/admin/inbox', active_id=(selected.id if selected else "")) }}
+        {{ inbox_pagination(list_query, page_meta, '/admin/inbox', active_id=selected_id) }}
     </div>
 </div>
