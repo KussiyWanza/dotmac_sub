@@ -1192,6 +1192,7 @@ def author_lead_from_form(
     lost_reason: str | None,
     notes: str | None,
     is_active: bool,
+    inbox_conversation_id: str | None = None,
 ) -> lead_authoring.AuthorLeadOutcome:
     errors: dict[str, str] = {}
 
@@ -1232,6 +1233,9 @@ def author_lead_from_form(
 
     actor_id = required_uuid(actor_system_user_id, "form")
     lead_id = required_uuid(submission_id, "form")
+    origin_conversation_id = optional_uuid(
+        inbox_conversation_id, "inbox_conversation_id"
+    )
     try:
         lead_status = LeadStatus((status or LeadStatus.new.value).strip())
     except ValueError:
@@ -1316,6 +1320,7 @@ def author_lead_from_form(
             organization_id=optional_uuid(organization_id, "organization_id"),
             reseller_id=selected_reseller_id,
         ),
+        origin_conversation_id=origin_conversation_id,
     )
     if errors:
         raise LeadFormValidationError(errors)

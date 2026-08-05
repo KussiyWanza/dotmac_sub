@@ -123,6 +123,26 @@ _TEMPLATE_WORK_ORDER_REQUIRES_AS_BUILT = (
 )
 
 
+def active_project_status_values() -> tuple[str, ...]:
+    """Return project-owner statuses eligible for active customer context."""
+
+    return tuple(
+        status.value
+        for status in ProjectStatus
+        if status not in {ProjectStatus.completed, ProjectStatus.canceled}
+    )
+
+
+def active_project_task_status_values() -> tuple[str, ...]:
+    """Return task-owner statuses eligible for active customer context."""
+
+    return tuple(
+        status.value
+        for status in ProjectTaskStatus
+        if status not in {ProjectTaskStatus.done, ProjectTaskStatus.canceled}
+    )
+
+
 @dataclass(frozen=True)
 class ProjectTaskWorkOrderAutomation:
     """Captured field-work policy for one instantiated template task."""

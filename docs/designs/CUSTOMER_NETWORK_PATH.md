@@ -41,6 +41,8 @@ The projection answers exactly:
   UISP observation, provisioning), and is it partial?
 - What is the ONT receive power / RF signal, as an owner-composed display
   string?
+- Where are the customer and the geographically mapped assets on that proven
+  path, and which path or coordinate gaps prevent a complete map?
 
 Unknown, stale, unavailable, and not-applicable stay distinct. An unenriched
 hop renders "unknown", never "up". A missing or aged observation is reported
@@ -66,6 +68,15 @@ this projection and the future subject-centred network explorer surface:
 Routes, templates, and HTMX fragments render these contracts (or their
 `to_dict()` projections) and do not re-derive state, tone, labels, units, or
 completeness.
+
+`CustomerNetworkMapView` is the bounded geographic companion contract. It
+combines the customer's primary service-address coordinates with the validated
+subscription fiber trace and canonical asset coordinates. It emits points,
+validated fiber-segment lines, an explicitly dashed electronic customer-to-POP
+line when passive geometry is incomplete, and typed gaps. Geography never
+creates connectivity: nearby cabinets or closures are not candidates, and a
+missing coordinate or topology edge remains visible as a gap rather than being
+bridged by the renderer.
 
 ## Inputs and boundaries
 
@@ -120,6 +131,11 @@ never vary by viewer.
 - The ticket prefill keeps consuming the legacy
   `SubscriberTopologyTrace.to_dict()` shape (`card.topology_trace`), which
   remains available from the same single resolution.
+- The Account-tab location map consumes `CustomerNetworkMapView.to_dict()`.
+  It retains customer coordinate editing, fits to the connected path, renders
+  validated segment endpoints as solid lines and the electronic-only fallback
+  as dashed, and summarizes missing topology or coordinates. The template does
+  not search for nearby infrastructure or infer edges.
 - Remaining template tone decisions on the same card — the known-outage
   panel, RADIUS access block, and access-medium label — belong to
   `network.connection_health` / `network.outage_lifecycle` presentation
@@ -161,8 +177,9 @@ typed `SubscriptionNetworkPath`.
 ## Verification
 
 - `tests/test_customer_network_path.py` — graph view identity/order/state
-  fidelity, presentation composition, RF display composition, unresolved
-  degradation, multi-subscription isolation, and the query-budget slope.
+  fidelity, presentation composition, RF display composition, geographic path
+  fidelity and gap behavior, unresolved degradation, multi-subscription
+  isolation, and the query-budget slope.
 - `tests/test_customer_detail_access_endpoint.py` — serving-endpoint
   contract and template boundary needles.
 - `tests/test_status_presentation.py` — presentation vocabulary.

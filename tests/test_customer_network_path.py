@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,9 +19,16 @@ from types import SimpleNamespace
 from sqlalchemy import event
 
 from app.models.catalog import BillingMode
+from app.models.network_monitoring import PopSite
 from app.schemas.catalog import SubscriptionCreate
 from app.services import catalog as catalog_service
 from app.services import customer_network_path as cnp
+from app.services import fiber_topology
+from app.services.fiber_topology import (
+    FiberSubscriptionTrace,
+    FiberTraceGap,
+    FiberTraceHop,
+)
 from app.services.topology.customer_path import CustomerPath
 
 NOW = datetime(2026, 8, 2, 12, 0, 0, tzinfo=UTC)
@@ -75,6 +83,163 @@ def _wireless_path(*, observed_at: datetime):
         basestation=_Asset(id=uuid.uuid4(), name="Jabi POP"),
         upstream_chain=[_Asset(id=uuid.uuid4(), name="Abuja BNG")],
     )
+
+
+def _fiber_map_trace(
+    subscription_id: uuid.UUID,
+    pop_id: uuid.UUID,
+    *,
+    electronic_complete: bool = True,
+) -> FiberSubscriptionTrace:
+    return FiberSubscriptionTrace(
+        subscription_id=subscription_id,
+        customer_label="Map Customer",
+        subscription_status="active",
+        hops=(
+            FiberTraceHop("pop", "Jabi POP", pop_id, "resolved POP identity"),
+            FiberTraceHop("olt", "GPON-JABI-5", uuid.uuid4(), "resolved OLT"),
+            FiberTraceHop("pon_port", "pon8", uuid.uuid4(), "canonical PON"),
+            FiberTraceHop("ont", "UBNTb999a67d", uuid.uuid4(), "exact assignment"),
+            FiberTraceHop(
+                "customer", "Map Customer", uuid.uuid4(), "subscription owner"
+            ),
+        ),
+        gaps=(),
+        electronic_complete=electronic_complete,
+        physical_complete=False,
+        upstream_scope="pop_boundary_only",
+        upstream_message="POP boundary",
+    )
+
+
+def test_customer_network_map_uses_proven_path_not_proximity(db_session, monkeypatch):
+    subscription_id = uuid.uuid4()
+    pop = PopSite(
+        name="Jabi POP",
+        code=f"JABI-{uuid.uuid4().hex[:8]}",
+        latitude=9.064,
+        longitude=7.489,
+        is_active=True,
+    )
+    db_session.add(pop)
+    db_session.flush()
+    trace = _fiber_map_trace(subscription_id, pop.id)
+    monkeypatch.setattr(fiber_topology, "trace_fiber_subscription", lambda *_: trace)
+
+    view = cnp.project_customer_network_map(
+        db_session,
+        customer_name="Map Customer",
+        customer_latitude=9.070,
+        customer_longitude=7.495,
+        subscriptions=[SimpleNamespace(id=subscription_id)],
+    )
+
+    payload = view.to_dict()
+    points = [
+        feature
+        for feature in payload["geojson"]["features"]
+        if feature["geometry"]["type"] == "Point"
+    ]
+    lines = [
+        feature
+        for feature in payload["geojson"]["features"]
+        if feature["geometry"]["type"] == "LineString"
+    ]
+    assert len(points) == 2
+    assert points[0]["properties"]["kinds"] == ["customer", "ont"]
+    assert points[1]["properties"]["labels"] == [
+        "Jabi POP",
+        "GPON-JABI-5",
+        "pon8",
+    ]
+    assert lines[0]["properties"]["source"] == (
+        "validated POP, OLT, PON, ONT, and subscription path"
+    )
+    assert lines[0]["properties"]["dashed"] is True
+
+
+def test_customer_network_map_reports_missing_coordinates_without_bridge(
+    db_session, monkeypatch
+):
+    subscription_id = uuid.uuid4()
+    pop = PopSite(
+        name="Unmapped POP",
+        code=f"UNMAPPED-{uuid.uuid4().hex[:8]}",
+        is_active=True,
+    )
+    db_session.add(pop)
+    db_session.flush()
+    trace = _fiber_map_trace(subscription_id, pop.id)
+    trace = replace(
+        trace,
+        gaps=(FiberTraceGap("fiber_path_missing", "Passive path is incomplete."),),
+    )
+    monkeypatch.setattr(fiber_topology, "trace_fiber_subscription", lambda *_: trace)
+
+    view = cnp.project_customer_network_map(
+        db_session,
+        customer_name="Map Customer",
+        customer_latitude=9.070,
+        customer_longitude=7.495,
+        subscriptions=[SimpleNamespace(id=subscription_id)],
+    )
+
+    assert view.lines == ()
+    assert {gap.code for gap in view.gaps} == {
+        "map.asset_coordinates_missing",
+        "fiber_path_missing",
+    }
+
+
+def test_customer_network_map_uses_typed_electronic_path_when_passive_trace_gaps(
+    db_session, monkeypatch
+):
+    subscription_id = uuid.uuid4()
+    pop = PopSite(
+        name="Jabi POP",
+        code=f"JABI-GAP-{uuid.uuid4().hex[:8]}",
+        latitude=9.064,
+        longitude=7.489,
+        is_active=True,
+    )
+    db_session.add(pop)
+    db_session.flush()
+    trace = replace(
+        _fiber_map_trace(subscription_id, pop.id),
+        electronic_complete=False,
+        gaps=(FiberTraceGap("fiber_path_missing", "Passive path is incomplete."),),
+    )
+    monkeypatch.setattr(fiber_topology, "trace_fiber_subscription", lambda *_: trace)
+    nodes = tuple(
+        SimpleNamespace(
+            kind=kind,
+            label=label,
+            asset_id=uuid.uuid4(),
+            id=f"{kind}:1",
+            evidence=None,
+        )
+        for kind, label in (
+            ("ont", "UBNTb999a67d"),
+            ("pon_port", "pon8"),
+            ("olt", "GPON-JABI-5"),
+        )
+    )
+    network_paths = {
+        str(subscription_id): SimpleNamespace(view=SimpleNamespace(nodes=nodes))
+    }
+
+    view = cnp.project_customer_network_map(
+        db_session,
+        customer_name="Map Customer",
+        customer_latitude=9.070,
+        customer_longitude=7.495,
+        subscriptions=[SimpleNamespace(id=subscription_id)],
+        network_paths=network_paths,
+    )
+
+    assert len(view.lines) == 1
+    assert view.lines[0].dashed is True
+    assert "UBNTb999a67d" in view.points[0].labels
 
 
 # --- graph view fidelity -------------------------------------------------

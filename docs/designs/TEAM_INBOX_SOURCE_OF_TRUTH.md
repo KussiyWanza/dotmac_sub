@@ -26,6 +26,9 @@ combined Inbox/Support workspace.
 | Consequence coordination | `communications.team_inbox_processing` | Locks a committed observation and invokes the relevant participants once |
 | Conversation identity and threading | `communications.team_inbox_threads` | Resolves provider message/thread identity and writes conversations/messages |
 | Contact, subscriber, reseller, and reviewed context | `communications.team_inbox_contact_resolution` | Produces explicit matched, ambiguous, suppressed, or unmatched outcomes and owns reviewed links |
+| Conversation-to-Lead provenance | `communications.conversation_lead_relationships` | Owns the durable, auditable, one-active-Lead-per-conversation relationship |
+| Customer context drawer | `communications.team_inbox_contact_context` | Composes permission-scoped Party, Lead, Ticket, conversation, Project, and Task sections with typed availability |
+| Profile and Lead action resolution | `communications.inbox_lead_actions` | Resolves and coordinates identity-aware actions without owning Party or Lead fields |
 | Routing, assignment, and escalation | `communications.team_inbox_routing` | Applies configured team, availability, permission, and SLA policy |
 | Operator read/unread state | `communications.team_inbox_operator_state` | Owns per-person monotonic read cursors and unread repair |
 | Outbound communication intent | `communications.team_inbox_outbound_intents` | Stages the intent, notification outbox record, and Inbox attempt together |
@@ -123,6 +126,7 @@ The admin CRM-replication controls use these existing owners:
 | Contact link | Conversation route plus reviewed Party/customer facts | contact-resolution owner | Revalidate/reapply the reviewed link; ambiguity remains explicit |
 | Operator unread | Message chronology plus per-person read cursor | operator-state owner | `rebuild_operator_read_state` removes impossible cross-conversation cursors |
 | Queue metrics and response cohorts | Conversation lifecycle, ordered message chronology, agent reply provenance/delivery, ticket handoff, assignment, and read state | projection query owner | Recompute on every query; no independent flag or counter is authoritative |
+| Customer context drawer | Exact Party/Subscriber/Lead links plus permission-scoped owner queries | contact-context query owner | Recompute on drawer load; per-section failures remain explicit and retryable |
 | Realtime envelope | Current committed Inbox projection | realtime transport | `rebuild_conversation_projection` republishes a snapshot; clients refetch |
 | Media and failed worklists | Authoritative message/intent metadata | maintenance owner | Idempotent scheduled maintenance commands |
 

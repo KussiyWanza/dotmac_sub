@@ -200,17 +200,29 @@ a persisted UI flag.
 - Tablet: fixed list and thread; context is an overlay drawer.
 - Mobile: list or thread, never squeezed columns. Thread provides a back action.
 
-## CRM inbox replication previews
+## Authoritative customer context
 
 The CRM visual structure is replicated inside the admin page-content boundary.
 Existing queue, conversation, contact, ticket, assignment, status, note,
 attachment, transcript, and outbound-message actions continue to use their
 registered backend owners.
 
-UI whose backend contract does not yet exist is marked
-`data-replica-placeholder` and visibly labelled as dummy or preview data.
-Contextual examples appear only in their relevant panel, while event-only
-surfaces remain hidden by default. The `crm_preview` query parameter may show
+The contact drawer contains no CRM customer placeholders. Party profile,
+Lead, active Ticket, recent conversation, Project, and Project Task sections
+are composed by `communications.team_inbox_contact_context` from exact
+structural relationships and permission-scoped owner queries. A successful
+empty query renders `0`; missing/not-applicable values render `—`; unavailable,
+not-calculated, stale, and restricted outcomes remain distinct and are never
+coerced to zero. Sections fail independently.
+
+`communications.inbox_lead_actions` resolves the profile and Lead controls.
+It reuses a direct Lead, requires an authoritative pipeline before examining
+Party Leads, requires explicit selection when several are eligible, creates a
+Lead without replacing an exact Party, and sends ambiguous identities to
+review. New-prospect authoring creates Party, Lead, origin evidence, and both
+conversation relationships in one owner transaction.
+
+Event-only replica surfaces remain hidden by default. The `crm_preview` query parameter may show
 an event preview (`comment`, `reply-failed`, `notifications`, `incoming-call`,
 or `active-call`) or `all`. Preview values are not submitted and must not be
 treated as customer facts.
@@ -222,9 +234,6 @@ The following remain non-authoritative preview UI:
 - social-post comment thread and public comment reply;
 - AI reply generation and voice capture;
 - fine-grained WhatsApp template parameter fields;
-- CRM-only profile completion, merge/convert/new-lead actions, demographic and
-  masked identity fields, retention indicator, activity statistics, embedded
-  conversation history, projects, and tasks.
 - The document does not scroll; list, timeline, context, and long overlays
   scroll independently.
 

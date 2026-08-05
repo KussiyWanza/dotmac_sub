@@ -22,7 +22,8 @@ from app.models.sales import Lead, Pipeline, PipelineStage
 from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.subscriber import Reseller
 from app.models.system_user import SystemUser
-from app.services import web_sales
+from app.models.team_inbox import InboxConversation
+from app.services import conversation_lead_relationships, web_sales
 from app.services.domain_errors import DomainError
 from app.services.sales import lead_authoring
 
@@ -274,6 +275,33 @@ def test_exact_submission_replays_without_duplicates(db_session):
     assert second.party_id == first.party_id
     assert db_session.query(Lead).filter(Lead.id == first.lead_id).count() == 1
     assert db_session.query(Party).filter(Party.id == first.party_id).count() == 1
+
+
+def test_inbox_authoring_creates_party_lead_and_origin_link_atomically(db_session):
+    actor = _staff_owner(db_session)
+    conversation = InboxConversation(
+        channel_type="email",
+        contact_address=f"new-{uuid4()}@example.com",
+        subject="New service enquiry",
+        is_active=True,
+    )
+    db_session.add(conversation)
+    db_session.commit()
+
+    outcome = _author(
+        db_session,
+        actor,
+        inbox_conversation_id=str(conversation.id),
+        emails=[conversation.contact_address],
+    )
+
+    link = conversation_lead_relationships.active_link(db_session, conversation.id)
+    assert link is not None
+    assert link.lead_id == outcome.lead_id
+    assert link.party_id == outcome.party_id
+    lead = db_session.get(Lead, outcome.lead_id)
+    assert lead is not None
+    assert lead.metadata_["origin_conversation_id"] == str(conversation.id)
 
 
 def test_pipeline_stage_mismatch_rolls_back_person_and_lead(db_session):

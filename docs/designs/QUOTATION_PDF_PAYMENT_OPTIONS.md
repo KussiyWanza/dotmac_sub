@@ -52,7 +52,7 @@ Invoice, intent, Payment, or SalesOrder state directly.
 quotation and every deposit Invoice attempt. `TopupIntent.invoice_id` is the
 structural checkout-to-document identity. Eligibility, replay, and verification
 join through those foreign keys; JSON metadata remains non-authoritative
-provider/reconciliation provenance. Migration 475 backfills both links from
+provider/reconciliation provenance. Migration 476 backfills both links from
 legacy metadata only during the controlled schema migration. Ambiguous multiple
 payable Invoice links fail closed rather than selecting one opportunistically.
 

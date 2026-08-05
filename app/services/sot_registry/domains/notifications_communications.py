@@ -1553,6 +1553,152 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="communications.conversation_lead_relationships",
+            module="app.services.conversation_lead_relationships",
+            owns=("durable Inbox conversation-to-Lead provenance and drift reporting",),
+            depends_on=(
+                "communications.team_inbox_threads",
+                "communications.team_inbox_contact_resolution",
+                "party.registry",
+                "sales.lead_lifecycle",
+                "events.dispatcher",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.conversation_lead_relationships",
+                concerns=(
+                    (
+                        "durable Inbox conversation-to-Lead provenance and drift reporting",
+                        OwnerRole.AUTHORITATIVE_RECORD,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="conversation identity",
+                        owner="communications.team_inbox_threads",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Exact native Inbox conversation identifier.",
+                    ),
+                    AuthorityInput(
+                        name="reviewed Party identity",
+                        owner="communications.team_inbox_contact_resolution",
+                        kind=AuthorityKind.DERIVED_PROJECTION,
+                        source="Subscriber Party or active participant contact-point relationship; contact equality is never authority.",
+                    ),
+                    AuthorityInput(
+                        name="Party-bound Lead identity",
+                        owner="sales.lead_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Exact Lead and Party foreign-key binding.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.PARTICIPANT,
+                event_types=("team_inbox.conversation_lead_linked.v1",),
+                projections=(
+                    "one active Lead link per Inbox conversation with preserved audit provenance",
+                ),
+                design_refs=(
+                    "docs/designs/INBOX_CUSTOMER_CONTEXT_AND_LEAD_ACTIONS.md",
+                    "docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=("tests/test_inbox_contact_context.py",),
+            ),
+        ),
+        SOTService(
+            name="communications.inbox_lead_actions",
+            module="app.services.inbox_lead_actions",
+            owns=("identity-aware Inbox profile and Lead action resolution",),
+            depends_on=(
+                "communications.conversation_lead_relationships",
+                "communications.team_inbox_contact_resolution",
+                "sales.lead_lifecycle",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.inbox_lead_actions",
+                concerns=(
+                    (
+                        "identity-aware Inbox profile and Lead action resolution",
+                        OwnerRole.APPLICATION_COORDINATOR,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="conversation Party and Lead relationships",
+                        owner="communications.conversation_lead_relationships",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Locked structural conversation, Party, pipeline, and Lead identities.",
+                    ),
+                    AuthorityInput(
+                        name="operator permissions",
+                        owner="auth.permission_gate",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source="Independent Inbox, customer-profile, and CRM permission decisions.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.COORDINATOR_MANAGED,
+                event_types=("team_inbox.conversation_lead_linked.v1", "lead.created"),
+                design_refs=(
+                    "docs/designs/INBOX_CUSTOMER_CONTEXT_AND_LEAD_ACTIONS.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                ),
+                test_refs=("tests/test_inbox_contact_context.py",),
+            ),
+        ),
+        SOTService(
+            name="communications.team_inbox_contact_context",
+            module="app.services.team_inbox_contact_context",
+            owns=("permission-scoped authoritative Inbox customer context projection",),
+            depends_on=(
+                "communications.conversation_lead_relationships",
+                "communications.inbox_lead_actions",
+                "communications.team_inbox_projection",
+                "party.registry",
+                "sales.lead_lifecycle",
+                "support.ticket_lifecycle",
+                "operations.project_lifecycle",
+                "auth.permission_gate",
+            ),
+            contract=_team_inbox_contract(
+                service_name="communications.team_inbox_contact_context",
+                concerns=(
+                    (
+                        "permission-scoped authoritative Inbox customer context projection",
+                        OwnerRole.RESOLVER,
+                    ),
+                ),
+                inputs=(
+                    AuthorityInput(
+                        name="exact customer relationships",
+                        owner="communications.conversation_lead_relationships",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Exact conversation-to-Party, Subscriber, and Lead relationships only.",
+                    ),
+                    AuthorityInput(
+                        name="customer operational records",
+                        owner="support.ticket_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source="Permission-scoped Ticket, Project, Task, Lead, Party, and conversation owner queries.",
+                    ),
+                ),
+                transaction_mode=TransactionMode.READ_ONLY,
+                projections=(
+                    "truthful per-section Inbox customer context with availability and freshness",
+                ),
+                design_refs=(
+                    "docs/designs/INBOX_CUSTOMER_CONTEXT_AND_LEAD_ACTIONS.md",
+                    "docs/designs/ADMIN_INBOX_WORKSPACE.md",
+                    "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                    "docs/SOT_RELATIONSHIP_MAP.md",
+                ),
+                test_refs=(
+                    "tests/test_inbox_contact_context.py",
+                    "tests/test_admin_inbox_workspace_integrity.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="communications.team_inbox_projection",
             module="app.services.team_inbox_projection",
             owns=(

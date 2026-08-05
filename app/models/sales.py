@@ -381,7 +381,7 @@ class LeadOriginCapture(Base):
             "(source_platform <> 'portal' OR lead_source = 'Portal') AND "
             "(source_platform <> 'referral' OR lead_source = 'Referrer') AND "
             "(source_platform <> 'team_inbox' OR lead_source IN "
-            "('Whatsapp', 'Facebook', 'Instagram'))",
+            "('Whatsapp', 'Facebook', 'Instagram', 'Email', 'Website'))",
             name="ck_lead_origin_captures_platform_source",
         ),
         CheckConstraint(

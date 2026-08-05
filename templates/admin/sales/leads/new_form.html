@@ -38,6 +38,12 @@
     <form method="post" action="{{ action_url }}" class="space-y-5" data-lead-create-form>
         {% include "components/forms/csrf_input.html" %}
         <input type="hidden" name="submission_id" value="{{ lead_form.submission_id }}">
+        {% if inbox_conversation_id %}
+        <input type="hidden" name="inbox_conversation_id" value="{{ inbox_conversation_id }}">
+        <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+            A new prospect Party and Lead will be created and linked to the originating Inbox conversation. Observed names and contact details are not treated as verified identity.
+        </div>
+        {% endif %}
 
         {% call card("Contact / Lead Information", color="cyan", allow_overflow=True) %}
         <div class="space-y-5">

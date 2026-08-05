@@ -280,6 +280,63 @@ class InboxConversation(Base):
     )
 
 
+class InboxConversationLeadLink(Base):
+    """Durable, auditable Inbox conversation to Sales Lead provenance."""
+
+    __tablename__ = "inbox_conversation_lead_links"
+    __table_args__ = (
+        CheckConstraint(
+            "(is_active IS TRUE AND deactivated_at IS NULL) OR "
+            "(is_active IS FALSE AND deactivated_at IS NOT NULL)",
+            name="ck_inbox_conversation_lead_links_active_evidence",
+        ),
+        Index(
+            "uq_inbox_conversation_lead_links_active_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("is_active IS TRUE"),
+            postgresql_where=text("is_active IS TRUE"),
+        ),
+        Index(
+            "ix_inbox_conversation_lead_links_lead_active",
+            "lead_id",
+            "is_active",
+        ),
+        UniqueConstraint("command_id", name="uq_inbox_conversation_lead_links_command"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("inbox_conversations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("leads.id", ondelete="RESTRICT"), nullable=False
+    )
+    party_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("parties.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    link_source: Mapped[str] = mapped_column(String(80), nullable=False)
+    link_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    linked_by_person_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deactivation_reason: Mapped[str | None] = mapped_column(Text)
+
+    conversation = relationship("InboxConversation")
+    lead = relationship("Lead")
+    party = relationship("Party")
+
+
 class InboxSavedFilter(Base):
     __tablename__ = "inbox_saved_filters"
     __table_args__ = (

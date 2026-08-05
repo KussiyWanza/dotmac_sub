@@ -60,6 +60,7 @@
     {% endif %}
 
     <form method="POST" class="space-y-6" @submit="$el.querySelector('button[type=submit]').disabled = true">
+        {% if inbox_conversation_id %}<input type="hidden" name="inbox_conversation_id" value="{{ inbox_conversation_id }}">{% endif %}
         {% include "components/forms/csrf_input.html" %}
 
         <!-- Customer Type Selection (only for new customers) -->

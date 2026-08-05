@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.subscriber import Reseller, SubscriberCategory
+from app.services import conversation_lead_relationships, customer_portal
 from app.services import customer_network_path as customer_network_path_service
-from app.services import customer_portal
 from app.services import network_monitoring as network_monitoring_service
 from app.services import subscriber as subscriber_service
 from app.services import web_billing_invoices as web_billing_invoices_service
@@ -49,6 +49,7 @@ from app.services.audit_helpers import (
     log_audit_event,
 )
 from app.services.auth_dependencies import (
+    can,
     has_permission,
     require_any_permission,
     require_permission,
@@ -1508,6 +1509,7 @@ def business_impersonate(
 def person_edit(
     request: Request,
     customer_id: str,
+    inbox_conversation_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """Edit person form."""
@@ -1522,6 +1524,21 @@ def person_edit(
     except Exception:
         logger.exception("Error loading person edit for %s", customer_id)
         raise
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = (
+                conversation_lead_relationships.conversation_links_subscriber(
+                    db,
+                    conversation_id=uuid.UUID(inbox_conversation_id),
+                    subscriber_id=uuid.UUID(customer_id),
+                )
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
 
     from app.web.admin import get_current_user, get_sidebar_stats
 
@@ -1541,6 +1558,7 @@ def person_edit(
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
             **_reseller_form_context(db, customer.reseller_id),
+            "inbox_conversation_id": inbox_conversation_id,
         },
     )
 
@@ -1635,9 +1653,25 @@ def person_update(
     metadata: str | None = Form(None),
     managed_by_reseller: str | None = Form(None),
     reseller_id: str | None = Form(None),
+    inbox_conversation_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Update a person."""
+    if inbox_conversation_id:
+        if not can(request, "support:ticket:read"):
+            raise HTTPException(status_code=403, detail="Inbox access is required.")
+        try:
+            valid_return = (
+                conversation_lead_relationships.conversation_links_subscriber(
+                    db,
+                    conversation_id=uuid.UUID(inbox_conversation_id),
+                    subscriber_id=uuid.UUID(customer_id),
+                )
+            )
+        except ValueError:
+            valid_return = False
+        if not valid_return:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
     try:
         before, after = web_customer_actions_service.update_person_customer(
             db=db,
@@ -1696,10 +1730,13 @@ def person_update(
             actor_id=str(current_user.get("subscriber_id")) if current_user else None,
             metadata=metadata_payload,
         )
-        return RedirectResponse(
-            url=f"/admin/customers/person/{customer_id}",
-            status_code=303,
+        destination = (
+            f"/admin/inbox?c={inbox_conversation_id}"
+            "&status=success&message=Profile%20updated"
+            if inbox_conversation_id
+            else f"/admin/customers/person/{customer_id}"
         )
+        return RedirectResponse(url=destination, status_code=303)
     except HTTPException:
         raise
     except Exception as e:
@@ -1731,6 +1768,7 @@ def person_update(
                 **_reseller_form_context(
                     db, customer.reseller_id if customer is not None else None
                 ),
+                "inbox_conversation_id": inbox_conversation_id,
             },
             status_code=400,
         )
