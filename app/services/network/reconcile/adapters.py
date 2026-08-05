@@ -40,8 +40,15 @@ from sqlalchemy.orm import Session
 
 from app.models.network import OntUnit
 from app.models.ont_observation import OntObservation
+from app.services.control_plane_intent import (
+    DesiredValueProvenance,
+    has_executable_desired_provenance,
+)
 from app.services.network.acs_resolution import resolve_acs_for_ont
 from app.services.network.effective_ont_config import resolve_effective_ont_config
+from app.services.network.ont_provisioning_defaults import (
+    default_pppoe_instance_index,
+)
 from app.services.network.serial_utils import parse_ont_id_on_olt
 from app.services.network.tr069_paths import Tr069PathError, tr069_path_resolver
 from app.services.network.vendor_capabilities import VendorCapabilities
@@ -79,6 +86,24 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
     effective = resolve_effective_ont_config(db, ont)
     values: dict[str, Any] = (
         effective.get("values", {}) if isinstance(effective, dict) else {}
+    )
+    desired_config_keys = frozenset(
+        str(key)
+        for key in (
+            effective.get("desired_config_keys", ())
+            if isinstance(effective, dict)
+            else ()
+        )
+    )
+    raw_ip_protocol = values.get("ip_protocol")
+    ip_protocol = (
+        str(raw_ip_protocol).strip().lower() if raw_ip_protocol is not None else ""
+    )
+    ipv6_provenance = (
+        DesiredValueProvenance.explicit
+        if "wan.ip_protocol" in desired_config_keys
+        and ip_protocol in {"ipv4", "dual_stack"}
+        else DesiredValueProvenance.unknown
     )
 
     fsp = _fsp_from_ont(ont)
@@ -129,8 +154,8 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         mgmt_iphost_priority=2,
         tr069_profile_id=int(values.get("tr069_olt_profile_id") or 0),
         acs_server_id=acs_resolution.server_id,
-        cr_username=values.get("cr_username"),
-        cr_password_ref=values.get("cr_password"),
+        cr_username=values.get("cr_username") or "",
+        cr_password_ref=values.get("cr_password") or "",
         periodic_inform_interval_sec=int(
             getattr(acs_server, "periodic_inform_interval", None) or 300
         ),
@@ -142,14 +167,16 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         # DEFAULT: provisioning method comes from a global domain_settings
         # row read elsewhere; until the reader pass loads it, default to "auto".
         wan_pppoe_provisioning_method="auto",
-        wan_pppoe_wcd_index=int(values.get("pppoe_wcd_index") or 1),
-        wan_pppoe_instance_index=int(values.get("wan_instance_index") or 1),
+        wan_pppoe_wcd_index=_int_or_none(values.get("pppoe_wcd_index")),
+        wan_pppoe_instance_index=int(
+            values.get("wan_instance_index") or default_pppoe_instance_index()
+        ),
         wan_config_profile_id=_int_or_none(values.get("wan_config_profile_id")),
         wan_internet_config_ip_index=_int_or_none(
             values.get("internet_config_ip_index")
         ),
         nat_enabled=_resolve_nat_enabled(wan_mode, values),
-        ipv6_enabled=str(values.get("ip_protocol") or "ipv4").lower() == "dual_stack",
+        ipv6_enabled=ip_protocol == "dual_stack",
         dhcp_enabled=_bool_or_default(values.get("lan_dhcp_enabled"), default=True),
         dhcp_pool_min=values.get("lan_dhcp_start") or "192.168.100.2",
         dhcp_pool_max=values.get("lan_dhcp_end") or "192.168.100.254",
@@ -191,6 +218,7 @@ def desired_from_ont_unit(db: Session, ont: OntUnit) -> OntDesiredState:
         ),
         wan_remote_access_ssh_port=22,
         remote_access_paths=remote_access_paths,
+        ipv6_enabled_provenance=ipv6_provenance,
         acs_device_id=_resolve_acs_device_id(db, ont),
     )
 
@@ -472,12 +500,15 @@ def apply_proposed_change(
     _set_desired_value(ont, "lan", "dhcp_enabled", target.dhcp_enabled)
     _set_desired_value(ont, "lan", "dhcp_start", target.dhcp_pool_min)
     _set_desired_value(ont, "lan", "dhcp_end", target.dhcp_pool_max)
-    _set_desired_value(
-        ont,
-        "wan",
-        "ip_protocol",
-        "dual_stack" if target.ipv6_enabled else "ipv4",
-    )
+    if "ipv6_enabled" in changed_fields or has_executable_desired_provenance(
+        target.ipv6_enabled_provenance
+    ):
+        _set_desired_value(
+            ont,
+            "wan",
+            "ip_protocol",
+            "dual_stack" if target.ipv6_enabled else "ipv4",
+        )
     _set_desired_value(ont, "wan", "static_ip", target.wan_static_ip)
     _set_desired_value(ont, "wan", "static_subnet", target.wan_static_subnet)
     _set_desired_value(ont, "wan", "static_gateway", target.wan_static_gateway)

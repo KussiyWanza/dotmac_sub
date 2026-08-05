@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -55,9 +56,31 @@ class AlertFinding:
     target_url: str = "/admin/system/health"
 
 
-def run_infrastructure_alert_evaluation(db: Session) -> dict[str, int]:
-    """Evaluate operational health and sync admin alert state."""
-    findings = _collect_infrastructure_findings(db)
+@dataclass(frozen=True, slots=True)
+class ManagedAlertSyncOutcome:
+    findings: int
+    opened: int
+    escalated: int
+    updated: int
+    resolved: int
+
+    def as_payload(self) -> dict[str, int]:
+        return {
+            "findings": self.findings,
+            "opened": self.opened,
+            "escalated": self.escalated,
+            "updated": self.updated,
+            "resolved": self.resolved,
+        }
+
+
+def sync_managed_alerts(
+    db: Session,
+    *,
+    findings: Sequence[AlertFinding],
+    managed_prefix: str,
+) -> ManagedAlertSyncOutcome:
+    """Atomically sync one owner's complete idempotent alert projection."""
     active_fingerprints = {finding.fingerprint for finding in findings}
     opened = escalated = updated = 0
 
@@ -72,17 +95,26 @@ def run_infrastructure_alert_evaluation(db: Session) -> dict[str, int]:
 
     resolved = resolve_missing_alerts(
         db,
-        managed_prefix=INFRASTRUCTURE_ALERT_PREFIX,
+        managed_prefix=managed_prefix,
         active_fingerprints=active_fingerprints,
     )
     db.commit()
-    return {
-        "findings": len(findings),
-        "opened": opened,
-        "escalated": escalated,
-        "updated": updated,
-        "resolved": resolved,
-    }
+    return ManagedAlertSyncOutcome(
+        findings=len(findings),
+        opened=opened,
+        escalated=escalated,
+        updated=updated,
+        resolved=resolved,
+    )
+
+
+def run_infrastructure_alert_evaluation(db: Session) -> dict[str, int]:
+    """Evaluate operational health and sync admin alert state."""
+    return sync_managed_alerts(
+        db,
+        findings=_collect_infrastructure_findings(db),
+        managed_prefix=INFRASTRUCTURE_ALERT_PREFIX,
+    ).as_payload()
 
 
 def _json_safe(value: Any) -> Any:

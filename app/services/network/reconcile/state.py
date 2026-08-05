@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from app.services.control_plane_intent import DesiredValueProvenance
+
 # ── Public string-literal types ─────────────────────────────────────────────
 
 SyncStatus = Literal["synced", "reconciling", "out_of_sync"]
@@ -139,7 +141,7 @@ class OntDesiredState:
     wan_pppoe_username: str | None
     wan_pppoe_password_ref: str | None
     wan_pppoe_provisioning_method: PppoeProvisioningMethod
-    wan_pppoe_wcd_index: int
+    wan_pppoe_wcd_index: int | None
     wan_pppoe_instance_index: int
     wan_config_profile_id: int | None
     wan_internet_config_ip_index: int | None
@@ -188,6 +190,12 @@ class OntDesiredState:
     wan_remote_access_source_cidrs: tuple[str, ...] = ()
     wan_remote_access_ssh_port: int = 22
     remote_access_paths: Tr069RemoteAccessParameterPaths | None = None
+
+    # ``False`` is a real IPv6 target only when this says where it came from.
+    # The adapter uses False as the in-memory representation of unknown solely
+    # to preserve the bool field contract; planner and applier gate on this
+    # provenance before treating it as intent.
+    ipv6_enabled_provenance: DesiredValueProvenance = DesiredValueProvenance.explicit
 
     # ── ACS device identity ────────────────────────────────────────────────
     # The GenieACS ``_id`` (``{OUI}-{ProductClass}-{SerialNumber}``) of this

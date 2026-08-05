@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime
 
+from app.services.control_plane_intent import DesiredValueProvenance
 from app.services.network.reconcile import (
     AcsAddObject,
     AcsDeleteObject,
@@ -289,6 +290,28 @@ def test_dual_stack_tr181_emits_ipv6_and_pd_action():
     assert action.enabled is True
     assert action.request_prefixes is True
     assert action.interface_index == 1
+
+
+def test_provenance_unknown_ipv6_emits_neither_drift_nor_action():
+    desired = _desired(
+        ipv6_enabled=False,
+        ipv6_enabled_provenance=DesiredValueProvenance.unknown,
+        tr069_data_model_root="Device",
+    )
+    observed = _synced_observed(desired)
+    observed = dataclasses.replace(
+        observed,
+        acs=dataclasses.replace(
+            observed.acs,
+            acs_data_model_root="Device",
+            acs_observed_ipv6_enabled=True,
+        ),
+    )
+
+    plan = compute_plan(desired, observed, "sweep")
+
+    assert not any(isinstance(item, AcsSetIpv6) for item in plan.actions)
+    assert not any(item.field == "ipv6_enabled" for item in plan.drifts)
 
 
 def test_dual_stack_tr098_is_visible_unrepairable_drift():

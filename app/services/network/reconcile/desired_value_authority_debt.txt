@@ -22,18 +22,11 @@
 
 acs_device_id
 acs_username
-cr_password_ref
-cr_username
 dhcp_enabled
 dhcp_pool_max
 dhcp_pool_min
-ipv6_enabled
 mgmt_gateway
 mgmt_subnet_mask
 periodic_inform_interval_sec
 tr069_data_model_root
-tr069_profile_id
 wan_gem_index
-wan_pppoe_instance_index
-wan_pppoe_wcd_index
-wan_vlan

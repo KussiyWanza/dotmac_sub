@@ -1,6 +1,7 @@
 # ONT reconciliation eligibility source of truth
 
-Status: implemented (owner, sweeper integration); rollout in progress
+Status: implemented (owner, sweeper integration, overdue alert delivery);
+rollout in progress
 
 ## Canonical owner
 
@@ -48,10 +49,18 @@ Nothing releases a hold on a timer. An expiring hold would hand a suppressed
 device back to the sweeper at an arbitrary moment — precisely the surprise a
 hold exists to prevent, and it would do so without anyone deciding.
 
-An overdue hold **stays active** and becomes reportable through
-`overdue_holds()` so it can be escalated. `release_reconcile_hold` is the only
-way one ends. A guard test asserts there is exactly one assignment to
-`released` in the module and that no expiry/scheduling construct appears.
+An overdue hold **stays active**. The owner projects one idempotent critical
+alert per overdue hold, and the hourly task persists it through the shared
+admin-alert sink. That creates both a durable `AdminAlert` and in-app
+notifications for the established admin/system audience. The task is scheduled
+independently of `network.ont_reconcile`, resolves the alert when the active
+overdue condition disappears, and never releases the hold. Actor and reviewer
+identities stay on the authoritative hold rather than being copied into alert
+payloads.
+
+`release_reconcile_hold` is the only way a hold ends. A guard test asserts there
+is exactly one assignment to `released` in the module and that no
+expiry/scheduling construct appears in the owner.
 
 ## Scope
 
@@ -115,6 +124,27 @@ refusal. Static guards cannot establish any of this.
 
 ## Rollout
 
+### Desired-value authority gates
+
+The first rollout cohort was structurally empty because every otherwise
+eligible ONT inherited two unowned desired values. Those gates are now closed:
+
+- `network.ont_provisioning_defaults` owns the approved typed default that the
+  first TR-069 `WANPPPConnection` instance is index `1`. The effective-config
+  composer obtains the value from that owner; no raw literal fallback remains.
+- A missing `wan.ip_protocol` remains provenance-unknown from composer through
+  planner. The bool representation is not drift and cannot produce
+  `AcsSetIpv6`; an explicit operator proposal is marked explicit and remains
+  executable. The applier independently refuses an action carrying unknown
+  provenance before ACS contact.
+- The zero-observation debt entries `tr069_profile_id`,
+  `wan_pppoe_wcd_index`, `cr_username`, `cr_password_ref`, and `wan_vlan` are
+  refused in planner and applier. Missing WCD evidence remains `None`, so a
+  legitimate explicit WCD index `1` is not conflated with an invented default.
+
+These code gates do not identify the production actor/reviewer. Those remain
+named human inputs required before any hold can be placed.
+
 1. Keep the fleet-wide hold active.
 2. Deploy this owner.
 3. Place reviewed holds on the cohort ONTs.
@@ -132,3 +162,5 @@ because the fleet-wide hold pauses that cleanup as described above.
   no longer the mechanism for excluding individual devices.
 - `network.ont_wan_service_intent` — the adjudication that typically motivates
   a hold.
+- `network.ont_provisioning_defaults` — approved executable device-layout
+  defaults used by the reconciler's effective desired state.

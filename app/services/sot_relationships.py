@@ -15991,6 +15991,81 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                 ),
             ),
             SOTService(
+                name="network.ont_provisioning_defaults",
+                module="app.services.network.ont_provisioning_defaults",
+                owns=("approved ONT provisioning layout defaults",),
+                depends_on=(),
+                notes=(
+                    "Owns only reviewed device-layout defaults that may become "
+                    "executable desired values. It is deliberately separate "
+                    "from the stateful provisioning executor: declaring the "
+                    "first TR-069 WANPPPConnection instance is a pure policy "
+                    "decision, not an execution transition."
+                ),
+                contract=ServiceContract(
+                    concerns=(
+                        ConcernContract(
+                            name="approved ONT provisioning layout defaults",
+                            role=OwnerRole.POLICY,
+                            input_names=("approved Huawei provisioning layout",),
+                        ),
+                    ),
+                    authoritative_inputs=(
+                        AuthorityInput(
+                            name="approved Huawei provisioning layout",
+                            owner="network.ont_provisioning_defaults",
+                            kind=AuthorityKind.CONTROL_INPUT,
+                            source=(
+                                "PppoeInstanceLayout declaration reviewed with "
+                                "the ONT rollout eligibility cohort"
+                            ),
+                        ),
+                    ),
+                    transaction=TransactionContract(
+                        mode=TransactionMode.NOT_APPLICABLE,
+                        boundary="Pure typed policy values; no session or I/O.",
+                        locking="None: immutable module-level declarations.",
+                        idempotency=(
+                            "Repeated resolution returns the same immutable layout value."
+                        ),
+                        retries="Not applicable: resolution cannot fail transiently.",
+                    ),
+                    errors=ErrorContract(
+                        domain_codes=("ont_provisioning_default_unsupported_layout",),
+                        mapping_owner="app.services.network.ont_provisioning_defaults",
+                        fail_closed_on=(
+                            "a device layout without an approved typed declaration",
+                        ),
+                    ),
+                    migration=MigrationContract(
+                        state=AuthorityMigrationState.COMPLETE,
+                        old_owner=(
+                            "raw literal fallback in effective ONT configuration"
+                        ),
+                        new_owner="network.ont_provisioning_defaults",
+                        verification=(
+                            "tests/test_reconcile_sentinels.py pins the declared "
+                            "owner, executable value, and absence of authority debt."
+                        ),
+                        cutover_gate=(
+                            "The composer obtains the instance index from this owner."
+                        ),
+                        fallback_retirement=(
+                            "The raw literal fallback is removed from composer and adapter."
+                        ),
+                    ),
+                    steward="network",
+                    design_refs=(
+                        "docs/designs/ONT_RECONCILE_ELIGIBILITY_SOT.md",
+                        "docs/SOT_RELATIONSHIP_MAP.md",
+                    ),
+                    test_refs=(
+                        "tests/test_reconcile_sentinels.py",
+                        "tests/architecture/test_control_plane_desired_value_policy.py",
+                    ),
+                ),
+            ),
+            SOTService(
                 name="network.ont_provisioning_execution",
                 module="app.services.network.ont_provisioning_execution",
                 owns=(
@@ -16913,7 +16988,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
             SOTService(
                 name="network.ont_reconcile_eligibility",
                 module="app.services.network.ont_reconcile_eligibility",
-                owns=("per-ONT automatic reconciliation eligibility",),
+                owns=(
+                    "per-ONT automatic reconciliation eligibility",
+                    "overdue reconcile-hold alert consequence policy",
+                ),
                 depends_on=(),
                 notes=(
                     "Replaces the fleet-wide network.ont_reconcile control as the "
@@ -16923,7 +17001,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                     "_reconcile_dialer_credentials run inside "
                     "run_ont_reconcile_sweep AFTER the gate, disabling it also "
                     "silently pauses expired remote-access cleanup and the dialer "
-                    "reconcile."
+                    "reconcile. Active holds past review_due_at remain in force; "
+                    "this owner also projects one critical, idempotent alert "
+                    "consequence per overdue hold for the shared admin-alert sink."
                 ),
                 contract=ServiceContract(
                     concerns=(
@@ -16932,6 +17012,11 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             role=OwnerRole.COMMAND_WRITER,
                             input_names=("reviewed hold decision",),
                             canonical_writer="network.ont_reconcile_eligibility",
+                        ),
+                        ConcernContract(
+                            name="overdue reconcile-hold alert consequence policy",
+                            role=OwnerRole.EVENT_POLICY,
+                            input_names=("reviewed hold decision",),
                         ),
                     ),
                     authoritative_inputs=(
@@ -16979,6 +17064,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "reconcile_hold_already_active",
                             "reconcile_hold_not_found",
                             "reconcile_hold_already_released",
+                            "reconcile_hold_missing_idempotency_key",
+                            "reconcile_hold_idempotency_conflict",
+                            "reconcile_hold_ont_not_found",
+                            "reconcile_hold_concurrent_release",
                             # Owner-command boundary codes, raised by
                             # execute_owner_command before this owner's own
                             # validation runs.
@@ -17037,7 +17126,9 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                             "tests/test_ont_reconcile_eligibility.py pins that an "
                             "OVERDUE hold still suppresses, that the sweeper skips "
                             "held ONTs before any ping/read/write, and that held "
-                            "is reported separately from skipped_unreachable."
+                            "is reported separately from skipped_unreachable. "
+                            "tests/test_ont_reconcile_hold_alerts.py pins durable, "
+                            "idempotent critical alert delivery and resolution."
                         ),
                         cutover_gate=(
                             "The fleet-wide hold stays active until reviewed "
@@ -17056,7 +17147,10 @@ DOMAIN_SOT_RELATIONSHIPS: tuple[DomainSOT, ...] = (
                         "docs/designs/ONT_RECONCILE_ELIGIBILITY_SOT.md",
                         "docs/SOT_RELATIONSHIP_MAP.md",
                     ),
-                    test_refs=("tests/test_ont_reconcile_eligibility.py",),
+                    test_refs=(
+                        "tests/test_ont_reconcile_eligibility.py",
+                        "tests/test_ont_reconcile_hold_alerts.py",
+                    ),
                 ),
             ),
             SOTService(

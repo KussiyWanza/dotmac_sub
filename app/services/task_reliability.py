@@ -475,8 +475,8 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         SWEEP,
         IDEMP,
         HEALTH,
-        "Pure read: reports reconciliation holds past their review date and "
-        "releases nothing, so re-running is free. Scheduled independently of "
+        "Idempotently syncs one durable critical admin alert per overdue hold "
+        "and releases no hold. Scheduled independently of "
         "network.ont_reconcile because that control is typically disabled while "
         "holds are in force -- gating the alarm on it would silence it exactly "
         "when the holds are active and least supervised.",

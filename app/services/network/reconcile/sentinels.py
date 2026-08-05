@@ -88,6 +88,7 @@ _UNDECLARED = DesiredValueAuthority.undeclared
 _DELEGATED = DesiredValueAuthority.delegated
 _REFUSED = DesiredValueAdjudication.refused
 _UNDECIDED = DesiredValueAdjudication.undecided
+_APPROVED = DesiredValueAdjudication.approved
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,29 +269,7 @@ RULES: tuple[SentinelRule, ...] = (
         writes="AcsSetPppoe.password_ref, OltOmciPppoe.password_ref",
         impact="Refused by the same PPP delivery authorization as the username.",
     ),
-    # ── undeclared: executes today; on the shrink-only debt baseline ────────
-    SentinelRule(
-        field="ipv6_enabled",
-        layer="composer",
-        config_path="wan.ip_protocol",
-        # The adapter re-applies ``or "ipv4"`` over the composed value. Both
-        # names are recorded; ``config_path`` is what the detector measures,
-        # because by the time the value reaches ``values`` it is never absent.
-        source_key="ip_protocol",
-        sentinel="ipv4",
-        trigger="absent",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
-        writes="AcsSetIpv6.enabled",
-        impact=(
-            'resolve_effective_ont_config defaults the path to "ipv4", which '
-            "the adapter turns into ipv6_enabled=False, and the fresh bring-up "
-            "branch pushes it regardless of drift — so a dual-stack service "
-            "whose ip_protocol never reached desired_config has IPv6 torn "
-            "down. Because the composer default lands first, this is invisible "
-            "to any audit that only reads the adapter."
-        ),
-    ),
+    # ── declared defaults: executable only by a named, approved owner ───────
     SentinelRule(
         field="wan_pppoe_instance_index",
         layer="composer",
@@ -298,15 +277,16 @@ RULES: tuple[SentinelRule, ...] = (
         source_key="wan_instance_index",
         sentinel=1,
         trigger="absent",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
+        authority=DesiredValueAuthority.declared_default,
+        adjudication=_APPROVED,
+        declared_by="network.ont_provisioning_defaults",
         writes="AcsSetPppoe.instance_index",
         impact=(
-            "WANPPPConnection.1 is the real first instance on deployed "
-            "firmware, so the substitution is almost certainly right. Almost "
-            "certainly right is not declared."
+            "The provisioning-layout owner declares WANPPPConnection.1 as the "
+            "first TR-069 PPP instance used by the supported Huawei layout."
         ),
     ),
+    # ── undeclared: executes today; on the shrink-only debt baseline ────────
     SentinelRule(
         field="dhcp_enabled",
         layer="adapter",
@@ -355,77 +335,79 @@ RULES: tuple[SentinelRule, ...] = (
         source_key="tr069_olt_profile_id",
         sentinel=0,
         trigger="falsy",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
         writes="OltTr069ServerConfig.profile_id",
         impact=(
             "In practice unreachable: validate_desired refuses a non-positive "
             "tr069_profile_id at the boundary and at the top of reconcile_ont. "
-            "Listed rather than declared because that refusal belongs to the "
-            "validator, not to a declaration about this default."
+            "The provider now enforces the same refusal in planner and applier "
+            "so legacy action construction cannot bypass boundary validation."
         ),
     ),
     SentinelRule(
         field="wan_pppoe_wcd_index",
         layer="adapter",
         source_key="pppoe_wcd_index",
-        sentinel=1,
-        trigger="falsy",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
-        writes="AcsSetPppoe.wcd_index",
+        sentinel=None,
+        trigger="absent",
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
+        writes=(
+            "AcsAddObject.wcd_index, AcsSetPppoe.wcd_index, "
+            "AcsSetNatEnabled.wcd_index, AcsSetWanIp.wcd_index"
+        ),
         impact=(
-            "WANConnectionDevice.1 is the deployed default. If a vendor ever "
-            "indexes from 0 this becomes a live defect, which is exactly why "
-            "an undeclared default is worth listing."
+            "Missing layout evidence now remains None. Explicit WCD 1 is still "
+            "valid; only absence is refused before any ACS write."
         ),
     ),
     SentinelRule(
         field="cr_username",
-        layer="planner",
+        layer="adapter",
         source_key="cr_username",
-        sentinel="admin",
+        sentinel="",
         trigger="falsy",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
         writes="AcsSetManagementServer.cr_username",
         impact=(
-            "Substituted at the emission site. _management_server_differs "
-            "compares with a raw != rather than _observed_differs, so an "
-            "unread value counts as drift and the write is re-emitted every "
-            "pass. CR credentials gate synchronous NBI delivery, so refusing "
-            "this needs the owner's decision, not an inline change."
+            "The adapter preserves missing CR identity as an empty, refused "
+            "value. The planner no longer invents the username admin."
         ),
     ),
     SentinelRule(
         field="cr_password_ref",
-        layer="planner",
+        layer="adapter",
         source_key="cr_password",
         sentinel="",
         trigger="falsy",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
         writes="AcsSetManagementServer.cr_password_ref",
         impact=(
             "An ONT with no recorded CR password has its "
-            "ConnectionRequestPassword set empty. Whether that is an intended "
-            "known-state reset or a credential wipe is the open question."
+            "ConnectionRequestPassword set empty. Missing secret provenance is "
+            "now refused before resolution or device contact."
         ),
     ),
     SentinelRule(
         field="wan_vlan",
-        layer="planner",
+        layer="adapter",
         source_key="wan_vlan",
         sentinel=0,
         trigger="falsy",
-        authority=_UNDECLARED,
-        adjudication=_UNDECIDED,
-        writes="AcsSetPppoe.vlan, AcsSetWanIp.vlan",
+        authority=_INADMISSIBLE,
+        adjudication=_REFUSED,
+        writes=(
+            "OltCreateServicePort.vlan, OltOmciPppoe.vlan, "
+            "AcsSetPppoe.vlan, AcsSetWanIp.vlan"
+        ),
         impact=(
             "VLAN 0 is not a valid customer VLAN. validate_desired bounds every "
             "VLAN to [1, 4094], so a stored 0 cannot pass the boundary; the "
-            "emission-site default would reintroduce it for a desired state "
-            "built elsewhere."
+            "planner and applier now refuse both the old emission fallback and "
+            "a legacy action built directly with VLAN 0."
         ),
     ),
     SentinelRule(

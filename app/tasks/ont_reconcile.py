@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.services.db_session_adapter import db_session_adapter
@@ -14,6 +17,72 @@ from app.tasks._postgres_lock import postgres_session_advisory_lock
 logger = logging.getLogger(__name__)
 
 _ADVISORY_LOCK_KEY = 0x6F_6E_74  # "ont"
+
+
+@dataclass(frozen=True, slots=True)
+class OverdueHoldAlertSyncOutcome:
+    overdue: int
+    opened: int
+    escalated: int
+    updated: int
+    resolved: int
+
+    def as_payload(self) -> dict[str, int]:
+        return {
+            "overdue": self.overdue,
+            "opened": self.opened,
+            "escalated": self.escalated,
+            "updated": self.updated,
+            "resolved": self.resolved,
+        }
+
+
+def _sync_overdue_reconcile_hold_alerts(
+    db: Session,
+) -> OverdueHoldAlertSyncOutcome:
+    """Persist the eligibility owner's alert projections through the sink."""
+    from app.models.network_monitoring import AlertSeverity
+    from app.services.admin_alerts import (
+        AlertFinding,
+        sync_managed_alerts,
+    )
+    from app.services.network.ont_reconcile_eligibility import (
+        OVERDUE_ALERT_PREFIX,
+        overdue_hold_alerts,
+    )
+
+    alerts = overdue_hold_alerts(db)
+    findings = tuple(
+        AlertFinding(
+            fingerprint=alert.fingerprint,
+            category="network",
+            source="network.ont_reconcile_eligibility",
+            severity=AlertSeverity(alert.severity.value),
+            title=alert.title,
+            summary=alert.summary,
+            details={
+                "hold_id": alert.hold_id,
+                "ont_unit_id": alert.ont_unit_id,
+                "scope": alert.scope,
+                "reason_code": alert.reason_code,
+                "review_due_at": alert.review_due_at,
+            },
+            target_url=alert.target_url,
+        )
+        for alert in alerts
+    )
+    sink_outcome = sync_managed_alerts(
+        db,
+        findings=findings,
+        managed_prefix=OVERDUE_ALERT_PREFIX,
+    )
+    return OverdueHoldAlertSyncOutcome(
+        overdue=len(alerts),
+        opened=sink_outcome.opened,
+        escalated=sink_outcome.escalated,
+        updated=sink_outcome.updated,
+        resolved=sink_outcome.resolved,
+    )
 
 
 def _reconcile_payload(result: Any) -> dict[str, Any]:
@@ -228,7 +297,7 @@ def _reconcile_dialer_credentials() -> dict[str, Any]:
     name="app.tasks.ont_reconcile.alert_overdue_reconcile_holds",
     time_limit=120,
 )
-def alert_overdue_reconcile_holds() -> dict[str, Any]:
+def alert_overdue_reconcile_holds() -> dict[str, int]:
     """Surface reconciliation holds past their review date.
 
     Deliberately NOT gated on ``network.ont_reconcile``. The point of a hold is
@@ -239,30 +308,15 @@ def alert_overdue_reconcile_holds() -> dict[str, Any]:
     A hold is never released here. Overdue is a reporting state; only an
     explicit release command ends a hold.
     """
-    from app.services.network.ont_reconcile_eligibility import overdue_holds
-
     with db_session_adapter.session() as db:
-        rows = list(overdue_holds(db))
-        payload = [
-            {
-                "hold_id": str(hold.id),
-                "ont_unit_id": str(hold.ont_unit_id),
-                "reason_code": hold.reason_code,
-                "actor": hold.actor,
-                "reviewer": hold.reviewer,
-                "review_due_at": hold.review_due_at.isoformat()
-                if hold.review_due_at
-                else None,
-            }
-            for hold in rows
-        ]
+        outcome = _sync_overdue_reconcile_hold_alerts(db)
 
-    if payload:
+    if outcome.overdue:
         logger.warning(
             "ont_reconcile_holds_overdue",
-            extra={"overdue": len(payload), "holds": payload},
+            extra=outcome.as_payload(),
         )
-    return {"overdue": len(payload), "holds": payload}
+    return outcome.as_payload()
 
 
 @celery_app.task(
