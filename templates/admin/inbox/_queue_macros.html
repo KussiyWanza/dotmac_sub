@@ -21,8 +21,7 @@
 
 {% macro conversation_queue_item(row, active_id="", agent_options=()) %}
 {% set contact_name = row.contact_name or row.contact_address or "Unknown contact" %}
-{% set contact_parts = contact_name.split() %}
-{% set avatar_initials = (contact_parts[0][0] ~ contact_parts[-1][0]) if contact_parts | length > 1 else contact_name[:2] %}
+{% set avatar_initials = row.contact_initials %}
 {% set assignee = namespace(name="", initials="") %}
 {% if row.active_assigned_person_id %}
     {% for agent in agent_options %}
@@ -88,7 +87,8 @@
                 hx-swap="innerHTML"
                 @click.stop="openContact('{{ row.id }}')"
                 class="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#314158] to-[#1D293D] text-xs font-bold uppercase text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
-                aria-label="Open contact details for {{ contact_name }}">
+                aria-label="Open contact details for {{ contact_name }}"
+                title="{{ contact_name }}">
             {{ avatar_initials | upper }}
             <span class="inbox-channel-indicator absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full text-white ring-2 ring-white dark:ring-slate-900"
                 data-inbox-channel="{{ row.channel_type }}"

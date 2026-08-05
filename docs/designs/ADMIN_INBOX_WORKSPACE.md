@@ -149,13 +149,16 @@ notice. `Refresh list` refetches and swaps only
 boundary and preserves the selected conversation in the URL. Thread refresh
 remains independent, so a focused composer is never replaced.
 
-Each queue row displays only projected facts. Contact display name is sourced
-from bounded conversation metadata when available, unread count is the number
-of inbound messages after the operator's authoritative read cursor, and ticket,
-status, priority, assignment/team, and label badges come from the existing
-queue projection. Only the first two labels render, with a numeric remainder.
-The receiving Inbox badge remains absent until a real provider account/mailbox
-identity is projected.
+Each queue row displays only projected facts. Contact display identity resolves
+in this order: the linked canonical Party name, the linked legacy Subscriber
+name, the latest inbound provider-observed name, an operator/provider name on
+the conversation, then the channel address. The same projected name and
+initials drive the queue, detail header, contact drawer, and avatar hover text.
+Unread count is the number of inbound messages after the operator's
+authoritative read cursor, and ticket, status, priority, assignment/team, and
+label badges come from the existing queue projection. Only the first two labels
+render, with a numeric remainder. The receiving Inbox badge remains absent
+until a real provider account/mailbox identity is projected.
 
 `Needs attention` is a live, counted cohort distinct from Unreplied. It selects
 an active conversation only after a customer message, a successful human-agent

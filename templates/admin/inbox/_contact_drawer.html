@@ -6,10 +6,10 @@
     {% call ctx_section("Identity") %}
         <div class="flex items-start gap-3">
             <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-100 to-orange-100 text-sm font-bold uppercase text-orange-700 dark:from-amber-950 dark:to-orange-950 dark:text-amber-200">
-                {{ ((subscriber_summary.name if subscriber_summary else timeline.contact_address) or '?')[:2] | upper }}
+                {{ timeline.contact_initials }}
             </div>
             <div class="min-w-0 flex-1">
-                <p class="truncate text-sm font-semibold text-slate-950 dark:text-white">{{ subscriber_summary.name if subscriber_summary else (timeline.contact_address or "Unknown contact") }}</p>
+                <p class="truncate text-sm font-semibold text-slate-950 dark:text-white" title="{{ timeline.contact_name }}">{{ timeline.contact_name }}</p>
                 <p class="truncate text-xs text-slate-500">{{ subscriber_summary.email if subscriber_summary and subscriber_summary.email else timeline.contact_address }}</p>
                 {% if subscriber_summary and subscriber_summary.phone %}<a href="tel:{{ subscriber_summary.phone }}" class="inbox-phone-channel mt-0.5 block text-xs hover:underline">{{ subscriber_summary.phone }}</a>{% endif %}
             </div>

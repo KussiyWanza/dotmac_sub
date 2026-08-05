@@ -137,6 +137,10 @@ stale. Realtime has no replay authority.
 - Information owner: `communications.team_inbox_projection` returns the list
   definition, normalized filters, canonical URL, page bounds, KPIs, unread
   state, detail composition, and action eligibility.
+- Contact display identity is a read-time projection. A bound canonical Party
+  name outranks the legacy Subscriber name, which outranks provider-observed
+  inbound names, conversation metadata names, and finally the channel address.
+  A normal list or detail refetch is its idempotent rebuild path.
 - Filters: search, status, channel, team, assignee, Unreplied, Needs Attention,
   AI handling, ticket handoff, activity window, contact resolution, priority,
   mute, snooze, open, unassigned, and unread.

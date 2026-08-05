@@ -74,7 +74,7 @@
    ============================================================ #}
 {% macro conversation_list_item(row, active_id="", agent_options=()) %}
 {% set is_active = (row.id | string) == (active_id | string) %}
-{% set contact_name = row.contact_address or "(unknown contact)" %}
+{% set contact_name = row.contact_name or row.contact_address or "(unknown contact)" %}
 {% set assignee = namespace(initials="") %}
 {% if row.active_assigned_person_id %}
     {% for agent in agent_options %}
@@ -99,8 +99,9 @@
                 hx-swap="innerHTML"
                 @click.stop="openContact('{{ row.id }}')"
                 class="relative mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-200 text-xs font-bold uppercase text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:bg-slate-700 dark:text-slate-100"
-                aria-label="Open contact details for {{ contact_name }}">
-            {{ contact_name[:2] | upper }}
+                aria-label="Open contact details for {{ contact_name }}"
+                title="{{ contact_name }}">
+            {{ row.contact_initials }}
             <span class="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border-2 border-white text-[9px] font-black text-white dark:border-slate-900
                 {% if row.channel_type == 'email' %}bg-violet-500{% elif row.channel_type == 'whatsapp' %}bg-emerald-500{% elif row.channel_type == 'sms' %}bg-orange-500{% elif row.channel_type == 'telegram' %}bg-sky-500{% elif row.channel_type == 'facebook' %}bg-blue-600{% elif row.channel_type == 'instagram' %}bg-pink-500{% else %}bg-amber-500{% endif %}"
                 title="{{ row.channel_type | replace('_',' ') | title }}">{{ row.channel_type[:1] | upper }}</span>
