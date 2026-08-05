@@ -137,6 +137,27 @@ once the new owner has run armed through a full incident cycle.
 - Availability = (eligible seconds − qualifying unavailable seconds) /
   eligible seconds; only active, service-entitled time enters the
   denominator.
+- `access.subscription_lifecycle_evidence` is the authority for the lifecycle
+  half of eligibility. The lifecycle status owner appends evidence in the same
+  transaction as each state change; generic CRUD and asynchronous event
+  handlers cannot create contractual history.
+- Admitted lifecycle evidence carries separate `effective_at` and
+  `recorded_at` instants, a closed source/grade vocabulary, a stable source
+  identity, and a material fingerprint. Idempotent replay returns the same row;
+  reusing an identity for different evidence fails closed.
+- Rows created before this admission contract remain immutable but unsupported.
+  Migration cutover, subscription creation, and reviewed recovery may append a
+  prospective state baseline. A baseline proves state only from its effective
+  instant forward; it never upgrades or reconstructs earlier history.
+- Lifecycle evidence retains its subscription identity. The subscription
+  foreign key is `RESTRICT`, and catalog deletion fails closed once any
+  lifecycle evidence exists; operators use a lifecycle transition instead of
+  erasing the service and the contractual periods that depend on it.
+- Lifecycle completeness is evaluated for the exact scoring period. The left
+  edge needs a trusted state anchor, lineage must remain continuous, and an
+  unsupported observation breaks coverage until a later trusted transition or
+  baseline. An earlier unsupported row does not poison a fully supported later
+  period.
 - `unknown` monitoring periods make the result incomplete/provisional — never
   silent uptime.
 - Third-party/upstream failure is not automatically excluded where Dotmac

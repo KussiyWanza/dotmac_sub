@@ -1,44 +1,88 @@
-"""Typed lifecycle history contract (prerequisite for SLA eligibility).
-
-The load-bearing behaviour is what this reports as NOT known. A contractual
-score built on mutable pre-cutover rows must be able to say so, and absence of
-evidence must never read as evidence of absence.
-"""
+"""Honest, period-scoped lifecycle history for SLA eligibility."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
-from app.models.catalog import SubscriptionStatus
+import pytest
+
+from app.models.catalog import BillingMode, Subscription, SubscriptionStatus
 from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
+from app.services.subscription_lifecycle_evidence import (
+    LifecycleEvidenceGrade,
+    LifecycleEvidenceSource,
+)
 from app.services.subscription_lifecycle_history import (
-    EvidenceGrade,
+    lifecycle_history_for_period,
     transition_history,
 )
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
 
 
-def _event(db, subscription, *, to, at, frm=None, grade="transition_evidence"):
+@pytest.fixture
+def history_subscription(db_session, subscriber, catalog_offer):
+    subscription = Subscription(
+        subscriber_id=subscriber.id,
+        offer_id=catalog_offer.id,
+        status=SubscriptionStatus.active,
+        billing_mode=BillingMode.postpaid,
+        start_at=NOW,
+    )
+    db_session.add(subscription)
+    db_session.flush()
+    return subscription
+
+
+def _event(
+    db,
+    subscription,
+    *,
+    to: SubscriptionStatus,
+    at: datetime,
+    frm: SubscriptionStatus | None = None,
+    grade: LifecycleEvidenceGrade = LifecycleEvidenceGrade.transition_evidence,
+    source: LifecycleEvidenceSource = LifecycleEvidenceSource.lifecycle_command,
+    effective: bool = True,
+):
+    evidence_id = uuid4()
+    trusted = grade in {
+        LifecycleEvidenceGrade.transition_evidence,
+        LifecycleEvidenceGrade.state_baseline,
+    }
     row = SubscriptionLifecycleEvent(
+        id=evidence_id,
         subscription_id=subscription.id,
         event_type=LifecycleEventType.activate,
         from_status=frm,
         to_status=to,
         created_at=at,
-        evidence_grade=grade,
+        evidence_grade=grade.value,
+        evidence_source=source.value,
+        source_id=f"test:{evidence_id}" if trusted else None,
+        evidence_fingerprint=f"sha256:{'a' * 64}" if trusted else None,
+        effective_at=at if effective else None,
+        recorded_at=at if trusted else None,
     )
     db.add(row)
     db.flush()
     return row
 
 
-def test_no_evidence_is_incomplete_not_an_empty_active_history(
-    db_session, subscription
-):
-    """Absence of transitions is not proof the subscription was never active."""
+def _baseline(db, subscription, *, status, at):
+    return _event(
+        db,
+        subscription,
+        to=status,
+        at=at,
+        grade=LifecycleEvidenceGrade.state_baseline,
+        source=LifecycleEvidenceSource.cutover_baseline,
+    )
 
-    history = transition_history(db_session, subscription.id)
+
+def test_no_evidence_is_incomplete_not_empty_proof(db_session, history_subscription):
+    history = transition_history(db_session, history_subscription.id)
 
     assert history.transitions == ()
     assert history.active_windows == ()
@@ -46,116 +90,181 @@ def test_no_evidence_is_incomplete_not_an_empty_active_history(
     assert history.has_evidence is False
 
 
-def test_active_then_suspended_yields_one_closed_window(db_session, subscription):
-    _event(db_session, subscription, to=SubscriptionStatus.active, at=NOW)
+def test_trusted_active_then_suspended_yields_one_closed_window(
+    db_session, history_subscription
+):
+    _baseline(
+        db_session,
+        history_subscription,
+        status=SubscriptionStatus.active,
+        at=NOW,
+    )
     _event(
         db_session,
-        subscription,
+        history_subscription,
         frm=SubscriptionStatus.active,
         to=SubscriptionStatus.suspended,
         at=NOW + timedelta(days=5),
     )
 
-    history = transition_history(db_session, subscription.id)
+    history = transition_history(db_session, history_subscription.id)
 
-    assert len(history.active_windows) == 1
-    assert history.active_windows[0].start == NOW
-    assert history.active_windows[0].end == NOW + timedelta(days=5)
     assert history.complete is True
+    assert [(window.start, window.end) for window in history.active_windows] == [
+        (NOW, NOW + timedelta(days=5))
+    ]
 
 
-def test_a_still_active_subscription_has_an_open_window(db_session, subscription):
-    _event(db_session, subscription, to=SubscriptionStatus.active, at=NOW)
-
-    history = transition_history(db_session, subscription.id)
-
-    assert len(history.active_windows) == 1
-    assert history.active_windows[0].end is None, "open, not active forever"
-
-
-def test_repeated_activation_does_not_open_a_second_window(db_session, subscription):
-    """Double-counting the same entitlement would inflate the SLA denominator."""
-
-    _event(db_session, subscription, to=SubscriptionStatus.active, at=NOW)
-    _event(
+def test_period_needs_a_supported_left_edge(db_session, history_subscription):
+    _baseline(
         db_session,
-        subscription,
-        to=SubscriptionStatus.active,
+        history_subscription,
+        status=SubscriptionStatus.active,
         at=NOW + timedelta(days=1),
     )
-    _event(
+
+    history = lifecycle_history_for_period(
         db_session,
-        subscription,
-        frm=SubscriptionStatus.active,
-        to=SubscriptionStatus.canceled,
-        at=NOW + timedelta(days=3),
+        history_subscription.id,
+        period_start=NOW,
+        period_end=NOW + timedelta(days=3),
     )
-
-    history = transition_history(db_session, subscription.id)
-
-    assert len(history.active_windows) == 1
-    assert history.active_windows[0].start == NOW
-    assert history.active_windows[0].end == NOW + timedelta(days=3)
-
-
-def test_pre_cutover_history_is_reported_incomplete(db_session, subscription):
-    """Rows that were mutable for their whole life cannot be vouched for."""
-
-    _event(
-        db_session,
-        subscription,
-        to=SubscriptionStatus.active,
-        at=NOW,
-        grade="unsupported_pre_cutover",
-    )
-
-    history = transition_history(db_session, subscription.id)
 
     assert history.complete is False
-    assert history.unsupported_transitions == 1
-    assert history.earliest_supported_at is None
-    # The windows are still derived — the caller decides what to do with
-    # incomplete evidence; this contract does not hide it or discard it.
-    assert len(history.active_windows) == 1
+    assert history.active_windows == (
+        type(history.active_windows[0])(
+            start=NOW + timedelta(days=1),
+            end=NOW + timedelta(days=3),
+        ),
+    )
+    assert "missing_supported_left_edge" in history.issues
 
 
-def test_mixed_history_is_incomplete_and_names_the_supported_boundary(
-    db_session, subscription
+def test_untrusted_observation_breaks_coverage_without_becoming_state(
+    db_session, history_subscription
 ):
-    _event(
+    _baseline(
         db_session,
-        subscription,
-        to=SubscriptionStatus.active,
+        history_subscription,
+        status=SubscriptionStatus.active,
         at=NOW,
-        grade="unsupported_pre_cutover",
+    )
+    observation = _event(
+        db_session,
+        history_subscription,
+        to=SubscriptionStatus.suspended,
+        at=NOW + timedelta(days=2),
+        grade=LifecycleEvidenceGrade.unsupported_observation,
+        source=LifecycleEvidenceSource.untrusted_observation,
+    )
+
+    history = lifecycle_history_for_period(
+        db_session,
+        history_subscription.id,
+        period_start=NOW + timedelta(days=1),
+        period_end=NOW + timedelta(days=4),
+    )
+
+    assert history.complete is False
+    assert [(window.start, window.end) for window in history.active_windows] == [
+        (NOW + timedelta(days=1), NOW + timedelta(days=2))
+    ]
+    assert f"unsupported_observation:{observation.id}" in history.issues
+
+
+def test_later_baseline_restores_only_future_periods(db_session, history_subscription):
+    _baseline(
+        db_session,
+        history_subscription,
+        status=SubscriptionStatus.active,
+        at=NOW,
     )
     _event(
         db_session,
-        subscription,
-        frm=SubscriptionStatus.active,
+        history_subscription,
         to=SubscriptionStatus.suspended,
+        at=NOW + timedelta(days=1),
+        grade=LifecycleEvidenceGrade.unsupported_observation,
+        source=LifecycleEvidenceSource.untrusted_observation,
+    )
+    _baseline(
+        db_session,
+        history_subscription,
+        status=SubscriptionStatus.active,
         at=NOW + timedelta(days=2),
     )
 
-    history = transition_history(db_session, subscription.id)
-
-    assert history.complete is False
-    assert history.unsupported_transitions == 1
-    assert history.earliest_supported_at == NOW + timedelta(days=2)
-
-
-def test_an_unrecognised_grade_is_treated_as_unsupported(db_session, subscription):
-    """Guessing 'probably fine' produces a confident wrong number."""
-
-    _event(
+    spanning = lifecycle_history_for_period(
         db_session,
-        subscription,
-        to=SubscriptionStatus.active,
-        at=NOW,
-        grade="something-new",
+        history_subscription.id,
+        period_start=NOW,
+        period_end=NOW + timedelta(days=3),
+    )
+    future = lifecycle_history_for_period(
+        db_session,
+        history_subscription.id,
+        period_start=NOW + timedelta(days=2, hours=1),
+        period_end=NOW + timedelta(days=3),
     )
 
-    history = transition_history(db_session, subscription.id)
+    assert spanning.complete is False
+    assert future.complete is True
+    assert [(window.start, window.end) for window in future.active_windows] == [
+        (NOW + timedelta(days=2, hours=1), NOW + timedelta(days=3))
+    ]
 
-    assert history.transitions[0].grade is EvidenceGrade.unsupported_pre_cutover
+
+def test_legacy_row_does_not_poison_a_later_cutover_baseline(
+    db_session, history_subscription
+):
+    _event(
+        db_session,
+        history_subscription,
+        to=SubscriptionStatus.active,
+        at=NOW,
+        grade=LifecycleEvidenceGrade.unsupported_pre_cutover,
+        source=LifecycleEvidenceSource.legacy_unattributed,
+        effective=False,
+    )
+    baseline = _baseline(
+        db_session,
+        history_subscription,
+        status=SubscriptionStatus.active,
+        at=NOW + timedelta(days=1),
+    )
+
+    history = lifecycle_history_for_period(
+        db_session,
+        history_subscription.id,
+        period_start=NOW + timedelta(days=2),
+        period_end=NOW + timedelta(days=3),
+    )
+
+    assert history.complete is True
+    assert history.supporting_evidence_ids == (baseline.id,)
+
+
+def test_discontinuous_trusted_lineage_is_incomplete(db_session, history_subscription):
+    _baseline(
+        db_session,
+        history_subscription,
+        status=SubscriptionStatus.active,
+        at=NOW,
+    )
+    broken = _event(
+        db_session,
+        history_subscription,
+        frm=SubscriptionStatus.pending,
+        to=SubscriptionStatus.suspended,
+        at=NOW + timedelta(days=1),
+    )
+
+    history = lifecycle_history_for_period(
+        db_session,
+        history_subscription.id,
+        period_start=NOW,
+        period_end=NOW + timedelta(days=2),
+    )
+
     assert history.complete is False
+    assert f"lineage_discontinuity:{broken.id}" in history.issues

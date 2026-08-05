@@ -68,7 +68,6 @@ app.services.infrastructure_availability_snapshot
 app.services.ip_lifecycle
 app.services.ipv6_pd
 app.services.legal
-app.services.lifecycle
 app.services.monitoring_metrics
 app.services.mrr_snapshot
 app.services.nas._mikrotik
@@ -160,7 +159,6 @@ app.services.sms
 app.services.stale_overdue_lock_reconcile
 app.services.subscription_changes
 app.services.subscription_engine
-app.services.subscription_lifecycle_events
 app.services.system_jobs
 app.services.table_config
 app.services.team_inbox_channel_receive

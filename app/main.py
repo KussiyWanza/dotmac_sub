@@ -400,7 +400,6 @@ def _seed_startup_settings() -> None:
         seed_geocoding_settings,
         seed_gis_settings,
         seed_imports_settings,
-        seed_lifecycle_settings,
         seed_network_monitoring_settings,
         seed_network_policy_settings,
         seed_network_settings,
@@ -471,7 +470,6 @@ def _seed_startup_settings() -> None:
         seed_network_policy_settings(db)
         seed_network_settings(db)
         seed_network_monitoring_settings(db)
-        seed_lifecycle_settings(db)
         seed_comms_settings(db)
         seed_wireguard_settings(db)
         seed_scheduler_runtime_settings(db)

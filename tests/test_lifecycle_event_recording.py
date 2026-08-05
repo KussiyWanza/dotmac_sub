@@ -84,11 +84,29 @@ def test_expire_and_cancel_payloads_carry_from_and_to_status(
     assert expired["reason"] == "expired"
 
 
-def test_expiry_is_recorded_in_lifecycle_log(db_session, subscriber, catalog_offer):
-    """The handler must produce a SubscriptionLifecycleEvent for expiry."""
+def test_expiry_is_recorded_atomically_and_handler_cannot_duplicate_it(
+    db_session, subscriber, catalog_offer
+):
+    """The status owner writes evidence; the event transport only observes."""
     assert EventType.subscription_expired in SUBSCRIPTION_LIFECYCLE_MAP
 
     sub = _active_sub(db_session, subscriber, catalog_offer)
+    account_lifecycle.expire_subscription(db_session, str(sub.id), emit=False)
+    db_session.flush()
+
+    records = (
+        db_session.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == sub.id)
+        .all()
+    )
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.event_type == LifecycleEventType.other
+    assert rec.from_status == SubscriptionStatus.active
+    assert rec.to_status == SubscriptionStatus.expired
+    assert rec.reason == "Subscription expired"
+    assert rec.evidence_source == "lifecycle_command"
+
     event = Event(
         event_type=EventType.subscription_expired,
         payload={
@@ -101,13 +119,9 @@ def test_expiry_is_recorded_in_lifecycle_log(db_session, subscriber, catalog_off
     )
     LifecycleHandler().handle(db_session, event)
     db_session.flush()
-
-    rec = (
+    assert (
         db_session.query(SubscriptionLifecycleEvent)
         .filter(SubscriptionLifecycleEvent.subscription_id == sub.id)
-        .one()
+        .count()
+        == 1
     )
-    assert rec.event_type == LifecycleEventType.other
-    assert rec.from_status == SubscriptionStatus.active
-    assert rec.to_status == SubscriptionStatus.expired
-    assert rec.reason == "expired"

@@ -48,6 +48,183 @@ DOMAIN = DomainSOT(
             ),
         ),
         SOTService(
+            name="access.subscription_lifecycle_evidence",
+            module="app.services.subscription_lifecycle_evidence",
+            owns=(
+                "immutable subscription lifecycle transition evidence",
+                "period-scoped subscription lifecycle evidence history",
+            ),
+            depends_on=(
+                "access.subscription_lifecycle",
+                "events.dispatcher",
+            ),
+            notes=(
+                "The subscription lifecycle owner applies status and invokes this "
+                "flush-only participant in the same transaction. Effective time, "
+                "recorded time, admitted source, source identity and fingerprint "
+                "are all required before a row can support a contractual period. "
+                "A RESTRICT parent link retains subscription identity, so catalog "
+                "deletion cannot erase evidence or its scored-period lineage. "
+                "Legacy rows and asynchronous event observations remain diagnostic; "
+                "prospective baselines repair coverage without inventing history."
+            ),
+            contract=ServiceContract(
+                concerns=(
+                    ConcernContract(
+                        name="immutable subscription lifecycle transition evidence",
+                        role=OwnerRole.AUTHORITATIVE_RECORD,
+                        input_names=(
+                            "canonical subscription lifecycle state",
+                            "typed lifecycle command evidence",
+                        ),
+                        canonical_writer="access.subscription_lifecycle_evidence",
+                    ),
+                    ConcernContract(
+                        name="period-scoped subscription lifecycle evidence history",
+                        role=OwnerRole.RESOLVER,
+                        input_names=("immutable subscription lifecycle evidence rows",),
+                    ),
+                ),
+                authoritative_inputs=(
+                    AuthorityInput(
+                        name="canonical subscription lifecycle state",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "The locked Subscription row after the lifecycle owner "
+                            "has applied its reviewed status transition"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="typed lifecycle command evidence",
+                        owner="access.subscription_lifecycle",
+                        kind=AuthorityKind.CONTROL_INPUT,
+                        source=(
+                            "CommandContext actor, scope, reason, command identity, "
+                            "correlation and idempotency evidence plus an aware "
+                            "effective instant"
+                        ),
+                    ),
+                    AuthorityInput(
+                        name="immutable subscription lifecycle evidence rows",
+                        owner="access.subscription_lifecycle_evidence",
+                        kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                        source=(
+                            "Append-only subscription_lifecycle_events admitted by "
+                            "source, grade, identity, effective and recorded times, "
+                            "and fingerprint"
+                        ),
+                    ),
+                ),
+                transaction=TransactionContract(
+                    mode=TransactionMode.PARTICIPANT,
+                    boundary=(
+                        "The lifecycle, catalog-creation, or reviewed recovery owner "
+                        "controls completion; this participant validates, appends, "
+                        "and flushes only."
+                    ),
+                    locking=(
+                        "The parent owner locks or exclusively creates the "
+                        "Subscription before applying status and appending evidence; "
+                        "the source-identity unique constraint arbitrates retries."
+                    ),
+                    idempotency=(
+                        "One (evidence_source, source_id) stores one exact fingerprint; "
+                        "an identical replay returns the row and changed material "
+                        "fails closed."
+                    ),
+                    retries=(
+                        "A database collision is retried only by rerunning the complete "
+                        "parent owner transaction, which re-reads the winner and proves "
+                        "replay or conflict."
+                    ),
+                ),
+                errors=ErrorContract(
+                    domain_codes=(
+                        "access.subscription_lifecycle_evidence.naive_effective_at",
+                        "access.subscription_lifecycle_evidence.untrusted_source",
+                        "access.subscription_lifecycle_evidence.untrusted_grade",
+                        "access.subscription_lifecycle_evidence.no_state_change",
+                        "access.subscription_lifecycle_evidence.baseline_has_from_status",
+                        (
+                            "access.subscription_lifecycle_evidence."
+                            "incomplete_replay_state"
+                        ),
+                        "access.subscription_lifecycle_evidence.idempotency_conflict",
+                        (
+                            "access.subscription_lifecycle_evidence."
+                            "subscription_not_found"
+                        ),
+                        "access.subscription_lifecycle_evidence.status_not_applied",
+                        (
+                            "access.subscription_lifecycle_evidence."
+                            "invalid_baseline_source"
+                        ),
+                    ),
+                    mapping_owner=(
+                        "subscription lifecycle, catalog creation, and reviewed "
+                        "recovery owners"
+                    ),
+                    fail_closed_on=(
+                        "untrusted source or grade",
+                        "missing or naive effective time",
+                        "status not yet applied",
+                        "source identity reused for different evidence",
+                        "subscription deletion with retained lifecycle evidence",
+                    ),
+                ),
+                events=EventContract(
+                    event_types=(
+                        "subscription.created",
+                        "subscription.activated",
+                        "subscription.suspended",
+                        "subscription.resumed",
+                        "subscription.disabled",
+                        "subscription.expired",
+                        "subscription.canceled",
+                    ),
+                    schema_version=1,
+                    delivery_owner="events.dispatcher",
+                    compatibility=(
+                        "Lifecycle events remain transport consequences of the status "
+                        "owner; they are never an evidence ingestion path."
+                    ),
+                    replay=(
+                        "Evidence replay is resolved from its database source identity "
+                        "and fingerprint; event redelivery creates no lifecycle row."
+                    ),
+                ),
+                migration=MigrationContract(
+                    state=AuthorityMigrationState.COMPLETE,
+                    new_owner="access.subscription_lifecycle_evidence",
+                    old_owner=(
+                        "generic lifecycle CRUD plus asynchronous lifecycle-event "
+                        "handler reconstruction using handler time"
+                    ),
+                    verification=(
+                        "Behavior, architecture, append-only PostgreSQL, and fresh plus "
+                        "incremental migration tests prove admission and period coverage."
+                    ),
+                    cutover_gate=(
+                        "All lifecycle status paths append admitted evidence or an "
+                        "explicit prospective baseline in their owning transaction."
+                    ),
+                    fallback_retirement=(
+                        "Generic creation and event-handler writes are removed; legacy "
+                        "rows remain immutable and explicitly unsupported."
+                    ),
+                ),
+                steward="Access lifecycle and customer service-level owners",
+                design_refs=("docs/designs/OUTAGE_SLA_SPINE.md",),
+                test_refs=(
+                    "tests/test_subscription_lifecycle_evidence.py",
+                    "tests/test_subscription_lifecycle_history.py",
+                    "tests/integration/test_lifecycle_events_append_only_postgres.py",
+                    "tests/integration/test_lifecycle_evidence_authority_migration.py",
+                ),
+            ),
+        ),
+        SOTService(
             name="access.credential_binding",
             module="app.services.access_credential_binding",
             owns=("access credential subscription and RADIUS-profile binding",),

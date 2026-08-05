@@ -1889,7 +1889,9 @@ class TestSubscriptions:
             )
         assert exc_info.value.status_code == 404
 
-    def test_delete_subscription(self, db_session, subscriber, catalog_offer):
+    def test_delete_subscription_refuses_to_erase_lifecycle_history(
+        self, db_session, subscriber, catalog_offer
+    ):
         sub = catalog_service.subscriptions.create(
             db_session,
             SubscriptionCreate(
@@ -1897,9 +1899,12 @@ class TestSubscriptions:
                 offer_id=catalog_offer.id,
             ),
         )
-        catalog_service.subscriptions.delete(db_session, str(sub.id))
-        with pytest.raises(HTTPException):
-            catalog_service.subscriptions.get(db_session, str(sub.id))
+        with pytest.raises(HTTPException) as caught:
+            catalog_service.subscriptions.delete(db_session, str(sub.id))
+
+        assert caught.value.status_code == 409
+        assert "retained lifecycle evidence" in caught.value.detail
+        assert catalog_service.subscriptions.get(db_session, str(sub.id)).id == sub.id
 
     def test_delete_subscription_not_found(self, db_session):
         with pytest.raises(HTTPException) as exc_info:

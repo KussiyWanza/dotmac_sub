@@ -1,44 +1,26 @@
-"""Tests for lifecycle service."""
+"""The generic lifecycle surface is read-only over owner-written evidence."""
 
-from app.models.lifecycle import LifecycleEventType
-from app.schemas.lifecycle import (
-    SubscriptionLifecycleEventCreate,
-)
+from app.models.lifecycle import SubscriptionLifecycleEvent
 from app.services import lifecycle as lifecycle_service
 
 
-def test_create_lifecycle_event(db_session, subscription):
-    """Test creating a subscription lifecycle event."""
-    event = lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.activate,
-            notes="Subscription activated",
-        ),
+def _creation_evidence(db_session, subscription) -> SubscriptionLifecycleEvent:
+    return (
+        db_session.query(SubscriptionLifecycleEvent)
+        .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+        .one()
     )
-    assert event.subscription_id == subscription.id
-    assert event.event_type == LifecycleEventType.activate
-    assert event.notes == "Subscription activated"
 
 
-def test_list_lifecycle_events_by_subscription(db_session, subscription):
-    """Test listing lifecycle events by subscription."""
-    # Create multiple events
-    lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.activate,
-        ),
-    )
-    lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.suspend,
-        ),
-    )
+def test_lifecycle_events_expose_no_mutation_api():
+    events = lifecycle_service.subscription_lifecycle_events
+    assert not hasattr(events, "create")
+    assert not hasattr(events, "update")
+    assert not hasattr(events, "delete")
+
+
+def test_list_lifecycle_evidence_by_subscription(db_session, subscription):
+    event = _creation_evidence(db_session, subscription)
 
     events = lifecycle_service.subscription_lifecycle_events.list(
         db_session,
@@ -49,78 +31,44 @@ def test_list_lifecycle_events_by_subscription(db_session, subscription):
         limit=10,
         offset=0,
     )
-    assert len(events) >= 2
-    assert all(e.subscription_id == subscription.id for e in events)
+
+    assert [item.id for item in events] == [event.id]
 
 
-def test_list_lifecycle_events_by_type(db_session, subscription):
-    """Test listing lifecycle events filtered by type."""
-    lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.activate,
-        ),
-    )
-    lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.suspend,
-        ),
-    )
+def test_list_lifecycle_evidence_by_type(db_session, subscription):
+    event = _creation_evidence(db_session, subscription)
 
-    activate_events = lifecycle_service.subscription_lifecycle_events.list(
+    events = lifecycle_service.subscription_lifecycle_events.list(
         db_session,
-        subscription_id=None,
-        event_type="activate",
+        subscription_id=str(subscription.id),
+        event_type=event.event_type.value,
         order_by="created_at",
         order_dir="asc",
         limit=10,
         offset=0,
     )
-    assert all(e.event_type == LifecycleEventType.activate for e in activate_events)
+
+    assert event.id in {item.id for item in events}
 
 
-def test_lifecycle_events_expose_no_mutation_api():
-    """Transitions are contractual evidence for SLA eligibility, so the
-    service must not offer a way to edit or remove them. Corrections are new
-    transitions; migration 468 enforces the same rule in the database, where
-    it cannot be re-added by a later refactor."""
+def test_subscription_creation_writes_a_prospective_baseline(db_session, subscription):
+    event = _creation_evidence(db_session, subscription)
 
-    events = lifecycle_service.subscription_lifecycle_events
-    assert not hasattr(events, "update")
-    assert not hasattr(events, "delete")
-
-
-def test_new_transitions_are_graded_as_evidence(db_session, subscription):
-    """Rows written after the cutover can be trusted; the grade says so."""
-
-    event = lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.activate,
-        ),
-    )
-
-    assert event.evidence_grade == "transition_evidence"
+    assert event.from_status is None
+    assert event.to_status == subscription.status
+    assert event.evidence_grade == "state_baseline"
+    assert event.evidence_source == "subscription_creation"
+    assert event.effective_at is not None
+    assert event.recorded_at is not None
+    assert event.source_id
+    assert event.evidence_fingerprint.startswith("sha256:")
 
 
-def test_get_lifecycle_event(db_session, subscription):
-    """Test getting a lifecycle event by ID."""
-    event = lifecycle_service.subscription_lifecycle_events.create(
-        db_session,
-        SubscriptionLifecycleEventCreate(
-            subscription_id=subscription.id,
-            event_type=LifecycleEventType.cancel,
-            notes="Service cancelled",
-        ),
-    )
+def test_get_lifecycle_evidence(db_session, subscription):
+    event = _creation_evidence(db_session, subscription)
 
     fetched = lifecycle_service.subscription_lifecycle_events.get(
         db_session, str(event.id)
     )
-    assert fetched is not None
+
     assert fetched.id == event.id
-    assert fetched.event_type == LifecycleEventType.cancel

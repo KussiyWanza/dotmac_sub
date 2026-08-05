@@ -980,7 +980,9 @@ class TestLifecycleHandler:
             **kwargs,
         )
 
-    def test_lifecycle_records_activate_event(self, db_session, subscription):
+    def test_lifecycle_activate_event_does_not_duplicate_owner_evidence(
+        self, db_session, subscription
+    ):
         handler = LifecycleHandler()
         event = self._make_event(
             EventType.subscription_activated,
@@ -992,25 +994,25 @@ class TestLifecycleHandler:
             subscription_id=subscription.id,
             actor="admin",
         )
-        handler.handle(db_session, event)
-        db_session.flush()
-
         from app.models.lifecycle import SubscriptionLifecycleEvent
 
-        records = (
+        before = (
             db_session.query(SubscriptionLifecycleEvent)
             .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
-            .all()
+            .count()
         )
-        assert len(records) >= 1
-        record = records[-1]
-        assert record.event_type.value == "activate"
-        assert record.from_status == SubscriptionStatus.pending
-        assert record.to_status == SubscriptionStatus.active
-        assert record.reason == "payment received"
-        assert record.actor == "admin"
+        handler.handle(db_session, event)
+        db_session.flush()
+        after = (
+            db_session.query(SubscriptionLifecycleEvent)
+            .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+            .count()
+        )
+        assert after == before
 
-    def test_lifecycle_records_suspend_event(self, db_session, subscription):
+    def test_lifecycle_suspend_event_does_not_duplicate_owner_evidence(
+        self, db_session, subscription
+    ):
         handler = LifecycleHandler()
         event = self._make_event(
             EventType.subscription_suspended,
@@ -1020,18 +1022,21 @@ class TestLifecycleHandler:
             },
             subscription_id=subscription.id,
         )
-        handler.handle(db_session, event)
-        db_session.flush()
-
         from app.models.lifecycle import SubscriptionLifecycleEvent
 
-        records = (
+        before = (
             db_session.query(SubscriptionLifecycleEvent)
             .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
-            .all()
+            .count()
         )
-        assert len(records) >= 1
-        assert records[-1].event_type.value == "suspend"
+        handler.handle(db_session, event)
+        db_session.flush()
+        after = (
+            db_session.query(SubscriptionLifecycleEvent)
+            .filter(SubscriptionLifecycleEvent.subscription_id == subscription.id)
+            .count()
+        )
+        assert after == before
 
     def test_lifecycle_ignores_non_subscription_events(self, db_session):
         handler = LifecycleHandler()

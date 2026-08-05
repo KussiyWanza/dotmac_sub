@@ -869,7 +869,9 @@ class Subscription(Base):
     add_ons = relationship("SubscriptionAddOn", back_populates="subscription")
     service_orders = relationship("ServiceOrder", back_populates="subscription")
     lifecycle_events = relationship(
-        "SubscriptionLifecycleEvent", back_populates="subscription"
+        "SubscriptionLifecycleEvent",
+        back_populates="subscription",
+        passive_deletes=True,
     )
     ip_assignments = relationship("IPAssignment", back_populates="subscription")
     bandwidth_samples = relationship("BandwidthSample", back_populates="subscription")

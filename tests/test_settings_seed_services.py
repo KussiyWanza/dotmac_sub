@@ -1101,31 +1101,6 @@ class TestSeedRadiusPolicySettings:
 
 
 # =============================================================================
-# Lifecycle Settings Tests
-# =============================================================================
-
-
-class TestSeedLifecycleSettings:
-    """Tests for seed_lifecycle_settings function."""
-
-    def test_seeds_default_event_type(self, db_session, monkeypatch):
-        """Test default event type is seeded."""
-        monkeypatch.setenv("LIFECYCLE_DEFAULT_EVENT_TYPE", "create")
-
-        settings_seed.seed_lifecycle_settings(db_session)
-
-        setting = (
-            db_session.query(DomainSetting)
-            .filter(
-                DomainSetting.domain == SettingDomain.lifecycle,
-                DomainSetting.key == "default_event_type",
-            )
-            .first()
-        )
-        assert setting is not None
-
-
-# =============================================================================
 # Comms Settings Tests
 # =============================================================================
 
