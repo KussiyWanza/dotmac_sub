@@ -77,6 +77,9 @@ def test_quote_activity_does_not_overstate_mailbox_delivery():
 def test_quote_payment_details_keep_their_authoritative_owners():
     documents = _source("app/services/sales/quote_documents.py")
     accounts = _source("app/services/billing/collection_accounts.py")
+    models = _source("app/models/sales.py")
+    billing_models = _source("app/models/billing.py")
+    deposits = _source("app/services/quote_deposits.py")
     routes = _source("app/web/customer/quotes.py")
     template = _source("templates/customer/quotes/pay.html")
 
@@ -84,6 +87,10 @@ def test_quote_payment_details_keep_their_authoritative_owners():
     assert "class QuotePaymentSnapshot" in documents
     assert "primary_presentment_account_projection" in documents
     assert "CollectionAccountPresentment" in accounts
+    assert "class QuoteDepositInvoiceLink" in models
+    assert "invoice_id: Mapped" in billing_models
+    assert "QuoteDepositInvoiceLink.quote_id" in deposits
+    assert "TopupIntent.invoice_id" in deposits
     assert "1016946461" not in documents
     assert "Zenith Bank" not in documents
     assert "Dotmac Technologies Ltd." not in documents

@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models.billing import Invoice, InvoiceStatus, TopupIntent
 from app.models.quote_mirror import QuoteMirror
-from app.models.sales import Quote, QuoteStatus
+from app.models.sales import Quote, QuoteDepositInvoiceLink, QuoteStatus
 from app.schemas.billing import InvoiceCreate
 from app.services import billing as billing_service
 from app.services import customer_portal_flow_payments as payments
@@ -191,7 +191,7 @@ def quote_payment_page(db: Session, query: QuotePaymentQuery) -> QuotePaymentPag
         query.observed_at
     ):
         raise _error("quote_expired", "This Quote has expired")
-    if _native_deposit_invoice_paid(db, str(quote.id)):
+    if _native_deposit_invoice_paid(db, quote.id):
         raise _error("already_paid", "This Quote deposit is already paid")
     amount = _authoritative_quote_deposit_amount(db, quote)
     if amount <= Decimal("0.00"):
@@ -233,17 +233,19 @@ def _quote_row(db: Session, subscriber_id: str, quote_id: str) -> QuoteMirror:
     return row
 
 
-def _native_deposit_invoice_paid(db: Session, quote_id: str) -> bool:
-    """Authoritative already-paid check for the native path: the paid deposit
-    Invoice in sub's own ledger (the sole quote-deposit invoice writer is
-    ``initiate_deposit`` below), NOT a mirror flag the CRM could stale-sync.
-    """
+def _native_deposit_invoice_paid(db: Session, quote_id: UUID) -> bool:
+    """Read paid state through the structural Quote-to-Invoice identity."""
+
     return (
         db.scalar(
-            select(Invoice.id).where(
+            select(Invoice.id)
+            .join(
+                QuoteDepositInvoiceLink,
+                QuoteDepositInvoiceLink.invoice_id == Invoice.id,
+            )
+            .where(
+                QuoteDepositInvoiceLink.quote_id == quote_id,
                 Invoice.status == InvoiceStatus.paid,
-                Invoice.metadata_["payment_flow"].as_string() == "quote_deposit",
-                Invoice.metadata_["quote_id"].as_string() == str(quote_id),
             )
         )
         is not None
@@ -251,8 +253,45 @@ def _native_deposit_invoice_paid(db: Session, quote_id: str) -> bool:
 
 
 def _existing_payable_deposit_invoice(
+    db: Session, *, subscriber_id: UUID, quote_id: UUID
+) -> Invoice | None:
+    invoices = tuple(
+        db.scalars(
+            select(Invoice)
+            .join(
+                QuoteDepositInvoiceLink,
+                QuoteDepositInvoiceLink.invoice_id == Invoice.id,
+            )
+            .where(
+                QuoteDepositInvoiceLink.quote_id == quote_id,
+                QuoteDepositInvoiceLink.account_id == subscriber_id,
+                Invoice.account_id == subscriber_id,
+                Invoice.status.in_(
+                    (
+                        InvoiceStatus.issued,
+                        InvoiceStatus.partially_paid,
+                        InvoiceStatus.overdue,
+                    )
+                ),
+            )
+            .order_by(Invoice.created_at.desc(), Invoice.id.desc())
+            .limit(2)
+        ).all()
+    )
+    if len(invoices) > 1:
+        raise _error(
+            "invoice_ambiguous",
+            "More than one payable deposit Invoice is linked to this Quote",
+            quote_id=str(quote_id),
+        )
+    return invoices[0] if invoices else None
+
+
+def _legacy_existing_payable_deposit_invoice(
     db: Session, *, subscriber_id: UUID, quote_id: str
 ) -> Invoice | None:
+    """Compatibility read for CRM-only Quotes without a native structural row."""
+
     return db.scalars(
         select(Invoice)
         .where(
@@ -269,6 +308,52 @@ def _existing_payable_deposit_invoice(
         )
         .order_by(Invoice.created_at.desc(), Invoice.id.desc())
     ).first()
+
+
+def _native_quote_for_reference(
+    db: Session, *, subscriber_id: UUID, quote_id: str
+) -> Quote | None:
+    try:
+        native_id = UUID(str(quote_id))
+    except ValueError:
+        return None
+    quote = db.get(Quote, native_id)
+    if quote is None or quote.subscriber_id != subscriber_id:
+        return None
+    return quote
+
+
+def _stage_quote_deposit_invoice_link(
+    db: Session, *, quote: Quote, invoice: Invoice
+) -> QuoteDepositInvoiceLink:
+    if quote.subscriber_id is None or invoice.account_id != quote.subscriber_id:
+        raise _error(
+            "invoice_identity_mismatch",
+            "The deposit Invoice does not belong to the Quote customer",
+            quote_id=str(quote.id),
+            invoice_id=str(invoice.id),
+        )
+    existing = db.scalar(
+        select(QuoteDepositInvoiceLink).where(
+            QuoteDepositInvoiceLink.invoice_id == invoice.id
+        )
+    )
+    if existing is not None:
+        if existing.quote_id != quote.id or existing.account_id != quote.subscriber_id:
+            raise _error(
+                "invoice_identity_mismatch",
+                "The deposit Invoice is already linked to another Quote",
+                invoice_id=str(invoice.id),
+            )
+        return existing
+    link = QuoteDepositInvoiceLink(
+        quote_id=quote.id,
+        invoice_id=invoice.id,
+        account_id=quote.subscriber_id,
+    )
+    db.add(link)
+    db.flush()
+    return link
 
 
 def initiate_deposit(
@@ -306,8 +391,23 @@ def initiate_deposit(
         raise HTTPException(status_code=400, detail="This quote has no deposit due")
 
     sub_uuid = coerce_uuid(str(subscriber_id))
-    invoice = _existing_payable_deposit_invoice(
-        db, subscriber_id=sub_uuid, quote_id=str(quote_id)
+    native_quote = _native_quote_for_reference(
+        db,
+        subscriber_id=sub_uuid,
+        quote_id=quote_id,
+    )
+    invoice = (
+        _existing_payable_deposit_invoice(
+            db,
+            subscriber_id=sub_uuid,
+            quote_id=native_quote.id,
+        )
+        if native_quote is not None
+        else _legacy_existing_payable_deposit_invoice(
+            db,
+            subscriber_id=sub_uuid,
+            quote_id=str(quote_id),
+        )
     )
     if invoice is None:
         invoice = billing_service.invoices.create(
@@ -328,6 +428,12 @@ def initiate_deposit(
             "quote_id": str(quote_id),
             "payment_flow": "quote_deposit",
         }
+        if native_quote is not None:
+            _stage_quote_deposit_invoice_link(
+                db,
+                quote=native_quote,
+                invoice=invoice,
+            )
         db.commit()
 
     try:
@@ -372,7 +478,7 @@ def _initiate_deposit_native(
     the ledger — the mirror's ``deposit_paid`` flag plays no part (risk #2:
     a stale mirror must never allow a second charge)."""
     quote = selfserve.selfserve_quotes.get_for_subscriber(db, subscriber_id, quote_id)
-    if _native_deposit_invoice_paid(db, str(quote.id)):
+    if _native_deposit_invoice_paid(db, quote.id):
         raise HTTPException(status_code=409, detail="Deposit already paid")
     payload = selfserve.build_portal_quote_payload(db, quote)
     deposit = Decimal(str(payload.get("deposit_amount") or "0"))
@@ -381,7 +487,7 @@ def _initiate_deposit_native(
 
     sub_uuid = coerce_uuid(str(subscriber_id))
     invoice = _existing_payable_deposit_invoice(
-        db, subscriber_id=sub_uuid, quote_id=str(quote.id)
+        db, subscriber_id=sub_uuid, quote_id=quote.id
     )
     if invoice is None:
         invoice = billing_service.invoices.create(
@@ -403,6 +509,7 @@ def _initiate_deposit_native(
             "quote_id": str(quote.id),
             "payment_flow": "quote_deposit",
         }
+        _stage_quote_deposit_invoice_link(db, quote=quote, invoice=invoice)
         db.commit()
 
     try:
@@ -452,7 +559,7 @@ def _pending_quote_intent(
     invoice = _existing_payable_deposit_invoice(
         db,
         subscriber_id=subscriber_id,
-        quote_id=str(quote_id),
+        quote_id=quote_id,
     )
     if invoice is None:
         return None
@@ -462,8 +569,7 @@ def _pending_quote_intent(
             TopupIntent.account_id == subscriber_id,
             TopupIntent.provider_type == "paystack",
             TopupIntent.status == "pending",
-            TopupIntent.metadata_["payment_flow"].as_string() == "invoice_payment",
-            TopupIntent.metadata_["invoice_id"].as_string() == str(invoice.id),
+            TopupIntent.invoice_id == invoice.id,
             TopupIntent.expires_at > _as_utc(observed_at),
         )
         .order_by(TopupIntent.created_at.desc(), TopupIntent.id.desc())
@@ -474,6 +580,7 @@ def _pending_quote_intent(
 def _typed_intent_outcome(
     payload: dict,
     *,
+    account_id: UUID,
     replayed: bool,
 ) -> QuoteDepositIntentOutcome:
     try:
@@ -481,15 +588,16 @@ def _typed_intent_outcome(
         provider_public_key = str(payload.get("provider_public_key") or "")
         payment_reference = str(payload.get("payment_reference") or "")
         customer_email = str(payload.get("customer_email") or "")
-        metadata = payload.get("checkout_metadata")
-        if not isinstance(metadata, dict):
+        checkout_payload = payload.get("checkout_metadata")
+        if not isinstance(checkout_payload, dict):
             raise ValueError("missing checkout metadata")
         if provider_type != "paystack" or not all(
             (provider_public_key, payment_reference, customer_email)
         ):
             raise ValueError("incomplete Paystack intent")
+        invoice_id = UUID(str(payload["invoice_id"]))
         return QuoteDepositIntentOutcome(
-            invoice_id=UUID(str(payload["invoice_id"])),
+            invoice_id=invoice_id,
             quote_id=UUID(str(payload["quote_id"])),
             amount=Decimal(str(payload["amount"])).quantize(Decimal("0.01")),
             currency=str(payload["currency"]),
@@ -497,11 +605,11 @@ def _typed_intent_outcome(
             provider_public_key=provider_public_key,
             payment_reference=payment_reference,
             checkout_metadata=QuoteCheckoutMetadata(
-                payment_flow=str(metadata["payment_flow"]),
-                invoice_id=UUID(str(metadata["invoice_id"])),
-                invoice_number=str(metadata.get("invoice_number") or ""),
-                account_id=UUID(str(metadata["account_id"])),
-                provider_id=UUID(str(metadata["provider_id"])),
+                payment_flow="invoice_payment",
+                invoice_id=invoice_id,
+                invoice_number=str(checkout_payload.get("invoice_number") or ""),
+                account_id=account_id,
+                provider_id=UUID(str(checkout_payload["provider_id"])),
             ),
             checkout_url=(
                 str(payload["checkout_url"])
@@ -622,11 +730,27 @@ def initiate_quote_deposit(
             str(exc.detail),
             status_code=exc.status_code,
         ) from exc
-    outcome = _typed_intent_outcome(payload, replayed=False)
-    if outcome.amount != page.payable_amount or outcome.currency != page.currency:
+    outcome = _typed_intent_outcome(
+        payload,
+        account_id=page.subscriber_id,
+        replayed=False,
+    )
+    structural_link = db.scalar(
+        select(QuoteDepositInvoiceLink.id).where(
+            QuoteDepositInvoiceLink.quote_id == page.quote_id,
+            QuoteDepositInvoiceLink.invoice_id == outcome.invoice_id,
+            QuoteDepositInvoiceLink.account_id == page.subscriber_id,
+        )
+    )
+    if (
+        outcome.quote_id != page.quote_id
+        or structural_link is None
+        or outcome.amount != page.payable_amount
+        or outcome.currency != page.currency
+    ):
         raise _error(
             "amount_mismatch",
-            "The payment intent did not match the authoritative Quote amount",
+            "The payment intent did not match the authoritative Quote deposit",
         )
     return outcome
 
@@ -773,27 +897,28 @@ def verify_quote_deposit(
     intent = db.scalars(
         select(TopupIntent).where(TopupIntent.reference == reference)
     ).one_or_none()
-    intent_metadata = dict(intent.metadata_ or {}) if intent is not None else {}
-    try:
-        invoice_id = UUID(str(intent_metadata.get("invoice_id") or ""))
-    except ValueError as exc:
-        raise _error(
-            "reference_mismatch",
-            "Payment reference was not issued for this Quote",
-        ) from exc
-    invoice = db.get(Invoice, invoice_id)
-    invoice_metadata = dict(invoice.metadata_ or {}) if invoice is not None else {}
+    invoice_id = intent.invoice_id if intent is not None else None
+    invoice = db.get(Invoice, invoice_id) if invoice_id is not None else None
+    structural_link = (
+        db.scalar(
+            select(QuoteDepositInvoiceLink.id).where(
+                QuoteDepositInvoiceLink.quote_id == quote.id,
+                QuoteDepositInvoiceLink.invoice_id == invoice_id,
+                QuoteDepositInvoiceLink.account_id == quote.subscriber_id,
+            )
+        )
+        if invoice_id is not None
+        else None
+    )
     if (
         intent is None
         or intent.account_id != quote.subscriber_id
         or intent.provider_type != "paystack"
         or intent.expires_at is None
         or _as_utc(intent.expires_at) <= datetime.now(UTC)
-        or intent_metadata.get("payment_flow") != "invoice_payment"
         or invoice is None
         or invoice.account_id != quote.subscriber_id
-        or invoice_metadata.get("payment_flow") != "quote_deposit"
-        or str(invoice_metadata.get("quote_id") or "") != str(quote.id)
+        or structural_link is None
     ):
         raise _error(
             "reference_mismatch",

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from starlette.responses import Response
 
 from app.models.billing import Invoice, InvoiceStatus, TopupIntent
-from app.models.sales import Quote, QuoteStatus
+from app.models.sales import Quote, QuoteDepositInvoiceLink, QuoteStatus
 from app.schemas.portal import QuotePaymentIntentRequest
 from app.services import quote_deposits
 from app.services.customer_context import resolve_customer_context
@@ -123,18 +123,25 @@ def test_ineligible_quote_states_fail_closed(
 def test_paid_quote_deposit_invoice_fails_closed(db_session, subscriber, monkeypatch):
     quote = _quote(db_session, subscriber)
     _enable_paystack(monkeypatch)
+    invoice = Invoice(
+        account_id=subscriber.id,
+        status=InvoiceStatus.paid,
+        currency="NGN",
+        subtotal=Decimal("53750.00"),
+        total=Decimal("53750.00"),
+        balance_due=Decimal("0.00"),
+        metadata_={
+            "payment_flow": "quote_deposit",
+            "quote_id": str(quote.id),
+        },
+    )
+    db_session.add(invoice)
+    db_session.flush()
     db_session.add(
-        Invoice(
+        QuoteDepositInvoiceLink(
+            quote_id=quote.id,
+            invoice_id=invoice.id,
             account_id=subscriber.id,
-            status=InvoiceStatus.paid,
-            currency="NGN",
-            subtotal=Decimal("53750.00"),
-            total=Decimal("53750.00"),
-            balance_due=Decimal("0.00"),
-            metadata_={
-                "payment_flow": "quote_deposit",
-                "quote_id": str(quote.id),
-            },
         )
     )
     db_session.commit()
@@ -155,6 +162,38 @@ def test_missing_paystack_route_fails_closed(db_session, subscriber, monkeypatch
     assert exc_info.value.code == "sales.quote_deposits.paystack_unavailable"
 
 
+def test_multiple_payable_deposit_invoice_links_fail_closed(db_session, subscriber):
+    quote = _quote(db_session, subscriber)
+    for amount in (Decimal("53750.00"), Decimal("53749.00")):
+        invoice = Invoice(
+            account_id=subscriber.id,
+            status=InvoiceStatus.issued,
+            currency="NGN",
+            subtotal=amount,
+            total=amount,
+            balance_due=amount,
+        )
+        db_session.add(invoice)
+        db_session.flush()
+        db_session.add(
+            QuoteDepositInvoiceLink(
+                quote_id=quote.id,
+                invoice_id=invoice.id,
+                account_id=subscriber.id,
+            )
+        )
+    db_session.commit()
+
+    with pytest.raises(quote_deposits.QuoteDepositError) as exc_info:
+        quote_deposits._existing_payable_deposit_invoice(
+            db_session,
+            subscriber_id=subscriber.id,
+            quote_id=quote.id,
+        )
+
+    assert exc_info.value.code == "sales.quote_deposits.invoice_ambiguous"
+
+
 def test_initiation_replays_pending_server_owned_intent(
     db_session, subscriber, monkeypatch
 ):
@@ -171,10 +210,18 @@ def test_initiation_replays_pending_server_owned_intent(
     )
     db_session.add(invoice)
     db_session.flush()
+    db_session.add(
+        QuoteDepositInvoiceLink(
+            quote_id=quote.id,
+            invoice_id=invoice.id,
+            account_id=subscriber.id,
+        )
+    )
     provider_id = uuid4()
     binding_id = uuid4()
     intent = TopupIntent(
         account_id=subscriber.id,
+        invoice_id=invoice.id,
         provider_id=None,
         capability_binding_id=None,
         reference="DMAC-QUOTE-PENDING",
@@ -250,8 +297,16 @@ def test_verification_rejects_reference_from_another_quote(
     )
     db_session.add(invoice)
     db_session.flush()
+    db_session.add(
+        QuoteDepositInvoiceLink(
+            quote_id=other.id,
+            invoice_id=invoice.id,
+            account_id=subscriber.id,
+        )
+    )
     intent = TopupIntent(
         account_id=subscriber.id,
+        invoice_id=invoice.id,
         reference="DMAC-QUOTE-WRONG-REFERENCE",
         provider_type="paystack",
         currency="NGN",

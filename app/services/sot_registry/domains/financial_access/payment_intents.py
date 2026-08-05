@@ -164,7 +164,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
                         "locked TopupIntent identity, subscriber account, provider, "
-                        "reference, requested amount, status, and metadata evidence"
+                        "reference, requested amount, status, structural Invoice "
+                        "identity when applicable, and provenance metadata"
                     ),
                 ),
                 AuthorityInput(
@@ -183,7 +184,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "typed invoice or reseller scope, provider, reference, "
-                        "amount, currency, lifetime, actor, and flow evidence"
+                        "amount, currency, lifetime, actor, structural Invoice "
+                        "identity, and flow evidence"
                     ),
                 ),
                 AuthorityInput(
@@ -1142,8 +1144,8 @@ SERVICES: tuple[SOTService, ...] = (
                     owner="financial.topup_intents",
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
-                        "flush-only creation, replay, status, failure, metadata, "
-                        "scope lock, and event staging"
+                        "flush-only creation, replay, status, failure, structural "
+                        "Invoice linkage, provenance metadata, scope lock, and event staging"
                     ),
                 ),
                 AuthorityInput(

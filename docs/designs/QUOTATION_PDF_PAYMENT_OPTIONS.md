@@ -48,6 +48,14 @@ Paystack verification and payment recording, then deposit-evidenced quotation
 acceptance and order consequences. The browser adapters never write Quote,
 Invoice, intent, Payment, or SalesOrder state directly.
 
+`QuoteDepositInvoiceLink` is the structural Sale-to-Money identity between the
+quotation and every deposit Invoice attempt. `TopupIntent.invoice_id` is the
+structural checkout-to-document identity. Eligibility, replay, and verification
+join through those foreign keys; JSON metadata remains non-authoritative
+provider/reconciliation provenance. Migration 475 backfills both links from
+legacy metadata only during the controlled schema migration. Ambiguous multiple
+payable Invoice links fail closed rather than selecting one opportunistically.
+
 ## Artifact delivery
 
 Admin download generates or reuses the content-addressed `QuotePdfExport` and

@@ -803,6 +803,7 @@ from app.models.sales import (  # noqa: F401
     Quote,
     QuoteDeliveryRequest,
     QuoteDeliveryRequestStatus,
+    QuoteDepositInvoiceLink,
     QuoteLineItem,
     QuotePdfExport,
     QuoteStatus,
