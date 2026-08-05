@@ -29,6 +29,7 @@ from app.schemas.dispatch import (
 )
 from app.schemas.status_presentation import StatusTone
 from app.services import dispatch as dispatch_service
+from app.services import service_address as service_address_service
 from app.services import work_order_views
 from app.services.common import coerce_uuid
 from app.services.field.work_order_status import WORK_ORDER_TERMINAL_VALUES
@@ -77,6 +78,7 @@ class WorkOrderCreatePrefill:
     description: str | None
     priority: str
     work_type: str
+    address: str | None
 
 
 def _subscriber_label(subscriber: Subscriber | None) -> str:
@@ -306,6 +308,13 @@ def _task_create_prefill(db: Session, project_task_id: str) -> WorkOrderCreatePr
         description=task.description,
         priority=task.priority if task.priority in PRIORITY_OPTIONS else "normal",
         work_type="install",
+        address=(
+            str(project.customer_address).strip()
+            if str(project.customer_address or "").strip()
+            else service_address_service.format_address(
+                service_address_service.service_address(db, subscriber.id)
+            )
+        ),
     )
 
 

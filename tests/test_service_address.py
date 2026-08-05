@@ -5,9 +5,23 @@ from __future__ import annotations
 from app.models.subscriber import Address, AddressType
 from app.services.service_address import (
     address_parts,
+    format_address,
     pick_service_address,
     service_address,
 )
+
+
+def test_format_address_joins_populated_canonical_parts():
+    address = Address(
+        subscriber_id=None,
+        address_line1="12 Fiber Close",
+        city="Abuja",
+        region="FCT",
+        country_code="NG",
+    )
+
+    assert format_address(address) == "12 Fiber Close, Abuja, FCT, NG"
+    assert format_address(None) is None
 
 
 def _add(db, subscriber_id, **kw):

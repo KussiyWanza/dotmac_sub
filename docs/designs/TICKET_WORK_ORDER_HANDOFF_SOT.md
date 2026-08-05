@@ -28,6 +28,11 @@ delete so operational evidence cannot be orphaned. Generic work-order create
 and update contracts expose the field for reads only and cannot establish or
 change it.
 
+Ticket work-order site resolution belongs to this handoff coordinator. Explicit
+operator input wins; otherwise a linked project's customer address is used,
+followed by the subscriber's canonical service `Address`. The ticket UI displays
+and prefills that canonical service location but does not create a private copy.
+
 ## Lifecycle
 
 1. Helpdesk captures and triages the incident in the ticket owner.

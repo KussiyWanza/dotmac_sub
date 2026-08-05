@@ -7,7 +7,7 @@ import pytest
 from app.models.audit import AuditEvent
 from app.models.project import Project, ProjectTask
 from app.models.service_team import ServiceTeam, ServiceTeamMember, ServiceTeamType
-from app.models.subscriber import Subscriber
+from app.models.subscriber import Address, AddressType, Subscriber
 from app.models.support import Ticket
 from app.models.work_order import WorkOrder
 from app.schemas.dispatch import WorkOrderHeaderCreate, WorkOrderHeaderUpdate
@@ -147,6 +147,29 @@ def test_assigned_team_member_issues_many_idempotent_work_orders(db_session):
         == 2
     )
     assert team.id == ticket.service_team_id
+
+
+def test_ticket_work_order_defaults_to_subscriber_service_address(db_session):
+    subscriber, _team, actor_id, ticket = _ticket_with_team(db_session)
+    db_session.add(
+        Address(
+            subscriber_id=subscriber.id,
+            address_type=AddressType.service,
+            is_primary=True,
+            address_line1="8 Customer Avenue",
+            city="Abuja",
+        )
+    )
+    db_session.commit()
+
+    result = _issue(
+        db_session,
+        ticket_id=ticket.id,
+        actor_id=actor_id,
+        idempotency_key="service-address-default",
+    )
+
+    assert result.work_order.address == "8 Customer Avenue, Abuja"
 
 
 def test_handoff_rejects_non_member_and_terminal_ticket(db_session):

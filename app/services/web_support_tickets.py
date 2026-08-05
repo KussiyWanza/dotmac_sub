@@ -7,6 +7,7 @@ import io
 import json
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
@@ -30,6 +31,7 @@ from app.schemas.support import (
     TicketUpdate,
 )
 from app.services import (
+    service_address,
     sla_assignment,
     support_ticket_filters,
     ticket_mentions,
@@ -50,6 +52,43 @@ from app.services.list_query import (
 from app.services.status_presentation import ticket_status_presentation
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class TicketCustomerContext:
+    name: str
+    email: str | None
+    phone: str | None
+    service_address: str | None
+    subscriber_id: UUID
+
+
+def _ticket_customer_context(
+    db: Session, subscriber_id: UUID | None
+) -> TicketCustomerContext | None:
+    if subscriber_id is None:
+        return None
+    subscriber = db.get(Subscriber, subscriber_id)
+    if subscriber is None:
+        return None
+    name = (
+        subscriber.company_name
+        or subscriber.display_name
+        or " ".join(
+            part for part in (subscriber.first_name, subscriber.last_name) if part
+        ).strip()
+        or subscriber.account_number
+        or str(subscriber.id)
+    )
+    return TicketCustomerContext(
+        name=name,
+        email=subscriber.email,
+        phone=subscriber.phone,
+        service_address=service_address.format_address(
+            service_address.service_address(db, subscriber.id)
+        ),
+        subscriber_id=subscriber.id,
+    )
 
 
 class WebSupportTicketInputError(DomainError):
@@ -1408,6 +1447,7 @@ def build_ticket_detail_context(
         "staff_options": staff,
         "staff_lookup": _label_lookup(staff),
         "subscriber_lookup": _label_lookup(subscribers),
+        "customer_details": _ticket_customer_context(db, ticket.subscriber_id),
         "service_team_options": service_team_options(db),
         "service_team_lookup": _service_team_lookup(db),
         "sla_state": _ticket_sla_state(
