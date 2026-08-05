@@ -117,6 +117,15 @@ project lifecycle reconciler locks the native aggregate, reports drift, and
 idempotently rebuilds the projection. Unknown or stale projection state fails
 closed for mutation eligibility.
 
+Project numbers use the shared locked `project_number` document sequence with
+the projects-domain policy defaults `PROJ-`, four-digit padding, and start value
+one. Before reserving a number, every native creation path locks that sequence
+and advances it beyond the highest canonical `PROJ-<digits>` value already in
+the project aggregate. This makes preserved imports authoritative inputs to the
+counter and prevents a stale local sequence from restarting the series. The
+476 cutover repairs the native `4` through `7` drift as `PROJ-1104` through
+`PROJ-1107` and advances, but never rewinds, the sequence to at least 1108.
+
 State-changing commands stage audit and versioned domain-event evidence in the
 same transaction as authoritative state. Events are delivered after commit by
 the durable dispatcher. Retryable database concurrency failures retry the whole

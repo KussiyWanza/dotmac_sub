@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
     InboxMessage,
@@ -25,7 +26,7 @@ from app.models.team_inbox import (
     InboxTeamRole,
     InboxTeamSource,
 )
-from app.services import team_inbox_assignment, team_inbox_outbound
+from app.services import team_inbox_assignment, team_inbox_outbound, team_inbox_status
 from app.services.common import coerce_uuid
 
 _ALLOWED_LABEL_COLORS = {
@@ -449,23 +450,15 @@ def execute_macro_actions(
                 status_value = str(params.get("status") or "").strip().lower()
                 if status_value not in {"open", "pending", "snoozed", "resolved"}:
                     raise InboxOperationError("Unsupported conversation status.")
-                metadata = dict(conversation.metadata_ or {})
-                history = metadata.get("status_history")
-                if not isinstance(history, list):
-                    history = []
-                history.append(
-                    {
-                        "from": conversation.status,
-                        "to": status_value,
-                        "at": _now_iso(),
-                        "actor_id": str(actor_uuid) if actor_uuid else None,
-                        "source": "team_inbox_macro",
-                        "macro_id": str(macro.id),
-                    }
+                team_inbox_status.apply_status_transition(
+                    db,
+                    conversation=conversation,
+                    status=InboxConversationStatus(status_value),
+                    actor_person_id=actor_uuid,
+                    reason=team_inbox_status.InboxStatusReason.macro,
+                    source_id=f"macro:{macro.id}:{conversation.id}:{uuid4()}",
+                    macro_id=macro.id,
                 )
-                metadata["status_history"] = history[-50:]
-                conversation.status = status_value
-                conversation.metadata_ = metadata
             elif action_type == "add_tag":
                 label_name = str(params.get("tag") or params.get("label") or "").strip()
                 if not label_name:
@@ -633,22 +626,14 @@ def bulk_update_status(
         if conversation.status == clean_status:
             skipped.append(str(conversation.id))
             continue
-        metadata = dict(conversation.metadata_ or {})
-        history = metadata.get("status_history")
-        if not isinstance(history, list):
-            history = []
-        history.append(
-            {
-                "from": conversation.status,
-                "to": clean_status,
-                "at": _now_iso(),
-                "actor_id": str(actor_uuid) if actor_uuid else None,
-                "source": "team_inbox_bulk_status",
-            }
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus(clean_status),
+            actor_person_id=actor_uuid,
+            reason=team_inbox_status.InboxStatusReason.bulk_change,
+            source_id=f"bulk-status:{conversation.id}:{uuid4()}",
         )
-        metadata["status_history"] = history[-50:]
-        conversation.status = clean_status
-        conversation.metadata_ = metadata
         updated.append(str(conversation.id))
     db.flush()
     return {"updated": updated, "skipped": skipped, "status": clean_status}
@@ -782,7 +767,14 @@ def update_conversation_workflow(
         }
         conversation.snoozed_until = target
         if target is not None:
-            conversation.status = "snoozed"
+            team_inbox_status.apply_status_transition(
+                db,
+                conversation=conversation,
+                status=InboxConversationStatus.snoozed,
+                actor_person_id=coerce_uuid(actor_person_id),
+                reason=team_inbox_status.InboxStatusReason.snooze,
+                source_id=f"workflow-snooze:{conversation.id}:{uuid4()}",
+            )
     history.append(event)
     metadata["workflow_history"] = history[-50:]
     conversation.metadata_ = metadata
@@ -1138,21 +1130,17 @@ def auto_resolve_stale_conversations(
         if latest is not None and latest.direction == "inbound":
             continue
         metadata = dict(conversation.metadata_ or {})
-        history = metadata.get("status_history")
-        if not isinstance(history, list):
-            history = []
-        history.append(
-            {
-                "from": conversation.status,
-                "to": "resolved",
-                "at": clock.isoformat(),
-                "source": "team_inbox_auto_resolve",
-            }
-        )
-        metadata["status_history"] = history[-50:]
         metadata["auto_resolved_at"] = clock.isoformat()
-        conversation.status = "resolved"
         conversation.metadata_ = metadata
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.resolved,
+            actor_person_id=None,
+            reason=team_inbox_status.InboxStatusReason.auto_resolve,
+            source_id=f"auto-resolve:{conversation.id}:{clock.isoformat()}",
+            occurred_at=clock,
+        )
         resolved += 1
     db.flush()
     return resolved
@@ -1191,7 +1179,14 @@ def snooze_until_reply(
     metadata["workflow_history"] = history[-50:]
     conversation.metadata_ = metadata
     conversation.snoozed_until = None
-    conversation.status = "snoozed"
+    team_inbox_status.apply_status_transition(
+        db,
+        conversation=conversation,
+        status=InboxConversationStatus.snoozed,
+        actor_person_id=coerce_uuid(actor_person_id),
+        reason=team_inbox_status.InboxStatusReason.snooze,
+        source_id=f"snooze-until-reply:{conversation.id}:{uuid4()}",
+    )
     db.flush()
     return conversation
 
@@ -1249,7 +1244,15 @@ def wake_due_snoozed_conversations(
         # A conversation resolved while asleep stays resolved: the wake time
         # passing is not a reason to reopen closed work.
         if conversation.status == "snoozed":
-            conversation.status = "open"
+            team_inbox_status.apply_status_transition(
+                db,
+                conversation=conversation,
+                status=InboxConversationStatus.open,
+                actor_person_id=None,
+                reason=team_inbox_status.InboxStatusReason.snooze_expired,
+                source_id=f"snooze-expired:{conversation.id}:{moment.isoformat()}",
+                occurred_at=moment,
+            )
         woken += 1
     db.flush()
     return woken
@@ -1290,7 +1293,14 @@ def wake_conversation(
     conversation.metadata_ = metadata
     conversation.snoozed_until = None
     if conversation.status == "snoozed":
-        conversation.status = "open"
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.open,
+            actor_person_id=None,
+            reason=team_inbox_status.InboxStatusReason.snooze_expired,
+            source_id=f"wake:{source}:{conversation.id}:{uuid4()}",
+        )
     db.flush()
     return True
 
@@ -1325,7 +1335,14 @@ def wake_on_inbound(db: Session, *, conversation: InboxConversation) -> bool:
     conversation.metadata_ = metadata
     conversation.snoozed_until = None
     if conversation.status == "snoozed":
-        conversation.status = "open"
+        team_inbox_status.apply_status_transition(
+            db,
+            conversation=conversation,
+            status=InboxConversationStatus.open,
+            actor_person_id=None,
+            reason=team_inbox_status.InboxStatusReason.snooze_expired,
+            source_id=f"wake-on-inbound:{conversation.id}:{uuid4()}",
+        )
     db.flush()
     return True
 

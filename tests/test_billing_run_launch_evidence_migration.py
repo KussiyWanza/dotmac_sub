@@ -36,7 +36,17 @@ def test_billing_run_evidence_is_the_single_migration_head() -> None:
     # reconciliation (423), conversation handoff (422), service-extension
     # activity (421), billing-run evidence (420), and
     # customer WHT (419).
-    assert script.get_heads() == ["475_inbox_conversation_lead_links"]
+    # Single-headed with the billing-run evidence revision in the head's
+    # ancestry. Naming the exact head made every later migration break this
+    # test for no defect.
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert "420_billing_run_launch_evidence" in {
+        item.revision
+        for item in script.iterate_revisions(
+            heads[0], "420_billing_run_launch_evidence", inclusive=True
+        )
+    }
     assert (
         script.get_revision("464_survey_lifecycle_and_creation").down_revision
         == "463_outage_customer_notices"

@@ -135,7 +135,10 @@ routing and per-account reconciliation. Independent of workstream B.
 2. Every migrated live account has `bank_name`, `account_name`, `account_number`,
    derived `account_last4`, currency, active state, and explicit presentment order.
 3. Portal, reseller portal, `/api/me`, invoice web view, and new invoice renders
-   show the owner-backed accounts. Archived invoice exports remain unchanged.
+   show the owner-backed accounts. New quotation snapshots also select the
+   typed primary account for their currency and retain its identity as internal
+   provenance while displaying only Bank, Account Number, and Account Name.
+   Archived invoice and quotation exports remain unchanged.
 4. Do not edit collection-account payment details during the rollback soak: old
    code can read only the frozen snapshot. After verification, remove the snapshot
    and its specs in the immediate contract change.

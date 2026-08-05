@@ -1,0 +1,135 @@
+{% extends "layouts/customer.html" %}
+
+{% block title %}Pay Quote - Customer Portal{% endblock %}
+
+{% block content %}
+<div class="space-y-6" x-data="quotePaymentPage()">
+    <div>
+        <nav class="mb-2 flex items-center gap-2 text-sm text-stone-500 dark:text-stone-400">
+            <a href="/portal/quotes" class="hover:text-[var(--color-brand-600)]">Quotes</a>
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+            <span class="text-stone-900 dark:text-white">Pay quote</span>
+        </nav>
+        <h1 class="text-2xl font-bold text-stone-900 dark:text-white">Pay with Paystack</h1>
+        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Review the server-calculated deposit before opening secure checkout.</p>
+    </div>
+
+    <section class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
+        <div class="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+                <p class="text-sm font-medium text-stone-500 dark:text-stone-400">Quote reference</p>
+                <p class="mt-1 break-all text-sm font-semibold text-stone-900 dark:text-white">{{ payment.quote_id }}</p>
+                {% if payment.expires_at %}
+                <p class="mt-2 text-sm text-stone-500 dark:text-stone-400">Expires {{ payment.expires_at | portal_datetime('%b %d, %Y', include_tz=False) }}</p>
+                {% endif %}
+            </div>
+            <div class="text-left sm:text-right">
+                <p class="text-sm font-medium text-stone-500 dark:text-stone-400">Deposit due</p>
+                <p class="mt-1 text-3xl font-bold text-stone-900 dark:text-white">{{ payment.currency }} {{ "{:,.2f}".format(payment.payable_amount) }}</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm dark:border-stone-700 dark:bg-stone-800">
+        <h2 class="text-lg font-semibold text-stone-900 dark:text-white">Secure online payment</h2>
+        <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">Your payable amount is derived from the current quotation and will be rechecked before a payment intent is created.</p>
+        <p x-show="errorMessage" x-cloak class="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300" x-text="errorMessage"></p>
+        <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+                type="button"
+                @click="startPayment()"
+                :disabled="processing"
+                class="inline-flex items-center justify-center rounded-xl bg-[var(--color-brand-600)] px-8 py-3.5 text-sm font-semibold text-white shadow-lg transition hover:bg-[var(--color-brand-700)] disabled:cursor-not-allowed disabled:opacity-60">
+                <span x-text="processing ? 'Processing...' : 'Pay {{ payment.currency }} {{ "{:,.2f}".format(payment.payable_amount) }}'"></span>
+            </button>
+            <a href="/portal/quotes" class="text-sm font-medium text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200">Back to quotes</a>
+        </div>
+    </section>
+</div>
+
+{% include "customer/billing/_payment_intent_js.html" %}
+<script>
+function quotePaymentPage() {
+    const storageKey = 'quote-payment-idempotency:{{ payment.quote_id }}';
+    return {
+        processing: false,
+        errorMessage: '',
+        csrfToken() {
+            const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+            return match ? decodeURIComponent(match[1]) : '';
+        },
+        idempotencyKey() {
+            let key = window.sessionStorage.getItem(storageKey);
+            if (!key) {
+                key = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+                window.sessionStorage.setItem(storageKey, key);
+            }
+            return key;
+        },
+        async refreshCsrf() {
+            try {
+                await fetch('/portal/auth/session', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+            } catch (e) { /* best effort */ }
+            return this.csrfToken();
+        },
+        async startPayment() {
+            this.processing = true;
+            this.errorMessage = '';
+            const key = this.idempotencyKey();
+            let result;
+            try {
+                result = await submitPaymentIntent({
+                    endpoint: '/portal/quotes/{{ payment.quote_id }}/pay/intent',
+                    verifyPath: '/portal/quotes/{{ payment.quote_id }}/pay/verify',
+                    csrfToken: this.csrfToken(),
+                    refreshCsrf: () => this.refreshCsrf(),
+                    idempotencyKey: key,
+                    body: { idempotency_key: key },
+                });
+            } catch (error) {
+                this.processing = false;
+                this.errorMessage = error.message || 'Unable to start payment.';
+                return;
+            }
+            if (result.handled) {
+                return;
+            }
+            const intent = result.intent;
+            if (!intent.amount || !intent.reference || !intent.provider_public_key || !intent.customer_email) {
+                this.processing = false;
+                this.errorMessage = 'Paystack checkout is unavailable. Please try again later.';
+                return;
+            }
+            if (typeof PaystackPop === 'undefined') {
+                this.processing = false;
+                this.errorMessage = 'The payment window failed to load. Please refresh and try again.';
+                return;
+            }
+            try {
+                const amountMinor = Math.round(Number(intent.amount) * 100);
+                if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+                    throw new Error('The server returned an invalid payment amount.');
+                }
+                const handler = PaystackPop.setup({
+                    key: intent.provider_public_key,
+                    email: intent.customer_email,
+                    amount: amountMinor,
+                    currency: intent.currency,
+                    ref: intent.reference,
+                    metadata: intent.checkout_metadata,
+                    callback: function(response) {
+                        window.location.href = '/portal/quotes/{{ payment.quote_id }}/pay/verify?reference=' + encodeURIComponent(response.reference);
+                    },
+                    onClose: () => { this.processing = false; },
+                });
+                handler.openIframe();
+            } catch (error) {
+                this.processing = false;
+                this.errorMessage = error.message || 'Could not open Paystack checkout.';
+            }
+        },
+    };
+}
+</script>
+<script src="https://js.paystack.co/v1/inline.js"></script>
+{% endblock %}

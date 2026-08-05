@@ -651,6 +651,38 @@ def test_wifi_password_change_not_re_emitted_on_verify_plan():
     assert OltModifyDescription not in _types(plan)
 
 
+def test_wifi_only_change_in_bootstrap_mode_stays_scoped():
+    """A WiFi edit carrying a password must not widen into an OLT-side plan.
+
+    ``OntFeatureService.set_wifi_config`` selects ``bootstrap`` whenever a
+    password is supplied (the value is write-only, so observed state can never
+    prove drift). Scoping used to require ``sync``, so every SSID+PSK edit fell
+    through to a full OLT-side plan — which can emit ``OltDeleteServicePort``
+    against a live customer service port.
+    """
+    desired = _desired(wifi_ssid="NEW_SSID", wifi_password_ref="new-pass")
+    observed = _synced_observed(_desired(description="old", wan_service_port_index=999))
+    plan = compute_plan(
+        desired,
+        observed,
+        "bootstrap",
+        proposed_fields=frozenset({"wifi_ssid", "wifi_password_ref"}),
+    )
+
+    assert OltDeleteServicePort not in _types(plan)
+    assert not any(action.surface == "olt" for action in plan.actions)
+    assert AcsSetWifiConfig in _types(plan)
+
+
+def test_bootstrap_without_proposed_fields_still_plans_olt_side():
+    """A GenieACS BOOTSTRAP event carries no proposed fields and must not be scoped."""
+    desired = _desired()
+    observed = _observed(olt=_olt_observed(olt_present=False))
+    plan = compute_plan(desired, observed, "bootstrap", proposed_fields=frozenset())
+
+    assert any(action.surface == "olt" for action in plan.actions)
+
+
 def test_wifi_ssid_change_scopes_out_unrelated_olt_drift():
     desired = _desired(wifi_ssid="NEW_SSID")
     observed = _synced_observed(_desired(description="old"))

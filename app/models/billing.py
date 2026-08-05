@@ -1726,6 +1726,7 @@ class TopupIntent(Base):
     __tablename__ = "topup_intents"
     __table_args__ = (
         Index("ix_topup_intents_account_id", "account_id"),
+        Index("ix_topup_intents_invoice_id", "invoice_id"),
         Index("uq_topup_intents_reference", "reference", unique=True),
         Index(
             "uq_topup_intents_deposit_idempotency",
@@ -1759,6 +1760,9 @@ class TopupIntent(Base):
     )
     billing_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("billing_accounts.id")
+    )
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="RESTRICT")
     )
     completed_payment_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("payments.id")
@@ -1801,6 +1805,7 @@ class TopupIntent(Base):
 
     account = relationship("Subscriber")
     billing_account = relationship("BillingAccount")
+    invoice = relationship("Invoice")
     completed_payment = relationship("Payment", back_populates="topup_intents")
     provider = relationship("PaymentProvider")
 

@@ -61,6 +61,13 @@ Sales Leads now uses the generic URL/pagination contract together with a typed
 once, and correlated related-record predicates keep the PostgreSQL `json` Lead
 row out of any full-row `DISTINCT` operation.
 
+Sales Quotes now uses the same owner pattern. `sales.service` owns one typed
+Quote list specification shared by the exact count and result page; correlated
+Lead, Party, active contact-point, and Subscriber `EXISTS` predicates keep the
+PostgreSQL `json` Quote row out of full-row `DISTINCT`. The web projection only
+translates the normalized outcome into `ListQuery`/`PageMeta` and renders an
+explicit retryable failure state.
+
 Each is independent; migrate and validate one at a time. The reference
 implementation, the two macros, and this recipe make each a mechanical change
 rather than a design problem.

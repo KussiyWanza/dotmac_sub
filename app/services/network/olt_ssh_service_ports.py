@@ -188,6 +188,46 @@ def _verify_conflicted_service_port(
     return False, last_message, None
 
 
+def _find_service_port_matching_intent(
+    olt: OLTDevice,
+    *,
+    fsp: str,
+    ont_id: int,
+    gem_index: int,
+    vlan_id: int,
+    user_vlan: int | str | None,
+    tag_transform: str,
+) -> tuple[bool, str, ServicePortEntry | None]:
+    """Find this ONT's service-port matching the requested intent.
+
+    Used when the OLT reports an idempotent "already exists" conflict without
+    naming the conflicting index, so there is nothing to look up by index.
+    Retries because the per-PON table can lag a create.
+    """
+    last_message = f"No service-port on {fsp} ONT {ont_id} matched the requested intent"
+    for attempt in range(_SERVICE_PORT_VERIFY_ATTEMPTS):
+        list_ok, list_msg, ports = get_service_ports_for_ont(olt, fsp, ont_id)
+        if list_ok:
+            for port in ports:
+                if _service_port_matches_intent(
+                    port,
+                    fsp=fsp,
+                    ont_id=ont_id,
+                    gem_index=gem_index,
+                    vlan_id=vlan_id,
+                    user_vlan=user_vlan,
+                    tag_transform=tag_transform,
+                ):
+                    return True, list_msg, port
+        else:
+            last_message = list_msg
+
+        if attempt + 1 < _SERVICE_PORT_VERIFY_ATTEMPTS:
+            time.sleep(_SERVICE_PORT_VERIFY_DELAY_SEC)
+
+    return False, last_message, None
+
+
 def clone_service_ports(
     db: Session, olt_id: str, fsp: str, ont_id: int
 ) -> tuple[bool, str]:
@@ -346,6 +386,49 @@ def create_single_service_port(
 
         if core.is_error_output(output):
             conflict_match = _CONFLICTED_SERVICE_PORT_RE.search(output)
+            if is_huawei_idempotent_conflict(output) and not conflict_match:
+                # The OLT reports "Service virtual port has existed already"
+                # without naming the conflicting index. Resolve it by exact
+                # readback of this ONT's service-ports rather than failing:
+                # a retry after a partial run must not fail on work the first
+                # run already completed.
+                read_ok, read_msg, existing_port = _find_service_port_matching_intent(
+                    olt,
+                    fsp=fsp,
+                    ont_id=ont_id,
+                    gem_index=gem_index,
+                    vlan_id=vlan_id,
+                    user_vlan=user_vlan,
+                    tag_transform=tag_transform,
+                )
+                if not read_ok or existing_port is None:
+                    return (
+                        False,
+                        (
+                            "OLT reported the service-port already exists, but no "
+                            f"matching service-port was found on readback: {read_msg}"
+                        ),
+                        None,
+                    )
+                logger.info(
+                    "Service-port already exists on OLT %s (resolved by readback): "
+                    "index=%d VLAN=%d GEM=%d ONT=%d %s",
+                    olt.name,
+                    existing_port.index,
+                    vlan_id,
+                    gem_index,
+                    ont_id,
+                    fsp,
+                )
+                core._invalidate_olt_read_cache(olt, "service_ports", "running_config")
+                return (
+                    True,
+                    (
+                        "Service-port already exists with the requested "
+                        f"ONT/VLAN/GEM tuple at index {existing_port.index}"
+                    ),
+                    existing_port.index,
+                )
             if is_huawei_idempotent_conflict(output) and conflict_match:
                 conflicted_index = int(conflict_match.group(1))
                 read_ok, read_msg, existing_port = _verify_conflicted_service_port(

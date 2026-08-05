@@ -16,12 +16,13 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
-from app.models.billing import Invoice, InvoiceStatus, Payment
+from app.models.billing import Invoice, InvoiceStatus, Payment, PaymentProviderType
 from app.models.party import Party
 from app.models.project import ProjectTemplate
 from app.models.sales import Quote, SalesOrder
 from app.models.subscriber import Subscriber
 from app.services import quote_deposits
+from app.services.payment_routing import GatewayOption
 from app.services.sales import selfserve
 from app.services.subscriber import _default_reseller_id
 
@@ -94,6 +95,31 @@ def test_quote_lifecycle_native(db_session):
     payload = selfserve.build_portal_quote_payload(db_session, quote)
     deposit = Decimal(payload["deposit_amount"])
     assert deposit > 0
+
+    # Resolve the browser-safe page before the protected POST. This typed read
+    # owns eligibility and amount resolution and must not create ledger state.
+    option = GatewayOption(
+        provider_type=PaymentProviderType.paystack,
+        provider_id=uuid.uuid4(),
+        installation_id=uuid.uuid4(),
+        capability_binding_id=uuid.uuid4(),
+        presentment_priority=100,
+    )
+    invoice_count_before = db_session.query(Invoice).count()
+    with patch("app.services.quote_deposits.gateway_options", return_value=[option]):
+        payment_page = quote_deposits.quote_payment_page(
+            db_session,
+            quote_deposits.QuotePaymentQuery(
+                quote_id=quote.id,
+                authorized_subscriber_ids=(sub.id,),
+                observed_at=datetime.now(UTC),
+            ),
+        )
+    assert payment_page.quote_id == quote.id
+    assert payment_page.subscriber_id == sub.id
+    assert payment_page.payable_amount == deposit
+    assert payment_page.provider_type == "paystack"
+    assert db_session.query(Invoice).count() == invoice_count_before
 
     # 2. Initiate deposit — a real issued Invoice lands in the ledger.
     intent = {"provider_type": "paystack", "reference": "flow_ref_1", "currency": "NGN"}

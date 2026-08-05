@@ -267,7 +267,9 @@ def test_live_indicator_and_search_match_the_sidebar_contract():
     assert 'url.searchParams.set("search", search)' in body
     assert 'url.searchParams.delete("page")' in body
     assert "conversation_id" in body
-    assert 'target: "#inbox-sidebar-content"' in body
+    assert "this.requestInboxList(url" in body
+    assert 'intent: "search"' in body
+    assert 'historyMode: "replace"' in body
 
 
 def test_stats_filters_scroll_without_hiding_the_conversation_queue():
@@ -287,6 +289,19 @@ def test_stats_filters_scroll_without_hiding_the_conversation_queue():
         "min-height: 8rem",
     ):
         assert contract in REPLICA_CSS
+
+
+def test_sidebar_filters_replace_stale_requests_and_expose_busy_state():
+    assert 'hx-sync="this:replace"' in SIDEBAR
+    assert 'hx-sync="#inbox-sidebar-content:replace"' in SIDEBAR
+    assert ':aria-busy="filterLoading.toString()"' in SIDEBAR
+    assert "Updating conversations" in SIDEBAR
+    assert "stale.xhr.abort()" in JAVASCRIPT
+    assert "if (this.filterLoading) return" in JAVASCRIPT
+    assert 'document.body.addEventListener("htmx:sendAbort", release)' in JAVASCRIPT
+    assert "InboxQueueComposition.sidebar" in ROUTES
+    assert "if can_manage_inbox and not is_list_fragment_request" in ROUTES
+    assert 'htmx_target == "inbox-conversation-queue"' in ROUTES
 
 
 def test_sidebar_resize_handle_has_exact_shape_states_and_tooltip():
@@ -571,9 +586,7 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
     ):
         assert contract in SIDEBAR
     for contract in (
-        'hx-target="#inbox-conversation-queue"',
-        'hx-select="#inbox-conversation-queue"',
-        'hx-swap="outerHTML"',
+        '@click.prevent="navigatePage(',
         "border border-slate-200 bg-white",
         "hover:bg-slate-50",
         "Page {{ page_meta.page }}",
@@ -585,8 +598,8 @@ def test_empty_state_and_inbox_pagination_are_scoped_to_the_queue():
 
 
 def test_realtime_activity_waits_for_an_explicit_queue_refresh():
-    marker = JAVASCRIPT.index("refreshConversationList()")
-    body = JAVASCRIPT[marker : marker + 650]
+    marker = JAVASCRIPT.index('refreshConversationList(intent = "manual_refresh")')
+    body = JAVASCRIPT[marker : marker + 850]
     assert "this.newListActivityAvailable = false" in body
     assert 'target: "#inbox-conversation-queue"' in body
     assert 'select: "#inbox-conversation-queue"' in body
@@ -594,6 +607,21 @@ def test_realtime_activity_waits_for_an_explicit_queue_refresh():
     event_marker = JAVASCRIPT.index("this.newListActivityAvailable = true")
     event_body = JAVASCRIPT[event_marker - 250 : event_marker + 500]
     assert "this.refreshSidebar()" not in event_body
+
+
+def test_every_list_request_uses_one_latest_request_wins_coordinator():
+    for contract in (
+        "requestInboxList(urlValue, options = {})",
+        "beginListRequest(intent, operator = false)",
+        "__inboxListSequence",
+        "sequence !== this.listRequestSequence",
+        "event.detail.shouldSwap = false",
+        'intent: "search"',
+        'intent: "pagination"',
+        'intent: "history"',
+        'this.refreshSidebar("poll")',
+    ):
+        assert contract in JAVASCRIPT
 
 
 def test_stats_filter_header_uses_the_page_scoped_amber_contract():

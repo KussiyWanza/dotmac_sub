@@ -31,7 +31,14 @@ def test_radius_session_projection_remains_in_the_single_migration_chain() -> No
 
     assert module.revision == "408_radius_session_latest_projection"
     assert module.down_revision == "407_retire_parallel_radius_refresh"
-    assert script.get_heads() == ["475_inbox_conversation_lead_links"]
+    # Single-headed with this revision in the head's ancestry. Naming the exact
+    # head made every later migration break this test for no defect.
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert module.revision in {
+        item.revision
+        for item in script.iterate_revisions(heads[0], module.revision, inclusive=True)
+    }
     assert (
         script.get_revision("464_survey_lifecycle_and_creation").down_revision
         == "463_outage_customer_notices"

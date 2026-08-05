@@ -231,6 +231,55 @@ class LeadListQueryResult:
     summary: LeadPipelineSummary
 
 
+class QuoteListSortField(StrEnum):
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+
+
+class QuoteListSortDirection(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteListQueryInput:
+    """Raw adapter values for the authoritative Quote list query."""
+
+    search_term: str | None = None
+    status: str | None = None
+    lead_id: str | None = None
+    sort_field: str | None = None
+    sort_direction: str | None = None
+    page: int = 1
+    page_size: int = 25
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteListQuery:
+    """Normalized Quote scope shared by rows, count, ordering, and pagination."""
+
+    search_term: str | None
+    status: QuoteStatus | None
+    lead_id: uuid.UUID | None
+    sort_field: QuoteListSortField
+    sort_direction: QuoteListSortDirection
+    page: int
+    page_size: int
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.page_size
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteListQueryResult:
+    """One unique, deterministically ordered Quote page and its exact count."""
+
+    items: tuple[Quote, ...]
+    total_count: int
+    query: QuoteListQuery
+
+
 @dataclass(frozen=True, slots=True)
 class _LeadListFilters:
     search_term: str | None
@@ -242,11 +291,32 @@ class _LeadListFilters:
     is_active: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _QuoteListFilters:
+    search_term: str | None
+    status: str | None
+    lead_id: uuid.UUID | None
+    is_active: bool
+
+
 def normalize_lead_search(value: str | None) -> str | None:
     """Collapse user-entered whitespace without changing search casing."""
 
     normalized = " ".join(str(value or "").split())
     return normalized or None
+
+
+def normalize_quote_search(value: str | None) -> str | None:
+    """Collapse whitespace while retaining the operator's literal search text."""
+
+    normalized = " ".join(str(value or "").split())
+    return normalized or None
+
+
+def _escape_like_pattern(value: str) -> str:
+    """Treat LIKE metacharacters as ordinary user-entered search characters."""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _optional_uuid_filter(value: str | None) -> uuid.UUID | None:
@@ -305,6 +375,33 @@ def _normalize_lead_list_query(
         sort_direction=(
             _optional_enum_filter(request.sort_direction, LeadListSortDirection)
             or LeadListSortDirection.DESC
+        ),
+        page=max(1, request.page),
+        page_size=request.page_size if request.page_size in (10, 25, 50, 100) else 25,
+    )
+
+
+def _normalize_quote_list_query(
+    db: Session,
+    request: QuoteListQueryInput,
+) -> QuoteListQuery:
+    lead_id = _optional_uuid_filter(request.lead_id)
+    if lead_id is not None:
+        selected_lead = db.get(Lead, lead_id)
+        if selected_lead is None or not selected_lead.is_active:
+            lead_id = None
+
+    return QuoteListQuery(
+        search_term=normalize_quote_search(request.search_term),
+        status=_optional_enum_filter(request.status, QuoteStatus),
+        lead_id=lead_id,
+        sort_field=(
+            _optional_enum_filter(request.sort_field, QuoteListSortField)
+            or QuoteListSortField.CREATED_AT
+        ),
+        sort_direction=(
+            _optional_enum_filter(request.sort_direction, QuoteListSortDirection)
+            or QuoteListSortDirection.DESC
         ),
         page=max(1, request.page),
         page_size=request.page_size if request.page_size in (10, 25, 50, 100) else 25,
@@ -391,6 +488,84 @@ def _lead_search_predicate(search_term: str) -> ColumnElement[bool]:
     )
 
 
+def _quote_search_predicate(search_term: str) -> ColumnElement[bool]:
+    """Search authoritative Quote relationships without multiplying Quote rows."""
+
+    escaped = _escape_like_pattern(search_term)
+    pattern = f"%{escaped}%"
+    subscriber_full_name = func.trim(
+        func.coalesce(Subscriber.first_name, "")
+        + " "
+        + func.coalesce(Subscriber.last_name, "")
+    )
+    subscriber_matches = (
+        select(1)
+        .where(
+            Subscriber.id == Quote.subscriber_id,
+            or_(
+                Subscriber.display_name.ilike(pattern, escape="\\"),
+                subscriber_full_name.ilike(pattern, escape="\\"),
+                Subscriber.first_name.ilike(pattern, escape="\\"),
+                Subscriber.last_name.ilike(pattern, escape="\\"),
+                Subscriber.email.ilike(pattern, escape="\\"),
+            ),
+        )
+        .correlate(Quote)
+        .exists()
+    )
+    lead_matches = (
+        select(1)
+        .where(
+            Lead.id == Quote.lead_id,
+            Lead.title.ilike(pattern, escape="\\"),
+        )
+        .correlate(Quote)
+        .exists()
+    )
+    party_matches = (
+        select(1)
+        .select_from(Lead)
+        .join(Party, Party.id == Lead.party_id)
+        .where(
+            Lead.id == Quote.lead_id,
+            Party.display_name.ilike(pattern, escape="\\"),
+        )
+        .correlate(Quote)
+        .exists()
+    )
+    contact_conditions: list[ColumnElement[bool]] = [
+        PartyContactPoint.display_value.ilike(pattern, escape="\\"),
+        PartyContactPoint.normalized_value.ilike(pattern, escape="\\"),
+    ]
+    digits = "".join(character for character in search_term if character.isdigit())
+    if len(digits) >= 4:
+        contact_conditions.append(
+            (PartyContactPoint.channel_type == "phone")
+            & _phone_search_value(PartyContactPoint.display_value).ilike(
+                f"%{digits}%", escape="\\"
+            )
+        )
+    contact_matches = (
+        select(1)
+        .select_from(Lead)
+        .join(PartyContactPoint, PartyContactPoint.party_id == Lead.party_id)
+        .where(
+            Lead.id == Quote.lead_id,
+            PartyContactPoint.is_active.is_(True),
+            or_(*contact_conditions),
+        )
+        .correlate(Quote)
+        .exists()
+    )
+    return or_(
+        cast(Quote.id, String).ilike(pattern, escape="\\"),
+        lead_matches,
+        party_matches,
+        contact_matches,
+        subscriber_matches,
+    )
+
+
 def _lead_list_predicates(
     filters: _LeadListFilters,
 ) -> tuple[ColumnElement[bool], ...]:
@@ -418,6 +593,28 @@ def _lead_list_filters(query: LeadListQuery) -> _LeadListFilters:
         stage_id=query.stage_id,
         owner_agent_id=query.owner_agent_id,
         lead_source=query.lead_source.value if query.lead_source is not None else None,
+        is_active=True,
+    )
+
+
+def _quote_list_predicates(
+    filters: _QuoteListFilters,
+) -> tuple[ColumnElement[bool], ...]:
+    predicates: list[ColumnElement[bool]] = [Quote.is_active == filters.is_active]
+    if filters.status is not None:
+        predicates.append(Quote.status == filters.status)
+    if filters.lead_id is not None:
+        predicates.append(Quote.lead_id == filters.lead_id)
+    if filters.search_term is not None:
+        predicates.append(_quote_search_predicate(filters.search_term))
+    return tuple(predicates)
+
+
+def _quote_list_filters(query: QuoteListQuery) -> _QuoteListFilters:
+    return _QuoteListFilters(
+        search_term=query.search_term,
+        status=query.status.value if query.status is not None else None,
+        lead_id=query.lead_id,
         is_active=True,
     )
 
@@ -1616,6 +1813,46 @@ class Leads(ListResponseMixin):
 
 class Quotes(ListResponseMixin):
     @staticmethod
+    def query(db: Session, request: QuoteListQueryInput) -> QuoteListQueryResult:
+        """Return one Quote page from the shared, read-only query specification."""
+
+        normalized = _normalize_quote_list_query(db, request)
+        predicates = _quote_list_predicates(_quote_list_filters(normalized))
+        total_count = int(
+            db.query(func.count(Quote.id)).filter(*predicates).scalar() or 0
+        )
+        total_pages = max(
+            1,
+            (total_count + normalized.page_size - 1) // normalized.page_size,
+        )
+        if normalized.page > total_pages:
+            normalized = replace(normalized, page=total_pages)
+
+        order_columns = {
+            QuoteListSortField.CREATED_AT.value: Quote.created_at,
+            QuoteListSortField.UPDATED_AT.value: Quote.updated_at,
+        }
+        rows_query = db.query(Quote).filter(*predicates)
+        rows_query = apply_ordering(
+            rows_query,
+            normalized.sort_field.value,
+            normalized.sort_direction.value,
+            order_columns,
+        ).order_by(Quote.id.asc())
+        items = tuple(
+            apply_pagination(
+                rows_query,
+                normalized.page_size,
+                normalized.offset,
+            ).all()
+        )
+        return QuoteListQueryResult(
+            items=items,
+            total_count=total_count,
+            query=normalized,
+        )
+
+    @staticmethod
     def create(
         db: Session,
         payload: QuoteCreate,
@@ -1718,43 +1955,13 @@ class Quotes(ListResponseMixin):
         offset: int,
         search: str | None = None,
     ):
-        query = db.query(Quote)
-        if lead_id:
-            query = query.filter(Quote.lead_id == coerce_uuid(lead_id))
-        if status:
-            query = query.filter(
-                Quote.status == _enum_str(status, QuoteStatus, "status")
-            )
-        if search:
-            like = f"%{search.strip()}%"
-            query = (
-                query.outerjoin(Subscriber, Quote.subscriber_id == Subscriber.id)
-                .outerjoin(Lead, Quote.lead_id == Lead.id)
-                .outerjoin(Party, Lead.party_id == Party.id)
-                .outerjoin(
-                    PartyContactPoint,
-                    (PartyContactPoint.party_id == Party.id)
-                    & PartyContactPoint.is_active.is_(True),
-                )
-                .filter(
-                    or_(
-                        Subscriber.display_name.ilike(like),
-                        Subscriber.first_name.ilike(like),
-                        Subscriber.last_name.ilike(like),
-                        Subscriber.email.ilike(like),
-                        Party.display_name.ilike(like),
-                        PartyContactPoint.display_value.ilike(like),
-                        PartyContactPoint.normalized_value.ilike(like),
-                        Lead.title.ilike(like),
-                        cast(Quote.id, String).ilike(like),
-                    )
-                )
-                .distinct()
-            )
-        if is_active is None:
-            query = query.filter(Quote.is_active.is_(True))
-        else:
-            query = query.filter(Quote.is_active == is_active)
+        filters = _QuoteListFilters(
+            search_term=normalize_quote_search(search),
+            status=_enum_str(status, QuoteStatus, "status") if status else None,
+            lead_id=coerce_uuid(lead_id) if lead_id else None,
+            is_active=True if is_active is None else is_active,
+        )
+        query = db.query(Quote).filter(*_quote_list_predicates(filters))
         query = apply_ordering(
             query,
             order_by,

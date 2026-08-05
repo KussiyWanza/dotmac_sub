@@ -197,8 +197,15 @@ _TR069_PROFILE_ONLY_FIELDS = frozenset({"tr069_profile_id"})
 
 
 def _is_wifi_only_change(mode: ReconcileMode, proposed_fields: frozenset[str]) -> bool:
+    # ``bootstrap`` counts here as well as ``sync``. Setting a WiFi password
+    # forces bootstrap mode (the password is write-only, so observed state can
+    # never prove drift), and restricting this to ``sync`` meant every SSID+PSK
+    # edit fell through to a full OLT-side plan — one that can emit
+    # OltDeleteServicePort against a live customer service port. A BOOTSTRAP
+    # event from GenieACS carries no proposed fields, so it still gets the full
+    # plan via the ``bool(proposed_fields)`` guard.
     return (
-        mode == "sync"
+        mode in ("sync", "bootstrap")
         and bool(proposed_fields)
         and proposed_fields <= _WIFI_ONLY_FIELDS
     )

@@ -163,7 +163,7 @@ be restated in durable domain language here or in the owning design document.
 
 Architecture liveness is checked in both directions. Every declared owner must
 have a real application/operator caller, and every new service module with a
-persistence-like mutation must name a declared owner. The 226 existing
+persistence-like mutation must name a declared owner. The 225 existing
 undeclared writer-like modules are an explicit shrink-only migration baseline,
 not approved parallel writers; resolving an owner or removing its write requires
 deleting the baseline entry. Adding an entry requires an explicit ownership
@@ -190,16 +190,28 @@ optional Quote metadata. Accepted is a separate transition owned only by
 
 `sales.quote_documents` owns the immutable customer-facing Quote PDF. It
 snapshots the locked Quote and lines together with the brand resolved by
-`customer.branding`, stores one content-addressed artifact for each distinct
-snapshot, and stages audit and `quote.pdf_exported` evidence atomically.
+`customer.branding` and the primary enabled, complete, currency-eligible bank
+destination resolved by `financial.collection_accounts`. The snapshot records
+the internal collection-account identity, the three customer-visible transfer
+fields, and the absolute company-hosted `/portal/quotes/{quote_id}/pay` URL
+before rendering. Existing artifacts never reread mutable bank configuration.
+The owner stores one content-addressed artifact for each distinct snapshot and
+stages audit and `quote.pdf_exported` evidence atomically. A missing portal
+identity, eligible bank destination, or absolute company URL fails document
+creation closed.
 `sales.quote_delivery` owns the idempotent Send Email command. It resolves the
 recipient only through `Quote -> Lead -> Party` active contact points, reuses
-the exact branded PDF, and submits a durable `communications.intents` request;
-the notification system remains the delivery transport. SMTP acceptance is
-timeline evidence that the configured mail transport accepted the message,
-not proof of final mailbox receipt. `ui.quote_detail_projection` combines the
-authoritative Quote state, immutable audit evidence, and notification outcome
-for action eligibility and the activity timeline without writing domain state.
+the exact branded PDF and its company-hosted HTTPS payment URL, consumes the
+typed `sales.quote_payment_eligibility` projection, and submits a durable
+`communications.intents` request. The payment projection resolves exact
+Subscriber scope, Quote lifecycle/expiry, paid state, authoritative deposit,
+and Paystack capability without creating financial state. Missing eligibility
+fails delivery before queueing. The notification system remains the delivery
+transport. SMTP acceptance is timeline evidence that the configured mail
+transport accepted the message, not proof of final mailbox receipt.
+`ui.quote_detail_projection` combines the authoritative Quote state, immutable
+audit evidence, and notification outcome for action eligibility and the
+activity timeline without writing domain state.
 
 `sales.quote_acceptance` owns the sole sales conversion boundary. Draft/Sent
 Quote authoring creates no account or fulfillment roots. Acceptance locks the
@@ -521,6 +533,10 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `communications.team_inbox_contact_resolution` | reviewed contact association and projection repair | `projection_writer` | canonical party contact facts ← `party.registry`<br>customer identity scope ← `customer.identity_scope`<br>conversation contact route ← `communications.team_inbox_threads` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
 | `communications.team_inbox_routing` | routing assignment and escalation policy | `policy` | conversation routing facts ← `communications.team_inbox_threads`<br>operational escalation policy ← `operations.sla_escalation`<br>operator authorization ← `auth.permission_gate`<br>validated AI intake destination metadata ← `ai.intake` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
 | `communications.team_inbox_routing` | routing assignment and escalation transitions | `command_writer` | conversation routing facts ← `communications.team_inbox_threads`<br>operational escalation policy ← `operations.sla_escalation`<br>operator authorization ← `auth.permission_gate`<br>validated AI intake destination metadata ← `ai.intake` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
+| `communications.team_inbox_routing` | immutable routing assignment and escalation evidence | `authoritative_record` | conversation routing facts ← `communications.team_inbox_threads`<br>operational escalation policy ← `operations.sla_escalation`<br>operator authorization ← `auth.permission_gate`<br>validated AI intake destination metadata ← `ai.intake` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
+| `communications.team_inbox_status` | conversation status transitions and immutable evidence | `command_writer` | current conversation status ← `communications.team_inbox_threads`<br>typed status transition command ← `auth.permission_gate` | `participant` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_lifecycle_audit.py`<br>`tests/architecture/test_team_inbox_lifecycle_audit_boundary.py` |
+| `communications.team_inbox_audit_reconstruction` | reviewed Team Inbox historical audit reconstruction | `reconciler` | reviewed historical evidence manifest ← `communications.team_inbox_audit_reconstruction`<br>legacy routing and status evidence ← `communications.team_inbox_routing` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_lifecycle_audit.py`<br>`tests/architecture/test_team_inbox_lifecycle_audit_boundary.py` |
+| `communications.team_inbox_audit_projection` | Team Inbox lifecycle audit timeline and drift projection | `resolver` | immutable routing evidence ← `communications.team_inbox_routing`<br>immutable status evidence ← `communications.team_inbox_status` | `read_only` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_lifecycle_audit.py`<br>`tests/architecture/test_team_inbox_lifecycle_audit_boundary.py` |
 | `communications.team_inbox_operator_state` | operator read cursor | `command_writer` | message chronology ← `communications.team_inbox_threads`<br>operator principal ← `auth.permission_gate` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
 | `communications.team_inbox_operator_state` | operator unread projection repair | `reconciler` | message chronology ← `communications.team_inbox_threads`<br>operator principal ← `auth.permission_gate` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
 | `communications.team_inbox_outbound_intents` | transactional outbound communication intent | `command_writer` | conversation reply target ← `communications.team_inbox_threads`<br>communication intent lifecycle ← `communications.intents`<br>effective channel policy ← `communications.channel_policy` | `owner_managed` | `complete` | customer experience platform | `docs/designs/TEAM_INBOX_SOURCE_OF_TRUTH.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_team_inbox_sot_completion.py`<br>`tests/architecture/test_team_inbox_boundaries.py`<br>`tests/architecture/test_team_inbox_sot_contracts.py` |
@@ -821,8 +837,9 @@ Edit the owning domain shard and regenerate; do not hand-edit these rows.
 | `sales.lead_intake` | atomic Inbox form to Party and Lead conversion | `application_coordinator` | validated public Lead intake submission ← `sales.lead_intake`<br>canonical Lead intake invitation ← `sales.lead_intake`<br>server-resolved Nigerian service address ← `gis.geocoding`<br>canonical Party identity state ← `party.registry`<br>canonical Lead lifecycle state ← `sales.lead_lifecycle`<br>canonical unknown Inbox conversation state ← `communications.team_inbox_processing` | `coordinator_managed` | `complete` | sales operations | `docs/designs/INBOX_LEAD_INTAKE.md`<br>`docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`tests/test_lead_intake.py`<br>`tests/test_web_lead_intake.py`<br>`tests/architecture/test_lead_intake_boundary.py` |
 | `sales.lead_authoring` | atomic admin Person and Lead authoring | `application_coordinator` | Lead authoring command evidence ← `sales.lead_authoring`<br>canonical staff actor state ← `auth.staff_provisioning`<br>canonical Party identity state ← `party.registry`<br>canonical sales pipeline state ← `sales.service`<br>configured Region and Organization state ← `sales.lead_authoring`<br>canonical reseller ownership state ← `customer.accounts` | `coordinator_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_web_sales_lead_authoring.py`<br>`tests/test_admin_sales_web.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
 | `sales.quote_authoring` | atomic Lead-backed Draft/Sent Quote authoring | `application_coordinator` | Quote authoring command evidence ← `sales.quote_authoring`<br>canonical staff actor state ← `auth.staff_provisioning`<br>canonical Lead and Party state ← `sales.lead_lifecycle`<br>canonical commercial reference state ← `sales.quote_authoring`<br>canonical Quote lifecycle state ← `sales.service` | `coordinator_managed` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_web_sales_quote_authoring.py`<br>`tests/test_quote_acceptance_workflow.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
-| `sales.quote_documents` | immutable branded Quote PDF generation | `command_writer` | Quote document command evidence ← `sales.quote_documents`<br>canonical Quote commercial state ← `sales.service`<br>canonical company branding state ← `customer.branding` | `owner_managed` | `native` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
-| `sales.quote_delivery` | idempotent branded Quote email request | `command_writer` | Quote delivery command evidence ← `sales.quote_delivery`<br>canonical Quote commercial state ← `sales.service`<br>canonical Party recipient state ← `party.registry`<br>canonical Quote PDF artifact ← `sales.quote_documents` | `owner_managed` | `native` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
+| `sales.quote_documents` | immutable branded Quote PDF generation | `command_writer` | Quote document command evidence ← `sales.quote_documents`<br>canonical Quote commercial state ← `sales.service`<br>canonical company branding state ← `customer.branding`<br>canonical receiving-account presentment ← `financial.collection_accounts` | `owner_managed` | `native` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/test_customer_quote_payments.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
+| `sales.quote_payment_eligibility` | authenticated customer Quote payment eligibility and payable amount | `resolver` | authorized customer Quote payment scope ← `sales.quote_payment_eligibility`<br>canonical Quote commercial state ← `sales.service`<br>canonical Quote deposit settlement state ← `financial.invoices`<br>installation-backed Paystack availability ← `financial.payment_routing` | `read_only` | `native` | sales and finance operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md`<br>`docs/designs/PAYMENT_GATEWAY_CONTROL_PLANE_SOT.md`<br>`tests/test_customer_quote_payments.py`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
+| `sales.quote_delivery` | idempotent branded Quote email request | `command_writer` | Quote delivery command evidence ← `sales.quote_delivery`<br>canonical Quote commercial state ← `sales.service`<br>canonical Party recipient state ← `party.registry`<br>canonical Quote PDF artifact ← `sales.quote_documents`<br>canonical Quote payment eligibility ← `sales.quote_payment_eligibility` | `owner_managed` | `native` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/UI_INFORMATION_AND_ACTION_STANDARD.md`<br>`docs/designs/QUOTATION_PDF_PAYMENT_OPTIONS.md`<br>`tests/test_quote_documents_and_delivery.py`<br>`tests/architecture/test_quote_document_delivery_boundary.py` |
 | `sales.account_conversion` | exact Lead and Party account conversion | `command_writer` | canonical attributed Lead state ← `sales.lead_lifecycle`<br>canonical Party identity state ← `party.registry`<br>reviewed account conversion command ← `sales.account_conversion`<br>canonical customer account state ← `customer.accounts` | `participant` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.account_conversion` | customer and pending-subscriber role establishment | `command_writer` | canonical Party identity state ← `party.registry`<br>canonical customer account state ← `customer.accounts`<br>reviewed account conversion command ← `sales.account_conversion` | `participant` | `complete` | sales operations | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_sales_capture_account_conversion.py`<br>`tests/test_sales_to_service_lifecycle.py`<br>`tests/architecture/test_service_http_boundary.py` |
 | `sales.quote_acceptance` | atomic accepted-Quote sales conversion | `application_coordinator` | accepted-Quote command evidence ← `sales.quote_acceptance`<br>canonical Lead and Party state ← `sales.lead_lifecycle`<br>canonical Quote and line state ← `sales.service`<br>canonical customer account state ← `customer.accounts`<br>configured implementation automation ← `operations.project_lifecycle` | `coordinator_managed` | `complete` | sales and service delivery | `docs/SOT_RELATIONSHIP_MAP.md`<br>`docs/PARTY_CUSTOMER_LIFECYCLE.md`<br>`docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md`<br>`tests/test_quote_acceptance_workflow.py`<br>`tests/architecture/test_sales_lifecycle_chain_boundary.py` |
@@ -1368,9 +1385,11 @@ detailed security and delivery boundary is
    (`app.services.billing.collection_accounts`) owns Dotmac receiving-account
    identity, full customer-presented bank details, derived last-four digits,
    active lifecycle, external accounting mapping, and explicit presentment
-   order. Portal, reseller, API, invoice, settings UI, payment-proof, and
-   attribution adapters carry its identity; they do not maintain bank-detail
-   copies. `financial.payment_routing` separately owns health-aware gateway
+   order. Portal, reseller, API, invoice, quotation document, settings UI,
+   payment-proof, and attribution adapters consume its typed identity; they do
+   not maintain bank-detail copies. The quotation document snapshot selects the
+   first enabled, complete account for its currency and persists the account id
+   as non-visible provenance. `financial.payment_routing` separately owns health-aware gateway
    ordering. `payment_channels` and `payment_channel_accounts` classify where
    recorded money arrived and never become the gateway-presentment policy.
    Legacy direct-transfer and company-info bank settings are a temporary frozen
@@ -2520,6 +2539,17 @@ UUIDs. Routes and templates only transport and render the owner-defined scope.
     and `referrals.program`. The route redirects invalid or clamped request state
     to the owner-provided URL; the template uses shared sortable-header,
     pagination, page-size, and keyboard-visible row-action controls.
+
+18. The admin Quote list remains owned by `sales.service`; no separate UI
+    search owner exists. Its typed Quote list specification normalizes search,
+    status, Lead, stable sort, and pagination once, and the exact predicate set
+    drives both `count(Quote.id)` and the directly selected Quote page. Related
+    Lead, Party, active Party contact-point, and optional Subscriber matches use
+    correlated `EXISTS`, so contact multiplicity cannot duplicate Quotes and
+    the PostgreSQL `json` metadata column is never compared by full-row
+    `DISTINCT`. `app.services.web_sales` only translates the normalized result
+    into `ListQuery`/`PageMeta` and the route/template render canonical URLs,
+    reset behavior, and the truthful retryable failure state.
 
 Rule: filters and search are applied before pagination; every paginated sort has
 a unique tie-breaker. Web list state is encoded in URL query parameters so deep
@@ -4637,21 +4667,25 @@ outcome; they do not embed their own geocode lookups or spatial write logic.
 2. `sales.selfserve`: owns the self-serve quote and signup flow.
 3. `sales.service`: owns the sales pipeline and quote lifecycle, including the
    governed stage-presentation vocabulary, atomic stage ordering, and typed
-   Lead list query projection. Its normalized Lead search/filter predicate is
-   shared by unique rows, count, pagination, and filtered summary; related
-   Party/contact/Subscriber matches are correlated observations rather than
-   row-multiplying joins.
+   Lead and Quote list query projections. Each normalized search/filter
+   predicate is shared by unique rows, count, and pagination (plus filtered
+   summary for Leads); related Party/active-contact/Subscriber matches are
+   correlated observations rather than row-multiplying joins. JSON-bearing
+   Lead and Quote rows are never subjected to full-row `DISTINCT`.
 4. `sales.quote_documents`: owns immutable, content-addressed, branded Quote
    PDF snapshots.
 5. `sales.quote_delivery`: owns the idempotent branded Quote email request and
    durable communication-intent handoff.
-6. `sales.quote_acceptance`: owns the atomic accepted-Quote conversion from
+6. `sales.quote_payment_eligibility`: owns the authenticated customer Quote
+   payment eligibility and authoritative payable-deposit projection consumed by
+   the customer GET route and Quote delivery.
+7. `sales.quote_acceptance`: owns the atomic accepted-Quote conversion from
    Lead/Party through Subscriber, SalesOrder and lines, Project, configured
    Tasks/WorkOrders, audit, and transactional outbox evidence.
-7. `referrals.program`: owns Party-first capture policy, canonical ReferralCode,
+8. `referrals.program`: owns Party-first capture policy, canonical ReferralCode,
    Referral and exact-Party account-attachment records, qualification/reward
    policy, and atomic program transition orchestration.
-8. `referrals.account_conversion`: owns exact Referral/Party/Lead context
+9. `referrals.account_conversion`: owns exact Referral/Party/Lead context
    validation, the bounded public-signup capability contract, and atomic
    account-creation/adjudication orchestration.
 

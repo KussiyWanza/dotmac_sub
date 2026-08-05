@@ -38,7 +38,10 @@ from app.services.network._common import NasTarget
 from app.services.network.config_pack_resolution import (
     resolve_effective_config_pack_stage,
 )
-from app.services.network.effective_ont_config import resolve_effective_ont_config
+from app.services.network.effective_ont_config import (
+    internet_wcd_index_from_effective_values,
+    resolve_effective_ont_config,
+)
 from app.services.network.huawei_cli_response import project_huawei_result_evidence
 from app.services.network.ont_desired_config import set_desired_config_values
 from app.services.network.ont_provisioning.context import (
@@ -528,6 +531,115 @@ def _igd_wan_instance_for_vlan_from_snapshot(
     return None
 
 
+# Phases that represent state actually applied to a device. Preparatory phases
+# (config-pack resolution, prerequisite validation, state reads) succeeding
+# says nothing about whether the customer got service, so they must not make a
+# wholly failed run look partial.
+_DEVICE_APPLY_PHASES = frozenset(
+    {
+        "olt_provisioning",
+        "post_authorization_acs_link",
+        "internet_l2",
+        "management_and_omci_apply",
+        "stale_wan_cleanup",
+    }
+)
+
+
+def _any_device_phase_succeeded(phase_timings: list[dict[str, Any]]) -> bool:
+    """Return True when at least one phase that writes to a device succeeded.
+
+    Used to distinguish a partial run from a total failure. Phases that do not
+    report a ``success`` key are ignored rather than assumed successful, and
+    ``olt_provisioning`` carries its inner steps as ``subphases``.
+    """
+
+    def _succeeded(entry: object) -> bool:
+        return (
+            isinstance(entry, dict)
+            and entry.get("phase") in _DEVICE_APPLY_PHASES
+            and entry.get("success") is True
+        )
+
+    for entry in phase_timings:
+        if _succeeded(entry):
+            return True
+        if isinstance(entry, dict) and any(
+            _succeeded(sub) for sub in entry.get("subphases") or ()
+        ):
+            return True
+    return False
+
+
+def _wcd_index_or_none(value: object) -> int | None:
+    """Coerce a WANConnectionDevice index to a positive int, else None."""
+    try:
+        index = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return index if index > 0 else None
+
+
+def _igd_management_wcd_indexes(ont: OntUnit) -> set[int]:
+    """Return WANConnectionDevice indexes the snapshot reports as TR-069 management.
+
+    A PPPoE service must never be written into the container that carries the
+    ACS management connection: doing so severs the only path we have to the
+    device. The snapshot labels those connections ``TR069``.
+    """
+    indexes: set[int] = set()
+    capabilities = getattr(ont, "tr069_last_snapshot", None)
+    if not isinstance(capabilities, dict):
+        return indexes
+    capabilities = capabilities.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return indexes
+    wan_caps = capabilities.get("wan")
+    if not isinstance(wan_caps, dict):
+        return indexes
+    connections = wan_caps.get("connections")
+    if not isinstance(connections, list):
+        return indexes
+    for item in connections:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("detected_wan_service") or "").upper() != "TR069":
+            continue
+        index = _wcd_index_or_none(item.get("index"))
+        if index:
+            indexes.add(index)
+    return indexes
+
+
+def _resolve_igd_pppoe_wcd_index(
+    ont: OntUnit,
+    effective_values: dict[str, Any],
+    wan_vlan: int | None,
+) -> int | None:
+    """Resolve the TR-098 WANConnectionDevice that PPPoE belongs in.
+
+    Returns ``None`` when no safe container can be identified. Callers must
+    fail closed on ``None`` rather than defaulting to an index: index 1 is the
+    management container on a freshly commissioned ONT, and writing PPPoE
+    there is refused downstream with a message that reads like stale device
+    config and has historically misdirected operators into a factory reset.
+    """
+    management = _igd_management_wcd_indexes(ont)
+
+    snapshot_index = _igd_wan_instance_for_vlan_from_snapshot(ont, wan_vlan)
+    if snapshot_index and snapshot_index not in management:
+        return snapshot_index
+
+    # The device may not expose an internet container yet (nothing has been
+    # provisioned into it). Fall back to the OLT config pack's declared
+    # pppoe_wcd_index, but only when it is explicitly configured.
+    configured = internet_wcd_index_from_effective_values(effective_values, default=0)
+    if configured and configured not in management:
+        return configured
+
+    return None
+
+
 def _mark_ppp_wan_requires_precreated(ont: OntUnit) -> None:
     snapshot = getattr(ont, "tr069_last_snapshot", None)
     if not isinstance(snapshot, dict):
@@ -749,9 +861,14 @@ def _provision_wan_service_instances(
         wan_mode == "pppoe"
         and getattr(ont, "tr069_data_model", None) == "InternetGatewayDevice"
     ):
-        detected_index = (
-            _igd_wan_instance_for_vlan_from_snapshot(ont, wan_vlan_int)
-            or instance_index
+        # Never fall back to a bare index here. On a freshly commissioned ONT
+        # the only container that exists is the TR-069 management one, and
+        # defaulting to it produced a downstream refusal ("the selected
+        # WANConnectionDevice is not empty") that reads like stale device
+        # config and has misdirected operators toward a factory reset, which
+        # would sever ONT management.
+        detected_index = _resolve_igd_pppoe_wcd_index(
+            ont, effective_values, wan_vlan_int
         )
         if detected_index is None:
             message = (
@@ -1652,7 +1769,6 @@ def apply_authorization_baseline(
             _record_phase("post_authorization_acs_link", success=False)
 
     if not dry_run:
-        final_status = OntProvisioningStatus.failed
         if baseline_result.success:
             if (
                 _domain_outcome_status(baseline_domain_outcomes, "acs_bootstrap_verify")
@@ -1661,6 +1777,16 @@ def apply_authorization_baseline(
                 final_status = OntProvisioningStatus.pending_acs_registration
             else:
                 final_status = OntProvisioningStatus.provisioned
+        else:
+            # A run that landed some phases is not the same as one that landed
+            # none. Reporting a blanket "failed" for a customer whose OLT-side
+            # provisioning succeeded (and who may be carrying traffic) inverts
+            # triage: the field reads as down while the service is up.
+            final_status = (
+                OntProvisioningStatus.partial
+                if _any_device_phase_succeeded(phase_timings)
+                else OntProvisioningStatus.failed
+            )
         set_provisioning_status(
             ont,
             final_status,
