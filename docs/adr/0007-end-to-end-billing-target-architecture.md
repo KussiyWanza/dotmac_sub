@@ -342,6 +342,11 @@ transaction. An asynchronous UI cache is never an enforcement input.
 
 Reviewed opening positions become explicit immutable opening posting groups
 during migration. They do not remain a permanent parallel calculation branch.
+Initial authority activation requires complete-cohort evidence. Once authority
+is active, a separately approved single-account completion may capture one
+newly eligible native-after-handoff account against the immutable original
+cutoff; it revalidates only that explicit account under lock and cannot waive or
+alter unrelated source debt.
 
 ### 5. Prepaid and postpaid semantics
 

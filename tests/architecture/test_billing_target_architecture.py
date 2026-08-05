@@ -235,7 +235,9 @@ def test_phase3_prepaid_cutover_is_fingerprint_gated_and_single_writer() -> None
     assert "CustomerPostingGroup(" not in renewals
 
     assert "expected_result_fingerprint" in opening
-    assert 'run.phase != "phase_3_opening_preview"' in opening
+    assert "run.phase not in {" in opening
+    assert '"phase_3_opening_preview",' in opening
+    assert '"phase_3_post_cutover_opening_preview",' in opening
     assert 'run.phase != "phase_3_subledger_parity"' in opening
     assert "if not run.approved" in opening
     assert "opening_result_contract" in verifier

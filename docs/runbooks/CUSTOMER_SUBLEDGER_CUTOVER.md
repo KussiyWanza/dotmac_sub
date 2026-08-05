@@ -98,6 +98,43 @@ run `capture-subledger-openings`. The owner atomically writes one immutable
 opening row and one typed posting group per missing account. A failure rolls
 back the complete capture.
 
+### 3a. Complete one newly eligible native account after authority activation
+
+The complete-cohort path above remains mandatory before initial authority
+activation. After authority is already active, a customer can enter the prepaid
+funding cohort even though unrelated historical accounts still need source
+repair. For that case only, use the bounded single-account command:
+
+```bash
+python -m scripts.billing.billing_target_shadow \
+  preview-post-cutover-account-opening \
+  --account ACCOUNT_UUID \
+  --code-version DEPLOYED_GIT_SHA \
+  --schema-version ALEMBIC_HEAD \
+  --currency NGN \
+  --idempotency-key post-cutover-opening-preview-ACCOUNT_UUID-v1
+```
+
+The owner, not the operator, derives the original opening cutoff from the
+immutable authority verification run. It accepts exactly one current prepaid
+funding candidate that existed before authority activation, has no opening, was
+created after the fixed legacy handoff, has no Splynx identity, and has complete
+canonical native evidence through that original cutoff. Facts after the cutoff
+remain normal authoritative postings and are never absorbed into the opening.
+
+Review the selected account, origin, target, shadow residual, authority identity,
+and result fingerprint. Record separate operator and finance approvals with
+`approve-verification`, then call `capture-subledger-openings` with the exact run
+and fingerprint. Capture locks the account and recomputes the bounded evidence;
+any identity, cohort, amount, posting, authority, or fingerprint change aborts
+the transaction. Exact replay returns the existing result and cannot create a
+second opening.
+
+This path neither inspects nor changes unrelated missing openings. It cannot be
+used before authority activation, for an account created after activation, for
+a migrated/Splynx-linked account, or as evidence for initial authority cutover.
+Those cases remain on the complete-cohort reconstruction and parity path.
+
 ## 4. Prove full-cohort parity
 
 Run `verify-subledger-parity` for the approved window. The completion gate is:

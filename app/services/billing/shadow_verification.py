@@ -55,6 +55,7 @@ from app.services.owner_commands import (
     OwnerCommandDefinition,
     execute_owner_command,
 )
+from app.services.prepaid_funding_reconstruction import PrepaidOpeningTargetOrigin
 
 
 def _object_dict(value: object) -> dict[str, object]:
@@ -97,6 +98,11 @@ _PHASE3_OPENING_PREVIEW_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
     concern="phase cutover verification evidence",
     name="record_phase3_opening_preview",
+)
+_POST_CUTOVER_OPENING_PREVIEW_COMMAND = OwnerCommandDefinition(
+    owner=OWNER,
+    concern="phase cutover verification evidence",
+    name="record_post_cutover_account_opening_preview",
 )
 _PHASE3_PARITY_COMMAND = OwnerCommandDefinition(
     owner=OWNER,
@@ -1851,6 +1857,260 @@ def _phase3_opening_result(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvePostCutoverOpeningEvidenceQuery:
+    """Resolve one post-cutover opening from the immutable authority boundary."""
+
+    account_id: UUID
+    currency: str = "NGN"
+    expected_authority_cutover_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PostCutoverOpeningEvidence:
+    """Typed, reproducible source evidence for one missing native opening."""
+
+    account_id: UUID
+    currency: str
+    account_created_at: datetime
+    authority_cutover_id: UUID
+    authority_cutover_at: datetime
+    authority_verification_run_id: UUID
+    opening_cutoff_at: datetime
+    opening_target_origin: PrepaidOpeningTargetOrigin
+    opening_target_source_position_at: datetime
+    legacy_position: Decimal
+    shadow_unapplied_customer_credit: Decimal
+    shadow_prepaid_funding_reserved: Decimal
+    shadow_prepaid_funding_consumed: Decimal
+    shadow_refunded_total: Decimal
+    shadow_adjustment_total: Decimal
+
+    @property
+    def shadow_position_before(self) -> Decimal:
+        return round_money(
+            self.shadow_unapplied_customer_credit + self.shadow_prepaid_funding_reserved
+        )
+
+    @property
+    def opening_delta(self) -> Decimal:
+        return round_money(self.legacy_position - self.shadow_position_before)
+
+    @property
+    def evidence_fingerprint(self) -> str:
+        return _digest(_post_cutover_opening_source_payload(self))
+
+
+@dataclass(frozen=True, slots=True)
+class RecordPostCutoverAccountOpeningPreviewCommand:
+    """Record one explicit post-cutover native-account opening proposal."""
+
+    account_id: UUID
+    code_version: str
+    database_schema_version: str
+    currency: str = "NGN"
+    cohort_name: str = "post_cutover_single_prepaid_account"
+    policy_version: str = "adr-0007-phase-3-post-cutover-single-account-v1"
+    evidence_schema_version: int = 6
+
+
+def _post_cutover_opening_source_payload(
+    evidence: PostCutoverOpeningEvidence,
+) -> dict[str, object]:
+    return {
+        "scope": "post_cutover_single_account",
+        "account_id": str(evidence.account_id),
+        "currency": evidence.currency,
+        "account_created_at": _utc(evidence.account_created_at).isoformat(),
+        "splynx_identity_present": False,
+        "authority_cutover_id": str(evidence.authority_cutover_id),
+        "authority_cutover_at": _utc(evidence.authority_cutover_at).isoformat(),
+        "authority_verification_run_id": str(evidence.authority_verification_run_id),
+        "authority_opening_cutoff_at": _utc(evidence.opening_cutoff_at).isoformat(),
+        "baseline_id": None,
+        "baseline_amount": "0.00",
+        "baseline_position_at": None,
+        "opening_target_origin": evidence.opening_target_origin.value,
+        "opening_target_source_position_at": _utc(
+            evidence.opening_target_source_position_at
+        ).isoformat(),
+        "legacy_position": str(round_money(evidence.legacy_position)),
+        "shadow_lanes": {
+            "unapplied_customer_credit": str(evidence.shadow_unapplied_customer_credit),
+            "prepaid_funding_reserved": str(evidence.shadow_prepaid_funding_reserved),
+            "prepaid_funding_consumed": str(evidence.shadow_prepaid_funding_consumed),
+            "refunded_total": str(evidence.shadow_refunded_total),
+            "adjustment_total": str(evidence.shadow_adjustment_total),
+        },
+    }
+
+
+def _post_cutover_opening_row(
+    evidence: PostCutoverOpeningEvidence,
+) -> dict[str, object]:
+    return {
+        **_post_cutover_opening_source_payload(evidence),
+        "shadow_position_before": str(evidence.shadow_position_before),
+        "opening_delta": str(evidence.opening_delta),
+        "evidence_fingerprint": evidence.evidence_fingerprint,
+    }
+
+
+def resolve_post_cutover_opening_evidence(
+    db: Session,
+    query: ResolvePostCutoverOpeningEvidenceQuery,
+) -> PostCutoverOpeningEvidence:
+    """Resolve one native opening without consulting unrelated backlog rows."""
+
+    from app.models.customer_subledger import (
+        CustomerPostingGroup,
+        CustomerSubledgerAuthorityCutover,
+        CustomerSubledgerOpeningPosition,
+    )
+    from app.models.subscriber import Subscriber
+    from app.services.billing.customer_subledger import resolve_position
+    from app.services.prepaid_enforcement_planner import (
+        candidate_prepaid_funding_account_ids,
+    )
+    from app.services.prepaid_funding_reconstruction import (
+        prepaid_funding_opening_required_account_ids,
+        prepaid_funding_opening_source_incomplete_account_ids,
+        preview_prepaid_opening_targets,
+    )
+
+    currency = query.currency.strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise _error(
+            "invalid_run_identity",
+            "Opening-position currency must be a three-letter code.",
+        )
+    authority = db.scalar(select(CustomerSubledgerAuthorityCutover).limit(1))
+    if authority is None:
+        raise _error(
+            "post_cutover_scope_unavailable",
+            "Single-account opening completion requires active subledger authority.",
+            account_id=str(query.account_id),
+        )
+    if (
+        query.expected_authority_cutover_id is not None
+        and authority.id != query.expected_authority_cutover_id
+    ):
+        raise _error(
+            "stale_reviewed_preview",
+            "The customer-subledger authority record changed after preview.",
+            expected_cutover_id=str(query.expected_authority_cutover_id),
+            actual_cutover_id=str(authority.id),
+        )
+    authority_run = db.get(BillingCutoverVerificationRun, authority.verification_run_id)
+    if authority_run is None or authority_run.phase != "phase_3_subledger_parity":
+        raise _error(
+            "corrupt_authority_evidence",
+            "Active customer-subledger authority has no valid parity evidence.",
+            cutover_id=str(authority.id),
+        )
+    account = db.get(Subscriber, query.account_id)
+    if account is None:
+        raise _error(
+            "account_not_found",
+            "The selected prepaid funding account does not exist.",
+            account_id=str(query.account_id),
+        )
+    candidates = candidate_prepaid_funding_account_ids(db)
+    if query.account_id not in candidates:
+        raise _error(
+            "account_not_in_funding_cohort",
+            "The selected account is not a current prepaid funding candidate.",
+            account_id=str(query.account_id),
+        )
+    if query.account_id not in prepaid_funding_opening_required_account_ids(
+        db, [query.account_id]
+    ):
+        raise _error(
+            "opening_not_required",
+            "An account created after authority activation starts at authoritative zero.",
+            account_id=str(query.account_id),
+            authority_cutover_at=_utc(authority.cutover_at).isoformat(),
+        )
+    opening = db.scalar(
+        select(CustomerSubledgerOpeningPosition.id).where(
+            CustomerSubledgerOpeningPosition.account_id == query.account_id,
+            CustomerSubledgerOpeningPosition.currency == currency,
+        )
+    )
+    if opening is not None:
+        raise _error(
+            "opening_position_already_captured",
+            "The selected account already has an immutable opening position.",
+            account_id=str(query.account_id),
+            opening_id=str(opening),
+        )
+    incomplete = prepaid_funding_opening_source_incomplete_account_ids(
+        db, [query.account_id], currency=currency
+    )
+    if incomplete:
+        raise _error(
+            "source_cohort_incomplete",
+            "The selected account lacks complete reviewed opening evidence.",
+            account_id=str(query.account_id),
+        )
+    cutoff_at = _utc(authority_run.cutoff_at)
+    target = preview_prepaid_opening_targets(
+        db,
+        [query.account_id],
+        currency=currency,
+        as_of=cutoff_at,
+    )[query.account_id]
+    if target.origin is not PrepaidOpeningTargetOrigin.native_after_handoff:
+        raise _error(
+            "post_cutover_scope_requires_native_account",
+            "Single-account completion is limited to proven native-after-handoff accounts.",
+            account_id=str(query.account_id),
+            origin=target.origin.value,
+        )
+    late_shadow_group = db.scalar(
+        select(CustomerPostingGroup.id)
+        .where(
+            CustomerPostingGroup.account_id == query.account_id,
+            CustomerPostingGroup.currency == currency,
+            CustomerPostingGroup.authority == BillingRecordAuthority.shadow,
+            CustomerPostingGroup.occurred_at > cutoff_at,
+        )
+        .limit(1)
+    )
+    if late_shadow_group is not None:
+        raise _error(
+            "shadow_fact_after_authority_cutoff",
+            "A shadow posting after the authority cutoff requires cohort repair.",
+            account_id=str(query.account_id),
+            posting_group_id=str(late_shadow_group),
+        )
+    position = resolve_position(
+        db,
+        account_id=query.account_id,
+        currency=currency,
+        authority=BillingRecordAuthority.shadow,
+    )
+    return PostCutoverOpeningEvidence(
+        account_id=query.account_id,
+        currency=currency,
+        account_created_at=_utc(account.created_at),
+        authority_cutover_id=authority.id,
+        authority_cutover_at=_utc(authority.cutover_at),
+        authority_verification_run_id=authority.verification_run_id,
+        opening_cutoff_at=cutoff_at,
+        opening_target_origin=target.origin,
+        opening_target_source_position_at=_utc(target.source_position_at),
+        legacy_position=round_money(target.amount),
+        shadow_unapplied_customer_credit=round_money(
+            position.unapplied_customer_credit
+        ),
+        shadow_prepaid_funding_reserved=round_money(position.prepaid_funding_reserved),
+        shadow_prepaid_funding_consumed=round_money(position.prepaid_funding_consumed),
+        shadow_refunded_total=round_money(position.refunded_total),
+        shadow_adjustment_total=round_money(position.adjustment_total),
+    )
+
+
 def record_phase3_opening_preview(
     db: Session,
     command: RecordPhase3OpeningPreviewCommand,
@@ -2167,13 +2427,205 @@ def _record_phase3_opening_preview(
     return _phase3_opening_result(run, replayed=False)
 
 
+def record_post_cutover_account_opening_preview(
+    db: Session,
+    command: RecordPostCutoverAccountOpeningPreviewCommand,
+    *,
+    context: CommandContext,
+) -> Phase3OpeningPreviewResult:
+    """Persist one reviewed post-cutover opening proposal without writing money."""
+
+    return execute_owner_command(
+        db,
+        definition=_POST_CUTOVER_OPENING_PREVIEW_COMMAND,
+        context=context,
+        operation=lambda: _record_post_cutover_account_opening_preview(
+            db, command=command, context=context
+        ),
+    )
+
+
+def _record_post_cutover_account_opening_preview(
+    db: Session,
+    *,
+    command: RecordPostCutoverAccountOpeningPreviewCommand,
+    context: CommandContext,
+) -> Phase3OpeningPreviewResult:
+    if not context.idempotency_key:
+        raise _error(
+            "missing_idempotency_key",
+            "A post-cutover opening preview requires an idempotency key.",
+        )
+    currency = command.currency.strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise _error(
+            "invalid_run_identity",
+            "Opening-position currency must be a three-letter code.",
+        )
+    for field, value in (
+        ("code_version", command.code_version),
+        ("database_schema_version", command.database_schema_version),
+        ("cohort_name", command.cohort_name),
+        ("policy_version", command.policy_version),
+    ):
+        if not value.strip():
+            raise _error(
+                "invalid_run_identity",
+                "Opening-position run identity fields cannot be empty.",
+                field=field,
+            )
+    existing = db.scalar(
+        select(BillingCutoverVerificationRun).where(
+            BillingCutoverVerificationRun.idempotency_key == context.idempotency_key
+        )
+    )
+    if existing is not None:
+        details = _object_dict((existing.cohort_classification or {}).get("_details"))
+        if (
+            existing.phase != "phase_3_post_cutover_opening_preview"
+            or existing.code_version != command.code_version
+            or existing.database_schema_version != command.database_schema_version
+            or existing.policy_version != command.policy_version
+            or existing.cohort_name != command.cohort_name
+            or str((existing.currency_totals or {}).get("currency")) != currency
+            or str(details.get("selected_account_id")) != str(command.account_id)
+        ):
+            raise _error(
+                "idempotency_conflict",
+                "Post-cutover opening idempotency key belongs to different evidence.",
+                run_id=str(existing.id),
+            )
+        return _phase3_opening_result(existing, replayed=True)
+
+    evidence = resolve_post_cutover_opening_evidence(
+        db,
+        ResolvePostCutoverOpeningEvidenceQuery(
+            account_id=command.account_id,
+            currency=currency,
+        ),
+    )
+    source = _post_cutover_opening_source_payload(evidence)
+    row = _post_cutover_opening_row(evidence)
+    result_contract = {
+        "scope": "post_cutover_single_account",
+        "authority_cutover_id": str(evidence.authority_cutover_id),
+        "authority_verification_run_id": str(evidence.authority_verification_run_id),
+        "authority_opening_cutoff_at": _utc(evidence.opening_cutoff_at).isoformat(),
+        "selected_account_id": str(evidence.account_id),
+        "opening_rows": [row],
+    }
+    expected_differences = (
+        [str(evidence.account_id)] if evidence.opening_delta != Decimal("0") else []
+    )
+    classification = {
+        "covered": [str(evidence.account_id)],
+        "unresolved": [],
+        "ambiguous": [],
+        "unexpected_unlinked": [],
+        "duplicate": [],
+        "shadow_variance": [],
+        "expected_difference": expected_differences,
+        "gap": [],
+        "overlap": [],
+        "_details": {
+            "scope": "post_cutover_single_account",
+            "selected_account_id": str(evidence.account_id),
+            "authority_cutover_id": str(evidence.authority_cutover_id),
+            "authority_verification_run_id": str(
+                evidence.authority_verification_run_id
+            ),
+            "authority_opening_cutoff_at": _utc(evidence.opening_cutoff_at).isoformat(),
+            "opening_rows": [row],
+            "opening_result_contract": result_contract,
+            "existing_openings": [],
+            "quarantined_accounts": [],
+            "postings_manufactured": False,
+            "authority_moved": False,
+        },
+    }
+    opening_delta = evidence.opening_delta
+    run = BillingCutoverVerificationRun(
+        phase="phase_3_post_cutover_opening_preview",
+        cohort_name=command.cohort_name,
+        evidence_schema_version=command.evidence_schema_version,
+        policy_version=command.policy_version,
+        cutoff_at=evidence.opening_cutoff_at,
+        observation_started_at=evidence.opening_cutoff_at,
+        observation_ended_at=evidence.opening_cutoff_at,
+        cohort_count=1,
+        covered_count=1,
+        unresolved_count=0,
+        ambiguous_count=0,
+        unexpected_unlinked_count=0,
+        duplicate_count=0,
+        shadow_variance_count=0,
+        expected_difference_count=len(expected_differences),
+        gap_count=0,
+        overlap_count=0,
+        source_fingerprint=_digest(source),
+        result_fingerprint=_digest(result_contract),
+        currency_totals={
+            "currency": currency,
+            "legacy_position": str(evidence.legacy_position),
+            "shadow_position_before": str(evidence.shadow_position_before),
+            "opening_delta": str(opening_delta),
+            "opening_positive": str(
+                opening_delta if opening_delta > 0 else Decimal("0.00")
+            ),
+            "opening_negative": str(
+                abs(opening_delta) if opening_delta < 0 else Decimal("0.00")
+            ),
+        },
+        cohort_classification=classification,
+        event_outcomes={
+            "migration_evidence_only": True,
+            "post_cutover_single_account": True,
+            "authority_moved": False,
+            "repair_requested": False,
+            "postings_manufactured": False,
+        },
+        code_version=command.code_version,
+        database_schema_version=command.database_schema_version,
+        idempotency_key=context.idempotency_key,
+        command_id=context.command_id,
+        correlation_id=context.correlation_id,
+        actor=context.actor,
+        reason=context.reason,
+    )
+    db.add(run)
+    db.flush()
+    emit_event(
+        db,
+        EventType.billing_cutover_verification_recorded,
+        {
+            "run_id": str(run.id),
+            "phase": run.phase,
+            "cohort_count": 1,
+            "capture_eligible_count": 1,
+            "existing_opening_count": 0,
+            "quarantined_count": 0,
+            "source_fingerprint": run.source_fingerprint,
+            "result_fingerprint": run.result_fingerprint,
+            "authority_moved": False,
+            "postings_manufactured": False,
+        },
+        actor=context.actor,
+    )
+    return _phase3_opening_result(run, replayed=False)
+
+
 __all__ += [
+    "PostCutoverOpeningEvidence",
     "Phase3ForwardVerificationResult",
     "Phase3OpeningPreviewResult",
     "RecordPhase3ForwardVerificationCommand",
     "RecordPhase3OpeningPreviewCommand",
+    "RecordPostCutoverAccountOpeningPreviewCommand",
+    "ResolvePostCutoverOpeningEvidenceQuery",
     "record_phase3_forward_run",
     "record_phase3_opening_preview",
+    "record_post_cutover_account_opening_preview",
+    "resolve_post_cutover_opening_evidence",
 ]
 
 

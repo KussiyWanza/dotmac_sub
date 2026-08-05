@@ -739,6 +739,7 @@ def preview_prepaid_opening_targets(
     account_ids: Iterable[object],
     *,
     currency: str | None = None,
+    as_of: datetime | None = None,
 ) -> dict[UUID, PrepaidOpeningTarget]:
     """Resolve typed targets for a fingerprinted opening-position preview.
 
@@ -826,10 +827,20 @@ def preview_prepaid_opening_targets(
             )
 
     if native_ids:
-        native = native_customer_financial_balances_by_currency(
-            db,
-            native_ids,
-            after=LEGACY_FINANCIAL_HANDOFF_AT,
+        boundary = _stored_utc(as_of) if as_of is not None else None
+        native = (
+            native_customer_financial_balances_by_currency(
+                db,
+                native_ids,
+                after=LEGACY_FINANCIAL_HANDOFF_AT,
+            )
+            if boundary is None
+            else native_customer_financial_balances_by_currency(
+                db,
+                native_ids,
+                after=LEGACY_FINANCIAL_HANDOFF_AT,
+                before=boundary,
+            )
         )
         for account_id in sorted(native_ids, key=str):
             targets[account_id] = PrepaidOpeningTarget(
