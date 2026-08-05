@@ -223,6 +223,9 @@ class NewLeadFormFields:
     country_code: str
     organization_id: str
     organization_label: str
+    managed_by_reseller: bool
+    reseller_id: str
+    reseller_label: str
     pipeline_id: str
     stage_id: str
     lead_source: str
@@ -863,6 +866,9 @@ def _new_lead_fields(
     country_code: str | None = None,
     organization_id: str | None = None,
     organization_label: str | None = None,
+    managed_by_reseller: bool = False,
+    reseller_id: str | None = None,
+    reseller_label: str | None = None,
     pipeline_id: str | None = None,
     stage_id: str | None = None,
     lead_source: str | None = None,
@@ -899,6 +905,9 @@ def _new_lead_fields(
         country_code=(country_code or "").strip().upper(),
         organization_id=(organization_id or "").strip(),
         organization_label=(organization_label or "").strip(),
+        managed_by_reseller=managed_by_reseller,
+        reseller_id=(reseller_id or "").strip(),
+        reseller_label=(reseller_label or "").strip(),
         pipeline_id=(pipeline_id or "").strip(),
         stage_id=(stage_id or "").strip(),
         lead_source=(lead_source or "").strip(),
@@ -1004,6 +1013,9 @@ def build_lead_create_error_context(
             country_code=str(fields.get("country_code") or ""),
             organization_id=str(fields.get("organization_id") or ""),
             organization_label=str(fields.get("organization_label") or ""),
+            managed_by_reseller=bool(fields.get("managed_by_reseller")),
+            reseller_id=str(fields.get("reseller_id") or ""),
+            reseller_label=str(fields.get("reseller_label") or ""),
             pipeline_id=str(fields.get("pipeline_id") or ""),
             stage_id=str(fields.get("stage_id") or ""),
             lead_source=str(fields.get("lead_source") or ""),
@@ -1220,6 +1232,8 @@ def author_lead_from_form(
     postal_code: str | None,
     country_code: str | None,
     organization_id: str | None,
+    managed_by_reseller: bool,
+    reseller_id: str | None,
     pipeline_id: str | None,
     stage_id: str | None,
     lead_source: str | None,
@@ -1302,6 +1316,12 @@ def author_lead_from_form(
         except ValueError:
             continue
 
+    selected_reseller_id = (
+        optional_uuid(reseller_id, "reseller_id") if managed_by_reseller else None
+    )
+    if managed_by_reseller and selected_reseller_id is None:
+        errors["reseller_id"] = "Select the reseller that manages this customer."
+
     if errors:
         raise LeadFormValidationError(errors)
 
@@ -1347,6 +1367,7 @@ def author_lead_from_form(
             postal_code=(postal_code or "").strip() or None,
             country_code=(country_code or "").strip().upper() or None,
             organization_id=optional_uuid(organization_id, "organization_id"),
+            reseller_id=selected_reseller_id,
         ),
     )
     if errors:

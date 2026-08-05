@@ -240,6 +240,10 @@ configuration. Changing one requires a migration/versioned contract and tests.
    operator drift leaves the cursor behind the highest issued number, the
    allocator advances it before reservation so acceptance repairs the drift
    without weakening the unique-number constraint.
+   For an admin-authored Lead, optional reviewed external reseller ownership is
+   copied into `SubscriberCreate`; absence resolves through the customer-account
+   owner to the House reseller. Downstream records remain structurally scoped by
+   Subscriber and must not copy or infer reseller ownership from contact email.
 4. Acceptance replay is idempotent by Quote identity. Structural unique keys
    and deterministic ProjectTask WorkOrder keys return the canonical account,
    SalesOrder, Project, Tasks, and WorkOrders without duplicates. Each created

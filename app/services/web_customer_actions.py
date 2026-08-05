@@ -34,6 +34,7 @@ from app.models.subscriber import (
     AddressType,
     ChannelType,
     ContactMethod,
+    Reseller,
     Subscriber,
     SubscriberCategory,
     SubscriberChannel,
@@ -102,6 +103,33 @@ from app.services.whatsapp_notification_templates import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_customer_reseller_id(
+    db: Session, *, managed_by_reseller: bool, reseller_id: str | None
+) -> UUID:
+    """Resolve explicit external ownership or the canonical House reseller."""
+
+    if not managed_by_reseller:
+        house_id = subscriber_service._default_reseller_id(db)
+        if house_id is None:
+            raise ValueError("The House reseller is not configured.")
+        return UUID(str(house_id))
+    try:
+        selected_id = UUID(str(reseller_id or "").strip())
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError("Select the reseller that manages this customer.") from None
+    reseller = db.scalars(
+        select(Reseller).where(
+            Reseller.id == selected_id,
+            Reseller.is_active.is_(True),
+            Reseller.is_house.is_(False),
+        )
+    ).one_or_none()
+    if reseller is None:
+        raise ValueError("Select an active reseller.")
+    return reseller.id
+
 
 WHATSAPP_VARIABLE_CUSTOMER_FIELDS = {
     "first_name",
@@ -2308,7 +2336,6 @@ def create_customer_from_form(
     contact_rows = parse_contact_rows(contact_columns)
     if customer_type not in {"person", "business"}:
         raise ValueError("customer_type must be person or business")
-
     if customer_type == "person":
         normalized_email = _normalize_optional(form_data.get("email"))
         if not normalized_email:
@@ -2318,6 +2345,11 @@ def create_customer_from_form(
         )
         last_name = _require_text(
             form_data.get("last_name"), "Last name", max_length=80
+        )
+        reseller_id = resolve_customer_reseller_id(
+            db,
+            managed_by_reseller=bool(form_data.get("managed_by_reseller")),
+            reseller_id=str(form_data.get("reseller_id") or ""),
         )
         # Email is contact info, not an identity — duplicates are valid.
         customer = _create_subscriber(
@@ -2348,6 +2380,7 @@ def create_customer_from_form(
                 "is_active": form_data.get("is_active") == "true",
                 "marketing_opt_in": form_data.get("marketing_opt_in") == "true",
                 "category": SubscriberCategory.residential.value,
+                "reseller_id": reseller_id,
                 "captive_redirect_enabled": form_data.get("captive_redirect_enabled")
                 == "true",
                 "account_start_date": _parse_date(form_data.get("account_start_date")),
@@ -2360,6 +2393,11 @@ def create_customer_from_form(
         return "person", str(customer.id)
 
     company_name = _require_text(form_data.get("name"), "Business name", max_length=120)
+    reseller_id = resolve_customer_reseller_id(
+        db,
+        managed_by_reseller=bool(form_data.get("managed_by_reseller")),
+        reseller_id=str(form_data.get("reseller_id") or ""),
+    )
     identity = _business_identity_from_contacts(company_name, contact_rows)
     business = _create_subscriber(
         db=db,
@@ -2376,6 +2414,7 @@ def create_customer_from_form(
             "phone": identity["phone"],
             "is_active": True,
             "category": SubscriberCategory.business.value,
+            "reseller_id": reseller_id,
             "notes": _normalize_optional(form_data.get("org_notes")),
             "account_start_date": _parse_date(form_data.get("org_account_start_date")),
         },
@@ -2520,10 +2559,21 @@ def update_person_customer(
     withholding_tax_enabled: str | None,
     payment_method: str | None,
     metadata_json: dict | None,
+    managed_by_reseller: bool | None = None,
+    reseller_id: str | None = None,
     vat_exempt: str | None = None,
     actor_id: str | None = None,
 ):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
+    resolved_reseller_id = (
+        before.reseller_id
+        if managed_by_reseller is None
+        else resolve_customer_reseller_id(
+            db,
+            managed_by_reseller=managed_by_reseller,
+            reseller_id=reseller_id,
+        )
+    )
     # Email is contact info, not an identity — duplicates across customers are
     # valid, so editing one to match another's address is allowed.
     normalized_email = _normalize_optional(email)
@@ -2568,6 +2618,7 @@ def update_person_customer(
         "country_code": _normalize_optional(country_code),
         "marketing_opt_in": marketing_opt_in == "true",
         "notes": _normalize_optional(notes),
+        "reseller_id": resolved_reseller_id,
     }
     if metadata_json is not None:
         metadata_payload = dict(metadata_json)
@@ -2662,10 +2713,21 @@ def update_business_customer(
     tax_rate_id: str | None,
     withholding_tax_enabled: str | None,
     payment_method: str | None,
+    managed_by_reseller: bool | None = None,
+    reseller_id: str | None = None,
     vat_exempt: str | None = None,
     actor_id: str | None = None,
 ):
     before = subscriber_service.subscribers.get(db=db, subscriber_id=customer_id)
+    resolved_reseller_id = (
+        before.reseller_id
+        if managed_by_reseller is None
+        else resolve_customer_reseller_id(
+            db,
+            managed_by_reseller=managed_by_reseller,
+            reseller_id=reseller_id,
+        )
+    )
     company_name = _require_text(name, "Business name", max_length=120)
     billing_payload = _billing_override_payload(
         billing_enabled_override=billing_enabled_override,
@@ -2696,6 +2758,7 @@ def update_business_customer(
             "website": _normalize_optional(website),
             "notes": _normalize_optional(org_notes),
             "category": SubscriberCategory.business.value,
+            "reseller_id": resolved_reseller_id,
             **billing_payload,
         }
     )

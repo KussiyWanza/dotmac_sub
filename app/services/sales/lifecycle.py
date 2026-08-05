@@ -186,6 +186,7 @@ def create_party_lead(
     expected_close_date: date | None = None,
     lost_reason: str | None = None,
     is_active: bool = True,
+    reseller_id: UUID | None = None,
 ) -> Lead:
     """Create one Party-first Lead without committing the caller's transaction.
 
@@ -213,6 +214,7 @@ def create_party_lead(
         expected_close_date=expected_close_date,
         lost_reason=_optional(lost_reason),
         is_active=is_active,
+        reseller_id=reseller_id,
     )
     if lead.status in {LeadStatus.won.value, LeadStatus.lost.value}:
         lead.closed_at = datetime.now(UTC)

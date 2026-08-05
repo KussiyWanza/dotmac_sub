@@ -398,6 +398,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=("atomic admin Person and Lead authoring",),
         depends_on=(
             "auth.staff_provisioning",
+            "customer.accounts",
             "events.dispatcher",
             "observability.audit_log",
             "party.registry",
@@ -407,7 +408,8 @@ SERVICES: tuple[SOTService, ...] = (
         notes=(
             "The admin adapter submits one typed command. This owner validates "
             "the staff actor, eligible owner, Pipeline/Stage, configured Region, "
-            "Organization, Person profile and contact points, then commits the "
+            "Organization, optional external reseller ownership, Person profile "
+            "and contact points, then commits the "
             "Person Party, immutable Lead origin, Lead, audit, and event once."
         ),
         contract=ServiceContract(
@@ -421,6 +423,7 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical Party identity state",
                         "canonical sales pipeline state",
                         "configured Region and Organization state",
+                        "canonical reseller ownership state",
                     ),
                 ),
             ),
@@ -431,7 +434,8 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "typed submission identity, Person profile, contact rows, "
-                        "owner, Pipeline/Stage, value, Region, and notes"
+                        "owner, Pipeline/Stage, value, Region, notes, and optional "
+                        "external reseller ownership"
                     ),
                 ),
                 AuthorityInput(
@@ -464,6 +468,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "by authoritative identifiers"
                     ),
                 ),
+                AuthorityInput(
+                    name="canonical reseller ownership state",
+                    owner="customer.accounts",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source=(
+                        "active non-House Reseller selected by authoritative identifier; "
+                        "absence means eventual House ownership"
+                    ),
+                ),
             ),
             transaction=TransactionContract(
                 mode=TransactionMode.COORDINATOR_MANAGED,
@@ -494,7 +507,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.lead_authoring.actor_not_eligible",
                     "sales.lead_authoring.display_name_too_long",
                     "sales.lead_authoring.email_invalid",
-                    "sales.lead_authoring.primary_email_in_use",
+                    "sales.lead_authoring.reseller_not_active",
                     "sales.lead_authoring.phone_invalid",
                     "sales.lead_authoring.owner_not_eligible",
                     "sales.lead_authoring.pipeline_stage_incomplete",
@@ -510,7 +523,7 @@ SERVICES: tuple[SOTService, ...] = (
                 fail_closed_on=(
                     "inactive or forged actor/owner",
                     "invalid Pipeline/Stage or configured Region",
-                    "invalid Organization identity",
+                    "invalid Organization or reseller identity",
                     "contact or private identity validation failure",
                     "submission fingerprint collision",
                 ),

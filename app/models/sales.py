@@ -188,6 +188,7 @@ class Lead(Base):
     __table_args__ = (
         Index("ix_leads_campaign_id", "campaign_id"),
         Index("ix_leads_party_id", "party_id"),
+        Index("ix_leads_reseller_id", "reseller_id"),
         # Native lead scans by subscriber (migration 251).
         Index("ix_leads_subscriber_id", "subscriber_id"),
         CheckConstraint(
@@ -227,6 +228,11 @@ class Lead(Base):
     party_binding_reason: Mapped[str | None] = mapped_column(Text)
     subscriber_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("subscribers.id")
+    )
+    # Optional external reseller ownership captured before an account exists.
+    # ``None`` means the eventual Subscriber uses the canonical House reseller.
+    reseller_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("resellers.id", ondelete="RESTRICT")
     )
     subscriber_linked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)

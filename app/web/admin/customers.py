@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models.subscriber import SubscriberCategory
+from app.models.subscriber import Reseller, SubscriberCategory
 from app.services import customer_network_path as customer_network_path_service
 from app.services import customer_portal
 from app.services import network_monitoring as network_monitoring_service
@@ -73,6 +73,22 @@ register_customer_portal_filters(templates)
 router = APIRouter(prefix="/customers", tags=["web-admin-customers"])
 
 _NOTIFICATION_QUEUE_TASK = "app.tasks.notifications.deliver_notification_queue"
+
+
+def _reseller_form_context(
+    db: Session, reseller_id: object | None
+) -> dict[str, object]:
+    reseller = db.get(Reseller, reseller_id) if reseller_id else None
+    managed = bool(reseller and not reseller.is_house)
+    return {
+        "managed_by_reseller": managed,
+        "selected_reseller_id": str(reseller.id) if managed and reseller else "",
+        "selected_reseller_label": (
+            f"{reseller.name} ({reseller.contact_email})"
+            if managed and reseller and reseller.contact_email
+            else (reseller.name if managed and reseller else "")
+        ),
+    }
 
 
 def _safe_form_error(exc: Exception) -> str:
@@ -535,6 +551,7 @@ def customer_new(
             "pop_sites": pop_sites,
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, None),
         },
     )
 
@@ -591,6 +608,9 @@ def customer_create(
     contact_email: list[str] = Form([]),
     contact_phone: list[str] = Form([]),
     contact_is_primary: list[str] = Form([]),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
+    reseller_label: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Create a new customer (person or business)."""
@@ -641,6 +661,8 @@ def customer_create(
             "metadata_json": web_customer_actions_service.parse_json_object(
                 metadata, "metadata"
             ),
+            "managed_by_reseller": managed_by_reseller is not None,
+            "reseller_id": reseller_id,
         }
         created_type, created_id = (
             web_customer_actions_service.create_customer_from_form(
@@ -703,6 +725,9 @@ def customer_create(
                 },
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                "managed_by_reseller": managed_by_reseller is not None,
+                "selected_reseller_id": reseller_id or "",
+                "selected_reseller_label": reseller_label or "",
             },
             status_code=400,
         )
@@ -1469,6 +1494,7 @@ def person_edit(
             "customer_audit_items": _customer_audit_items(db, customer),
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, customer.reseller_id),
         },
     )
 
@@ -1514,6 +1540,7 @@ def business_edit(
             "customer_audit_items": _customer_audit_items(db, customer),
             "current_user": current_user,
             "sidebar_stats": sidebar_stats,
+            **_reseller_form_context(db, customer.reseller_id),
         },
     )
 
@@ -1560,6 +1587,8 @@ def person_update(
     vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
     metadata: str | None = Form(None),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Update a person."""
@@ -1605,6 +1634,8 @@ def person_update(
             if metadata is not None
             else None,
             actor_id=_get_actor_id(request),
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
         )
         metadata_payload = build_changes_metadata(before, after)
         from app.web.admin import get_current_user
@@ -1651,6 +1682,9 @@ def person_update(
                 "customer_audit_items": _customer_audit_items(db, customer),
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                **_reseller_form_context(
+                    db, customer.reseller_id if customer is not None else None
+                ),
             },
             status_code=400,
         )
@@ -1681,6 +1715,8 @@ def business_update(
     withholding_tax_enabled: str | None = Form(None),
     vat_exempt: str | None = Form(None),
     payment_method: str | None = Form(None),
+    managed_by_reseller: str | None = Form(None),
+    reseller_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     """Update a business customer."""
@@ -1706,6 +1742,8 @@ def business_update(
             vat_exempt=vat_exempt,
             payment_method=payment_method,
             actor_id=_get_actor_id(request),
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
         )
         metadata_payload = build_changes_metadata(before, after)
         from app.web.admin import get_current_user
@@ -1750,6 +1788,9 @@ def business_update(
                 "customer_audit_items": _customer_audit_items(db, customer),
                 "current_user": current_user,
                 "sidebar_stats": sidebar_stats,
+                **_reseller_form_context(
+                    db, customer.reseller_id if customer is not None else None
+                ),
             },
             status_code=400,
         )

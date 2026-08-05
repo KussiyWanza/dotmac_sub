@@ -194,8 +194,26 @@
                     <div id="organization-results" class="absolute z-30 mt-1 hidden max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-600 dark:bg-slate-800" role="listbox"></div>
                 </div>
             </div>
+            <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <label class="flex min-h-11 cursor-pointer items-center gap-3">
+                    <input type="checkbox" id="managed_by_reseller" name="managed_by_reseller" value="true" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" {% if lead_form.managed_by_reseller %}checked{% endif %}>
+                    <span>
+                        <span class="block text-sm font-semibold text-slate-900 dark:text-white">Managed by a reseller</span>
+                        <span class="block text-xs text-slate-500 dark:text-slate-400">Leave off for a direct Dotmac lead assigned to the House account.</span>
+                    </span>
+                </label>
+                <div id="reseller-field" class="relative mt-4{% if not lead_form.managed_by_reseller %} hidden{% endif %}">
+                    <label class="{{ label_class }}" for="reseller-search">Reseller</label>
+                    <input type="hidden" id="reseller_id" name="reseller_id" value="{{ lead_form.reseller_id }}">
+                    <input type="hidden" id="reseller_label" name="reseller_label" value="{{ lead_form.reseller_label }}">
+                    <input class="{{ input_class }}" id="reseller-search" value="{{ lead_form.reseller_label }}" autocomplete="off" placeholder="Search by reseller name, email, or code" aria-autocomplete="list" aria-controls="reseller-results" aria-describedby="reseller-help{% if field_errors.get('reseller_id') %} reseller_id-error{% endif %}" {% if lead_form.managed_by_reseller %}required{% endif %}>
+                    <p id="reseller-help" class="{{ help_class }}">Select an active reseller result; shared customer emails do not determine ownership.</p>
+                    {{ field_error('reseller_id') }}
+                    <div id="reseller-results" class="absolute z-30 mt-1 hidden max-h-64 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-600 dark:bg-slate-800" role="listbox"></div>
+                </div>
+            </div>
             <div class="hidden rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200" role="status" data-reseller-warning>
-                Communication for this organization is routed through its reseller. Direct email, phone, and WhatsApp channels will not be stored.
+                Communication is reseller-routed. The supplied contact details remain attached to the Lead and can be shared across different People.
             </div>
         </div>
         {% endcall %}
@@ -499,6 +517,80 @@
     });
     document.addEventListener("click", event => {
         if (!orgResults.contains(event.target) && event.target !== orgSearch) hideOrgResults();
+    });
+
+    const managedByReseller = document.getElementById("managed_by_reseller");
+    const resellerField = document.getElementById("reseller-field");
+    const resellerSearch = document.getElementById("reseller-search");
+    const resellerId = document.getElementById("reseller_id");
+    const resellerLabel = document.getElementById("reseller_label");
+    const resellerResults = document.getElementById("reseller-results");
+    let selectedResellerLabel = resellerSearch.value;
+    let resellerTimer = null;
+    let resellerController = null;
+    function hideResellerResults() { resellerResults.classList.add("hidden"); resellerResults.replaceChildren(); }
+    function syncResellerField() {
+        resellerField.classList.toggle("hidden", !managedByReseller.checked);
+        resellerSearch.required = managedByReseller.checked;
+        if (!managedByReseller.checked) {
+            resellerId.value = "";
+            resellerLabel.value = "";
+            resellerSearch.value = "";
+            selectedResellerLabel = "";
+            hideResellerResults();
+        }
+    }
+    managedByReseller.addEventListener("change", syncResellerField);
+    syncResellerField();
+    resellerSearch.addEventListener("input", () => {
+        const query = resellerSearch.value.trim();
+        if (resellerSearch.value !== selectedResellerLabel) {
+            resellerId.value = "";
+            resellerLabel.value = resellerSearch.value;
+        }
+        window.clearTimeout(resellerTimer);
+        if (resellerController) resellerController.abort();
+        if (query.length < 2) { hideResellerResults(); return; }
+        resellerTimer = window.setTimeout(async () => {
+            resellerController = new AbortController();
+            try {
+                const response = await fetch(`/api/v1/search/resellers?q=${encodeURIComponent(query)}&limit=20`, {headers: {"Accept": "application/json"}, signal: resellerController.signal});
+                if (!response.ok) throw new Error("search unavailable");
+                const payload = await response.json();
+                resellerResults.replaceChildren();
+                (payload.items || []).forEach(item => {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.role = "option";
+                    button.className = "block min-h-11 w-full px-3 py-2 text-left text-sm text-slate-900 hover:bg-slate-50 focus:bg-slate-50 focus:outline-none dark:text-white dark:hover:bg-slate-700 dark:focus:bg-slate-700";
+                    button.textContent = item.label;
+                    button.addEventListener("click", () => {
+                        resellerId.value = item.id;
+                        selectedResellerLabel = item.label;
+                        resellerLabel.value = item.label;
+                        resellerSearch.value = item.label;
+                        resellerWarning.classList.remove("hidden");
+                        hideResellerResults();
+                    });
+                    resellerResults.appendChild(button);
+                });
+                if (!resellerResults.children.length) {
+                    const empty = document.createElement("p");
+                    empty.className = "px-3 py-3 text-sm text-slate-500 dark:text-slate-400";
+                    empty.textContent = "No matching active resellers found.";
+                    resellerResults.appendChild(empty);
+                }
+                resellerResults.classList.remove("hidden");
+            } catch (error) {
+                if (error.name !== "AbortError") {
+                    resellerResults.textContent = "Reseller search is unavailable.";
+                    resellerResults.classList.remove("hidden");
+                }
+            }
+        }, 250);
+    });
+    document.addEventListener("click", event => {
+        if (!resellerResults.contains(event.target) && event.target !== resellerSearch) hideResellerResults();
     });
 
     form.addEventListener("submit", event => {

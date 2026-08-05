@@ -234,6 +234,7 @@ def _account_from_lead_party(db: Session, quote: Quote) -> SubscriberCreate:
                 else SubscriberCategory.residential
             ),
             email=email,
+            reseller_id=lead.reseller_id,
             phone=phone[:40] if phone else None,
             address_line1=(lead.address or "").strip()[:120] or None,
             region=(lead.region or "").strip()[:80] or None,
