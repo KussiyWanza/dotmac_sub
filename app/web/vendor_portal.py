@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.work_order import WorkOrder
 from app.schemas.vendor_portal import (
     VendorAdvanceCreate,
     VendorAsBuiltCreate,
@@ -26,7 +27,7 @@ from app.schemas.vendor_purchase_invoice import (
     VendorPurchaseInvoiceCreate,
     VendorPurchaseInvoiceLineCreate,
 )
-from app.services import vendor_submission_proposals
+from app.services import vendor_fiber, vendor_submission_proposals
 from app.services.common import coerce_uuid
 from app.services.db_session_adapter import db_session_adapter
 from app.services.domain_errors import DomainError
@@ -244,6 +245,15 @@ def vendor_project_detail(
         vendor_id=vendor_id,
         capabilities=vendor_capabilities.capabilities_for(context),
     )
+    vendor_work_orders = (
+        db.query(WorkOrder)
+        .filter(
+            WorkOrder.project_id == project["project_id"],
+            WorkOrder.is_active.is_(True),
+        )
+        .order_by(WorkOrder.created_at.desc())
+        .all()
+    )
     return templates.TemplateResponse(
         "vendor/project_detail.html",
         {
@@ -254,8 +264,46 @@ def vendor_project_detail(
             "invoice": invoice,
             "route_geojson": route_geojson,
             "supply": supply,
+            "vendor_work_orders": vendor_work_orders,
             "message": message,
         },
+    )
+
+
+@router.post("/projects/{project_id}/closure-proposals")
+def vendor_create_closure_proposal(
+    project_id: str,
+    work_order_id: str = Form(...),
+    name: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    notes: str | None = Form(default=None),
+    auth: dict = Depends(require_vendor_web_auth),
+    db: Session = Depends(get_db),
+):
+    context = _context(auth, db, vendor_capabilities.AS_BUILT_WRITE)
+    try:
+        receipt = vendor_fiber.register_closure(
+            db,
+            vendor_id=str(context["native_vendor_id"]),
+            vendor_user_id=str(auth["principal_id"]),
+            work_order_id=work_order_id,
+            installation_project_id=project_id,
+            name=name,
+            latitude=latitude,
+            longitude=longitude,
+            notes=notes,
+        )
+    except DomainError as exc:
+        raise HTTPException(
+            status_code={"not_found": 404, "conflict": 409, "invalid": 422}.get(
+                getattr(exc, "kind", "invalid"), 422
+            ),
+            detail=exc.message,
+        ) from exc
+    return _redirect(
+        project_id,
+        f"Closure {receipt.name} submitted for staff review",
     )
 
 

@@ -66,7 +66,6 @@
             weight: 4,
         }).addTo(map);
         var markers = window.L.layerGroup().addTo(map);
-        var lengthEdited = false;
 
         function setError(message) {
             errorElement.textContent = message || "";
@@ -131,7 +130,7 @@
                 }),
             });
             var meters = Math.round(tracedLength() * 10) / 10;
-            if (!lengthEdited) lengthElement.value = meters;
+            lengthElement.value = meters;
             hintElement.textContent =
                 points.length + " points \u00b7 " + meters + " m traced";
         }
@@ -144,16 +143,12 @@
         map.on("click", function (event) {
             addPoint(event.latlng.lat, event.latlng.lng);
         });
-        lengthElement.addEventListener("input", function () {
-            lengthEdited = true;
-        });
         undoElement.addEventListener("click", function () {
             points.pop();
             redraw();
         });
         clearElement.addEventListener("click", function () {
             points = [];
-            lengthEdited = false;
             lengthElement.value = "";
             redraw();
         });
