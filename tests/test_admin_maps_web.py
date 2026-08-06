@@ -18,7 +18,7 @@ from app.models.dispatch import TechnicianProfile
 from app.models.field_location import FieldTechPresence
 from app.models.field_movement import FieldWorkOrderMovement
 from app.models.project import Project
-from app.models.subscriber import Subscriber, UserType
+from app.models.subscriber import Address, AddressType, Subscriber, UserType
 from app.models.system_user import SystemUser
 from app.models.vendor_routes import (
     InstallationProject,
@@ -27,6 +27,7 @@ from app.models.vendor_routes import (
     Vendor,
 )
 from app.models.work_order import WorkOrder
+from app.schemas.field import FieldLiveMapFeedQuery, FieldLiveMapSearchQuery
 from app.services import field_maps as field_maps_service
 from app.services import vendor_routes_api
 from app.web.admin import field_maps as web_field_maps
@@ -77,6 +78,7 @@ def test_field_map_routes_registered():
     assert {
         "/dispatch/live-map",
         "/dispatch/live-map/feed",
+        "/dispatch/live-map/search",
         "/dispatch/movement-playback",
         "/dispatch/movement-playback/feed",
     } <= paths
@@ -96,6 +98,7 @@ def test_vendor_route_routes_registered():
     [
         "/dispatch/live-map",
         "/dispatch/live-map/feed",
+        "/dispatch/live-map/search",
         "/dispatch/movement-playback",
         "/dispatch/movement-playback/feed",
     ],
@@ -199,14 +202,17 @@ def test_technician_positions_feed_shape(db_session):
     db_session.add(FieldTechPresence(technician_id=other.id, person_id=other.person_id))
     db_session.flush()
 
-    feed = field_maps_service.list_technician_positions(db_session)
-    assert feed["count"] == 1
-    assert feed["live_count"] == 1
-    item = feed["items"][0]
-    assert item["label"] == "Ada Field"
-    assert item["latitude"] == 6.5244
-    assert item["longitude"] == 3.3792
-    assert item["is_live"] is True
+    feed = field_maps_service.list_technician_positions(
+        db_session,
+        FieldLiveMapFeedQuery(),
+    )
+    assert feed.count == 1
+    assert feed.live_count == 1
+    item = feed.items[0]
+    assert item.label == "Ada Field"
+    assert item.latitude == 6.5244
+    assert item.longitude == 3.3792
+    assert item.is_live is True
 
 
 def test_technician_positions_marks_stale(db_session):
@@ -225,11 +231,99 @@ def test_technician_positions_marks_stale(db_session):
     db_session.flush()
 
     feed = field_maps_service.list_technician_positions(
-        db_session, stale_after_seconds=120
+        db_session,
+        FieldLiveMapFeedQuery(stale_after_seconds=120),
     )
-    assert feed["count"] == 1
-    assert feed["live_count"] == 0
-    assert feed["items"][0]["is_live"] is False
+    assert feed.count == 1
+    assert feed.live_count == 0
+    assert feed.items[0].is_live is False
+
+
+def test_technician_positions_excludes_disabled_location_sharing(db_session):
+    user = _user(db_session)
+    profile = _technician(db_session, user)
+    db_session.add(
+        FieldTechPresence(
+            technician_id=profile.id,
+            person_id=user.id,
+            status="on_shift",
+            location_sharing_enabled=False,
+            last_latitude=6.5,
+            last_longitude=3.3,
+            last_location_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    feed = field_maps_service.list_technician_positions(
+        db_session,
+        FieldLiveMapFeedQuery(),
+    )
+
+    assert feed.count == 0
+    assert feed.items == []
+
+
+def test_live_map_search_matches_canonical_service_street(db_session):
+    subscriber = _subscriber(db_session)
+    db_session.add(
+        Address(
+            subscriber_id=subscriber.id,
+            address_type=AddressType.service,
+            is_primary=True,
+            address_line1="14 Ahmadu Bello Way",
+            city="Abuja",
+            region="FCT",
+            latitude=9.0765,
+            longitude=7.3986,
+        )
+    )
+    db_session.add(
+        WorkOrder(
+            public_id="sub-street-search",
+            subscriber_id=subscriber.id,
+            title="Restore subscriber service",
+            status="dispatched",
+        )
+    )
+    db_session.flush()
+
+    result = field_maps_service.search_live_map(
+        db_session,
+        FieldLiveMapSearchQuery(query="Ahmadu Bello", limit=20),
+    )
+
+    assert result.count == 1
+    item = result.items[0]
+    assert item.kind == "work_order"
+    assert item.id == "sub-street-search"
+    assert item.detail == "14 Ahmadu Bello Way, Abuja, FCT"
+    assert item.latitude == 9.0765
+    assert item.longitude == 7.3986
+
+
+def test_live_map_search_excludes_technicians_not_sharing_location(db_session):
+    user = _user(db_session)
+    profile = _technician(db_session, user)
+    db_session.add(
+        FieldTechPresence(
+            technician_id=profile.id,
+            person_id=user.id,
+            status="on_shift",
+            location_sharing_enabled=False,
+            last_latitude=6.5,
+            last_longitude=3.3,
+            last_location_at=datetime.now(UTC),
+        )
+    )
+    db_session.flush()
+
+    result = field_maps_service.search_live_map(
+        db_session,
+        FieldLiveMapSearchQuery(query="Ada Field", limit=20),
+    )
+
+    assert result.items == []
 
 
 # ---------------------------------------------------------------------------
@@ -386,3 +480,15 @@ def test_get_route_project_missing_returns_none(db_session):
 def test_map_templates_compile(template_name):
     # get_template parses + compiles the template source (Jinja syntax check).
     assert web_field_maps.templates.env.get_template(template_name) is not None
+
+
+def test_live_map_template_exposes_street_search_and_focus_behavior():
+    source = web_field_maps.templates.env.loader.get_source(
+        web_field_maps.templates.env,
+        "admin/dispatch/live_map.html",
+    )[0]
+
+    assert 'id="map-search"' in source
+    assert "street" in source.lower()
+    assert "/admin/dispatch/live-map/search" in source
+    assert "map.setView(latlng, 16)" in source

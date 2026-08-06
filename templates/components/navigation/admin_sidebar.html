@@ -216,8 +216,10 @@
     {% endif %}
     {{ nav_link("Work Orders", "/admin/dispatch/work-orders", icon_projects, "dispatch-work-orders") }}
     {{ nav_link("Material Requests", "/admin/operations/material-requests", icon_projects, "material-requests") }}
+    {% if can(request, "operations:dispatch:read") %}
     {{ nav_link("Field Live Map", "/admin/dispatch/live-map", icon_gis, "field-live-map",
         active_pages=["field-live-map", "field-movement-playback"]) }}
+    {% endif %}
     {{ nav_link("Vendors", "/admin/vendors", icon_network, "vendors") }}
     {{ nav_link("Vendor Review Queue", "/admin/vendors/operations", icon_network, "vendor-operations") }}
     {{ nav_link("Vendor Routes", "/admin/vendors/routes", icon_network, "vendor-routes") }}

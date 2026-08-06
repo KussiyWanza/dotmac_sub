@@ -690,6 +690,52 @@ class FieldMapSearchResponse(BaseModel):
     offset: int = 0
 
 
+class FieldLiveMapPosition(BaseModel):
+    technician_id: UUID
+    person_id: UUID
+    label: str
+    status: str
+    latitude: float
+    longitude: float
+    accuracy_m: float | None = None
+    last_location_at: datetime | None = None
+    is_live: bool
+
+
+class FieldLiveMapFeedQuery(BaseModel):
+    stale_after_seconds: int = Field(default=120, ge=15, le=3600)
+    limit: int = Field(default=500, ge=1, le=2000)
+
+
+class FieldLiveMapFeed(BaseModel):
+    count: int
+    live_count: int
+    stale_after_seconds: int
+    items: list[FieldLiveMapPosition]
+
+
+class FieldLiveMapSearchQuery(BaseModel):
+    query: str = Field(min_length=1, max_length=160)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class FieldLiveMapSearchResult(BaseModel):
+    kind: Literal["technician", "work_order"]
+    id: str
+    label: str
+    detail: str | None = None
+    latitude: float
+    longitude: float
+    status: str | None = None
+    href: str | None = None
+
+
+class FieldLiveMapSearchResponse(BaseModel):
+    query: str
+    count: int
+    items: list[FieldLiveMapSearchResult]
+
+
 class FieldSpliceCreate(BaseModel):
     closure_id: UUID
     from_strand_id: UUID
