@@ -203,6 +203,35 @@ _TICKET_TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class TicketStatusScope:
+    """Typed status predicate for canonical Ticket list and count queries.
+
+    A list scope is deliberately separate from ``TicketStatus``: composite
+    filters such as "not closed" describe a query and are never persisted as a
+    lifecycle status.
+    """
+
+    exact: TicketStatus | None = None
+    excluded: frozenset[TicketStatus] = frozenset()
+
+    def __post_init__(self) -> None:
+        if self.exact is not None and self.excluded:
+            raise ValueError("Ticket status scope cannot be exact and excluding")
+
+    @classmethod
+    def all(cls) -> TicketStatusScope:
+        return cls()
+
+    @classmethod
+    def matching(cls, status: TicketStatus) -> TicketStatusScope:
+        return cls(exact=status)
+
+    @classmethod
+    def not_closed(cls) -> TicketStatusScope:
+        return cls(excluded=frozenset({TicketStatus.closed}))
+
+
 def active_ticket_status_values() -> tuple[str, ...]:
     """Return the support-owned statuses eligible for active customer context."""
 
@@ -2449,9 +2478,12 @@ class Tickets:
         created_by_person_id: str | None = None,
         is_active: bool | None = None,
         filters: str | None = None,
+        status_scope: TicketStatusScope | None = None,
     ):
         """Build the canonical filtered ticket query before ordering/pagination."""
 
+        if status is not None and status_scope is not None:
+            raise ValueError("Use either status or status_scope, not both")
         query = db.query(Ticket).options(selectinload(Ticket.assignees))
         # Default (None) keeps the legacy active-only behavior.
         if is_active is None or is_active:
@@ -2467,7 +2499,16 @@ class Tickets:
                     Ticket.description.ilike(like),
                 )
             )
-        if status:
+        if status_scope is not None:
+            if status_scope.exact is not None:
+                query = query.filter(Ticket.status == status_scope.exact.value)
+            elif status_scope.excluded:
+                query = query.filter(
+                    Ticket.status.notin_(
+                        sorted(item.value for item in status_scope.excluded)
+                    )
+                )
+        elif status:
             query = query.filter(Ticket.status == str(status).strip())
         if ticket_type:
             query = query.filter(Ticket.ticket_type == ticket_type)
@@ -2528,6 +2569,7 @@ class Tickets:
         created_by_person_id: str | None = None,
         is_active: bool | None = None,
         filters: str | None = None,
+        status_scope: TicketStatusScope | None = None,
     ) -> int:
         """Count the same canonical ticket scope consumed by list projections."""
 
@@ -2547,6 +2589,7 @@ class Tickets:
                 created_by_person_id=created_by_person_id,
                 is_active=is_active,
                 filters=filters,
+                status_scope=status_scope,
             )
             .order_by(None)
             .count()
@@ -2572,6 +2615,7 @@ class Tickets:
         created_by_person_id: str | None = None,
         is_active: bool | None = None,
         filters: str | None = None,
+        status_scope: TicketStatusScope | None = None,
     ) -> list[Ticket]:
         query = Tickets.query(
             db,
@@ -2588,6 +2632,7 @@ class Tickets:
             created_by_person_id=created_by_person_id,
             is_active=is_active,
             filters=filters,
+            status_scope=status_scope,
         )
 
         query = apply_ordering(

@@ -10,7 +10,7 @@ import pytest
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from app.models.support import Ticket, TicketChannel
+from app.models.support import Ticket, TicketChannel, TicketStatus
 from app.services import support as support_service
 from app.services import web_support_tickets
 from app.services.list_query import PageMeta
@@ -119,6 +119,9 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
     assert query.page == 2
     assert query.per_page == 50
 
+    not_closed = _query(status=" NOT_CLOSED ")
+    assert not_closed.filter_value("status") == "not_closed"
+
     with pytest.raises(ValueError, match="Unsupported ticket status"):
         _query(status="invented")
     with pytest.raises(ValueError, match="must be a valid UUID"):
@@ -127,6 +130,56 @@ def test_ticket_query_normalizes_declared_state_and_rejects_unknown_values():
         _query(sort_by="description")
     with pytest.raises(ValueError, match="not filterable"):
         _query(filters='[["Ticket","metadata","=","private"]]')
+
+
+def test_not_closed_status_scope_excludes_only_closed_and_aligns_paging(
+    db_session,
+):
+    tickets_per_status = 3
+    db_session.add_all(
+        _ticket(
+            title=f"{status.value} ticket {index}",
+            status=status.value,
+        )
+        for status in TicketStatus
+        for index in range(tickets_per_status)
+    )
+    db_session.commit()
+
+    expected_statuses = {
+        status.value for status in TicketStatus if status is not TicketStatus.closed
+    }
+
+    context = web_support_tickets.build_tickets_list_context(
+        db_session,
+        list_query=_query(status="not_closed", page=1, per_page=25),
+        actor_id=None,
+        visible_columns_cookie=None,
+    )
+
+    assert context["status"] == "not_closed"
+    assert context["total"] == len(expected_statuses) * tickets_per_status
+    assert context["total_pages"] == 2
+    assert len(context["tickets"]) == 25
+    assert {ticket.status for ticket in context["tickets"]}.isdisjoint({"closed"})
+    assert "status=not_closed" in context["list_query"].url(
+        "/admin/support/tickets/export.csv"
+    )
+
+    exported = web_support_tickets.list_tickets_for_scope(
+        db_session,
+        list_query=_query(status="not_closed"),
+        actor_id=None,
+    )
+    assert {ticket.status for ticket in exported} == expected_statuses
+
+    csv_output = web_support_tickets.render_tickets_csv(
+        db_session,
+        list_query=_query(status="not_closed"),
+        actor_id=None,
+        visible_columns_cookie="status",
+    )
+    assert set(csv_output.splitlines()[1:]) == expected_statuses
 
 
 def test_ticket_context_uses_exact_count_clamps_page_and_aligns_status_links(
@@ -323,6 +376,8 @@ def test_ticket_full_and_htmx_views_share_canonical_accessible_partials():
     assert 'name="region" data-auto-submit' in list_partial
     assert "All Regions" in list_partial
     assert "{% for option in region_options %}" in list_partial
+    assert '<option value="not_closed"' in list_partial
+    assert ">Not closed</option>" in list_partial
     assert 'id="ticket-filter-apply"' in list_partial
     assert 'aria-label="Apply ticket filters"' in list_partial
     assert 'hx-include="#ticket-filter-form"' in list_partial
