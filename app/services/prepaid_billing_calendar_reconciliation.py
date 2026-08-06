@@ -1,9 +1,11 @@
-"""Reviewed repair owner for the historical UTC prepaid-calendar defect.
+"""Reviewed repair owner for historical prepaid settlement-period defects.
 
 The forward settlement owner now resolves prepaid anniversaries in the declared
-business timezone.  This reconciler repairs only historical rows that exactly
-match the retired UTC-midnight calculation and whose invoice, entitlement,
-payment settlement, and subscription anchor still form one unambiguous chain.
+business timezone. This reconciler repairs historical rows that either exactly
+match the retired UTC-midnight calculation or prove that a lapsed payment was
+left on an earlier stale invoice period. The invoice, entitlement, payment
+settlement, subscription anchor, and access consequence must still form one
+unambiguous chain.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import enum
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import NoReturn
 from uuid import UUID
@@ -36,10 +38,16 @@ from app.models.billing import (
     ServiceEntitlementStatus,
 )
 from app.models.catalog import BillingMode, Subscription
+from app.models.enforcement_lock import EnforcementLock, EnforcementReason
 from app.models.idempotency import IdempotencyKey
-from app.models.service_extension import ServiceExtensionEntry
+from app.models.service_extension import (
+    ServiceExtension,
+    ServiceExtensionEntry,
+    ServiceExtensionStatus,
+)
 from app.models.usage import QuotaBucket
 from app.schemas.audit import AuditEventCreate
+from app.services.account_lifecycle import restore_subscription_detailed
 from app.services.audit import AuditEvents
 from app.services.billing._common import lock_account
 from app.services.domain_errors import DomainError
@@ -91,11 +99,15 @@ class PrepaidBillingCalendarDisposition(enum.Enum):
     overlapping_invoice = "overlapping_invoice"
 
 
+class PrepaidBillingCalendarCorrectionKind(enum.Enum):
+    """The historical defect proved by one actionable preview."""
+
+    retired_utc_midnight = "retired_utc_midnight"
+    lapsed_payment_period = "lapsed_payment_period"
+
+
 _REASONS: dict[PrepaidBillingCalendarDisposition, str] = {
-    PrepaidBillingCalendarDisposition.eligible: (
-        "The invoice exactly matches the retired UTC-midnight calculation and "
-        "has one safe, internally consistent correction path."
-    ),
+    PrepaidBillingCalendarDisposition.eligible: "The correction is actionable.",
     PrepaidBillingCalendarDisposition.invoice_not_found: "Invoice was not found.",
     PrepaidBillingCalendarDisposition.invoice_not_paid: (
         "Only active, fully paid, non-proforma invoices can be reconciled."
@@ -141,6 +153,18 @@ _REASONS: dict[PrepaidBillingCalendarDisposition, str] = {
     ),
 }
 
+_ELIGIBLE_REASONS: dict[PrepaidBillingCalendarCorrectionKind, str] = {
+    PrepaidBillingCalendarCorrectionKind.retired_utc_midnight: (
+        "The invoice exactly matches the retired UTC-midnight calculation and "
+        "has one safe, internally consistent correction path."
+    ),
+    PrepaidBillingCalendarCorrectionKind.lapsed_payment_period: (
+        "The settled payment occurred after the stale invoice period began, "
+        "and the older billing anchor proves the lapsed service period should "
+        "start on the settlement business date."
+    ),
+}
+
 
 class PrepaidBillingCalendarReconciliationError(DomainError):
     """Transport-neutral rejection from the calendar repair owner."""
@@ -160,6 +184,10 @@ def _utc(value: datetime) -> datetime:
 
 def _same_instant(left: datetime | None, right: datetime | None) -> bool:
     return left is not None and right is not None and _utc(left) == _utc(right)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,10 +210,22 @@ class PrepaidBillingCalendarPreview:
     disposition: PrepaidBillingCalendarDisposition
     reason: str
     fingerprint: str
+    correction_kind: PrepaidBillingCalendarCorrectionKind | None = None
+    active_lock_reasons: tuple[EnforcementReason, ...] = ()
 
     @property
     def actionable(self) -> bool:
         return self.disposition is PrepaidBillingCalendarDisposition.eligible
+
+    @property
+    def proposed_paid_through_on(self) -> str | None:
+        """Return the inclusive customer service date for a half-open period."""
+
+        if self.proposed_ends_on is None:
+            return None
+        return (
+            datetime.fromisoformat(self.proposed_ends_on).date() - timedelta(days=1)
+        ).isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +258,12 @@ class PrepaidBillingCalendarReconciliationResult:
     corrected_ends_at: datetime
     preview_fingerprint: str
     replayed: bool
+    correction_kind: PrepaidBillingCalendarCorrectionKind | None = None
+    access_consequence_evaluated: bool = False
+    subscription_reactivated: bool = False
+    access_restored: bool = False
+    resolved_lock_count: int = 0
+    remaining_blockers: tuple[str, ...] = ()
 
 
 def _fingerprint(payload: dict[str, object]) -> str:
@@ -234,6 +280,8 @@ def _preview(
     entitlement: ServiceEntitlement | None = None,
     payment: Payment | None = None,
     proposed: PrepaidSettlementPeriod | None = None,
+    correction_kind: PrepaidBillingCalendarCorrectionKind | None = None,
+    active_locks: tuple[EnforcementLock, ...] = (),
 ) -> PrepaidBillingCalendarPreview:
     payload: dict[str, object] = {
         "invoice_id": str(invoice.id),
@@ -280,8 +328,18 @@ def _preview(
         ),
         "proposed_start": proposed.starts_at.isoformat() if proposed else None,
         "proposed_end": proposed.ends_at.isoformat() if proposed else None,
+        "correction_kind": correction_kind.value if correction_kind else None,
+        "active_locks": [
+            {"id": str(lock.id), "reason": lock.reason.value} for lock in active_locks
+        ],
         "disposition": disposition.value,
     }
+    reason = (
+        _ELIGIBLE_REASONS[correction_kind]
+        if disposition is PrepaidBillingCalendarDisposition.eligible
+        and correction_kind is not None
+        else _REASONS[disposition]
+    )
     return PrepaidBillingCalendarPreview(
         invoice_id=invoice.id,
         account_id=invoice.account_id,
@@ -311,9 +369,31 @@ def _preview(
         proposed_ends_on=proposed.ends_on.isoformat() if proposed is not None else None,
         timezone_name=APP_TIMEZONE_NAME,
         disposition=disposition,
-        reason=_REASONS[disposition],
+        reason=reason,
         fingerprint=_fingerprint(payload),
+        correction_kind=correction_kind,
+        active_lock_reasons=tuple(lock.reason for lock in active_locks),
     )
+
+
+def _lapsed_payment_period_candidate(
+    *,
+    invoice: Invoice,
+    subscription: Subscription,
+    proposed: PrepaidSettlementPeriod,
+) -> bool:
+    """Return whether stale facts prove a missed lapsed-payment re-anchor."""
+
+    if (
+        invoice.billing_period_start is None
+        or invoice.billing_period_end is None
+        or subscription.next_billing_at is None
+    ):
+        return False
+    current_start = _utc(invoice.billing_period_start)
+    current_end = _utc(invoice.billing_period_end)
+    anchor = _utc(subscription.next_billing_at)
+    return anchor < current_start < proposed.starts_at < current_end < proposed.ends_at
 
 
 def preview_prepaid_billing_calendar_reconciliation(
@@ -455,14 +535,23 @@ def preview_prepaid_billing_calendar_reconciliation(
             billing_cycle=subscription.billing_cycle,
         )
     )
+    correction_kind: PrepaidBillingCalendarCorrectionKind | None = None
     if (
-        not _same_instant(invoice.billing_period_start, legacy.starts_at)
-        or not _same_instant(invoice.billing_period_end, legacy.ends_at)
-        or (
+        _same_instant(invoice.billing_period_start, legacy.starts_at)
+        and _same_instant(invoice.billing_period_end, legacy.ends_at)
+        and not (
             _same_instant(legacy.starts_at, proposed.starts_at)
             and _same_instant(legacy.ends_at, proposed.ends_at)
         )
     ):
+        correction_kind = PrepaidBillingCalendarCorrectionKind.retired_utc_midnight
+    elif _lapsed_payment_period_candidate(
+        invoice=invoice,
+        subscription=subscription,
+        proposed=proposed,
+    ):
+        correction_kind = PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+    else:
         return _preview(
             invoice=invoice,
             line=line,
@@ -498,7 +587,10 @@ def preview_prepaid_billing_calendar_reconciliation(
             proposed=proposed,
             disposition=PrepaidBillingCalendarDisposition.entitlement_mismatch,
         )
-    if not _same_instant(subscription.next_billing_at, invoice.billing_period_end):
+    if (
+        correction_kind is PrepaidBillingCalendarCorrectionKind.retired_utc_midnight
+        and not _same_instant(subscription.next_billing_at, invoice.billing_period_end)
+    ):
         return _preview(
             invoice=invoice,
             line=line,
@@ -509,8 +601,14 @@ def preview_prepaid_billing_calendar_reconciliation(
             disposition=PrepaidBillingCalendarDisposition.anchor_changed,
         )
     if db.scalar(
-        select(ServiceExtensionEntry.id).where(
-            ServiceExtensionEntry.subscription_id == subscription.id
+        select(ServiceExtensionEntry.id)
+        .join(
+            ServiceExtension,
+            ServiceExtension.id == ServiceExtensionEntry.extension_id,
+        )
+        .where(
+            ServiceExtensionEntry.subscription_id == subscription.id,
+            ServiceExtension.status == ServiceExtensionStatus.applied,
         )
     ):
         return _preview(
@@ -586,6 +684,16 @@ def preview_prepaid_billing_calendar_reconciliation(
             proposed=proposed,
             disposition=PrepaidBillingCalendarDisposition.overlapping_invoice,
         )
+    active_locks = tuple(
+        db.scalars(
+            select(EnforcementLock)
+            .where(
+                EnforcementLock.subscription_id == subscription.id,
+                EnforcementLock.is_active.is_(True),
+            )
+            .order_by(EnforcementLock.id)
+        ).all()
+    )
     return _preview(
         invoice=invoice,
         line=line,
@@ -594,13 +702,15 @@ def preview_prepaid_billing_calendar_reconciliation(
         payment=payment,
         proposed=proposed,
         disposition=PrepaidBillingCalendarDisposition.eligible,
+        correction_kind=correction_kind,
+        active_locks=active_locks,
     )
 
 
 def preview_prepaid_billing_calendar_cohort(
     db: Session, *, limit: int = 100, offset: int = 0
 ) -> PrepaidBillingCalendarCohort:
-    """Return a bounded work queue of exact legacy-signature invoices."""
+    """Return a bounded queue of reviewed historical settlement-period drift."""
 
     bounded_limit = max(1, min(limit, 500))
     bounded_offset = max(0, offset)
@@ -669,6 +779,18 @@ def _replay_result(
         _error(
             "idempotency_conflict", "Idempotency evidence does not match this review."
         )
+    raw_correction_kind = evidence.get("correction_kind")
+    correction_kind = (
+        PrepaidBillingCalendarCorrectionKind(str(raw_correction_kind))
+        if raw_correction_kind
+        else None
+    )
+    raw_blockers = evidence.get("remaining_blockers", [])
+    remaining_blockers = (
+        tuple(str(item) for item in raw_blockers)
+        if isinstance(raw_blockers, list)
+        else ()
+    )
     return PrepaidBillingCalendarReconciliationResult(
         invoice_id=command.invoice_id,
         subscription_id=UUID(str(evidence["subscription_id"])),
@@ -681,6 +803,14 @@ def _replay_result(
         corrected_ends_at=datetime.fromisoformat(str(evidence["corrected_ends_at"])),
         preview_fingerprint=command.preview_fingerprint,
         replayed=True,
+        correction_kind=correction_kind,
+        access_consequence_evaluated=bool(
+            evidence.get("access_consequence_evaluated", False)
+        ),
+        subscription_reactivated=bool(evidence.get("subscription_reactivated", False)),
+        access_restored=bool(evidence.get("access_restored", False)),
+        resolved_lock_count=int(evidence.get("resolved_lock_count", 0)),
+        remaining_blockers=remaining_blockers,
     )
 
 
@@ -761,6 +891,20 @@ def reconcile_prepaid_billing_calendar(
             lock_for_update(db, PaymentSettlement, settlement_id)
             for settlement_id in settlement_ids
         ]
+        enforcement_lock_ids = tuple(
+            db.scalars(
+                select(EnforcementLock.id)
+                .where(
+                    EnforcementLock.subscription_id == preliminary.subscription_id,
+                    EnforcementLock.is_active.is_(True),
+                )
+                .order_by(EnforcementLock.id)
+            ).all()
+        )
+        locked_enforcement_locks = [
+            lock_for_update(db, EnforcementLock, enforcement_lock_id)
+            for enforcement_lock_id in enforcement_lock_ids
+        ]
         if (
             subscription is None
             or line is None
@@ -768,6 +912,7 @@ def reconcile_prepaid_billing_calendar(
             or payment is None
             or any(item is None for item in locked_allocations)
             or any(item is None for item in locked_settlements)
+            or any(item is None for item in locked_enforcement_locks)
         ):
             _error("stale_preview", "A reviewed calendar record no longer exists.")
         db.expire_all()
@@ -782,6 +927,7 @@ def reconcile_prepaid_billing_calendar(
             )
         assert current.proposed_starts_at is not None
         assert current.proposed_ends_at is not None
+        assert current.correction_kind is not None
         locked_invoice = db.get(Invoice, command.invoice_id)
         subscription = db.get(Subscription, preliminary.subscription_id)
         line = db.get(InvoiceLine, preliminary.invoice_line_id)
@@ -821,13 +967,42 @@ def reconcile_prepaid_billing_calendar(
         line.metadata_ = line_metadata
         entitlement.starts_at = corrected_start
         entitlement.ends_at = corrected_end
+        now = _now_utc()
         entitlement_metadata = dict(entitlement.metadata_ or {})
         entitlement_metadata[_METADATA_KEY] = {
             "preview_fingerprint": current.fingerprint,
-            "corrected_at": datetime.now(UTC).isoformat(),
+            "corrected_at": now.isoformat(),
         }
         entitlement.metadata_ = entitlement_metadata
         subscription.next_billing_at = corrected_end
+        access_consequence_evaluated = False
+        subscription_reactivated = False
+        access_restored = False
+        resolved_lock_count = 0
+        remaining_blockers: tuple[str, ...] = ()
+        if (
+            current.correction_kind
+            is PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+            and corrected_start <= now < corrected_end
+        ):
+            access_consequence_evaluated = True
+            restoration = restore_subscription_detailed(
+                db,
+                str(subscription.id),
+                trigger="top_up",
+                resolved_by=f"{_OWNER}:{locked_invoice.id}",
+                reason=EnforcementReason.prepaid,
+                notes=(
+                    "Restore exact prepaid coverage after reviewed lapsed-payment "
+                    "period reconciliation"
+                ),
+                evidence_context=command.context,
+                evidence_effective_at=now,
+            )
+            subscription_reactivated = restoration.subscription_reactivated
+            access_restored = restoration.access_restored
+            resolved_lock_count = restoration.resolved_lock_count
+            remaining_blockers = restoration.remaining_blockers
         evidence = {
             "owner": _OWNER,
             "timezone": APP_TIMEZONE_NAME,
@@ -837,6 +1012,7 @@ def reconcile_prepaid_billing_calendar(
             "correlation_id": str(command.context.correlation_id),
             "idempotency_key": key,
             "preview_fingerprint": current.fingerprint,
+            "correction_kind": current.correction_kind.value,
             "subscription_id": str(subscription.id),
             "entitlement_id": str(entitlement.id),
             "payment_id": str(current.payment_id),
@@ -845,6 +1021,11 @@ def reconcile_prepaid_billing_calendar(
             "corrected_starts_at": corrected_start.isoformat(),
             "corrected_ends_at": corrected_end.isoformat(),
             "economic_delta": "0.00",
+            "access_consequence_evaluated": access_consequence_evaluated,
+            "subscription_reactivated": subscription_reactivated,
+            "access_restored": access_restored,
+            "resolved_lock_count": resolved_lock_count,
+            "remaining_blockers": list(remaining_blockers),
         }
         invoice_metadata = dict(locked_invoice.metadata_ or {})
         invoice_metadata[_METADATA_KEY] = evidence
@@ -884,6 +1065,12 @@ def reconcile_prepaid_billing_calendar(
             corrected_ends_at=corrected_end,
             preview_fingerprint=current.fingerprint,
             replayed=False,
+            correction_kind=current.correction_kind,
+            access_consequence_evaluated=access_consequence_evaluated,
+            subscription_reactivated=subscription_reactivated,
+            access_restored=access_restored,
+            resolved_lock_count=resolved_lock_count,
+            remaining_blockers=remaining_blockers,
         )
 
     return execute_owner_command(

@@ -28,6 +28,7 @@ from app.services.form_contracts import register as register_form_contract
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_billing_calendar_reconciliation import (
     PrepaidBillingCalendarCohort,
+    PrepaidBillingCalendarCorrectionKind,
     PrepaidBillingCalendarPreview,
     PrepaidBillingCalendarReconciliationResult,
     ReconcilePrepaidBillingCalendarCommand,
@@ -62,8 +63,15 @@ PREPAID_BILLING_CALENDAR_FORM = register_form_contract(
             FormConsequence(
                 key="financial_invariance",
                 label=(
-                    "Invoice totals, payment, allocation, settlement, status, access, "
+                    "Invoice totals, payment, allocation, settlement, invoice status, "
                     "and ledger evidence do not change"
+                ),
+            ),
+            FormConsequence(
+                key="access_reconciliation",
+                label=(
+                    "A current lapsed-payment repair resolves only its prepaid lock; "
+                    "the lifecycle owner restores access only when no other blocker remains"
                 ),
             ),
             FormConsequence(
@@ -142,12 +150,27 @@ def build_admin_review(
             ActionHiddenValue(key="confirmation_token", value=token),
         )
         confirmation = ActionConfirmation(
-            title="Confirm this exact zero-value correction",
+            title="Confirm this exact zero-economic-value correction",
             message=(
                 "I reviewed the before/after dates and understand that the owner "
                 "will recheck every guard under lock before changing them."
             ),
         )
+    lapsed_payment_repair = (
+        preview.correction_kind
+        is PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+    )
+    impact = (
+        "Calendar projections move with an economic delta of NGN 0.00. If the "
+        "corrected period is current, the owner resolves only the prepaid lock and "
+        "asks the lifecycle owner to restore access; every independent blocker is "
+        "preserved."
+        if lapsed_payment_repair
+        else (
+            "Only calendar projections move. The economic delta is NGN 0.00 and no "
+            "payment, ledger, invoice status, or access decision changes."
+        )
+    )
     action_form = ActionForm(
         key=ACTION_KEY,
         title="Correct prepaid billing dates",
@@ -167,24 +190,21 @@ def build_admin_review(
                 required=True,
                 max_length=500,
                 rows=3,
-                placeholder="Explain why this exact UTC-to-WAT correction is approved.",
+                placeholder="Explain why this exact calendar correction is approved.",
                 help_text="Required audit evidence; do not include secrets.",
             ),
         ),
         hidden_values=hidden_values,
         tone=ActionTone.neutral,
-        impact=(
-            "Only calendar projections move. The economic delta is NGN 0.00 and no "
-            "payment, ledger, invoice status, or access decision changes."
-        ),
+        impact=impact,
         confirmation=confirmation,
         allowed=preview.actionable,
         disabled_reason=None if preview.actionable else preview.reason,
     )
     prerequisites = [
         FormPrerequisite(
-            key="exact_legacy_signature",
-            label="The owner found one exact retired UTC-period signature",
+            key="proved_historical_defect",
+            label="The owner proved one supported historical calendar defect",
             met=preview.actionable,
             reason=None if preview.actionable else preview.reason,
         ),

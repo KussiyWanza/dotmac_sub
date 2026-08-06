@@ -172,15 +172,23 @@ therefore part of the new WAT day even though its UTC timestamp is on the
 previous date. Date-only customer and operator projections convert the stored
 boundary back to the configured display timezone before rendering it.
 
-Historical paid periods that exactly match the retired UTC-midnight rule are
-owned by `financial.prepaid_billing_calendar_reconciliation`. Its admin queue
-is preview-first and fingerprint-bound: only one unambiguous invoice, payment
-settlement, base line, entitlement, and unchanged anchor can be corrected.
-Refunds, reversals, extensions, usage quota periods, coverage overlaps,
-multiple evidence rows, or a moved anchor are quarantined for manual review.
-The command changes calendar
-projections only, records zero economic delta, and stages invoice evidence,
-audit, event, and idempotency rows atomically. See
+Historical paid periods that exactly match the retired UTC-midnight rule, plus
+paid lapsed periods proved by an older stale anchor and strict documentary/
+payment-period ordering, are owned by
+`financial.prepaid_billing_calendar_reconciliation`. Its admin queue is
+preview-first and fingerprint-bound: only one unambiguous invoice, payment
+settlement, base line, entitlement, calendar defect, and access-lock snapshot
+can be corrected. Refunds, reversals, applied extensions, usage quota periods,
+coverage overlaps, multiple evidence rows, or an unproved anchor relationship
+are quarantined for manual review. Reversed extension history does not provide
+coverage and does not block an otherwise proved correction.
+
+Every repair records zero economic delta and stages invoice evidence, audit,
+event, and idempotency rows atomically. A current lapsed-payment repair also
+invokes the canonical lifecycle protocol scoped to `EnforcementReason.prepaid`:
+it can resolve a prepaid lock and reactivate service only when no independent
+enforcement lock, active-login collision, or lifecycle override remains. It
+never clears fraud, admin, FUP, or other unrelated blockers. See
 `docs/designs/PREPAID_BILLING_CALENDAR_RECONCILIATION.md`.
 
 When an existing prepaid draft is covered by settlement-backed Payments plus a

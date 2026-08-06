@@ -6,7 +6,9 @@ evidence and then emits a durable funding-change event; it must not project the
 anchor itself. An earlier attempt that called the projection inline from
 `_finalize_invoice_payment_effects` was reverted for exactly this reason.
 `financial.prepaid_billing_calendar_reconciliation` is the explicit historical
-repair owner and may write only the preview-bound UTC-to-WAT correction.
+repair owner. It may write only a preview-bound UTC-to-WAT or proved lapsed-
+payment correction, and delegates any access consequence to the canonical
+lifecycle protocol.
 """
 
 from __future__ import annotations
@@ -135,6 +137,8 @@ def test_reviewed_calendar_reconciler_has_one_named_anchor_repair() -> None:
     source = CALENDAR_RECONCILER.read_text(encoding="utf-8")
     assert "execute_owner_command(" in source
     assert "preview_fingerprint" in source
+    assert "restore_subscription_detailed(" in source
+    assert "reason=EnforcementReason.prepaid" in source
 
 
 def test_payment_allocation_emits_the_funding_change_event() -> None:

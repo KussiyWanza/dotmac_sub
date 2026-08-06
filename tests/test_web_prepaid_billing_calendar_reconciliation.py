@@ -8,6 +8,7 @@ import pytest
 
 from app.services import web_prepaid_billing_calendar_reconciliation as web_service
 from app.services.prepaid_billing_calendar_reconciliation import (
+    PrepaidBillingCalendarCorrectionKind,
     PrepaidBillingCalendarDisposition,
     PrepaidBillingCalendarPreview,
     PrepaidBillingCalendarReconciliationResult,
@@ -32,6 +33,9 @@ def _preview(
     disposition: PrepaidBillingCalendarDisposition = (
         PrepaidBillingCalendarDisposition.eligible
     ),
+    correction_kind: PrepaidBillingCalendarCorrectionKind = (
+        PrepaidBillingCalendarCorrectionKind.retired_utc_midnight
+    ),
 ) -> PrepaidBillingCalendarPreview:
     return PrepaidBillingCalendarPreview(
         invoice_id=INVOICE_ID,
@@ -52,6 +56,7 @@ def _preview(
         disposition=disposition,
         reason="Exact retired UTC signature.",
         fingerprint=FINGERPRINT,
+        correction_kind=correction_kind,
     )
 
 
@@ -116,6 +121,28 @@ def test_blocked_review_has_no_confirmation_capability(monkeypatch):
     assert review.action_form.allowed is False
     assert review.action_form.hidden_values == ()
     assert review.action_form.confirmation is None
+
+
+def test_lapsed_payment_review_explains_scoped_access_restoration(monkeypatch):
+    monkeypatch.setattr(
+        web_service,
+        "preview_prepaid_billing_calendar_reconciliation",
+        lambda _db, _invoice_id: _preview(
+            correction_kind=PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+        ),
+    )
+    monkeypatch.setattr(
+        web_service.context_signing,
+        "sign_context_token",
+        lambda _db, _claims: "signed-calendar-review",
+    )
+
+    review = web_service.build_admin_review(
+        object(), invoice_id=INVOICE_ID, actor=ACTOR, now=NOW
+    )
+
+    assert "resolves only the prepaid lock" in review.action_form.impact
+    assert "independent blocker is preserved" in review.action_form.impact
 
 
 def test_confirmation_binds_actor_invoice_fingerprint_and_idempotency(monkeypatch):
@@ -205,6 +232,8 @@ def test_templates_and_routes_expose_review_only_workflow_and_granular_permissio
     assert "can(request, 'billing:reconciliation:write')" in queue_template
     assert "Blocked rows have no automatic action" in queue_template
     assert "economic delta" in confirm_template.lower()
+    assert "Access consequence" in confirm_template
+    assert "Active enforcement reasons" in confirm_template
     assert "action_form(review.action_form)" in confirm_template
     assert "service.READ_PERMISSION" in route_source
     assert "service.WRITE_PERMISSION" in route_source

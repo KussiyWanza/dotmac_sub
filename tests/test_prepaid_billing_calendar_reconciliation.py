@@ -28,11 +28,24 @@ from app.models.catalog import (
     Subscription,
     SubscriptionStatus,
 )
+from app.models.enforcement_lock import (
+    AccessRestrictionMode,
+    EnforcementLock,
+    EnforcementReason,
+)
 from app.models.event_store import EventStore
 from app.models.idempotency import IdempotencyKey
+from app.models.service_extension import (
+    ServiceExtension,
+    ServiceExtensionEntry,
+    ServiceExtensionScope,
+    ServiceExtensionStatus,
+)
+from app.models.subscriber import SubscriberStatus
 from app.models.usage import QuotaBucket
 from app.services.owner_commands import CommandContext
 from app.services.prepaid_billing_calendar_reconciliation import (
+    PrepaidBillingCalendarCorrectionKind,
     PrepaidBillingCalendarDisposition,
     ReconcilePrepaidBillingCalendarCommand,
     preview_prepaid_billing_calendar_cohort,
@@ -45,6 +58,11 @@ LEGACY_START = datetime(2026, 7, 6, 0, 0, tzinfo=UTC)
 LEGACY_END = datetime(2026, 8, 6, 0, 0, tzinfo=UTC)
 WAT_START = datetime(2026, 7, 5, 23, 0, tzinfo=UTC)
 WAT_END = datetime(2026, 8, 5, 23, 0, tzinfo=UTC)
+LAPSED_PAID_AT = datetime(2026, 7, 21, 6, 8, tzinfo=UTC)
+LAPSED_PROPOSED_START = datetime(2026, 7, 20, 23, 0, tzinfo=UTC)
+LAPSED_PROPOSED_END = datetime(2026, 8, 20, 23, 0, tzinfo=UTC)
+LAPSED_RECONCILED_AT = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+STALE_ANCHOR = datetime(2023, 10, 8, tzinfo=UTC)
 
 
 def _chain(db, subscriber):
@@ -152,7 +170,57 @@ def _chain(db, subscriber):
     return invoice, line, subscription, entitlement, payment
 
 
-def _command(invoice_id, fingerprint, *, key="calendar-repair-test"):
+def _lapsed_chain(db, subscriber):
+    invoice, line, subscription, entitlement, payment = _chain(db, subscriber)
+    invoice.paid_at = LAPSED_PAID_AT
+    payment.paid_at = LAPSED_PAID_AT
+    payment.created_at = LAPSED_PAID_AT
+    subscription.next_billing_at = STALE_ANCHOR
+    subscription.status = SubscriptionStatus.suspended
+    subscriber.status = SubscriberStatus.suspended
+    subscriber.billing_enabled = True
+    lock = EnforcementLock(
+        subscription_id=subscription.id,
+        subscriber_id=subscriber.id,
+        reason=EnforcementReason.prepaid,
+        access_mode=AccessRestrictionMode.hard_reject,
+        source="prepaid_balance_sweep",
+        is_active=True,
+        created_at=LAPSED_RECONCILED_AT,
+    )
+    extension = ServiceExtension(
+        reason="Historical extension later reversed",
+        window_start=datetime(2026, 7, 28, tzinfo=UTC),
+        window_end=datetime(2026, 8, 4, tzinfo=UTC),
+        days=7,
+        scope_type=ServiceExtensionScope.subscribers,
+        scope_subscriber_ids=[str(subscriber.id)],
+        status=ServiceExtensionStatus.reversed,
+    )
+    db.add_all([lock, extension])
+    db.flush()
+    db.add(
+        ServiceExtensionEntry(
+            extension_id=extension.id,
+            subscription_id=subscription.id,
+            subscriber_id=subscriber.id,
+            previous_next_billing_at=STALE_ANCHOR,
+            grant_starts_at=datetime(2026, 8, 4, 10, 38, tzinfo=UTC),
+            grant_ends_at=datetime(2026, 8, 11, 10, 38, tzinfo=UTC),
+            new_next_billing_at=datetime(2026, 8, 11, 10, 38, tzinfo=UTC),
+        )
+    )
+    db.commit()
+    return invoice, line, subscription, entitlement, payment, lock, extension
+
+
+def _command(
+    invoice_id,
+    fingerprint,
+    *,
+    key="calendar-repair-test",
+    reason="Reviewed UTC-to-WAT historical calendar correction.",
+):
     command_id = uuid4()
     return ReconcilePrepaidBillingCalendarCommand(
         context=CommandContext(
@@ -160,7 +228,7 @@ def _command(invoice_id, fingerprint, *, key="calendar-repair-test"):
             correlation_id=command_id,
             actor="user:test-finance-manager",
             scope="billing:reconciliation:write",
-            reason="Reviewed UTC-to-WAT historical calendar correction.",
+            reason=reason,
             idempotency_key=key,
         ),
         invoice_id=invoice_id,
@@ -175,6 +243,10 @@ def test_exact_legacy_chain_previews_and_reconciles_without_economic_change(
     preview = preview_prepaid_billing_calendar_reconciliation(db_session, invoice.id)
 
     assert preview.disposition is PrepaidBillingCalendarDisposition.eligible
+    assert (
+        preview.correction_kind
+        is PrepaidBillingCalendarCorrectionKind.retired_utc_midnight
+    )
     assert preview.current_starts_at == LEGACY_START
     assert preview.current_ends_at == LEGACY_END
     assert preview.proposed_starts_at == WAT_START
@@ -189,6 +261,7 @@ def test_exact_legacy_chain_previews_and_reconciles_without_economic_change(
     )
 
     assert result.replayed is False
+    assert result.access_consequence_evaluated is False
     assert result.corrected_ends_at == WAT_END
     db_session.refresh(invoice)
     db_session.refresh(line)
@@ -227,6 +300,147 @@ def test_exact_legacy_chain_previews_and_reconciles_without_economic_change(
         )
         .one()
     )
+
+
+def test_lapsed_payment_period_reconciles_evidence_and_restores_prepaid_access(
+    db_session, subscriber, monkeypatch
+):
+    invoice, line, subscription, entitlement, payment, lock, extension = _lapsed_chain(
+        db_session, subscriber
+    )
+    monkeypatch.setattr(
+        "app.services.prepaid_billing_calendar_reconciliation._now_utc",
+        lambda: LAPSED_RECONCILED_AT,
+    )
+
+    preview = preview_prepaid_billing_calendar_reconciliation(db_session, invoice.id)
+
+    assert preview.disposition is PrepaidBillingCalendarDisposition.eligible
+    assert (
+        preview.correction_kind
+        is PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+    )
+    assert preview.proposed_starts_at == LAPSED_PROPOSED_START
+    assert preview.proposed_ends_at == LAPSED_PROPOSED_END
+    assert preview.proposed_starts_on == "2026-07-21"
+    assert preview.proposed_ends_on == "2026-08-21"
+    assert preview.proposed_paid_through_on == "2026-08-20"
+    assert preview.active_lock_reasons == (EnforcementReason.prepaid,)
+    invoice_id = invoice.id
+    db_session.commit()
+
+    result = reconcile_prepaid_billing_calendar(
+        db_session,
+        _command(
+            invoice_id,
+            preview.fingerprint,
+            key="lapsed-payment-period-repair",
+            reason=(
+                "Payment settled on 2026-07-21; move exact prepaid coverage "
+                "through 2026-08-20 and restore eligible access."
+            ),
+        ),
+    )
+
+    for row in (invoice, line, subscription, entitlement, payment, lock, extension):
+        db_session.refresh(row)
+    db_session.refresh(subscriber)
+    assert invoice.billing_period_start.replace(tzinfo=UTC) == LAPSED_PROPOSED_START
+    assert invoice.billing_period_end.replace(tzinfo=UTC) == LAPSED_PROPOSED_END
+    assert line.metadata_["billing_period_start"] == LAPSED_PROPOSED_START.isoformat()
+    assert line.metadata_["billing_period_end"] == LAPSED_PROPOSED_END.isoformat()
+    assert entitlement.starts_at.replace(tzinfo=UTC) == LAPSED_PROPOSED_START
+    assert entitlement.ends_at.replace(tzinfo=UTC) == LAPSED_PROPOSED_END
+    assert subscription.next_billing_at.replace(tzinfo=UTC) == LAPSED_PROPOSED_END
+    assert subscription.status is SubscriptionStatus.active
+    assert subscriber.status is SubscriberStatus.active
+    assert lock.is_active is False
+    assert lock.resolved_by == (
+        f"financial.prepaid_billing_calendar_reconciliation:{invoice.id}"
+    )
+    assert extension.status is ServiceExtensionStatus.reversed
+    assert result.correction_kind is (
+        PrepaidBillingCalendarCorrectionKind.lapsed_payment_period
+    )
+    assert result.access_consequence_evaluated is True
+    assert result.subscription_reactivated is True
+    assert result.access_restored is True
+    assert result.resolved_lock_count == 1
+    assert result.remaining_blockers == ()
+    evidence = invoice.metadata_["prepaid_billing_calendar_reconciliation"]
+    assert evidence["correction_kind"] == "lapsed_payment_period"
+    assert evidence["economic_delta"] == "0.00"
+    assert payment.amount == Decimal("1000.00")
+
+
+def test_lapsed_payment_repair_preserves_independent_access_lock(
+    db_session, subscriber, monkeypatch
+):
+    invoice, _line, subscription, _entitlement, _payment, prepaid_lock, _extension = (
+        _lapsed_chain(db_session, subscriber)
+    )
+    fraud_lock = EnforcementLock(
+        subscription_id=subscription.id,
+        subscriber_id=subscriber.id,
+        reason=EnforcementReason.fraud,
+        access_mode=AccessRestrictionMode.hard_reject,
+        source="fraud:review",
+        is_active=True,
+        created_at=LAPSED_RECONCILED_AT,
+    )
+    db_session.add(fraud_lock)
+    db_session.commit()
+    monkeypatch.setattr(
+        "app.services.prepaid_billing_calendar_reconciliation._now_utc",
+        lambda: LAPSED_RECONCILED_AT,
+    )
+    preview = preview_prepaid_billing_calendar_reconciliation(db_session, invoice.id)
+    invoice_id = invoice.id
+    db_session.commit()
+
+    result = reconcile_prepaid_billing_calendar(
+        db_session,
+        _command(
+            invoice_id,
+            preview.fingerprint,
+            key="lapsed-payment-preserve-fraud-lock",
+        ),
+    )
+
+    db_session.refresh(prepaid_lock)
+    db_session.refresh(fraud_lock)
+    db_session.refresh(subscription)
+    assert prepaid_lock.is_active is False
+    assert fraud_lock.is_active is True
+    assert subscription.status is SubscriptionStatus.suspended
+    assert result.subscription_reactivated is False
+    assert result.access_restored is False
+    assert result.resolved_lock_count == 1
+    assert result.remaining_blockers == (EnforcementReason.fraud.value,)
+
+
+def test_applied_extension_blocks_lapsed_period_repair_but_reversed_does_not(
+    db_session, subscriber
+):
+    invoice, _line, _subscription, _entitlement, _payment, _lock, extension = (
+        _lapsed_chain(db_session, subscriber)
+    )
+
+    reversed_preview = preview_prepaid_billing_calendar_reconciliation(
+        db_session, invoice.id
+    )
+    assert reversed_preview.actionable is True
+
+    extension.status = ServiceExtensionStatus.applied
+    db_session.commit()
+    applied_preview = preview_prepaid_billing_calendar_reconciliation(
+        db_session, invoice.id
+    )
+    assert (
+        applied_preview.disposition
+        is PrepaidBillingCalendarDisposition.service_extension_present
+    )
+    assert applied_preview.actionable is False
 
 
 def test_identical_command_replays_from_durable_invoice_evidence(
