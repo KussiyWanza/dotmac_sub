@@ -57,11 +57,16 @@
             <p class="mt-1">Reference {{ active_deposit_request.reference }} for {{ active_deposit_request.currency }} {{ "{:,.2f}".format(active_deposit_request.amount) }}.</p>
             <p class="mt-1">A new deposit will become available when this request completes or expires.</p>
         </div>
-        {% if active_deposit_request.next_action == "upload_receipt" %}
-        <a href="/portal/billing/topup/transfer" class="inline-flex items-center justify-center rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700">
-            Continue
-        </a>
-        {% endif %}
+        <div class="flex shrink-0 gap-2">
+            {% if active_deposit_request.next_action == "upload_receipt" %}
+            <a href="/portal/billing/topup/transfer" class="inline-flex items-center justify-center rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700">Continue</a>
+            {% endif %}
+            {% if active_deposit_request.can_cancel %}
+            <form method="post" action="/portal/billing/topup/intents/{{ active_deposit_request.intent_id }}/cancel" onsubmit="return confirm('Cancel this bank-transfer request? Use this only if you have not sent the transfer.');">
+                <button type="submit" class="inline-flex items-center justify-center rounded-xl border border-amber-400 bg-white px-4 py-2 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 dark:bg-transparent dark:text-amber-200">Cancel request</button>
+            </form>
+            {% endif %}
+        </div>
     </div>
     {% endif %}
 

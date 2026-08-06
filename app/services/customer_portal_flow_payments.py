@@ -30,6 +30,7 @@ from app.services.account_credit_deposits import (
     SETTLEMENT_SCOPE,
     AccountCreditDeposits,
     AccountCreditDepositSettlementSource,
+    ActiveDepositPhase,
     ActiveDepositRequest,
     SettleAccountCreditDepositCommand,
 )
@@ -133,6 +134,10 @@ def _serialize_active_deposit_request(
         "expires_at": request.expires_at,
         "observed_at": request.observed_at,
         "rejection_reason": request.rejection_reason,
+        "can_cancel": (
+            request.provider_type == "direct_bank_transfer"
+            and request.phase == ActiveDepositPhase.awaiting_receipt
+        ),
     }
 
 
