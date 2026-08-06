@@ -655,8 +655,12 @@
                         <span class="text-sm text-slate-700 dark:text-slate-300">ONT Units</span>
                     </label>
                     <label class="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" id="layer-customers" checked class="h-4 w-4 rounded border-slate-300 text-green-600 focus:ring-green-500">
-                        <span class="text-sm text-slate-700 dark:text-slate-300">Customers</span>
+                        <input type="checkbox" id="layer-customers-online" checked class="h-4 w-4 rounded border-slate-300 text-green-600 focus:ring-green-500">
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Online customers</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="layer-customers-offline" checked class="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500">
+                        <span class="text-sm text-slate-700 dark:text-slate-300">Offline customers</span>
                     </label>
                     <hr class="col-span-2 border-slate-200 dark:border-slate-700">
                     <label class="flex items-center gap-2 cursor-pointer">
@@ -756,7 +760,8 @@
         supportStructures: L.layerGroup().addTo(map),
         networkDevices: L.layerGroup().addTo(map),
         onts: L.layerGroup().addTo(map),
-        customers: L.layerGroup().addTo(map),
+        customersOnline: L.layerGroup().addTo(map),
+        customersOffline: L.layerGroup().addTo(map),
         feeder: L.layerGroup().addTo(map),
         distribution: L.layerGroup().addTo(map),
         drop: L.layerGroup().addTo(map)
@@ -903,6 +908,7 @@
     // Store all features for search
     const allFeatures = [];
     const bounds = [];
+    const customerBounds = [];
 
     // Show asset detail panel
     function copyToClipboard(text) {
@@ -929,6 +935,7 @@
         let typeLabel = p.type.replace(/_/g, ' ');
         let detailUrl = null;
         let editUrl = null;
+        let connectedCustomersUrl = null;
 
         switch (p.type) {
             case 'pop_site':
@@ -937,6 +944,7 @@
                 typeLabel = 'POP Site';
                 detailUrl = `/admin/network/pop-sites/${p.id}`;
                 editUrl = `/admin/network/pop-sites/${p.id}/edit`;
+                connectedCustomersUrl = `/admin/customers?infrastructure_type=location&infrastructure_id=${encodeURIComponent(p.id)}`;
                 break;
             case 'fdh_cabinet':
                 iconBg = themeColor('semantic-warning-600');
@@ -944,6 +952,7 @@
                 typeLabel = 'FDH Cabinet';
                 detailUrl = `/admin/network/fdh-cabinets/${p.id}`;
                 editUrl = `/admin/network/fdh-cabinets/${p.id}/edit`;
+                connectedCustomersUrl = `/admin/customers?infrastructure_type=cabinet&infrastructure_id=${encodeURIComponent(p.id)}`;
                 break;
             case 'splice_closure':
                 iconBg = themeColor('accent-600');
@@ -1032,6 +1041,7 @@
         if (p.code) html += `<div class="asset-detail-row"><span class="asset-detail-label">Code</span><span class="asset-detail-value">${escapeHtml(p.code)}</span></div>`;
         if (p.address) html += `<div class="asset-detail-row"><span class="asset-detail-label">Address</span><span class="asset-detail-value">${escapeHtml(p.address)}</span></div>`;
         if (p.city) html += `<div class="asset-detail-row"><span class="asset-detail-label">City</span><span class="asset-detail-value">${escapeHtml(p.city)}</span></div>`;
+        if (p.type === 'customer') html += `<div class="asset-detail-row"><span class="asset-detail-label">Connectivity</span><span class="asset-detail-value status-foreground status-tone-${p.is_online ? 'positive' : 'negative'}">${p.is_online ? 'Online' : 'Offline'}</span></div>`;
         if (p.status) html += `<div class="asset-detail-row"><span class="asset-detail-label">Status</span><span class="asset-detail-value">${escapeHtml(p.status)}</span></div>`;
         if (p.role) html += `<div class="asset-detail-row"><span class="asset-detail-label">Role</span><span class="asset-detail-value">${escapeHtml(p.role)}</span></div>`;
         if (p.device_type) html += `<div class="asset-detail-row"><span class="asset-detail-label">Device Type</span><span class="asset-detail-value">${escapeHtml(p.device_type)}</span></div>`;
@@ -1065,13 +1075,17 @@
 
         html += '</div>';
 
-        if (detailUrl || editUrl || coordText) {
+        if (detailUrl || editUrl || connectedCustomersUrl || coordText) {
             html += '<div class="mt-4 flex flex-wrap items-center gap-2">';
             if (detailUrl) {
-                html += `<a href="${detailUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">View</a>`;
+                const detailLabel = p.type === 'customer' ? 'View customer and network path' : 'View';
+                html += `<a href="${detailUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">${detailLabel}</a>`;
             }
             if (editUrl) {
                 html += `<a href="${editUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">Edit</a>`;
+            }
+            if (connectedCustomersUrl) {
+                html += `<a href="${connectedCustomersUrl}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">Connected customers</a>`;
             }
             if (coordText) {
                 html += `<button type="button" data-copy-coords="${coordText}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">Copy coords</button>`;
@@ -1098,6 +1112,7 @@
             if (geom.type === 'Point') {
                 const coords = [geom.coordinates[1], geom.coordinates[0]];
                 bounds.push(coords);
+                if (p.type === 'customer') customerBounds.push(coords);
 
                 let icon;
                 if (p.type === 'customer') {
@@ -1159,7 +1174,9 @@
                     case 'support_structure': layers.supportStructures.addLayer(marker); break;
                     case 'network_device': layers.networkDevices.addLayer(marker); break;
                     case 'ont': layers.onts.addLayer(marker); break;
-                    case 'customer': layers.customers.addLayer(marker); break;
+                    case 'customer':
+                        (p.is_online ? layers.customersOnline : layers.customersOffline).addLayer(marker);
+                        break;
                 }
             } else if (geom.type === 'LineString') {
                 const coords = geom.coordinates.map(c => [c[1], c[0]]);
@@ -1200,7 +1217,12 @@
             map.fitBounds(bounds, { padding: [50, 50] });
         }
     }
-    fitAllBounds();
+    const initialFocus = new URLSearchParams(window.location.search).get('focus');
+    if (initialFocus === 'customers' && customerBounds.length > 0) {
+        map.fitBounds(customerBounds, { padding: [50, 50] });
+    } else {
+        fitAllBounds();
+    }
 
     // Layer toggles
     const layerToggles = {
@@ -1211,7 +1233,8 @@
         'layer-support-structures': 'supportStructures',
         'layer-network-devices': 'networkDevices',
         'layer-onts': 'onts',
-        'layer-customers': 'customers',
+        'layer-customers-online': 'customersOnline',
+        'layer-customers-offline': 'customersOffline',
         'layer-feeder': 'feeder',
         'layer-distribution': 'distribution',
         'layer-drop': 'drop'
