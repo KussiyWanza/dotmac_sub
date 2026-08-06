@@ -18,14 +18,15 @@ from app.services.integrations.whatsapp_capability import (
     inbound_secret_material,
     require_binding,
 )
+from app.services.integrations.whatsapp_installation import (
+    VerifyWhatsAppWebhookChallengeQuery,
+    WhatsAppWebhookVerificationError,
+    verify_whatsapp_webhook_challenge,
+)
 
 router = APIRouter(prefix="/webhooks/whatsapp", tags=["whatsapp-webhook"])
 
 SIGNATURE_HEADER = "X-Hub-Signature-256"
-
-
-def _verify_token(db: Session) -> str:
-    return str(inbound_secret_material(db).get("webhook_verify_token") or "").strip()
 
 
 def _app_secret(db: Session) -> str:
@@ -190,13 +191,19 @@ def verify_meta_webhook(
     challenge: str | None = Query(default=None, alias="hub.challenge"),
     db: Session = Depends(get_db),
 ):
-    expected = _verify_token(db)
-    if not expected:
+    if mode != "subscribe" or not token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        result = verify_whatsapp_webhook_challenge(
+            db=db,
+            query=VerifyWhatsAppWebhookChallengeQuery(presented_token=token),
+        )
+    except WhatsAppWebhookVerificationError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Meta webhook verify token is not configured.",
-        )
-    if mode != "subscribe" or not token or not hmac.compare_digest(token, expected):
+        ) from exc
+    if not result.accepted:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return PlainTextResponse(challenge or "")
 
