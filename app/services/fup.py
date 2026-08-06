@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -641,18 +642,27 @@ def _time_in_window(
     start: time | None,
     end: time | None,
     inverse: bool = False,
+    tz: ZoneInfo | None = None,
 ) -> bool:
     """Check if a time falls within a start-end window.
 
     If inverse=True, returns True when OUTSIDE the window (e.g., night browsing
     is "free" = traffic inside window doesn't count, so inverse window is "counted").
+
+    ``tz`` is the subscriber's timezone. A window is configured in *wall clock*
+    terms — "the night is free from 22:00" means the customer's 22:00 — but
+    ``check_time`` is a UTC instant, so comparing its raw ``.time()`` shifted
+    every window by the UTC offset: a 22:00 window opened at 23:00 in Lagos.
+    Daily consumption windows are already aligned to subscriber-local midnight
+    by ``fup_usage.fup_window_bounds``; this makes the time-of-day gate agree
+    with them instead of straddling two clocks.
     """
     if start is None or end is None:
         return True  # no window = always applies
     if check_time is None:
         return True
 
-    t = check_time.time()
+    t = check_time.astimezone(tz).time() if tz is not None else check_time.time()
 
     if start <= end:
         in_window = start <= t <= end
@@ -663,13 +673,23 @@ def _time_in_window(
     return not in_window if inverse else in_window
 
 
-def _day_in_list(check_time: datetime | None, days: list[int] | None) -> bool:
-    """Check if a datetime's weekday is in the allowed days list (0=Mon..6=Sun)."""
+def _day_in_list(
+    check_time: datetime | None,
+    days: list[int] | None,
+    tz: ZoneInfo | None = None,
+) -> bool:
+    """Check if a datetime's weekday is in the allowed days list (0=Mon..6=Sun).
+
+    Resolved in ``tz`` for the same reason as ``_time_in_window``: a weekday is
+    a wall-clock fact, and late-evening traffic east of UTC otherwise counts
+    against the following day.
+    """
     if not days:
         return True  # no filter = all days
     if check_time is None:
         return True
-    return check_time.weekday() in days
+    local = check_time.astimezone(tz) if tz is not None else check_time
+    return local.weekday() in days
 
 
 def evaluate_rules(
@@ -680,8 +700,13 @@ def evaluate_rules(
     current_time: datetime | None = None,
     fired_rule_ids: set | None = None,
     usage_by_period: dict | None = None,
+    tz: ZoneInfo | None = None,
 ) -> list[dict]:
     """Evaluate FUP rules for an offer against current usage.
+
+    ``tz`` is the subscriber's timezone, used only for time-of-day and
+    day-of-week gating. Enforcement supplies it; the simulation/preview path
+    may omit it, in which case windows are read in UTC as before.
 
     ``usage_by_period`` (optional) maps a consumption_period -> FupUsageWindow so
     each rule is compared against usage over ITS own window (daily/weekly/
@@ -759,12 +784,19 @@ def evaluate_rules(
             )
             continue
 
-        # Check time-of-day window (rule-level overrides policy-level)
-        time_start = rule.time_start or policy.traffic_accounting_start
-        time_end = rule.time_end or policy.traffic_accounting_end
-        inverse = policy.traffic_inverse_interval
+        # Time-of-day gating is the RULE's alone. The policy's
+        # traffic_accounting_* window is a different decision — which traffic
+        # ACCRUES, applied in fup_usage — and letting it fall through to here
+        # made one field silently govern both, so a "night is free" accounting
+        # window also stopped every rule from releasing at night. Each field
+        # now owns exactly one thing (PLAN_FAMILY_ARCHITECTURE §12).
+        #
+        # No policy in production sets traffic_accounting_start, so dropping
+        # the fallback is a no-op on current data.
+        time_start = rule.time_start
+        time_end = rule.time_end
 
-        if not _time_in_window(current_time, time_start, time_end, inverse):
+        if not _time_in_window(current_time, time_start, time_end, tz=tz):
             results.append(
                 {
                     "rule_id": str(rule.id),
@@ -782,7 +814,7 @@ def evaluate_rules(
 
         # Check day-of-week
         days = rule.days_of_week or policy.traffic_days_of_week
-        if not _day_in_list(current_time, days):
+        if not _day_in_list(current_time, days, tz=tz):
             day_names = {
                 0: "Mon",
                 1: "Tue",

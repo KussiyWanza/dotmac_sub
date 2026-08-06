@@ -30,6 +30,7 @@ from app.services.fup_state import (
     ApplyFupRuntimeState,
     FupRuntimeStateError,
 )
+from app.services.fup_throttle_profile import resolve_fup_throttle_profile
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +554,24 @@ class EnforcementHandler:
         if _sub_for_profile is not None:
             _orig = _resolve_effective_profile(db, _sub_for_profile)
             original_profile_id = str(_orig.id) if _orig else None
+            # The throttle is a percentage of THIS subscriber's rate, not a
+            # single global speed for the whole fleet — see
+            # app/services/fup_throttle_profile.py. `policy` supplies only the
+            # fallback for offers with no rate to reduce.
+            decision = resolve_fup_throttle_profile(
+                db,
+                subscription=_sub_for_profile,
+                rule_id=rule_id,
+                fallback_profile_id=throttle_profile_id,
+            )
+            throttle_profile_id = decision.profile_id
+            if not decision.derived:
+                logger.warning(
+                    "FUP throttle for subscription %s fell back to the global "
+                    "profile: %s",
+                    subscription_id,
+                    decision.reason,
+                )
         try:
             updated = apply_radius_profile_to_account(
                 db, str(account_id), str(throttle_profile_id)

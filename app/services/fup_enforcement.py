@@ -311,13 +311,53 @@ def _evaluate_subscription(
         current_usage,
     )
     prior_status = state.action_status.value if state else "none"
+    # Time-of-day windows are wall-clock facts about the customer's night, and
+    # the daily consumption windows above are already aligned to this same
+    # local midnight. Passing it keeps both halves of a "free night" on one
+    # clock.
+    from app.services.usage_summary import _subscriber_tz
+
+    subscriber_tz = _subscriber_tz(db, str(subscription.subscriber_id))
     results = evaluate_rules(
         db,
         str(subscription.offer_id),
         current_usage_gb=current_usage,
         current_time=command.evaluated_at,
         usage_by_period=usage_by_period,
+        tz=subscriber_tz,
     )
+    # A free overnight window has to LIFT the throttle, not merely stop
+    # re-applying it. cap_resets_at (above) is the period boundary — for a
+    # daily rule, local midnight — so without this a rule whose window closes
+    # at 22:00 would leave the subscriber throttled for the first two hours of
+    # the night it was told were free.
+    #
+    # Deliberately narrow: it releases only when the rule that CAUSED the
+    # current enforcement is itself outside its time window right now. It does
+    # not release because a threshold stopped being met (that is what
+    # cap_resets_at owns) and it cannot release on a blind usage reading,
+    # because a time_skip is decided from the clock alone.
+    if state is not None and state.active_rule_id is not None:
+        active_rule_id = str(state.active_rule_id)
+        outside_window = any(
+            row.get("rule_id") == active_rule_id and row.get("status") == "time_skip"
+            for row in results
+        )
+        if outside_window and prior_status in {"throttled", "blocked"}:
+            from app.services.enforcement import lift_fup_enforcement
+
+            result = lift_fup_enforcement(
+                db,
+                str(subscription.id),
+                evaluated_at=command.evaluated_at,
+            )
+            logger.info(
+                "FUP enforcement lifted for sub %s: rule %s is outside its time window",
+                subscription.id,
+                active_rule_id,
+            )
+            return FupSubscriptionOutcome(reset=int(bool(result.get("lifted"))))
+
     no_data_count = sum(1 for row in results if row.get("usage_source") == "no_data")
     for row in results:
         if row.get("usage_source") == "no_data":
