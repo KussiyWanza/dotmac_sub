@@ -113,7 +113,10 @@ test-e2e: assert-full-test-host ## Run end-to-end browser tests
 migrate: ## Apply all pending migrations
 	poetry run alembic upgrade head
 
-migrate-new: ## Create a new migration (usage: make migrate-new msg="add users table")
+new-migration: ## Allocate a migration from the current head (usage: make new-migration slug=add_users_table)
+	poetry run python scripts/new_migration.py "$(slug)"
+
+migrate-new: ## Autogenerate a migration (hex id; prefer new-migration for the NNN_slug convention)
 	poetry run alembic revision --autogenerate -m "$(msg)"
 
 migrate-down: ## Rollback last migration
