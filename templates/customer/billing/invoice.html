@@ -75,6 +75,12 @@
                             <span>Subtotal</span>
                             <span class="font-semibold text-stone-900 dark:text-white">{{ invoice_currency }} {{ "{:,.2f}".format(invoice.subtotal or invoice.total or 0) }}</span>
                         </div>
+                        {% if invoice.discount_amount and invoice.discount_amount > 0 %}
+                        <div class="flex items-center justify-between text-sm text-emerald-700 dark:text-emerald-300">
+                            <span>Discount</span>
+                            <span class="font-semibold">-{{ invoice_currency }} {{ "{:,.2f}".format(invoice.discount_amount) }}</span>
+                        </div>
+                        {% endif %}
                         <div class="flex items-center justify-between text-sm text-stone-600 dark:text-stone-300">
                             <span>Tax</span>
                             <span class="font-semibold text-stone-900 dark:text-white">{{ invoice_currency }} {{ "{:,.2f}".format(invoice.tax_total or 0) }}</span>

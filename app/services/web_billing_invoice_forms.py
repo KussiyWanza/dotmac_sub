@@ -15,6 +15,7 @@ from app.services import subscriber as subscriber_service
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import web_billing_invoices as web_billing_invoices_service
 from app.services.billing_settings import resolve_payment_due_days
+from app.timezone import APP_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,16 @@ def _build_invoice_form_config(
         "lineItems": existing_line_items or [],
         "invoiceId": str(invoice.id) if invoice else "",
         "paymentTermsDays": payment_terms_days,
+        "discountType": getattr(invoice, "discount_type", None) if invoice else "",
+        "discountValue": (
+            float(getattr(invoice, "discount_value", 0))
+            if invoice and getattr(invoice, "discount_value", None) is not None
+            else ""
+        ),
+        "discountReason": getattr(invoice, "discount_reason", None) if invoice else "",
+        "discountLocked": bool(
+            invoice and getattr(invoice, "discount_source", None) == "quote"
+        ),
     }
 
 
@@ -107,6 +118,7 @@ def new_form_state(db: Session, *, account_id: str | None) -> dict[str, object]:
         "selected_account_id": str(selected_account.id) if selected_account else None,
         "account_x_model": "accountId",
         "draft_idempotency_key": secrets.token_urlsafe(24),
+        "discount_applied_date": datetime.now(APP_TIMEZONE).date().isoformat(),
     }
 
 
@@ -137,6 +149,13 @@ def edit_form_state(db: Session, *, invoice_id: str) -> dict[str, object] | None
     invoice_config = _build_invoice_form_config(
         invoice, tax_rates_json, existing_line_items, payment_due_days
     )
+    discount_applied_at = getattr(invoice, "discount_applied_at", None)
+    if discount_applied_at is not None:
+        if discount_applied_at.tzinfo is None:
+            discount_applied_at = discount_applied_at.replace(tzinfo=UTC)
+        discount_applied_date = discount_applied_at.astimezone(APP_TIMEZONE).date()
+    else:
+        discount_applied_date = datetime.now(APP_TIMEZONE).date()
     return {
         "invoice": invoice,
         "accounts": None,
@@ -153,4 +172,5 @@ def edit_form_state(db: Session, *, invoice_id: str) -> dict[str, object] | None
         else str(invoice.account_id),
         "account_x_model": "accountId",
         "draft_idempotency_key": secrets.token_urlsafe(24),
+        "discount_applied_date": discount_applied_date.isoformat(),
     }

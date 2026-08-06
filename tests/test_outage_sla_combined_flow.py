@@ -17,12 +17,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
-from app.models.catalog import NasDevice, Subscription, SubscriptionStatus
+from app.models.billing import ServiceEntitlement, ServiceEntitlementStatus
+from app.models.catalog import BillingMode, NasDevice, Subscription, SubscriptionStatus
+from app.models.lifecycle import LifecycleEventType, SubscriptionLifecycleEvent
 from app.models.network_monitoring import NetworkDevice
 from app.models.radius_active_session import RadiusActiveSession
 from app.models.subscriber import Subscriber
 from app.models.support import Ticket
+from app.models.usage import AccountingStatus, RadiusAccountingSession
 from app.services import customer_service_level as sla
 from app.services import network_explorer as explorer
 from app.services import web_customer_details as details
@@ -86,6 +90,45 @@ def _session(db, nas, subscription):
     db.add(row)
     db.flush()
     return row
+
+
+def _sla_evidence(db, subscription, *, start, end):
+    subscription.billing_mode = BillingMode.prepaid
+    subscription.start_at = start
+    evidence_id = uuid4()
+    db.add_all(
+        (
+            SubscriptionLifecycleEvent(
+                id=evidence_id,
+                subscription_id=subscription.id,
+                event_type=LifecycleEventType.activate,
+                to_status=SubscriptionStatus.active,
+                evidence_grade="state_baseline",
+                evidence_source="reconciliation_baseline",
+                source_id=f"test:combined:{evidence_id}",
+                evidence_fingerprint=f"sha256:{uuid4().hex * 2}",
+                effective_at=start,
+                recorded_at=start,
+                created_at=start,
+            ),
+            ServiceEntitlement(
+                account_id=subscription.subscriber_id,
+                subscription_id=subscription.id,
+                starts_at=start,
+                ends_at=end,
+                status=ServiceEntitlementStatus.active,
+            ),
+            RadiusAccountingSession(
+                subscription_id=subscription.id,
+                session_id=f"combined-sla-{uuid4()}",
+                status_type=AccountingStatus.stop,
+                session_start=start,
+                session_end=end,
+                last_update_at=end,
+            ),
+        )
+    )
+    db.flush()
 
 
 def test_combined_outage_sla_flow(db_session, catalog_offer):
@@ -226,10 +269,20 @@ def test_combined_outage_sla_flow(db_session, catalog_offer):
     reconcile_incident_accrual(
         db_session, second, now=NOW + timedelta(hours=2, minutes=20)
     )
+    score_start = NOW - timedelta(days=1)
+    score_end = NOW + timedelta(hours=3)
+    _sla_evidence(
+        db_session,
+        subscriptions[2],
+        start=score_start,
+        end=score_end,
+    )
     score = sla.score_subscription_period(
         db_session,
         subscriptions[2],
-        now=NOW + timedelta(hours=3),
+        now=score_end,
+        period_start=score_start,
+        period_end=score_end,
     )
     # Union of [NOW, cleared_at] windows: exactly two hours — never a sum
     # of the two incidents' overlapping intervals.

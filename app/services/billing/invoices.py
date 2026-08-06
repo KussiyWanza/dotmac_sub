@@ -2377,6 +2377,16 @@ class Invoices(ListResponseMixin):
                 status_code=409,
                 detail="Issued invoices are immutable; use an exact lifecycle action",
             )
+        if invoice.discount_type and set(data).intersection(
+            {"subtotal", "tax_total", "total", "balance_due"}
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Discounted Invoice totals are owner-derived; use Edit Invoice "
+                    "to change its Line Items and discount together"
+                ),
+            )
         if data.get("status") in {
             InvoiceStatus.partially_paid,
             InvoiceStatus.paid,
@@ -2408,6 +2418,7 @@ class Invoices(ListResponseMixin):
             )
         merged = {
             "subtotal": data.get("subtotal", invoice.subtotal),
+            "discount_amount": invoice.discount_amount,
             "tax_total": data.get("tax_total", invoice.tax_total),
             "total": data.get("total", invoice.total),
             "balance_due": data.get("balance_due", invoice.balance_due),
@@ -2595,6 +2606,8 @@ class InvoiceLines(ListResponseMixin):
         db: Session,
         invoice_id: UUID,
         replacements: tuple[DraftInvoiceLineReplacement, ...],
+        *,
+        allow_discount_reprice: bool = False,
     ) -> None:
         """Stage the complete active line set for an administrative draft."""
         invoice = lock_for_update(db, Invoice, invoice_id)
@@ -2607,6 +2620,11 @@ class InvoiceLines(ListResponseMixin):
             raise DraftInvoiceParticipantError(
                 "invoice_not_editable",
                 "Invoice lines can be edited only while the invoice is a draft",
+            )
+        if invoice.discount_type and not allow_discount_reprice:
+            raise DraftInvoiceParticipantError(
+                "active_discount_blocks_line_mutation",
+                "Change Invoice lines and its discount together from the Edit Invoice page",
             )
         existing = {
             line.id: line
@@ -2708,6 +2726,11 @@ class InvoiceLines(ListResponseMixin):
                         detail="Billing line key was used for a different invoice line",
                     )
                 return existing
+        if invoice.discount_type:
+            raise HTTPException(
+                status_code=409,
+                detail="Invoice lines cannot change after a discount is applied",
+            )
         line = InvoiceLine(
             **data,
             amount=amount,
@@ -2747,6 +2770,11 @@ class InvoiceLines(ListResponseMixin):
             raise HTTPException(
                 status_code=409,
                 detail="Invoice lines can be edited only while the invoice is a draft",
+            )
+        if invoice.discount_type:
+            raise HTTPException(
+                status_code=409,
+                detail="Change Invoice lines and its discount together from Edit Invoice",
             )
         _resolve_tax_rate(db, str(payload.tax_rate_id) if payload.tax_rate_id else None)
         data = payload.model_dump(exclude={"amount"})
@@ -2818,6 +2846,11 @@ class InvoiceLines(ListResponseMixin):
                 status_code=409,
                 detail="Invoice lines can be edited only while the invoice is a draft",
             )
+        if invoice.discount_type:
+            raise HTTPException(
+                status_code=409,
+                detail="Change Invoice lines and its discount together from Edit Invoice",
+            )
         data = payload.model_dump(exclude_unset=True)
         if "tax_rate_id" in data:
             _resolve_tax_rate(
@@ -2851,6 +2884,11 @@ class InvoiceLines(ListResponseMixin):
             raise HTTPException(
                 status_code=409,
                 detail="Invoice lines can be edited only while the invoice is a draft",
+            )
+        if invoice.discount_type:
+            raise HTTPException(
+                status_code=409,
+                detail="Change Invoice lines and its discount together from Edit Invoice",
             )
         line.is_active = False
         if invoice:

@@ -14,6 +14,7 @@ arrive at the read model with the type the read model expects.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from io import BytesIO
 from unittest.mock import patch
@@ -172,7 +173,13 @@ def test_new_conversation_ignores_an_empty_browser_file_placeholder():
         headers={"content-type": "application/octet-stream"},
     )
 
-    uploads = asyncio.run(_read_new_conversation_uploads([placeholder]))
+    # The full parallel suite can leave an event loop active on this worker.
+    # Match the repository convention for sync tests that drive async helpers:
+    # use a dedicated thread instead of nesting asyncio.run().
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        uploads = executor.submit(
+            asyncio.run, _read_new_conversation_uploads([placeholder])
+        ).result()
 
     assert uploads == []
 

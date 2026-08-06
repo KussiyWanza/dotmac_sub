@@ -1141,7 +1141,12 @@ def _build_service_impact(db: Session, subscription) -> dict[str, object] | None
     }
 
 
-def _build_service_level(db: Session, subscription) -> dict[str, object] | None:
+def _build_service_level(
+    db: Session,
+    subscription,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object] | None:
     """This period's SLA context from customer.service_level (shadow phase).
 
     Admin-facing: verdicts render honestly, including no_contractual_sla
@@ -1152,7 +1157,7 @@ def _build_service_level(db: Session, subscription) -> dict[str, object] | None:
     from app.services.status_presentation import sla_verdict_presentation
 
     try:
-        score = score_subscription_period(db, subscription)
+        score = score_subscription_period(db, subscription, now=now)
     except Exception:
         logger.warning(
             "SLA scoring failed for subscription %s",

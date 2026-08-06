@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -133,6 +135,24 @@ class AddOnType(enum.Enum):
     extra_ip = "extra_ip"
     managed_wifi = "managed_wifi"
     custom = "custom"
+
+
+class ServiceHandoffType(enum.Enum):
+    """How the service is handed to the customer at their edge.
+
+    A dedicated circuit is the same product whichever of these it uses — only
+    the handoff differs, so these are NOT separate plan families. Transit is
+    dedicated delivered over BGP rather than a static address; a layer-2 clear
+    channel is dedicated capacity with no IP layer at all, sold to a party who
+    runs their own addressing across it.
+    """
+
+    #: Our address space, statically assigned. The default for internet access.
+    static_ip = "static_ip"
+    #: BGP session to the customer's own ASN, announcing their own prefixes.
+    bgp = "bgp"
+    #: Point-to-point layer-2 clear channel. No IP is provided or routed.
+    layer2_clear_channel = "layer2_clear_channel"
 
 
 class PlanCategory(enum.Enum):
@@ -755,6 +775,75 @@ class AddOnPrice(Base):
     add_on = relationship("AddOn", back_populates="prices")
 
 
+class BandwidthPriceBand(Base):
+    """One speed band and its rate per Mbps, for rule-driven bandwidth quoting.
+
+    Dedicated circuits are sold at arbitrary speeds, so pricing them from a
+    ``CatalogOffer`` row per speed is what produced a catalog with duplicate
+    speeds at incompatible prices — and a 500 Mbps circuit priced below a
+    300 Mbps one. A band set replaces those rows with a rule sales can quote
+    from at any speed.
+
+    Bands are half-open ``[speed_from_mbps, speed_to_mbps)`` with an open top
+    band (``speed_to_mbps IS NULL``) meaning "and above". A partial unique
+    index stops two live bands starting at the same speed, and
+    ``bandwidth_pricing.validate_band_set`` rejects overlaps, gaps, a closed
+    top and a second open top — so "the rate at N Mbps" has exactly one answer.
+
+    No effective-dating: a band set is a *sales aid*, not a contract. The
+    contracted figure is captured on ``QuoteLineItem.unit_price`` when the
+    quote is raised, so re-rating a band never rewrites an issued quote.
+    """
+
+    __tablename__ = "bandwidth_price_bands"
+    __table_args__ = (
+        CheckConstraint(
+            "plan_family IN ('unlimited', 'dedicated', 'home_flex')",
+            name="ck_bandwidth_price_bands_family_vocab",
+        ),
+        CheckConstraint("speed_from_mbps >= 0", name="ck_bandwidth_price_bands_from"),
+        CheckConstraint(
+            "speed_to_mbps IS NULL OR speed_to_mbps > speed_from_mbps",
+            name="ck_bandwidth_price_bands_range",
+        ),
+        CheckConstraint(
+            "rate_per_mbps >= 0", name="ck_bandwidth_price_bands_rate_sign"
+        ),
+        # Partial on is_active: two live bands must not start at the same
+        # speed, but retiring a band and re-cutting the ladder from the same
+        # boundary is ordinary repricing and must stay possible.
+        Index(
+            "uq_bandwidth_price_bands_family_from",
+            "plan_family",
+            "speed_from_mbps",
+            unique=True,
+            sqlite_where=text("is_active = 1"),
+            postgresql_where=text("is_active"),
+        ),
+        Index("ix_bandwidth_price_bands_family", "plan_family", "speed_from_mbps"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    plan_family: Mapped[str] = mapped_column(String(40), nullable=False)
+    speed_from_mbps: Mapped[int] = mapped_column(Integer, nullable=False)
+    speed_to_mbps: Mapped[int | None] = mapped_column(Integer)
+    rate_per_mbps: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="NGN")
+    description: Mapped[str | None] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
     __table_args__ = (
@@ -935,6 +1024,95 @@ class SubscriptionAddOn(Base):
     account_adjustment = relationship(
         "AccountAdjustment", back_populates="subscription_add_on"
     )
+
+
+class ServiceHandoff(Base):
+    """How one subscription is delivered at the customer edge, for the NOC.
+
+    Transit and layer-2 clear channel are not separate products: both are a
+    dedicated circuit differing only in what we hand over. Modelling them as
+    plan families would fork the catalog for a delivery detail — the pattern
+    that already produced customer-named offer rows. Modelling them as an
+    untyped blob on the sales order would leave provisioning facts with no
+    schema and no owner. So the commercial product stays one offer, and the
+    delivery specification lives here as typed, constrained state.
+
+    The sales order captures the requirement; this row is where it lands and
+    is read from. One row per subscription — a service has one handoff.
+
+    Each type carries only its own fields, enforced in the database: a BGP
+    handoff without an ASN cannot be provisioned, and a clear channel with an
+    IP handoff is a contradiction.
+    """
+
+    __tablename__ = "service_handoffs"
+    __table_args__ = (
+        # Exactly the fields the type needs, and none it cannot use.
+        CheckConstraint(
+            "(handoff_type = 'static_ip' AND customer_asn IS NULL "
+            " AND announced_prefixes IS NULL AND a_end_description IS NULL "
+            " AND b_end_description IS NULL) "
+            "OR (handoff_type = 'bgp' AND customer_asn IS NOT NULL "
+            " AND a_end_description IS NULL AND b_end_description IS NULL) "
+            "OR (handoff_type = 'layer2_clear_channel' AND customer_asn IS NULL "
+            " AND announced_prefixes IS NULL "
+            " AND a_end_description IS NOT NULL AND b_end_description IS NOT NULL)",
+            name="ck_service_handoffs_fields_match_type",
+        ),
+        # 16-bit and 32-bit ASN space, excluding 0 and the 16-bit/32-bit
+        # reserved-last values.
+        CheckConstraint(
+            "customer_asn IS NULL OR (customer_asn > 0 AND customer_asn < 4294967295)",
+            name="ck_service_handoffs_asn_range",
+        ),
+        CheckConstraint(
+            "vlan_id IS NULL OR (vlan_id > 0 AND vlan_id < 4095)",
+            name="ck_service_handoffs_vlan_range",
+        ),
+        Index("ix_service_handoffs_type", "handoff_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    subscription_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    handoff_type: Mapped[ServiceHandoffType] = mapped_column(
+        Enum(ServiceHandoffType, name="servicehandofftype", create_constraint=False),
+        nullable=False,
+        default=ServiceHandoffType.static_ip,
+    )
+
+    # --- BGP ---
+    customer_asn: Mapped[int | None] = mapped_column(BigInteger)
+    #: Newline-separated CIDRs the customer will announce. Free text rather
+    #: than a child table until the NOC needs per-prefix state (accepted,
+    #: filtered, RPKI status) — at which point it becomes one.
+    announced_prefixes: Mapped[str | None] = mapped_column(Text)
+    peer_ip: Mapped[str | None] = mapped_column(String(64))
+
+    # --- layer-2 clear channel ---
+    a_end_description: Mapped[str | None] = mapped_column(String(200))
+    b_end_description: Mapped[str | None] = mapped_column(String(200))
+    vlan_id: Mapped[int | None] = mapped_column(Integer)
+
+    #: What the NOC needs that the typed fields do not carry.
+    noc_notes: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    subscription = relationship("Subscription")
 
 
 class NasDevice(Base):
@@ -1516,14 +1694,28 @@ class SlaPolicyVersion(Base):
         # Exactly one scope, and it must match the claimed precedence.
         CheckConstraint(
             "(source = 'subscription_contract' AND subscription_id IS NOT NULL "
-            " AND subscriber_id IS NULL AND offer_id IS NULL) "
+            " AND subscriber_id IS NULL AND offer_id IS NULL "
+            " AND plan_family IS NULL) "
             "OR (source = 'account_contract' AND subscriber_id IS NOT NULL "
-            " AND subscription_id IS NULL AND offer_id IS NULL) "
+            " AND subscription_id IS NULL AND offer_id IS NULL "
+            " AND plan_family IS NULL) "
             "OR (source = 'offer_version' AND offer_id IS NOT NULL "
-            " AND subscription_id IS NULL AND subscriber_id IS NULL) "
+            " AND subscription_id IS NULL AND subscriber_id IS NULL "
+            " AND plan_family IS NULL) "
+            "OR (source = 'plan_family' AND plan_family IS NOT NULL "
+            " AND subscription_id IS NULL AND subscriber_id IS NULL "
+            " AND offer_id IS NULL) "
             "OR (source = 'internal_measurement' AND subscription_id IS NULL "
-            " AND subscriber_id IS NULL AND offer_id IS NULL)",
+            " AND subscriber_id IS NULL AND offer_id IS NULL "
+            " AND plan_family IS NULL)",
             name="ck_sla_policy_versions_scope_matches_source",
+        ),
+        # The family scope is a closed vocabulary, enforced in the database so
+        # a direct write cannot introduce a family the resolver cannot match.
+        CheckConstraint(
+            "plan_family IS NULL "
+            "OR plan_family IN ('unlimited', 'dedicated', 'home_flex')",
+            name="ck_sla_policy_versions_plan_family_vocab",
         ),
         UniqueConstraint(
             "command_fingerprint", name="uq_sla_policy_versions_fingerprint"
@@ -1538,6 +1730,7 @@ class SlaPolicyVersion(Base):
         Index("ix_sla_policy_versions_subscription", "subscription_id"),
         Index("ix_sla_policy_versions_subscriber", "subscriber_id"),
         Index("ix_sla_policy_versions_offer", "offer_id"),
+        Index("ix_sla_policy_versions_plan_family", "plan_family"),
         Index("ix_sla_policy_versions_effective", "effective_from", "effective_to"),
     )
 
@@ -1561,6 +1754,10 @@ class SlaPolicyVersion(Base):
     offer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("catalog_offers.id", ondelete="RESTRICT")
     )
+    # A commercial-family default. Unlike the other scopes this is a closed
+    # vocabulary (PLAN_FAMILY_VALUES), not a foreign key, so it carries no
+    # RESTRICT concern — there is no parent row to delete.
+    plan_family: Mapped[str | None] = mapped_column(String(40))
     effective_from: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

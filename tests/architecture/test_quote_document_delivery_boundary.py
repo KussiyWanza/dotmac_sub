@@ -23,10 +23,21 @@ def test_quote_document_and_delivery_are_registered_owner_commands():
     assert "db.rollback(" not in documents
     assert 'owner="sales.quote_delivery"' in delivery
     assert "execute_owner_command(" in delivery
-    assert "CommunicationIntent(" in delivery
+    # The communication intent is constructed by the shared document-delivery
+    # owner, not here — but Quote delivery must still reach the customer
+    # through that spine and nowhere else. Assert the delegation, and assert
+    # the spine is what the shared owner actually uses.
+    shared_delivery = _source("app/services/document_delivery.py")
+    assert "document_delivery.deliver(" in delivery
+    assert "CommunicationIntent(" in shared_delivery
+    assert "CommunicationIntent(" not in delivery, (
+        "Quote delivery must not build its own intent alongside the shared owner"
+    )
     assert "EventType.quote_delivery_requested" in delivery
     assert "db.commit(" not in delivery
     assert "db.rollback(" not in delivery
+    assert "db.commit(" not in shared_delivery
+    assert "db.rollback(" not in shared_delivery
     assert service_relationship("sales.quote_documents").module == (
         "app.services.sales.quote_documents"
     )
@@ -39,6 +50,9 @@ def test_quote_document_and_delivery_are_registered_owner_commands():
     assert "sales.quote_payment_eligibility" in dependencies_for("sales.quote_delivery")
     assert service_relationship("ui.quote_detail_projection").module == (
         "app.services.web_sales"
+    )
+    assert service_relationship("communication.document_delivery").module == (
+        "app.services.document_delivery"
     )
 
 
@@ -124,7 +138,7 @@ def test_quote_email_reuses_typed_payment_eligibility_and_pdf_url():
     assert "snapshot.payment.paystack_url" in delivery
     assert 'f"/portal/quotes/{' not in delivery
     assert "render_quote_email(" in delivery
-    assert '"quote_payment_url": content.payment_url' in delivery
+    assert '("quote_payment_url", content.payment_url)' in delivery
     assert "CommunicationAttachmentKind.quote_pdf" in delivery
 
 

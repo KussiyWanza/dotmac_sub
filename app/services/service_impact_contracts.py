@@ -93,12 +93,31 @@ class SlaVerdict(StrEnum):
     no_contractual_sla = "no_contractual_sla"
 
 
+class SlaPlanFamily(StrEnum):
+    """Commercial families eligible to own one SLA default.
+
+    Catalog classification is settings-driven and may contain additional
+    values. SLA authority is deliberately narrower: adding another family to
+    this protocol also requires the matching model constraint, Alembic
+    migration, precedence tests, and commercial approval of its terms.
+    """
+
+    unlimited = "unlimited"
+    dedicated = "dedicated"
+    home_flex = "home_flex"
+
+
 class SlaPolicySource(StrEnum):
     """Approved policy precedence, highest first (design §4)."""
 
     subscription_contract = "subscription_contract"
     account_contract = "account_contract"
     offer_version = "offer_version"
+    # A commercial family default (unlimited / dedicated / home_flex). Sits
+    # below offer_version so a plan that negotiates its own terms still wins,
+    # and above internal_measurement so a family default is a real promise
+    # rather than a measurement statement.
+    plan_family = "plan_family"
     internal_measurement = "internal_measurement"
 
 
@@ -272,12 +291,100 @@ class SlaPolicyVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class SlaPolicySegmentScore:
+    """One policy-homogeneous part of a period with its own evidence bounds."""
+
+    start: datetime
+    end: datetime
+    eligible_seconds: int
+    unavailable_seconds: int
+    excluded_seconds: int
+    unknown_seconds: int
+    verdict: SlaVerdict
+    policy: SlaPolicyVersion | None
+
+    def __post_init__(self) -> None:
+        _require_utc(self.start, "start")
+        _require_utc(self.end, "end")
+        if self.end <= self.start:
+            raise ValueError("an SLA policy segment must cover positive time")
+        _validate_score_seconds(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+        )
+        if self.policy is None and self.verdict not in (
+            SlaVerdict.no_contractual_sla,
+            SlaVerdict.unavailable,
+        ):
+            raise ValueError("a targeted segment verdict requires a policy")
+
+    @property
+    def availability_lower_bound_percent(self) -> float | None:
+        return _availability_bound(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+            unknown_is_uptime=False,
+        )
+
+    @property
+    def availability_upper_bound_percent(self) -> float | None:
+        return _availability_bound(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+            unknown_is_uptime=True,
+        )
+
+
+def _validate_score_seconds(
+    *,
+    eligible_seconds: int,
+    unavailable_seconds: int,
+    excluded_seconds: int,
+    unknown_seconds: int,
+) -> None:
+    values = {
+        "eligible_seconds": eligible_seconds,
+        "unavailable_seconds": unavailable_seconds,
+        "excluded_seconds": excluded_seconds,
+        "unknown_seconds": unknown_seconds,
+    }
+    for name, value in values.items():
+        if value < 0:
+            raise ValueError(f"{name} cannot be negative")
+    if unavailable_seconds + excluded_seconds + unknown_seconds > eligible_seconds:
+        raise ValueError(
+            "unavailable, excluded, and unknown seconds cannot exceed eligible seconds"
+        )
+
+
+def _availability_bound(
+    *,
+    eligible_seconds: int,
+    unavailable_seconds: int,
+    excluded_seconds: int,
+    unknown_seconds: int,
+    unknown_is_uptime: bool,
+) -> float | None:
+    denominator = eligible_seconds - excluded_seconds
+    if denominator <= 0:
+        return None
+    unavailable = unavailable_seconds + (0 if unknown_is_uptime else unknown_seconds)
+    return round(100.0 * max(denominator - unavailable, 0) / denominator, 4)
+
+
+@dataclass(frozen=True, slots=True)
 class SlaScore:
     """One per-subscription, per-period SLA result (design §4).
 
-    Unknown seconds make the score provisional; they are never counted as
-    uptime. Without a contractual policy the verdict is ``no_contractual_sla``
-    and measured availability is shown as-is.
+    Unknown seconds or incomplete lifecycle/entitlement lineage make the score
+    provisional.  A provisional result exposes a lower and upper bound but no
+    guessed measured percentage and can never be labelled passing or at-risk.
     """
 
     subscription_id: UUID
@@ -291,48 +398,71 @@ class SlaScore:
     policy: SlaPolicyVersion | None
     evidence_digest: str
     interval_ids: tuple[str, ...] = ()
+    policy_segments: tuple[SlaPolicySegmentScore, ...] = ()
+    evidence_complete: bool = True
+    completeness_issues: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_utc(self.period_start, "period_start")
         _require_utc(self.period_end, "period_end")
         if self.period_end <= self.period_start:
             raise ValueError("a reporting period cannot end before it starts")
-        for name in (
-            "eligible_seconds",
-            "unavailable_seconds",
-            "excluded_seconds",
-            "unknown_seconds",
-        ):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} cannot be negative")
-        accounted = self.unavailable_seconds + self.unknown_seconds
-        if accounted > self.eligible_seconds:
-            raise ValueError(
-                "unavailable plus unknown seconds cannot exceed eligible seconds"
+        _validate_score_seconds(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+        )
+        if (
+            self.policy is None
+            and not any(segment.policy is not None for segment in self.policy_segments)
+            and self.verdict
+            not in (
+                SlaVerdict.no_contractual_sla,
+                SlaVerdict.unavailable,
             )
-        if self.policy is None and self.verdict not in (
-            SlaVerdict.no_contractual_sla,
-            SlaVerdict.unavailable,
         ):
             raise ValueError(
                 "a verdict against a target requires an effective policy version"
             )
         if not self.evidence_digest:
             raise ValueError("scores bind to an evidence digest")
+        if not self.evidence_complete and self.verdict in (
+            SlaVerdict.passing,
+            SlaVerdict.at_risk,
+        ):
+            raise ValueError("incomplete evidence cannot produce a passing verdict")
+        if self.evidence_complete and self.completeness_issues:
+            raise ValueError("a complete score cannot carry completeness issues")
 
     @property
     def measured_availability_percent(self) -> float | None:
-        """Availability over the measurable portion; None when nothing counts."""
+        """One final percentage only when evidence is complete."""
 
-        if self.eligible_seconds <= 0:
+        if not self.evidence_complete or self.unknown_seconds > 0:
             return None
-        return round(
-            100.0
-            * (self.eligible_seconds - self.unavailable_seconds)
-            / self.eligible_seconds,
-            3,
+        return self.availability_lower_bound_percent
+
+    @property
+    def availability_lower_bound_percent(self) -> float | None:
+        return _availability_bound(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+            unknown_is_uptime=False,
+        )
+
+    @property
+    def availability_upper_bound_percent(self) -> float | None:
+        return _availability_bound(
+            eligible_seconds=self.eligible_seconds,
+            unavailable_seconds=self.unavailable_seconds,
+            excluded_seconds=self.excluded_seconds,
+            unknown_seconds=self.unknown_seconds,
+            unknown_is_uptime=True,
         )
 
     @property
     def is_provisional(self) -> bool:
-        return self.unknown_seconds > 0
+        return not self.evidence_complete or self.unknown_seconds > 0

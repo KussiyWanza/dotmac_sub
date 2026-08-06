@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -102,6 +103,28 @@ class SubscriptionNasHistory:
     targets: tuple[HistoricalNasTarget, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class AccountingCoverageInterval:
+    """One exact subscription-bound positive accounting interval."""
+
+    subscription_id: UUID
+    source_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AccountingCoveragePeriodHistory:
+    """Positive service observations for exactly one half-open period."""
+
+    subscription_id: UUID
+    period_start: datetime
+    period_end: datetime
+    intervals: tuple[AccountingCoverageInterval, ...]
+    complete: bool
+    issues: tuple[str, ...]
+
+
 def _accounting_recency_expression():
     return func.coalesce(
         RadiusAccountingSession.last_update_at,
@@ -165,6 +188,75 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def accounting_coverage_for_period(
+    db: Session,
+    subscription_id: UUID,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+) -> AccountingCoveragePeriodHistory:
+    """Return only positive, exact-subscription historical RADIUS evidence.
+
+    An open session ends at its last imported observation.  The resolver never
+    extends it to ``now`` and never binds subscriber-level sessions to a
+    service retrospectively; both would guess uptime.
+    """
+
+    start = _as_utc(period_start)
+    end = _as_utc(period_end)
+    if start is None or end is None or end <= start:
+        raise ValueError("Accounting coverage requires a positive UTC period")
+
+    observed_end = func.coalesce(
+        RadiusAccountingSession.session_end,
+        RadiusAccountingSession.last_update_at,
+    )
+    rows = db.scalars(
+        select(RadiusAccountingSession)
+        .where(
+            RadiusAccountingSession.subscription_id == subscription_id,
+            RadiusAccountingSession.session_start.isnot(None),
+            RadiusAccountingSession.session_start < end,
+            observed_end.isnot(None),
+            observed_end > start,
+        )
+        .order_by(
+            RadiusAccountingSession.session_start,
+            observed_end,
+            RadiusAccountingSession.id,
+        )
+    ).all()
+    intervals: list[AccountingCoverageInterval] = []
+    issues: list[str] = []
+    for row in rows:
+        row_start = _as_utc(row.session_start)
+        row_end = _as_utc(row.session_end or row.last_update_at)
+        if row_start is None or row_end is None or row_end <= row_start:
+            issues.append(f"invalid_accounting_interval:{row.id}")
+            continue
+        interval_start = max(row_start, start)
+        interval_end = min(row_end, end)
+        if interval_end <= interval_start:
+            continue
+        intervals.append(
+            AccountingCoverageInterval(
+                subscription_id=subscription_id,
+                source_id=row.id,
+                starts_at=interval_start,
+                ends_at=interval_end,
+            )
+        )
+
+    return AccountingCoveragePeriodHistory(
+        subscription_id=subscription_id,
+        period_start=start,
+        period_end=end,
+        intervals=tuple(intervals),
+        complete=not issues,
+        issues=tuple(issues),
+    )
 
 
 def _active_session_observed_at(session: RadiusActiveSession) -> datetime:

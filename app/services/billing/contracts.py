@@ -104,6 +104,29 @@ class BillingContractError(DomainError):
     """Fail-closed billing-contract error."""
 
 
+@dataclass(frozen=True, slots=True)
+class PostpaidEntitlementInterval:
+    """One authoritative accepted-contract interval for one subscription."""
+
+    subscription_id: UUID
+    contract_id: UUID
+    contract_version_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PostpaidEntitlementPeriodHistory:
+    """Postpaid entitlement facts plus explicit shadow/gap diagnostics."""
+
+    subscription_id: UUID
+    period_start: datetime
+    period_end: datetime
+    intervals: tuple[PostpaidEntitlementInterval, ...]
+    complete: bool
+    issues: tuple[str, ...]
+
+
 def _error(suffix: str, message: str, **details: object) -> BillingContractError:
     return BillingContractError(
         code=f"{OWNER}.{suffix}", message=message, details=dict(details)
@@ -120,6 +143,111 @@ def _aware_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def postpaid_entitlement_history_for_period(
+    db: Session,
+    *,
+    subscription_id: UUID,
+    period_start: datetime,
+    period_end: datetime,
+) -> PostpaidEntitlementPeriodHistory:
+    """Resolve only authoritative accepted-contract coverage for an SLA period.
+
+    ADR 0007 is still shadowing in current deployments.  Shadow contract rows
+    are useful comparison evidence but cannot establish customer entitlement,
+    so their presence produces an incomplete history and no eligible interval.
+    """
+
+    start = _aware_utc(period_start)
+    end = _aware_utc(period_end)
+    if start is None or end is None or end <= start:
+        raise ValueError("Postpaid entitlement requires a positive UTC period")
+
+    contract = db.execute(
+        select(BillingContract).where(
+            BillingContract.subscription_id == subscription_id
+        )
+    ).scalar_one_or_none()
+    if contract is None:
+        return PostpaidEntitlementPeriodHistory(
+            subscription_id=subscription_id,
+            period_start=start,
+            period_end=end,
+            intervals=(),
+            complete=False,
+            issues=("missing_authoritative_billing_contract",),
+        )
+    if contract.authority is not BillingRecordAuthority.authoritative:
+        return PostpaidEntitlementPeriodHistory(
+            subscription_id=subscription_id,
+            period_start=start,
+            period_end=end,
+            intervals=(),
+            complete=False,
+            issues=(f"shadow_billing_contract:{contract.id}",),
+        )
+
+    rows = db.scalars(
+        select(BillingContractVersion)
+        .where(
+            BillingContractVersion.contract_id == contract.id,
+            BillingContractVersion.status.in_(
+                (
+                    BillingContractVersionStatus.effective,
+                    BillingContractVersionStatus.superseded,
+                )
+            ),
+            BillingContractVersion.starts_at < end,
+            (BillingContractVersion.ends_at.is_(None))
+            | (BillingContractVersion.ends_at > start),
+        )
+        .order_by(BillingContractVersion.starts_at, BillingContractVersion.version)
+    ).all()
+    issues: list[str] = []
+    intervals: list[PostpaidEntitlementInterval] = []
+    for row in rows:
+        if row.authority is not BillingRecordAuthority.authoritative:
+            issues.append(f"shadow_billing_contract_version:{row.id}")
+            continue
+        row_start = _aware_utc(row.starts_at)
+        row_end = _aware_utc(row.ends_at) or end
+        assert row_start is not None
+        interval_start = max(row_start, start)
+        interval_end = min(row_end, end)
+        if interval_end <= interval_start:
+            continue
+        intervals.append(
+            PostpaidEntitlementInterval(
+                subscription_id=subscription_id,
+                contract_id=contract.id,
+                contract_version_id=row.id,
+                starts_at=interval_start,
+                ends_at=interval_end,
+            )
+        )
+
+    contracted_start = max(_aware_utc(contract.opened_at) or start, start)
+    contracted_end = min(_aware_utc(contract.closed_at) or end, end)
+    cursor = contracted_start
+    for interval in intervals:
+        if interval.ends_at <= cursor:
+            continue
+        if interval.starts_at > cursor:
+            issues.append(f"authoritative_billing_contract_gap:{cursor.isoformat()}")
+            break
+        cursor = max(cursor, interval.ends_at)
+    if contracted_end > contracted_start and cursor < contracted_end:
+        issues.append(f"authoritative_billing_contract_gap:{cursor.isoformat()}")
+
+    return PostpaidEntitlementPeriodHistory(
+        subscription_id=subscription_id,
+        period_start=start,
+        period_end=end,
+        intervals=tuple(intervals),
+        complete=not issues,
+        issues=tuple(dict.fromkeys(issues)),
+    )
 
 
 def permitted_authority() -> BillingRecordAuthority:

@@ -478,8 +478,13 @@ def _send_coa_disconnect(
 def _build_mikrotik_rate_limit(profile: RadiusProfile) -> str | None:
     """Build MikroTik-Rate-Limit attribute string from profile speeds.
 
-    Format: rx/tx (download is rx from NAS perspective, upload is tx).
-    Supports burst: rx/tx burst-rx/burst-tx threshold-rx/threshold-tx time
+    Format: rx/tx burst-rx/burst-tx threshold-rx/threshold-tx time.
+
+    rx/tx are NAS-perspective: rx is NAS ingress — the subscriber's UPLOAD —
+    and tx is NAS egress, the subscriber's DOWNLOAD. That convention is
+    encoded canonically in ``app.services.bandwidth.to_subscriber_directions``,
+    which the live bandwidth charts read through. Every pair here is therefore
+    upload-first; emitting download-first silently swaps a subscriber's rates.
     """
     if profile.mikrotik_rate_limit:
         return profile.mikrotik_rate_limit
@@ -487,14 +492,14 @@ def _build_mikrotik_rate_limit(profile: RadiusProfile) -> str | None:
         return None
     dl = f"{profile.download_speed}k" if profile.download_speed else "0"
     ul = f"{profile.upload_speed}k" if profile.upload_speed else "0"
-    rate = f"{dl}/{ul}"
+    rate = f"{ul}/{dl}"
     if profile.burst_download or profile.burst_upload:
         bdl = f"{profile.burst_download}k" if profile.burst_download else dl
         bul = f"{profile.burst_upload}k" if profile.burst_upload else ul
         threshold = f"{profile.burst_threshold}k" if profile.burst_threshold else dl
         threshold_ul = f"{profile.burst_threshold}k" if profile.burst_threshold else ul
         btime = str(profile.burst_time or 10)
-        rate = f"{dl}/{ul} {bdl}/{bul} {threshold}/{threshold_ul} {btime}/{btime}"
+        rate = f"{ul}/{dl} {bul}/{bdl} {threshold_ul}/{threshold} {btime}/{btime}"
     return rate
 
 

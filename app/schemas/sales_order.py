@@ -15,7 +15,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.sales import SalesOrderPaymentStatus, SalesOrderStatus
+from app.models.sales import (
+    QuoteDiscountType,
+    SalesOrderPaymentStatus,
+    SalesOrderStatus,
+)
 
 
 class SalesOrderBase(BaseModel):
@@ -88,6 +92,9 @@ class SalesOrderRead(SalesOrderBase):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
+    discount_type: QuoteDiscountType | None = None
+    discount_value: Decimal | None = None
+    discount_amount: Decimal = Decimal("0.00")
     created_at: datetime
     updated_at: datetime
 

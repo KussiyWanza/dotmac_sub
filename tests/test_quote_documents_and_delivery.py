@@ -35,7 +35,7 @@ from app.models.sales import (
     QuoteStatus,
 )
 from app.models.stored_file import StoredFile
-from app.services import quote_deposits
+from app.services import document_delivery, quote_deposits
 from app.services.billing.collection_accounts import CollectionAccounts
 from app.services.brand_profiles import ResolvedBrand
 from app.services.brand_theme import contrast_ratio
@@ -309,9 +309,9 @@ def test_send_email_queues_one_pdf_intent_and_replays(
             suppressed=(),
         )
 
-    monkeypatch.setattr(quote_delivery, "submit", submit)
+    monkeypatch.setattr(document_delivery, "submit", submit)
     monkeypatch.setattr(
-        quote_delivery,
+        document_delivery,
         "emit_event",
         lambda *_args, **_kwargs: None,
     )
@@ -446,9 +446,9 @@ def test_suppressed_email_does_not_mark_quote_sent(db_session, subscriber, monke
             suppressed=("customer_policy",),
         )
 
-    monkeypatch.setattr(quote_delivery, "submit", submit_suppressed)
+    monkeypatch.setattr(document_delivery, "submit", submit_suppressed)
     monkeypatch.setattr(
-        quote_delivery,
+        document_delivery,
         "emit_event",
         lambda *_args, **_kwargs: None,
     )
@@ -479,8 +479,8 @@ def test_ineligible_payment_link_prevents_quote_delivery_queue(
 
     monkeypatch.setattr(quote_deposits, "quote_payment_page", reject)
     monkeypatch.setattr(
-        quote_delivery,
-        "submit",
+        document_delivery,
+        "deliver",
         lambda *_args, **_kwargs: pytest.fail("delivery must not be queued"),
     )
 

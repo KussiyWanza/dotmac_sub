@@ -77,6 +77,12 @@ Coordinates and spatial projections remain owned by `gis.spatial_sync`. Fiber
 topology owns what an asset is and how it connects; GIS owns where its approved
 spatial projection is stored.
 
+The admin Assign Subscriber modal resolves subscription choices only from the
+exact selected Subscriber identifier. It displays all of that Subscriber's
+subscriptions with an explicit Active or Inactive/current-status indicator;
+the assignment owner still revalidates the exact Subscriber/Subscription
+relationship when the form is submitted.
+
 ## Exact racks, patches, and cable-core continuity
 
 `network.fiber_physical_continuity` is the only writer for active core splices,

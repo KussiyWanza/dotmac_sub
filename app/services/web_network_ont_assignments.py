@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from app.models.catalog import Subscription, SubscriptionStatus
 from app.models.network import PonPort
 from app.models.ont_autofind import OltAutofindCandidate
 from app.services import network as network_service
@@ -33,6 +35,60 @@ class AssignmentFormResult:
     error: str | None = None
     not_found: bool = False
     not_found_message: str = "ONT not found"
+
+
+@dataclass(frozen=True, slots=True)
+class AssignmentSubscriptionOption:
+    """One exact subscription choice for the selected subscriber."""
+
+    id: UUID
+    offer_name: str
+    service_login: str | None
+    status: SubscriptionStatus
+
+    @property
+    def is_active(self) -> bool:
+        return self.status is SubscriptionStatus.active
+
+    @property
+    def status_indicator(self) -> str:
+        if self.is_active:
+            return "Active"
+        status_name = self.status.value.replace("_", " ").title()
+        return f"Inactive ({status_name})"
+
+
+def assignment_subscription_options(
+    db: Session, *, subscriber_id: UUID
+) -> tuple[AssignmentSubscriptionOption, ...]:
+    """Return every subscription owned by one exact selected subscriber."""
+
+    subscriptions = db.scalars(
+        select(Subscription)
+        .options(joinedload(Subscription.offer))
+        .where(Subscription.subscriber_id == subscriber_id)
+        .order_by(
+            case(
+                (Subscription.status == SubscriptionStatus.active, 0),
+                else_=1,
+            ),
+            Subscription.created_at.desc(),
+            Subscription.id,
+        )
+    ).all()
+    return tuple(
+        AssignmentSubscriptionOption(
+            id=subscription.id,
+            offer_name=(
+                subscription.offer.name
+                if subscription.offer is not None
+                else "Subscription"
+            ),
+            service_login=(subscription.login or "").strip() or None,
+            status=subscription.status,
+        )
+        for subscription in subscriptions
+    )
 
 
 def resolve_pon_port_for_ont(db: Session, ont) -> dict[str, object]:

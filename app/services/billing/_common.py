@@ -245,6 +245,7 @@ def lock_account(db: Session, account_id: str) -> None:
 def _validate_invoice_totals(data: dict):
     """Validate invoice monetary totals are consistent."""
     subtotal = data.get("subtotal")
+    discount_amount = data.get("discount_amount", Decimal("0.00"))
     tax_total = data.get("tax_total")
     total = data.get("total")
     balance_due = data.get("balance_due")
@@ -256,10 +257,20 @@ def _validate_invoice_totals(data: dict):
         raise HTTPException(status_code=400, detail="Total must be non-negative")
     if balance_due is not None and balance_due < 0:
         raise HTTPException(status_code=400, detail="Balance due must be non-negative")
+    if discount_amount is not None and discount_amount < 0:
+        raise HTTPException(status_code=400, detail="Discount must be non-negative")
+    if (
+        subtotal is not None
+        and discount_amount is not None
+        and discount_amount > subtotal
+    ):
+        raise HTTPException(status_code=400, detail="Discount exceeds subtotal")
     if subtotal is not None and tax_total is not None and total is not None:
-        if round_money(subtotal + tax_total) > round_money(total):
+        discounted_subtotal = subtotal - (discount_amount or Decimal("0.00"))
+        if round_money(discounted_subtotal + tax_total) > round_money(total):
             raise HTTPException(
-                status_code=400, detail="Total must cover subtotal and tax"
+                status_code=400,
+                detail="Total must cover discounted subtotal and tax",
             )
     if balance_due is not None and total is not None and balance_due > total:
         raise HTTPException(status_code=400, detail="Balance due exceeds total")
@@ -426,7 +437,19 @@ def _recalculate_invoice_totals(db: Session, invoice: Invoice):
         if total_lines == 0:
             subtotal = round_money(to_decimal(invoice.subtotal))
             tax_total = round_money(to_decimal(invoice.tax_total))
-            total = round_money(to_decimal(invoice.total, default=subtotal + tax_total))
+            discount_amount = round_money(
+                to_decimal(getattr(invoice, "discount_amount", Decimal("0.00")))
+            )
+            if discount_amount > 0:
+                discounted_subtotal = max(Decimal("0.00"), subtotal - discount_amount)
+                total = round_money(discounted_subtotal + tax_total)
+            else:
+                # Legacy and externally-created Invoices may carry an explicit
+                # total without line rows or a populated subtotal. Preserve that
+                # authoritative amount when there is no discount to reprice.
+                total = round_money(
+                    to_decimal(invoice.total, default=subtotal + tax_total)
+                )
             invoice.subtotal = subtotal
             invoice.tax_total = tax_total
             invoice.total = total
@@ -474,9 +497,18 @@ def _recalculate_invoice_totals(db: Session, invoice: Invoice):
                 subtotal += amount
         subtotal = round_money(subtotal)
         tax_total = round_money(tax_total)
+        discount_amount = round_money(
+            to_decimal(getattr(invoice, "discount_amount", Decimal("0.00")))
+        )
+        discounted_subtotal = max(Decimal("0.00"), subtotal - discount_amount)
+        if discount_amount > 0 and subtotal > 0:
+            # An Invoice discount is applied to the net subtotal before tax.
+            # Proportional allocation across the active lines makes mixed tax
+            # rates deterministic without rewriting the immutable line facts.
+            tax_total = round_money(tax_total * discounted_subtotal / subtotal)
         invoice.subtotal = subtotal
         invoice.tax_total = tax_total
-        invoice.total = round_money(subtotal + tax_total)
+        invoice.total = round_money(discounted_subtotal + tax_total)
 
     settlement = resolve_invoice_settlement_amounts(db, invoice.id)
     # Void and written_off are terminal: never recompute their balance or

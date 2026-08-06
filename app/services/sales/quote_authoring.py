@@ -17,7 +17,16 @@ from app.models.catalog import CatalogOffer, OfferStatus
 from app.models.field_material import FieldInventoryItem
 from app.models.party import PartyIdentityStatus
 from app.models.project import ProjectType
-from app.models.sales import Lead, LeadStatus, Quote, QuoteLineItem, QuoteStatus
+from app.models.sales import (
+    Lead,
+    LeadStatus,
+    Quote,
+    QuoteDiscountAction,
+    QuoteDiscountHistory,
+    QuoteDiscountType,
+    QuoteLineItem,
+    QuoteStatus,
+)
 from app.models.system_user import SystemUser
 from app.services.audit_adapter import stage_audit_event
 from app.services.common import round_money
@@ -34,6 +43,11 @@ _AUTHOR_QUOTE = OwnerCommandDefinition(
     owner="sales.quote_authoring",
     concern="atomic Lead-backed Draft/Sent Quote authoring",
     name="author_quote",
+)
+_CHANGE_QUOTE_DISCOUNT = OwnerCommandDefinition(
+    owner="sales.quote_authoring",
+    concern="Quote discount lifecycle and append-only history",
+    name="change_quote_discount",
 )
 
 _ELIGIBLE_LEAD_STATUSES = {
@@ -66,9 +80,15 @@ class QuoteLineDraft:
     description: str
     quantity: Decimal
     unit_price: Decimal
-    discount_percent: Decimal
     sub_offer_id: UUID | None = None
     inventory_item_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteDiscountInput:
+    discount_type: QuoteDiscountType
+    value: Decimal
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,12 +107,40 @@ class AuthorQuoteCommand:
     notes: str | None
     install: QuoteInstallLocation
     lines: tuple[QuoteLineDraft, ...]
+    discount: QuoteDiscountInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AuthorQuoteOutcome:
     quote_id: UUID
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeQuoteDiscountCommand:
+    context: CommandContext
+    quote_id: UUID
+    actor_system_user_id: UUID
+    expected_revision: int
+    discount: QuoteDiscountInput | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeQuoteDiscountOutcome:
+    quote_id: UUID
+    revision: int
+    action: QuoteDiscountAction
+    discount_amount: Decimal
+    total: Decimal
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedQuoteDiscount:
+    discount_type: QuoteDiscountType
+    value: Decimal
+    amount: Decimal
+    reason: str | None
 
 
 def _error(
@@ -133,7 +181,6 @@ def _fingerprint(command: AuthorQuoteCommand) -> str:
                 "description": item.description,
                 "quantity": str(item.quantity),
                 "unit_price": str(item.unit_price),
-                "discount_percent": str(item.discount_percent),
                 "sub_offer_id": str(item.sub_offer_id) if item.sub_offer_id else None,
                 "inventory_item_id": str(item.inventory_item_id)
                 if item.inventory_item_id
@@ -141,15 +188,24 @@ def _fingerprint(command: AuthorQuoteCommand) -> str:
             }
             for item in command.lines
         ],
+        "discount": (
+            {
+                "type": command.discount.discount_type.value,
+                "value": str(command.discount.value),
+                "reason": command.discount.reason,
+            }
+            if command.discount is not None
+            else None
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _actor(db: Session, command: AuthorQuoteCommand) -> SystemUser:
+def _active_actor(db: Session, actor_system_user_id: UUID) -> SystemUser:
     actor = db.scalars(
         select(SystemUser)
-        .where(SystemUser.id == command.actor_system_user_id)
+        .where(SystemUser.id == actor_system_user_id)
         .with_for_update()
     ).one_or_none()
     if actor is None or not actor.is_active:
@@ -158,6 +214,165 @@ def _actor(db: Session, command: AuthorQuoteCommand) -> SystemUser:
             "The authenticated staff user cannot create Quotes.",
         )
     return actor
+
+
+def _actor(db: Session, command: AuthorQuoteCommand) -> SystemUser:
+    return _active_actor(db, command.actor_system_user_id)
+
+
+def resolve_quote_discount(
+    subtotal: Decimal, discount: QuoteDiscountInput | None
+) -> ResolvedQuoteDiscount | None:
+    """Validate and price one mutually exclusive Quote-level discount."""
+
+    if discount is None:
+        return None
+    original_subtotal = round_money(subtotal)
+    value = discount.value
+    if not value.is_finite() or value <= 0:
+        raise _error(
+            "discount_value_invalid",
+            "Discount value must be greater than zero.",
+            field="discount_value",
+        )
+    if original_subtotal <= 0:
+        raise _error(
+            "discount_subtotal_invalid",
+            "Add a positive Quote subtotal before applying a discount.",
+            field="discount_value",
+        )
+    normalized_value = round_money(value)
+    if discount.discount_type == QuoteDiscountType.percentage:
+        if normalized_value > Decimal("100"):
+            raise _error(
+                "discount_value_invalid",
+                "Percentage discount cannot be greater than 100.",
+                field="discount_value",
+            )
+        amount = round_money(original_subtotal * normalized_value / Decimal("100"))
+    elif discount.discount_type == QuoteDiscountType.fixed_amount:
+        amount = normalized_value
+    else:  # pragma: no cover - enum construction prevents this branch
+        raise _error(
+            "discount_type_invalid",
+            "Select Percentage or Fixed Amount.",
+            field="discount_type",
+        )
+    if amount <= 0:
+        raise _error(
+            "discount_value_invalid",
+            "Discount value is too small to reduce this Quote.",
+            field="discount_value",
+        )
+    if amount > original_subtotal:
+        raise _error(
+            "discount_exceeds_subtotal",
+            "Discount cannot be greater than the Quote subtotal.",
+            field="discount_value",
+        )
+    reason = (discount.reason or "").strip() or None
+    if reason is not None and len(reason) > 500:
+        raise _error(
+            "discount_reason_invalid",
+            "Discount reason cannot be longer than 500 characters.",
+            field="discount_reason",
+        )
+    return ResolvedQuoteDiscount(
+        discount_type=discount.discount_type,
+        value=normalized_value,
+        amount=amount,
+        reason=reason,
+    )
+
+
+def assert_line_mutation_allowed(
+    *,
+    quote_id: UUID,
+    discount_type: QuoteDiscountType | None,
+) -> None:
+    """Keep line changes from silently rewriting current discount evidence."""
+
+    if discount_type is None:
+        return
+    raise _error(
+        "active_discount_blocks_line_mutation",
+        (
+            "Remove the Quote discount before changing Line Items, then reapply it "
+            "to preserve exact discount history."
+        ),
+        quote_id=str(quote_id),
+    )
+
+
+def _tax_and_total(
+    *,
+    subtotal: Decimal,
+    discount_amount: Decimal,
+    tax_rate: Decimal | None,
+    manual_tax_total: Decimal,
+) -> tuple[Decimal, Decimal, Decimal]:
+    discounted_subtotal = round_money(subtotal - discount_amount)
+    tax_total = (
+        round_money(discounted_subtotal * tax_rate / Decimal("100"))
+        if tax_rate is not None
+        else round_money(manual_tax_total)
+    )
+    return discounted_subtotal, tax_total, round_money(discounted_subtotal + tax_total)
+
+
+def _discount_command_fingerprint(command: ChangeQuoteDiscountCommand) -> str:
+    payload = {
+        "quote_id": str(command.quote_id),
+        "actor_system_user_id": str(command.actor_system_user_id),
+        "expected_revision": command.expected_revision,
+        "discount": (
+            {
+                "type": command.discount.discount_type.value,
+                "value": str(command.discount.value),
+                "reason": command.discount.reason,
+            }
+            if command.discount is not None
+            else None
+        ),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _stage_discount_history(
+    db: Session,
+    *,
+    quote: Quote,
+    revision: int,
+    action: QuoteDiscountAction,
+    resolved: ResolvedQuoteDiscount,
+    actor_system_user_id: UUID,
+    command_id: UUID,
+    command_fingerprint: str,
+    applied_at: datetime,
+    discounted_subtotal: Decimal,
+    tax_total: Decimal,
+    total: Decimal,
+) -> QuoteDiscountHistory:
+    history = QuoteDiscountHistory(
+        quote_id=quote.id,
+        revision=revision,
+        action=action.value,
+        discount_type=resolved.discount_type.value,
+        discount_value=resolved.value,
+        discount_amount=resolved.amount,
+        original_subtotal=round_money(quote.subtotal),
+        discounted_subtotal=discounted_subtotal,
+        tax_total=tax_total,
+        total_after_discount=total,
+        reason=resolved.reason,
+        actor_system_user_id=actor_system_user_id,
+        command_id=command_id,
+        command_fingerprint=command_fingerprint,
+        applied_at=applied_at,
+    )
+    db.add(history)
+    return history
 
 
 def _lead(db: Session, lead_id: UUID) -> Lead:
@@ -259,14 +474,6 @@ def _validated_lines(
                 "Line Item Unit Price cannot be negative.",
                 field="line_items",
             )
-        if not item.discount_percent.is_finite() or not Decimal(
-            "0"
-        ) <= item.discount_percent <= Decimal("100"):
-            raise _error(
-                "line_discount_invalid",
-                "Line Item Discount must be between 0 and 100.",
-                field="line_items",
-            )
         if item.sub_offer_id is not None and item.inventory_item_id is not None:
             raise _error(
                 "line_source_ambiguous",
@@ -292,12 +499,7 @@ def _validated_lines(
                     "The selected inventory item no longer matches its description.",
                     field="line_items",
                 )
-        amount = round_money(
-            item.quantity
-            * item.unit_price
-            * (Decimal("100") - item.discount_percent)
-            / Decimal("100")
-        )
+        amount = round_money(item.quantity * item.unit_price)
         validated.append((item, amount))
     return tuple(validated)
 
@@ -429,10 +631,16 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
     metadata.update(_install_metadata(db, command.install))
 
     subtotal = round_money(sum((amount for _item, amount in lines), Decimal("0.00")))
-    tax_total = (
-        round_money(subtotal * Decimal(tax_rate.rate) / Decimal("100"))
-        if tax_rate is not None
-        else round_money(command.manual_tax_total)
+    resolved_discount = resolve_quote_discount(subtotal, command.discount)
+    discount_amount = (
+        resolved_discount.amount if resolved_discount is not None else Decimal("0.00")
+    )
+    applied_at = datetime.now(UTC) if resolved_discount is not None else None
+    discounted_subtotal, tax_total, total = _tax_and_total(
+        subtotal=subtotal,
+        discount_amount=discount_amount,
+        tax_rate=(Decimal(tax_rate.rate) if tax_rate is not None else None),
+        manual_tax_total=command.manual_tax_total,
     )
     quote = Quote(
         id=command.quote_id,
@@ -443,9 +651,18 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
         project_type=command.project_type.value,
         currency=currency,
         subtotal=subtotal,
+        discount_type=(
+            resolved_discount.discount_type.value if resolved_discount else None
+        ),
+        discount_value=(resolved_discount.value if resolved_discount else None),
+        discount_amount=discount_amount,
+        discount_reason=(resolved_discount.reason if resolved_discount else None),
+        discount_applied_by_system_user_id=(actor.id if resolved_discount else None),
+        discount_applied_at=applied_at,
+        discount_revision=(1 if resolved_discount else 0),
         tax_rate=Decimal(tax_rate.rate) if tax_rate is not None else None,
         tax_total=tax_total,
-        total=round_money(subtotal + tax_total),
+        total=total,
         expires_at=command.expires_at,
         sent_at=(datetime.now(UTC) if command.status == QuoteStatus.sent else None),
         notes=(command.notes or "").strip() or None,
@@ -467,10 +684,54 @@ def _operation(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome:
                 description=draft.description.strip(),
                 quantity=draft.quantity,
                 unit_price=draft.unit_price,
-                discount_percent=draft.discount_percent,
+                discount_percent=Decimal("0.00"),
                 amount=amount,
                 metadata_=line_metadata,
             )
+        )
+    if resolved_discount is not None:
+        assert applied_at is not None
+        _stage_discount_history(
+            db,
+            quote=quote,
+            revision=1,
+            action=QuoteDiscountAction.applied,
+            resolved=resolved_discount,
+            actor_system_user_id=actor.id,
+            command_id=command.context.command_id,
+            command_fingerprint=fingerprint,
+            applied_at=applied_at,
+            discounted_subtotal=discounted_subtotal,
+            tax_total=tax_total,
+            total=total,
+        )
+        emit_event(
+            db,
+            EventType.quote_discount_applied,
+            {
+                "quote_id": str(quote.id),
+                "revision": 1,
+                "discount_type": resolved_discount.discount_type.value,
+                "discount_value": str(resolved_discount.value),
+                "discount_amount": str(resolved_discount.amount),
+                "currency": quote.currency,
+                "total": str(quote.total),
+            },
+            actor=command.context.actor,
+        )
+        stage_audit_event(
+            db,
+            action="quote.discount_applied",
+            entity_type="quote",
+            entity_id=str(quote.id),
+            actor_id=str(actor.id),
+            request_id=str(command.context.command_id),
+            metadata={
+                "revision": 1,
+                "discount_type": resolved_discount.discount_type.value,
+                "discount_value": str(resolved_discount.value),
+                "discount_amount": str(resolved_discount.amount),
+            },
         )
     emit_event(
         db,
@@ -511,4 +772,197 @@ def author_quote(db: Session, command: AuthorQuoteCommand) -> AuthorQuoteOutcome
         definition=_AUTHOR_QUOTE,
         context=command.context,
         operation=lambda: _operation(db, command),
+    )
+
+
+def _change_discount_operation(
+    db: Session, command: ChangeQuoteDiscountCommand
+) -> ChangeQuoteDiscountOutcome:
+    fingerprint = _discount_command_fingerprint(command)
+    replay = db.scalars(
+        select(QuoteDiscountHistory).where(
+            QuoteDiscountHistory.command_id == command.context.command_id
+        )
+    ).one_or_none()
+    if replay is not None:
+        if (
+            replay.command_fingerprint != fingerprint
+            or replay.quote_id != command.quote_id
+        ):
+            raise _error(
+                "discount_command_conflict",
+                "This discount request was already used with different values.",
+            )
+        replay_quote = db.get(Quote, replay.quote_id)
+        assert replay_quote is not None
+        replay_action = QuoteDiscountAction(replay.action)
+        return ChangeQuoteDiscountOutcome(
+            quote_id=replay.quote_id,
+            revision=replay.revision,
+            action=replay_action,
+            discount_amount=(
+                Decimal("0.00")
+                if replay_action == QuoteDiscountAction.removed
+                else replay.discount_amount
+            ),
+            total=replay_quote.total,
+            replayed=True,
+        )
+
+    actor = _active_actor(db, command.actor_system_user_id)
+    quote = db.scalars(
+        select(Quote).where(Quote.id == command.quote_id).with_for_update()
+    ).one_or_none()
+    if quote is None or not quote.is_active:
+        raise _error("quote_not_found", "Select a valid active Quote.")
+    if quote.status == QuoteStatus.accepted.value:
+        raise _error(
+            "accepted_quote_immutable",
+            "An accepted Quote cannot be discounted; create a new Quote for revised terms.",
+        )
+    if quote.status not in {QuoteStatus.draft.value, QuoteStatus.sent.value}:
+        raise _error(
+            "discount_status_invalid",
+            "Only Draft or Sent Quotes can have their discount changed.",
+        )
+    if command.expected_revision != quote.discount_revision:
+        raise _error(
+            "discount_revision_conflict",
+            "The Quote discount changed while this page was open. Reload and try again.",
+            expected_revision=command.expected_revision,
+            current_revision=quote.discount_revision,
+        )
+
+    applied_at = datetime.now(UTC)
+    revision = quote.discount_revision + 1
+    if command.discount is None:
+        if quote.discount_type is None or quote.discount_value is None:
+            raise _error("discount_not_found", "This Quote has no discount to remove.")
+        previous = ResolvedQuoteDiscount(
+            discount_type=QuoteDiscountType(quote.discount_type),
+            value=Decimal(quote.discount_value),
+            amount=Decimal(quote.discount_amount),
+            reason=quote.discount_reason,
+        )
+        prior_discounted_subtotal = quote.discounted_subtotal
+        prior_tax_total = round_money(quote.tax_total)
+        prior_total = round_money(quote.total)
+        quote.discount_type = None
+        quote.discount_value = None
+        quote.discount_amount = Decimal("0.00")
+        quote.discount_reason = None
+        quote.discount_applied_by_system_user_id = None
+        quote.discount_applied_at = None
+        quote.discount_revision = revision
+        _, quote.tax_total, quote.total = _tax_and_total(
+            subtotal=round_money(quote.subtotal),
+            discount_amount=Decimal("0.00"),
+            tax_rate=(Decimal(quote.tax_rate) if quote.tax_rate is not None else None),
+            manual_tax_total=round_money(quote.tax_total),
+        )
+        action = QuoteDiscountAction.removed
+        history_resolved = previous
+        history_discounted_subtotal = prior_discounted_subtotal
+        history_tax_total = prior_tax_total
+        history_total = prior_total
+    else:
+        resolved = resolve_quote_discount(round_money(quote.subtotal), command.discount)
+        assert resolved is not None
+        action = (
+            QuoteDiscountAction.applied
+            if quote.discount_type is None
+            else QuoteDiscountAction.changed
+        )
+        discounted_subtotal, tax_total, total = _tax_and_total(
+            subtotal=round_money(quote.subtotal),
+            discount_amount=resolved.amount,
+            tax_rate=(Decimal(quote.tax_rate) if quote.tax_rate is not None else None),
+            manual_tax_total=round_money(quote.tax_total),
+        )
+        quote.discount_type = resolved.discount_type.value
+        quote.discount_value = resolved.value
+        quote.discount_amount = resolved.amount
+        quote.discount_reason = resolved.reason
+        quote.discount_applied_by_system_user_id = actor.id
+        quote.discount_applied_at = applied_at
+        quote.discount_revision = revision
+        quote.tax_total = tax_total
+        quote.total = total
+        history_resolved = resolved
+        history_discounted_subtotal = discounted_subtotal
+        history_tax_total = tax_total
+        history_total = total
+
+    _stage_discount_history(
+        db,
+        quote=quote,
+        revision=revision,
+        action=action,
+        resolved=history_resolved,
+        actor_system_user_id=actor.id,
+        command_id=command.context.command_id,
+        command_fingerprint=fingerprint,
+        applied_at=applied_at,
+        discounted_subtotal=history_discounted_subtotal,
+        tax_total=history_tax_total,
+        total=history_total,
+    )
+    event_type = {
+        QuoteDiscountAction.applied: EventType.quote_discount_applied,
+        QuoteDiscountAction.changed: EventType.quote_discount_changed,
+        QuoteDiscountAction.removed: EventType.quote_discount_removed,
+    }[action]
+    emit_event(
+        db,
+        event_type,
+        {
+            "quote_id": str(quote.id),
+            "revision": revision,
+            "discount_type": history_resolved.discount_type.value,
+            "discount_value": str(history_resolved.value),
+            "discount_amount": str(history_resolved.amount),
+            "currency": quote.currency,
+            "total": str(quote.total),
+        },
+        actor=command.context.actor,
+    )
+    stage_audit_event(
+        db,
+        action=f"quote.discount_{action.value}",
+        entity_type="quote",
+        entity_id=str(quote.id),
+        actor_id=str(actor.id),
+        request_id=str(command.context.command_id),
+        metadata={
+            "revision": revision,
+            "discount_type": history_resolved.discount_type.value,
+            "discount_value": str(history_resolved.value),
+            "discount_amount": str(history_resolved.amount),
+        },
+    )
+    db.flush()
+    return ChangeQuoteDiscountOutcome(
+        quote_id=quote.id,
+        revision=revision,
+        action=action,
+        discount_amount=(
+            Decimal("0.00")
+            if action == QuoteDiscountAction.removed
+            else history_resolved.amount
+        ),
+        total=round_money(quote.total),
+        replayed=False,
+    )
+
+
+def change_quote_discount(
+    db: Session, command: ChangeQuoteDiscountCommand
+) -> ChangeQuoteDiscountOutcome:
+    """Apply, replace, or remove one Quote-level discount atomically."""
+
+    return execute_owner_command(
+        db,
+        definition=_CHANGE_QUOTE_DISCOUNT,
+        context=command.context,
+        operation=lambda: _change_discount_operation(db, command),
     )

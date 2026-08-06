@@ -77,6 +77,30 @@ class TestSalesLeads:
         ).to_be_visible()
         expect(admin_page.get_by_text("55%")).to_be_visible()
 
+    def test_admin_can_edit_a_lead_email(
+        self,
+        admin_page: Page,
+        settings,
+    ) -> None:
+        _mark_admin_tour_seen(admin_page)
+        suffix = uuid4().hex[:10]
+        updated_email = f"updated-lead-{suffix}@example.com"
+        admin_page.goto(f"{settings.base_url}/admin/sales/leads/new")
+        admin_page.get_by_label("Display Name").fill(f"Editable Lead {suffix}")
+        admin_page.get_by_label("Email 1").fill(f"lead-{suffix}@example.com")
+        admin_page.get_by_label("Phone 1").fill("08031234567")
+        admin_page.get_by_role("button", name="Create Lead").click()
+        admin_page.wait_for_url("**/admin/sales/leads/**")
+
+        admin_page.get_by_role("link", name="Edit Lead").click()
+        expect(admin_page.get_by_role("heading", name="Edit Lead")).to_be_visible()
+        admin_page.get_by_label("Email 1").fill(updated_email)
+        admin_page.get_by_role("button", name="Update Lead").click()
+
+        admin_page.wait_for_url("**/admin/sales/leads/**?result=updated")
+        expect(admin_page.get_by_text("Lead updated successfully.")).to_be_visible()
+        expect(admin_page.get_by_text(updated_email)).to_be_visible()
+
     def test_new_lead_repeaters_and_mobile_layout(
         self,
         admin_page: Page,

@@ -396,7 +396,10 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="sales.lead_authoring",
         module="app.services.sales.lead_authoring",
-        owns=("atomic admin Person and Lead authoring",),
+        owns=(
+            "atomic admin Person and Lead authoring",
+            "atomic admin Person and Lead maintenance",
+        ),
         depends_on=(
             "auth.staff_provisioning",
             "customer.accounts",
@@ -411,8 +414,10 @@ SERVICES: tuple[SOTService, ...] = (
             "The admin adapter submits one typed command. This owner validates "
             "the staff actor, eligible owner, Pipeline/Stage, configured Region, "
             "Organization, optional external reseller ownership, Person profile "
-            "and contact points, then commits the "
-            "Person Party, immutable Lead origin, Lead, audit, and event once."
+            "and contact points. Creation commits the Person Party, immutable "
+            "Lead origin, Lead, audit, and event once; maintenance preserves the "
+            "same Party identity while atomically reconciling its profile, contact "
+            "points, Organization relationship, and editable Lead values."
         ),
         contract=ServiceContract(
             concerns=(
@@ -421,6 +426,18 @@ SERVICES: tuple[SOTService, ...] = (
                     role=OwnerRole.APPLICATION_COORDINATOR,
                     input_names=(
                         "Lead authoring command evidence",
+                        "canonical staff actor state",
+                        "canonical Party identity state",
+                        "canonical sales pipeline state",
+                        "configured Region and Organization state",
+                        "canonical reseller ownership state",
+                    ),
+                ),
+                ConcernContract(
+                    name="atomic admin Person and Lead maintenance",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "Lead maintenance command evidence",
                         "canonical staff actor state",
                         "canonical Party identity state",
                         "canonical sales pipeline state",
@@ -438,6 +455,16 @@ SERVICES: tuple[SOTService, ...] = (
                         "typed submission identity, Person profile, contact rows, "
                         "owner, Pipeline/Stage, value, Region, notes, and optional "
                         "external reseller ownership"
+                    ),
+                ),
+                AuthorityInput(
+                    name="Lead maintenance command evidence",
+                    owner="sales.lead_authoring",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed edit identity, exact Lead and Person profile, complete "
+                        "contact sets, commercial values, owner, Pipeline/Stage, "
+                        "Region, Organization, and reseller ownership"
                     ),
                 ),
                 AuthorityInput(
@@ -484,15 +511,17 @@ SERVICES: tuple[SOTService, ...] = (
                 mode=TransactionMode.COORDINATOR_MANAGED,
                 boundary=(
                     "execute_owner_command commits Person Party, contact points, "
-                    "relationship, Lead origin, Lead, audit, and event once"
+                    "relationship, Lead, audit, and event once; creation also "
+                    "commits the immutable Lead origin"
                 ),
                 locking=(
-                    "The actor and selected owner are locked; the deterministic Lead "
-                    "and Person identifiers plus database constraints arbitrate retries."
+                    "The actor and selected owner are locked; maintenance additionally "
+                    "locks the exact Lead, Person Party, contact points, and Organization "
+                    "relationship. Database constraints arbitrate retries."
                 ),
                 idempotency=(
-                    "The server-issued submission UUID deterministically identifies "
-                    "the Lead and Person; an exact fingerprint replays and drift conflicts."
+                    "Server-issued create and edit submission UUIDs plus exact "
+                    "fingerprints replay safely and reject changed reuse."
                 ),
                 retries=(
                     "Safe exact retries replay the saved outcome; validation and "
@@ -520,6 +549,15 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.lead_authoring.organization_party_ineligible",
                     "sales.lead_authoring.status_not_allowed",
                     "sales.lead_authoring.submission_conflict",
+                    "sales.lead_authoring.edit_conflict",
+                    "sales.lead_authoring.lead_not_found",
+                    "sales.lead_authoring.lead_party_missing",
+                    "sales.lead_authoring.party_not_editable",
+                    "sales.service.lead_not_found",
+                    "sales.service.lead_title_invalid",
+                    "sales.service.lead_won_transition_forbidden",
+                    "sales.service.lead_origin_immutable",
+                    "sales.service.converted_lead_reseller_immutable",
                 ),
                 mapping_owner="admin sales Lead web adapter",
                 fail_closed_on=(
@@ -531,33 +569,34 @@ SERVICES: tuple[SOTService, ...] = (
                 ),
             ),
             events=EventContract(
-                event_types=("lead.created",),
+                event_types=("lead.created", "lead.updated"),
                 schema_version=1,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 carries Lead, Party, status, source and Pipeline "
-                    "identifiers without contact values or NIN."
+                    "Version 1 creation and maintenance events carry Lead, Party, "
+                    "status and Pipeline identifiers without contact values or NIN."
                 ),
                 replay=(
-                    "The stored authoring key and fingerprint reproduce the exact "
-                    "Lead/Party outcome without duplicate contact points."
+                    "Stored authoring and edit keys plus fingerprints reproduce the "
+                    "exact Lead/Party outcome without duplicate contact points."
                 ),
             ),
             migration=MigrationContract(
                 state=AuthorityMigrationState.COMPLETE,
-                old_owner="admin web form plus per-row sales.service commits",
+                old_owner="admin create/edit web forms plus per-row sales.service commits",
                 new_owner="sales.lead_authoring",
                 verification=(
-                    "Focused authoring tests cover identity derivation, contacts, "
-                    "ownership, Region, Pipeline/Stage, rollback, and replay."
+                    "Focused authoring and maintenance tests cover identity preservation, "
+                    "contact reconciliation, ownership, Region, Pipeline/Stage, "
+                    "rollback, and replay."
                 ),
                 cutover_gate=(
-                    "The New Lead POST invokes only the typed owner command and "
+                    "The New and Edit Lead POSTs invoke only typed owner commands and "
                     "ordinary validation failures map back to the HTML form."
                 ),
                 fallback_retirement=(
-                    "The New Lead adapter no longer accepts a Party/Person identifier "
-                    "or calls the legacy Leads.create path."
+                    "The New Lead adapter no longer accepts a Party/Person identifier, "
+                    "and Edit no longer calls the legacy Leads.update path."
                 ),
             ),
             steward="sales operations",
@@ -576,7 +615,10 @@ SERVICES: tuple[SOTService, ...] = (
     SOTService(
         name="sales.quote_authoring",
         module="app.services.sales.quote_authoring",
-        owns=("atomic Lead-backed Draft/Sent Quote authoring",),
+        owns=(
+            "atomic Lead-backed Draft/Sent Quote authoring",
+            "Quote discount lifecycle and append-only history",
+        ),
         depends_on=(
             "auth.staff_provisioning",
             "events.dispatcher",
@@ -589,7 +631,10 @@ SERVICES: tuple[SOTService, ...] = (
         ),
         notes=(
             "Staff author one Lead-backed Draft or Sent Quote and all of its "
-            "lines under one transaction. Initial Accepted authoring and every "
+            "lines plus an optional Quote-level discount under one transaction. "
+            "The same owner locks mutable Quotes for discount replacement/removal "
+            "and preserves append-only actor/time/value evidence. Initial Accepted "
+            "authoring and every "
             "Subscriber, order, Project, Task, or WorkOrder consequence are "
             "forbidden; acceptance is a separate sales.quote_acceptance command."
         ),
@@ -606,6 +651,15 @@ SERVICES: tuple[SOTService, ...] = (
                         "canonical Quote lifecycle state",
                     ),
                 ),
+                ConcernContract(
+                    name="Quote discount lifecycle and append-only history",
+                    role=OwnerRole.APPLICATION_COORDINATOR,
+                    input_names=(
+                        "Quote discount command evidence",
+                        "canonical staff actor state",
+                        "canonical Quote lifecycle state",
+                    ),
+                ),
             ),
             authoritative_inputs=(
                 AuthorityInput(
@@ -616,6 +670,16 @@ SERVICES: tuple[SOTService, ...] = (
                         "typed submission id, Lead, Draft/Sent status, currency, "
                         "tax choice, install location, required Project Type, line values, "
                         "actor, and CommandContext provenance"
+                    ),
+                ),
+                AuthorityInput(
+                    name="Quote discount command evidence",
+                    owner="sales.quote_authoring",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed mutually exclusive percentage/fixed discount, optional "
+                        "reason, expected revision, command identity, actor, and "
+                        "CommandContext provenance"
                     ),
                 ),
                 AuthorityInput(
@@ -636,7 +700,7 @@ SERVICES: tuple[SOTService, ...] = (
                     kind=AuthorityKind.CONTROL_INPUT,
                     source=(
                         "validated active offer, field-item, tax-rate, currency, "
-                        "quantity, price, discount, and install-pin references"
+                        "quantity, price, Quote-level discount, and install-pin references"
                     ),
                 ),
                 AuthorityInput(
@@ -652,17 +716,20 @@ SERVICES: tuple[SOTService, ...] = (
             transaction=TransactionContract(
                 mode=TransactionMode.COORDINATOR_MANAGED,
                 boundary=(
-                    "author_quote enters execute_owner_command once on a clean "
-                    "adapter session; Quote, lines, quote.created event, and audit "
-                    "evidence commit or roll back together"
+                    "author_quote or change_quote_discount enters execute_owner_command "
+                    "once on a clean adapter session; Quote, lines/current discount, "
+                    "append-only history, domain event, and audit evidence commit or "
+                    "roll back together"
                 ),
                 locking=(
-                    "The actor and Lead lock FOR UPDATE; the supplied Quote UUID "
-                    "and database key arbitrate concurrent submissions."
+                    "Authoring locks actor then Lead; discount mutation locks actor then "
+                    "Quote. The supplied UUID, expected revision, and database keys "
+                    "arbitrate concurrent submissions."
                 ),
                 idempotency=(
-                    "Submission UUID plus a canonical command fingerprint returns "
-                    "the original Quote; changed content under that UUID fails closed."
+                    "Submission UUID or discount command UUID plus a canonical command "
+                    "fingerprint returns the original outcome; changed content under "
+                    "that UUID fails closed."
                 ),
                 retries=(
                     "Equivalent retries use the same submission UUID; transient "
@@ -672,6 +739,8 @@ SERVICES: tuple[SOTService, ...] = (
             errors=ErrorContract(
                 domain_codes=(
                     *owner_command_boundary_error_codes("sales.quote_authoring"),
+                    "sales.quote_authoring.accepted_quote_immutable",
+                    "sales.quote_authoring.active_discount_blocks_line_mutation",
                     "sales.quote_authoring.actor_not_eligible",
                     "sales.quote_authoring.currency_invalid",
                     "sales.quote_authoring.initial_status_invalid",
@@ -684,7 +753,15 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_authoring.lead_person_ineligible",
                     "sales.quote_authoring.lead_person_required",
                     "sales.quote_authoring.line_description_invalid",
-                    "sales.quote_authoring.line_discount_invalid",
+                    "sales.quote_authoring.discount_command_conflict",
+                    "sales.quote_authoring.discount_exceeds_subtotal",
+                    "sales.quote_authoring.discount_not_found",
+                    "sales.quote_authoring.discount_reason_invalid",
+                    "sales.quote_authoring.discount_revision_conflict",
+                    "sales.quote_authoring.discount_status_invalid",
+                    "sales.quote_authoring.discount_subtotal_invalid",
+                    "sales.quote_authoring.discount_type_invalid",
+                    "sales.quote_authoring.discount_value_invalid",
                     "sales.quote_authoring.line_items_required",
                     "sales.quote_authoring.line_price_invalid",
                     "sales.quote_authoring.line_quantity_invalid",
@@ -693,6 +770,7 @@ SERVICES: tuple[SOTService, ...] = (
                     "sales.quote_authoring.manual_tax_invalid",
                     "sales.quote_authoring.offer_description_mismatch",
                     "sales.quote_authoring.offer_not_active",
+                    "sales.quote_authoring.quote_not_found",
                     "sales.quote_authoring.submission_conflict",
                     "sales.quote_authoring.tax_rate_not_active",
                 ),
@@ -702,15 +780,23 @@ SERVICES: tuple[SOTService, ...] = (
                     "inactive actor or commercial reference",
                     "initial Accepted/Rejected/Expired status",
                     "ambiguous or stale line references",
+                    "discount above subtotal or stale discount revision",
+                    "commercial discount mutation after Quote acceptance",
                 ),
             ),
             events=EventContract(
-                event_types=("quote.created",),
+                event_types=(
+                    "quote.created",
+                    "quote.discount_applied",
+                    "quote.discount_changed",
+                    "quote.discount_removed",
+                ),
                 schema_version=1,
                 delivery_owner="events.dispatcher",
                 compatibility=(
-                    "Version 1 identifies the Quote, Lead, Party, status, "
-                    "currency, and total without contact PII."
+                    "Version 1 identifies the Quote, Lead/Party where applicable, "
+                    "discount revision/type/value/amount, status, currency, and total "
+                    "without contact PII."
                 ),
                 replay=(
                     "The submission UUID and authoring fingerprint reproduce the "
@@ -723,8 +809,8 @@ SERVICES: tuple[SOTService, ...] = (
                 new_owner="sales.quote_authoring",
                 verification=(
                     "Lead and Project Type requirements, Draft/Sent restriction, "
-                    "atomic lines, install metadata, exact replay, manifest, and "
-                    "boundary tests."
+                    "atomic gross-priced lines, Quote-level discount/history, install "
+                    "metadata, exact replay, manifest, and boundary tests."
                 ),
                 cutover_gate=(
                     "The admin form submits one typed owner command on a clean "
@@ -740,10 +826,115 @@ SERVICES: tuple[SOTService, ...] = (
                 "docs/SOT_RELATIONSHIP_MAP.md",
                 "docs/PARTY_CUSTOMER_LIFECYCLE.md",
                 "docs/designs/SALES_TO_SERVICE_LIFECYCLE_SOT.md",
+                "docs/designs/QUOTE_DISCOUNT_HISTORY.md",
             ),
             test_refs=(
                 "tests/test_web_sales_quote_authoring.py",
                 "tests/test_quote_acceptance_workflow.py",
+                "tests/test_quote_discounts.py",
+                "tests/architecture/test_sales_lifecycle_chain_boundary.py",
+            ),
+        ),
+    ),
+    SOTService(
+        name="sales.quote_discount_reporting",
+        module="app.services.sales.quote_discount_reporting",
+        owns=("filtered Quote discount history projection",),
+        depends_on=(
+            "auth.staff_provisioning",
+            "party.registry",
+            "sales.quote_authoring",
+            "sales.service",
+        ),
+        notes=(
+            "Authorized staff receive one typed, filtered, paginated projection "
+            "from append-only Quote discount evidence. The web route and template "
+            "do not join, calculate, or reinterpret discount history."
+        ),
+        contract=ServiceContract(
+            concerns=(
+                ConcernContract(
+                    name="filtered Quote discount history projection",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "Quote discount history query",
+                        "canonical Quote discount history",
+                        "canonical Quote and customer identity state",
+                        "canonical staff actor state",
+                    ),
+                ),
+            ),
+            authoritative_inputs=(
+                AuthorityInput(
+                    name="Quote discount history query",
+                    owner="sales.quote_discount_reporting",
+                    kind=AuthorityKind.CONTROL_INPUT,
+                    source=(
+                        "typed inclusive date range, normalized customer search, "
+                        "salesperson, discount type, Quote status, and pagination"
+                    ),
+                ),
+                AuthorityInput(
+                    name="canonical Quote discount history",
+                    owner="sales.quote_authoring",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="append-only QuoteDiscountHistory revision evidence",
+                ),
+                AuthorityInput(
+                    name="canonical Quote and customer identity state",
+                    owner="sales.service",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="Quote status/currency joined structurally through Lead to Party",
+                ),
+                AuthorityInput(
+                    name="canonical staff actor state",
+                    owner="auth.staff_provisioning",
+                    kind=AuthorityKind.AUTHORITATIVE_RECORD,
+                    source="SystemUser identity captured by each history event",
+                ),
+            ),
+            transaction=TransactionContract(
+                mode=TransactionMode.READ_ONLY,
+                boundary=(
+                    "list_quote_discount_history performs one side-effect-free, "
+                    "server-filtered count and page query"
+                ),
+                locking=(
+                    "The append-only query takes no lock; discount commands lock the "
+                    "Quote and revision before writing."
+                ),
+                idempotency=(
+                    "The same committed history and typed filter/page input produce "
+                    "the same deterministically ordered projection."
+                ),
+                retries="Adapters may safely repeat the complete read query.",
+            ),
+            errors=ErrorContract(
+                domain_codes=(
+                    "sales.quote_discount_reporting.date_range_invalid",
+                    "sales.quote_discount_reporting.page_invalid",
+                    "sales.quote_discount_reporting.page_size_invalid",
+                ),
+                mapping_owner="admin Quote discount history adapter",
+                retryable_codes=(),
+                fail_closed_on=(
+                    "invalid date range",
+                    "invalid page or page size",
+                    "unauthorized Quote-read scope",
+                ),
+            ),
+            migration=MigrationContract(
+                state=AuthorityMigrationState.NATIVE,
+                new_owner="sales.quote_discount_reporting",
+            ),
+            steward="sales operations",
+            design_refs=(
+                "docs/SOT_RELATIONSHIP_MAP.md",
+                "docs/UI_INFORMATION_AND_ACTION_STANDARD.md",
+                "docs/designs/QUOTE_DISCOUNT_HISTORY.md",
+            ),
+            test_refs=(
+                "tests/test_quote_discounts.py",
                 "tests/architecture/test_sales_lifecycle_chain_boundary.py",
             ),
         ),

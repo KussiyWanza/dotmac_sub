@@ -14,6 +14,8 @@ from app.models.billing import (
     CreditNoteStatus,
     InvoiceClosureOrigin,
     InvoiceClosureType,
+    InvoiceDiscountSource,
+    InvoiceDiscountType,
     InvoiceStatus,
     LedgerCategory,
     LedgerEntryType,
@@ -179,6 +181,9 @@ class InvoiceSyncRead(BaseModel):
     status: InvoiceStatus
     currency: str
     subtotal: Decimal
+    discount_type: InvoiceDiscountType | None = None
+    discount_value: Decimal | None = None
+    discount_amount: Decimal = Decimal("0.00")
     tax_total: Decimal
     total: Decimal
     balance_due: Decimal
@@ -1481,6 +1486,15 @@ class InvoiceRead(InvoiceBase):
     # Money fields inherit unbounded from InvoiceBase (bounds are create-only),
     # so stored signed/zero values serialize without a per-field override.
     id: UUID
+    discount_type: InvoiceDiscountType | None = None
+    discount_value: Decimal | None = None
+    discount_amount: Decimal = Decimal("0.00")
+    discount_reason: str | None = None
+    discount_source: InvoiceDiscountSource | None = None
+    discount_source_quote_id: UUID | None = None
+    discount_applied_by_system_user_id: UUID | None = None
+    discount_applied_at: datetime | None = None
+    discount_revision: int = 0
     created_at: datetime
     updated_at: datetime
     lines: list[InvoiceLineRead] = Field(default_factory=list)

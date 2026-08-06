@@ -1,6 +1,6 @@
 {% extends "layouts/admin.html" %}
 {% from "components/ui/macros.html" import card %}
-{% block title %}New Lead - Admin{% endblock %}
+{% block title %}{{ form_title }} - Admin{% endblock %}
 
 {% macro field_error(name) %}
 {% if field_errors.get(name) %}
@@ -20,17 +20,17 @@
             <span aria-hidden="true">/</span>
             <a href="/admin/sales/leads" class="rounded focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:focus:ring-cyan-400">Leads</a>
             <span aria-hidden="true">/</span>
-            <span aria-current="page" class="font-medium text-slate-700 dark:text-slate-200">New Lead</span>
+            <span aria-current="page" class="font-medium text-slate-700 dark:text-slate-200">{{ form_title }}</span>
         </nav>
         <div>
-            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">New Lead</h1>
-            <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">Create and qualify a new sales opportunity</p>
+            <h1 class="font-display text-2xl font-bold tracking-tight text-slate-900 dark:text-white">{{ form_title }}</h1>
+            <p class="mt-1 text-sm text-slate-600 dark:text-slate-400">{{ form_description or "Create and qualify a new sales opportunity" }}</p>
         </div>
     </header>
 
     {% if error %}
     <div class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200" role="alert" tabindex="-1" data-error-banner>
-        <p class="font-semibold">We could not create this Lead.</p>
+        <p class="font-semibold">{{ error_title }}</p>
         <p class="mt-1">{{ error }}</p>
     </div>
     {% endif %}
@@ -41,13 +41,20 @@
         {% if inbox_conversation_id %}
         <input type="hidden" name="inbox_conversation_id" value="{{ inbox_conversation_id }}">
         <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
-            A new prospect Party and Lead will be created and linked to the originating Inbox conversation. Observed names and contact details are not treated as verified identity.
+            {% if is_edit %}Changes will be saved to the existing Person and Lead linked to this Inbox conversation.{% else %}A new prospect Party and Lead will be created and linked to the originating Inbox conversation. Observed names and contact details are not treated as verified identity.{% endif %}
         </div>
         {% endif %}
 
         {% call card("Contact / Lead Information", color="cyan", allow_overflow=True) %}
         <div class="space-y-5">
             <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {% if is_edit %}
+                <div class="md:col-span-2">
+                    <label class="{{ label_class }}" for="title">Lead Name <span class="text-red-500">*</span></label>
+                    <input class="{{ input_class }}" id="title" name="title" maxlength="200" required value="{{ lead_form.title }}" aria-describedby="{% if field_errors.get('title') %}title-error{% endif %}">
+                    {{ field_error('title') }}
+                </div>
+                {% endif %}
                 <div>
                     <label class="{{ label_class }}" for="display_name">Display Name</label>
                     <input class="{{ input_class }}" id="display_name" name="display_name" maxlength="120" value="{{ lead_form.display_name }}" autocomplete="name" aria-describedby="display_name-help{% if field_errors.get('display_name') %} display_name-error{% endif %}">
@@ -161,7 +168,7 @@
                 <div>
                     <label class="{{ label_class }}" for="nin">NIN</label>
                     <input class="{{ input_class }}" id="nin" name="nin" inputmode="numeric" pattern="[0-9]{11}" minlength="11" maxlength="11" value="{{ lead_form.nin }}" autocomplete="off" aria-describedby="nin-help{% if field_errors.get('nin') %} nin-error{% endif %}">
-                    <p id="nin-help" class="{{ help_class }}">Exactly 11 digits when provided.</p>
+                    <p id="nin-help" class="{{ help_class }}">{% if is_edit and nin_stored %}Leave blank to keep the stored NIN, or enter 11 digits to replace it.{% else %}Exactly 11 digits when provided.{% endif %}</p>
                     {{ field_error('nin') }}
                 </div>
             </div>
@@ -248,12 +255,13 @@
             </div>
             <div>
                 <label class="{{ label_class }}" for="lead_source">Lead Source</label>
-                <select class="{{ input_class }}" id="lead_source" name="lead_source">
+                <select class="{{ input_class }}" id="lead_source" name="lead_source" {% if lead_source_locked %}disabled{% endif %}>
                     <option value="">Not specified</option>
                     {% for source in lead_sources %}
                     <option value="{{ source }}" {% if lead_form.lead_source == source %}selected{% endif %}>{{ source }}</option>
                     {% endfor %}
                 </select>
+                {% if lead_source_locked %}<input type="hidden" name="lead_source" value="{{ lead_form.lead_source }}"><p class="{{ help_class }}">Lead Source is fixed by the original capture.</p>{% endif %}
                 {{ field_error('lead_source') }}
             </div>
             <div>
@@ -309,6 +317,13 @@
                 <textarea class="{{ input_class }}" id="notes" name="notes" rows="5">{{ lead_form.notes }}</textarea>
                 {{ field_error('notes') }}
             </div>
+            {% if is_edit %}
+            <div>
+                <label class="{{ label_class }}" for="address">Lead Address / Service Location</label>
+                <textarea class="{{ input_class }}" id="address" name="address" rows="3">{{ lead_form.address }}</textarea>
+                {{ field_error('address') }}
+            </div>
+            {% endif %}
             <label class="inline-flex min-h-11 items-center gap-3 text-sm font-medium text-slate-700 dark:text-slate-300">
                 <input type="checkbox" name="is_active" value="true" {% if lead_form.is_active %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-cyan-400">
                 Active
@@ -317,10 +332,10 @@
         {% endcall %}
 
         <div class="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end dark:border-slate-700">
-            <a href="/admin/sales/leads" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:ring-cyan-400">Cancel</a>
+            <a href="{{ cancel_url }}" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 dark:focus:ring-cyan-400">Cancel</a>
             <button type="submit" data-submit class="inline-flex min-h-11 min-w-36 items-center justify-center rounded-xl bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-cyan-500 dark:hover:bg-cyan-600 dark:focus:ring-cyan-400 dark:focus:ring-offset-slate-900">
-                <span data-submit-label>Create Lead</span>
-                <span data-submitting-label class="hidden">Submitting...</span>
+                <span data-submit-label>{{ submit_label }}</span>
+                <span data-submitting-label class="hidden">{{ submitting_label }}</span>
             </button>
         </div>
     </form>

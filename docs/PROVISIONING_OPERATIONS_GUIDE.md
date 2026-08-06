@@ -159,6 +159,11 @@ On the OLT detail page:
 4. Confirm the topology and PON interface views show the expected OLT structure
 5. Re-run **Import Live State** after large manual OLT changes so imported service-port and GEM rows stay current.
 
+PON assignment fails closed when multiple active rows on one OLT claim the same
+frame/slot/port identity. A reviewed deactivation preserves the retired row for
+history while removing it from current identity competition; the reporting-only
+**Repair PON Ports** action does not deactivate or merge rows.
+
 ### Step 8: Run Autofind
 
 For unregistered ONTs:

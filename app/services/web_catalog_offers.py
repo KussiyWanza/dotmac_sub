@@ -399,22 +399,38 @@ def generated_radius_profile_code_for_offer(offer_id: str) -> str:
     return f"offer-{offer_id}"
 
 
+#: ``CatalogOffer.speed_*_mbps`` is megabits; ``RadiusProfile.*_speed`` is
+#: kilobits (see the column comments on both). Nothing converted between them,
+#: so a 100 Mbps offer generated a ``100k/100k`` rate limit — a 1000x throttle
+#: that ``sync_offer_radius_profile_to_subscriptions`` then pushed to every
+#: subscription on the offer. The unit boundary lives here and nowhere else.
+_KBPS_PER_MBPS = 1000
+
+
 def _coerce_offer_speed(value: object) -> int | None:
+    """Offer megabits -> profile kilobits, the unit RadiusProfile stores."""
     text = str(value or "").strip()
     if not text:
         return None
     try:
-        return int(text)
+        mbps = int(text)
     except (TypeError, ValueError):
         return None
+    return mbps * _KBPS_PER_MBPS
 
 
 def _build_offer_generated_rate_limit(
     download_speed: int | None, upload_speed: int | None
 ) -> str | None:
+    """MikroTik rate-limit string from speeds already expressed in kilobits.
+
+    Emitted rx/tx — NAS-perspective, so upload first, download second. See
+    ``app.services.bandwidth.to_subscriber_directions`` for the canonical
+    statement of that convention.
+    """
     if not download_speed and not upload_speed:
         return None
-    return f"{download_speed or 0}k/{upload_speed or 0}k"
+    return f"{upload_speed or 0}k/{download_speed or 0}k"
 
 
 def ensure_generated_radius_profile_for_offer(

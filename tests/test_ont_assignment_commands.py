@@ -92,6 +92,37 @@ def test_conflicting_ont_identity_fails_closed(db_session, subscription):
     assert db_session.query(OntAssignment).count() == 0
 
 
+def test_move_to_pon_refuses_a_non_canonical_target(db_session, subscription):
+    """The guard covered ``assign`` but not the physical move.
+
+    ``move_to_pon`` loads its target PON directly instead of through
+    ``_load_target``, so a prefixed row reached the point where board/port are
+    written from the row's name -- the exact path that turns a name nobody
+    chose into corrupt ONT inventory.
+    """
+    olt, first_pon, second_pon, ont = _plant(db_session)
+    network_service.ont_assignment_commands.assign(
+        db_session,
+        ont_unit_id=ont.id,
+        subscription_id=subscription.id,
+        pon_port_id=first_pon.id,
+    )
+    second_pon.name = "pon-0/2/2"
+    db_session.commit()
+
+    with pytest.raises(OntAssignmentCommandError, match="pon_port_identity"):
+        network_service.ont_assignment_commands.move_to_pon(
+            db_session,
+            ont_unit_id=ont.id,
+            target_pon_port_id=second_pon.id,
+            actor_id="operator@example.com",
+        )
+
+    db_session.refresh(ont)
+    assert ont.pon_port_id == first_pon.id
+    assert ont.board == "0/2"
+
+
 def test_release_and_verified_move_delegate_to_same_owner(db_session, subscription):
     _olt, first_pon, second_pon, ont = _plant(db_session)
     created = network_service.ont_assignment_commands.assign(

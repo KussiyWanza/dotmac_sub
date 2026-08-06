@@ -29,9 +29,9 @@
     </div>
     {% endif %}
     {% if map_data %}
-    <!-- Leaflet CSS for mini-map -->
+    <!-- Leaflet CSS for the Overview map -->
     <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="">
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <style>
         .customer-location-map { width: 100%; height: 400px; }
         @media (max-width: 640px) {
@@ -448,8 +448,9 @@
                         </div>
 
                         {% if map_data %}
-                        <div class="space-y-3 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/30">
-                            <div id="customer-overview-map" class="customer-location-map w-full overflow-hidden rounded-lg"></div>
+                        <div class="overflow-hidden rounded-lg border border-slate-200/80 bg-slate-50/60 dark:border-slate-700 dark:bg-slate-900/30">
+                            <div id="customer-overview-map" class="customer-location-map w-full overflow-hidden"></div>
+                            <div class="space-y-3 p-3">
                             <div class="flex flex-wrap items-center gap-2">
                                 <button type="button"
                                         id="customer-map-click-toggle"
@@ -484,6 +485,7 @@
                             </button>
                             <div class="text-xs text-slate-500 dark:text-slate-400">
                                 <div id="customer-map-nearby-assets"></div>
+                            </div>
                             </div>
                         </div>
                         {% elif geocode_target %}
@@ -2139,138 +2141,6 @@
                 </div>
                 {% endif %}
 
-                <!-- Location -->
-                <div class="rounded-2xl border border-slate-200/60 bg-white shadow-sm dark:border-slate-700/60 dark:bg-slate-800">
-                    <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-700">
-                        <div class="flex items-center gap-2">
-                            <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
-                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                            </div>
-                            <h3 class="font-semibold text-slate-900 dark:text-white">Location</h3>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            {% if map_data %}
-                            <a href="/admin/network/map" class="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">Full Map</a>
-                            {% endif %}
-                            <button type="button" @click="showAddressModal = true" class="text-xs font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400">+ Add Address</button>
-                        </div>
-                    </div>
-                    {% if map_data %}
-                    <div class="p-2">
-                        <div id="customer-mini-map" class="customer-location-map w-full rounded-xl overflow-hidden"></div>
-                    </div>
-                    <div class="px-5 pb-2">
-                        <div class="flex flex-wrap items-center gap-2">
-                            <button type="button"
-                                    id="customer-map-click-toggle"
-                                    class="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700">
-                                Set by map click
-                            </button>
-                            <span id="customer-map-edit-status" class="text-xs text-slate-500 dark:text-slate-400"></span>
-                        </div>
-                        <div class="mt-2 grid grid-cols-2 gap-2">
-                            <div>
-                                <label for="customer-map-latitude" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Latitude</label>
-                                <input id="customer-map-latitude"
-                                       type="number"
-                                       step="0.000001"
-                                       value="{{ map_data.center[0] if map_data and map_data.center else '' }}"
-                                       class="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                            </div>
-                            <div>
-                                <label for="customer-map-longitude" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Longitude</label>
-                                <input id="customer-map-longitude"
-                                       type="number"
-                                       step="0.000001"
-                                       value="{{ map_data.center[1] if map_data and map_data.center else '' }}"
-                                       class="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                            </div>
-                        </div>
-                        <button type="button"
-                                id="customer-map-save-btn"
-                                data-address-id="{{ primary_address.id if primary_address and primary_address.id else '' }}"
-                                class="mt-2 inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60">
-                            Save coordinates
-                        </button>
-                        {% if location_capture_enabled %}
-                        <button type="button"
-                                id="customer-location-confirm-btn"
-                                data-latitude-input="customer-map-latitude"
-                                data-longitude-input="customer-map-longitude"
-                                data-claimed-state="{{ customer.region or '' }}"
-                                data-claimed-lga="{{ customer.lga or '' }}"
-                                data-claimed-postcode="{{ customer.postal_code or '' }}"
-                                class="mt-2 ml-2 inline-flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-700 dark:bg-sky-900/20 dark:text-sky-300">
-                            Confirm for NCC ledger
-                        </button>
-                        <p id="customer-location-confirm-status" class="mt-2 text-xs text-slate-500 dark:text-slate-400"></p>
-                        {% endif %}
-                    </div>
-                    <div class="px-5 pb-4 pt-2 text-xs text-slate-500 dark:text-slate-400">
-                        <div id="customer-map-nearby-assets"></div>
-                    </div>
-                    {% elif geocode_target %}
-                    <div class="p-5 space-y-3">
-                        <div>
-                            <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Address</p>
-                            <p class="text-sm text-slate-900 dark:text-white">{{ geocode_target.address_line1 }}</p>
-                            <p class="text-xs text-slate-500 dark:text-slate-400">
-                                {{ geocode_target.city | default('') }}{% if geocode_target.region %}, {{ geocode_target.region }}{% endif %} {{ geocode_target.postal_code or '' }}
-                            </p>
-                        </div>
-                        <button type="button"
-                                id="customer-geocode-btn"
-                                data-address-id="{{ geocode_target.id or '' }}"
-                                data-address='{{ geocode_target.payload_json }}'
-                                class="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700">
-                            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                            Geocode address
-                        </button>
-                        <p id="customer-geocode-status" class="text-xs text-slate-500 dark:text-slate-400"></p>
-                        <div id="customer-geocode-results" class="space-y-2"></div>
-                        <div class="grid grid-cols-2 gap-2 pt-2">
-                            <div>
-                                <label for="customer-latitude" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Latitude</label>
-                                <input id="customer-latitude"
-                                       type="number"
-                                       step="0.000001"
-                                       placeholder="0.000000"
-                                       class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                            </div>
-                            <div>
-                                <label for="customer-longitude" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Longitude</label>
-                                <input id="customer-longitude"
-                                       type="number"
-                                       step="0.000001"
-                                       placeholder="0.000000"
-                                       class="w-full rounded-lg border border-slate-300 px-2.5 py-2 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-white">
-                            </div>
-                        </div>
-                        <button type="button"
-                                id="customer-coords-save-btn"
-                                class="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700/50 dark:bg-emerald-900/20 dark:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-60">
-                            Save coordinates
-                        </button>
-                        {% if location_capture_enabled %}
-                        <button type="button"
-                                id="customer-location-confirm-btn"
-                                data-latitude-input="customer-latitude"
-                                data-longitude-input="customer-longitude"
-                                data-claimed-state="{{ customer.region or '' }}"
-                                data-claimed-lga="{{ customer.lga or '' }}"
-                                data-claimed-postcode="{{ customer.postal_code or '' }}"
-                                class="ml-2 inline-flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-sky-700 dark:bg-sky-900/20 dark:text-sky-300">
-                            Confirm for NCC ledger
-                        </button>
-                        <p id="customer-location-confirm-status" class="text-xs text-slate-500 dark:text-slate-400"></p>
-                        {% endif %}
-                    </div>
-                    {% else %}
-                    <div class="px-5 py-8 text-center">
-                        <p class="text-sm text-slate-500 dark:text-slate-400">No address on file.</p>
-                    </div>
-                    {% endif %}
-                </div>
     </div>
 
     <!-- Tab Content: Timeline -->

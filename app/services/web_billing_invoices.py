@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import TypedDict
 from uuid import UUID
@@ -14,7 +14,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.billing import Invoice, InvoiceStatus
+from app.models.billing import (
+    Invoice,
+    InvoiceDiscountSource,
+    InvoiceDiscountType,
+    InvoiceStatus,
+)
 from app.models.subscriber import Subscriber
 from app.schemas.billing import (
     CreditNoteApplicationPreviewRequest,
@@ -27,7 +32,7 @@ from app.services import audit as audit_service
 from app.services import billing as billing_service
 from app.services import billing_invoice_pdf as billing_invoice_pdf_service
 from app.services import invoice_bank_details as invoice_bank_details_service
-from app.services import invoice_draft_authoring
+from app.services import invoice_discounts, invoice_draft_authoring
 from app.services import web_billing_customers as web_billing_customers_service
 from app.services import (
     web_prepaid_draft_reconciliation as web_prepaid_draft_reconciliation_service,
@@ -54,6 +59,32 @@ class InvoiceLineItem(TypedDict):
     quantity: Decimal
     unit_price: Decimal
     tax_rate_id: UUID | None
+
+
+def _discount_from_form(
+    *,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
+) -> invoice_discounts.InvoiceDiscountInput | None:
+    selected = (discount_type or "").strip()
+    value = (discount_value or "").strip()
+    reason = (discount_reason or "").strip() or None
+    if not selected:
+        if value or reason:
+            raise ValueError("Select a Discount type before entering discount details.")
+        return None
+    try:
+        kind = InvoiceDiscountType(selected)
+    except ValueError as exc:
+        raise ValueError("Select Percentage or Fixed Amount.") from exc
+    if not value:
+        raise ValueError("Enter a Discount value.")
+    return invoice_discounts.InvoiceDiscountInput(
+        discount_type=kind,
+        value=parse_decimal(value, "Discount value"),
+        reason=reason,
+    )
 
 
 def is_proforma_invoice(invoice: Invoice | None) -> bool:
@@ -275,6 +306,9 @@ def create_invoice_from_form(
     issued_at: str | None,
     due_at: str | None,
     memo: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
     proforma_invoice: str | None,
     line_description: list[str],
     line_quantity: list[str],
@@ -326,11 +360,17 @@ def create_invoice_from_form(
         line_tax_rate_id=line_tax_rate_id,
         parse_decimal=parse_decimal,
     )
+    discount = _discount_from_form(
+        discount_type=discount_type,
+        discount_value=discount_value,
+        discount_reason=discount_reason,
+    )
     db_session_adapter.release_read_transaction(db)
     result = invoice_draft_authoring.create_invoice_draft(
         db,
         invoice_draft_authoring.CreateInvoiceDraftCommand(
             account_id=resolved_account_uuid,
+            actor_system_user_id=UUID(actor_id) if actor_id else None,
             invoice_number=invoice_number,
             currency=currency,
             issued_at=parse_datetime(issued_at),
@@ -347,6 +387,7 @@ def create_invoice_from_form(
                 )
                 for item in line_items
             ),
+            discount=discount,
         ),
         context=CommandContext.system(
             actor=actor_id or "admin-billing",
@@ -370,6 +411,9 @@ def update_invoice_from_form(
     issued_at: str | None,
     due_at: str | None,
     memo: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
     proforma_invoice: str | None,
     line_items_json: str | None,
     actor_id: str | None = None,
@@ -397,11 +441,17 @@ def update_invoice_from_form(
         parse_decimal=parse_decimal,
     )
     resolved_account_id = parse_uuid(account_id, "account_id")
+    discount = _discount_from_form(
+        discount_type=discount_type,
+        discount_value=discount_value,
+        discount_reason=discount_reason,
+    )
     db_session_adapter.release_read_transaction(db)
     result = invoice_draft_authoring.update_invoice_draft(
         db,
         invoice_draft_authoring.UpdateInvoiceDraftCommand(
             invoice_id=UUID(invoice_id),
+            actor_system_user_id=UUID(actor_id) if actor_id else None,
             account_id=resolved_account_id,
             invoice_number=invoice_number,
             currency=currency,
@@ -419,6 +469,7 @@ def update_invoice_from_form(
                 )
                 for item in lines
             ),
+            discount=discount,
         ),
         context=CommandContext.system(
             actor=actor_id or "admin-billing",
@@ -444,6 +495,9 @@ def create_invoice_web(
     issued_at: str | None,
     due_at: str | None,
     memo: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
     proforma_invoice: str | None,
     line_description: list[str],
     line_quantity: list[str],
@@ -464,6 +518,9 @@ def create_invoice_web(
         issued_at=issued_at,
         due_at=due_at,
         memo=memo,
+        discount_type=discount_type,
+        discount_value=discount_value,
+        discount_reason=discount_reason,
         proforma_invoice=proforma_invoice,
         line_description=line_description,
         line_quantity=line_quantity,
@@ -491,6 +548,9 @@ def update_invoice_web(
     issued_at: str | None,
     due_at: str | None,
     memo: str | None,
+    discount_type: str | None,
+    discount_value: str | None,
+    discount_reason: str | None,
     proforma_invoice: str | None,
     line_items_json: str | None,
     draft_idempotency_key: str | None = None,
@@ -505,6 +565,9 @@ def update_invoice_web(
         issued_at=issued_at,
         due_at=due_at,
         memo=memo,
+        discount_type=discount_type,
+        discount_value=discount_value,
+        discount_reason=discount_reason,
         proforma_invoice=proforma_invoice,
         line_items_json=line_items_json,
         actor_id=actor_id,
@@ -760,6 +823,58 @@ def load_invoice_detail_data(
             db, currency=invoice.currency
         ),
         "prepaid_draft_reconciliation_preview": (prepaid_draft_reconciliation_preview),
+    }
+
+
+def build_invoice_discounts_list_context(
+    db: Session,
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    customer: str | None,
+    salesperson_id: str | None,
+    discount_type: str | None,
+    invoice_status: str | None,
+    source: str | None,
+    page: int,
+    page_size: int,
+) -> dict[str, object]:
+    selected_salesperson = UUID(salesperson_id) if salesperson_id else None
+    selected_type = InvoiceDiscountType(discount_type) if discount_type else None
+    selected_status = InvoiceStatus(invoice_status) if invoice_status else None
+    selected_source = InvoiceDiscountSource(source) if source else None
+    result = invoice_discounts.list_invoice_discount_history(
+        db,
+        invoice_discounts.InvoiceDiscountHistoryQuery(
+            date_from=date_from,
+            date_to=date_to,
+            customer=customer,
+            salesperson_id=selected_salesperson,
+            discount_type=selected_type,
+            invoice_status=selected_status,
+            source=selected_source,
+            page=page,
+            page_size=page_size,
+        ),
+    )
+    return {
+        "discounts": list(result.items),
+        "total_count": result.total_count,
+        "page": result.page,
+        "page_size": result.page_size,
+        "actors": list(invoice_discounts.invoice_discount_actor_options(db)),
+        "discount_types": list(InvoiceDiscountType),
+        "invoice_statuses": list(InvoiceStatus),
+        "discount_sources": list(InvoiceDiscountSource),
+        "filters": {
+            "date_from": date_from.isoformat() if date_from else "",
+            "date_to": date_to.isoformat() if date_to else "",
+            "customer": customer or "",
+            "salesperson_id": salesperson_id or "",
+            "discount_type": discount_type or "",
+            "invoice_status": invoice_status or "",
+            "source": source or "",
+        },
     }
 
 

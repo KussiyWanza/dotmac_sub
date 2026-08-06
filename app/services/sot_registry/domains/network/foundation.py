@@ -11,6 +11,11 @@ SERVICES: tuple[SOTService, ...] = (
         name="network.identity",
         module="app.services.network.identity",
         owns=("cross-model network links", "device/entity identity"),
+        notes=(
+            "Current PON identity ambiguity is scoped to active PonPort rows. "
+            "Inactive rows remain historical evidence and do not compete with "
+            "an active port for assignment authority."
+        ),
     ),
     SOTService(
         name="network.monitoring_inventory",

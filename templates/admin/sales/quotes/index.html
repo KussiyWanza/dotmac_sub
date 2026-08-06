@@ -10,11 +10,14 @@
             <h1 class="font-display text-xl font-bold tracking-tight text-slate-900 dark:text-white">Quotes</h1>
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">Track pricing proposals through to acceptance.</p>
         </div>
-        <a href="/admin/sales/quotes/new"
-           class="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-cyan-700">
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-            New Quote
-        </a>
+        <div class="flex flex-wrap items-center gap-2">
+            <a href="/admin/sales/quote-discounts" class="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">Quote Discounts</a>
+            <a href="/admin/sales/quotes/new"
+               class="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-cyan-700">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                New Quote
+            </a>
+        </div>
     </div>
 
     {% if api_error %}

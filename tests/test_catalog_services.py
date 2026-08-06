@@ -169,8 +169,10 @@ def test_ensure_offer_radius_profile_creates_generated_profile_and_link(db_sessi
             service_type=ServiceType.residential,
             access_type=AccessType.fiber,
             price_basis=PriceBasis.flat,
-            speed_download_mbps=6000,
-            speed_upload_mbps=6000,
+            # Megabits: the offer column's unit. The generated profile stores
+            # kilobits, so 6 Mbps must land as 6000k — not 6k.
+            speed_download_mbps=6,
+            speed_upload_mbps=6,
         ),
     )
 
@@ -215,8 +217,8 @@ def test_ensure_offer_radius_profile_updates_existing_generated_profile(db_sessi
             service_type=ServiceType.residential,
             access_type=AccessType.fiber,
             price_basis=PriceBasis.flat,
-            speed_download_mbps=3000,
-            speed_upload_mbps=2000,
+            speed_download_mbps=3,
+            speed_upload_mbps=2,
         ),
     )
 
@@ -229,8 +231,8 @@ def test_ensure_offer_radius_profile_updates_existing_generated_profile(db_sessi
         str(offer.id),
         CatalogOfferUpdate(
             name="Starter Plan Plus",
-            speed_download_mbps=7000,
-            speed_upload_mbps=5000,
+            speed_download_mbps=7,
+            speed_upload_mbps=5,
         ),
     )
 
@@ -245,7 +247,77 @@ def test_ensure_offer_radius_profile_updates_existing_generated_profile(db_sessi
     assert profile.name == "Starter Plan Plus"
     assert profile.download_speed == 7000
     assert profile.upload_speed == 5000
-    assert profile.mikrotik_rate_limit == "7000k/5000k"
+    # Columns stay download/upload; the emitted rx/tx string is upload-first.
+    assert profile.mikrotik_rate_limit == "5000k/7000k"
+
+
+def test_generated_profile_converts_offer_megabits_to_profile_kilobits(db_session):
+    """The offer column is megabits; the profile column is kilobits.
+
+    Nothing converted between them, so a 100 Mbps offer generated a
+    ``100k/100k`` rate limit — a 1000x throttle that
+    ``sync_offer_radius_profile_to_subscriptions`` then pushed to every live
+    subscription on that offer. Any admin edit was enough to trigger it.
+
+    Asserted against a literal rather than a multiple of the input so the
+    boundary cannot be "fixed" by moving both sides together.
+    """
+
+    offer = catalog_service.offers.create(
+        db_session,
+        CatalogOfferCreate(
+            name="Unit Boundary 100",
+            code="UNIT-100",
+            service_type=ServiceType.residential,
+            access_type=AccessType.fiber,
+            price_basis=PriceBasis.flat,
+            speed_download_mbps=100,
+            speed_upload_mbps=100,
+        ),
+    )
+
+    profile_id = web_catalog_offers_service.ensure_offer_radius_profile(
+        db_session, offer
+    )
+    profile = catalog_service.radius_profiles.get(db_session, profile_id)
+
+    assert profile.download_speed == 100_000, "100 Mbps is 100000 kbps, not 100"
+    assert profile.upload_speed == 100_000
+    assert profile.mikrotik_rate_limit == "100000k/100000k"
+
+
+def test_generated_rate_limit_emits_upload_first(db_session):
+    """Mikrotik-Rate-Limit is rx/tx from the NAS's perspective, so rx is the
+    subscriber's UPLOAD and tx their DOWNLOAD — the convention stated in
+    ``app.services.bandwidth.to_subscriber_directions``.
+
+    Every current offer is symmetrical, which is exactly why this needs an
+    asymmetric fixture: with equal speeds the ordering is unobservable and a
+    regression would ship silently, then invert real customers' rates the day
+    an asymmetric plan is created.
+    """
+
+    offer = catalog_service.offers.create(
+        db_session,
+        CatalogOfferCreate(
+            name="Asymmetric Direction Probe",
+            code="ASYM-DIR",
+            service_type=ServiceType.residential,
+            access_type=AccessType.fiber,
+            price_basis=PriceBasis.flat,
+            speed_download_mbps=100,
+            speed_upload_mbps=20,
+        ),
+    )
+
+    profile_id = web_catalog_offers_service.ensure_offer_radius_profile(
+        db_session, offer
+    )
+    profile = catalog_service.radius_profiles.get(db_session, profile_id)
+
+    # 20 Mbps up first, 100 Mbps down second. Reversed, the customer would get
+    # 20 Mbps down and 100 Mbps up.
+    assert profile.mikrotik_rate_limit == "20000k/100000k"
 
 
 def test_update_offer_with_audit_stages_profile_sync_task_for_existing_bundle(

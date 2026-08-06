@@ -51,6 +51,10 @@ class EventType(enum.Enum):
     invoice_sent = "invoice.sent"
     invoice_paid = "invoice.paid"
     invoice_overdue = "invoice.overdue"
+    invoice_discount_applied = "invoice.discount_applied"
+    invoice_discount_changed = "invoice.discount_changed"
+    invoice_discount_removed = "invoice.discount_removed"
+    invoice_discount_inherited = "invoice.discount_inherited"
 
     # Billing - Payment events (4)
     payment_received = "payment.received"
@@ -207,9 +211,13 @@ class EventType(enum.Enum):
     # lead/quote lifecycle was webhook-silent in the CRM's event system;
     # automation consumes these.
     lead_created = "lead.created"
+    lead_updated = "lead.updated"
     lead_account_converted = "lead.account_converted"
     quote_created = "quote.created"
     quote_accepted = "quote.accepted"
+    quote_discount_applied = "quote.discount_applied"
+    quote_discount_changed = "quote.discount_changed"
+    quote_discount_removed = "quote.discount_removed"
     quote_pdf_exported = "quote.pdf_exported"
     quote_delivery_requested = "quote.delivery_requested"
     sales_order_paid = "sales_order.paid"
@@ -399,6 +407,10 @@ class EventType(enum.Enum):
     # OUTAGE_SLA_SPINE §4). Provenance breadcrumb: the authoritative record
     # is the immutable sla_policy_versions row itself.
     sla_policy_version_recorded = "sla_policy_version.recorded"
+    # Immutable SLA period score revision and evidence snapshot recorded
+    # (customer.service_level, OUTAGE_SLA_SPINE §4). The authoritative rows,
+    # not this breadcrumb, are the reproducible scoring record.
+    sla_period_score_recorded = "sla_period_score.recorded"
     # Customer outage communications pass completed
     # (network.outage_communications, OUTAGE_SLA_SPINE §3). Operational
     # breadcrumb only, same as the cabinet notice: the customer messages

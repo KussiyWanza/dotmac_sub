@@ -29,7 +29,7 @@ native models (``app/models/sales.py``), with the deltas applied:
 import logging
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum, StrEnum
 from typing import TypeVar
@@ -70,6 +70,7 @@ from app.services.common import (
     validate_enum,
 )
 from app.services.db_session_adapter import db_session_adapter
+from app.services.domain_errors import DomainError
 from app.services.events import EventType, emit_event
 from app.services.owner_commands import CommandContext
 from app.services.response import ListResponseMixin
@@ -115,6 +116,35 @@ class LeadSource(StrEnum):
 
 
 LEAD_SOURCE_OPTIONS = tuple(source.value for source in LeadSource)
+
+
+@dataclass(frozen=True, slots=True)
+class LeadMaintenanceUpdate:
+    """Validated Lead values staged by the admin maintenance coordinator."""
+
+    lead_id: uuid.UUID
+    title: str
+    status: LeadStatus
+    owner_agent_id: uuid.UUID | None
+    pipeline_id: uuid.UUID | None
+    stage_id: uuid.UUID | None
+    lead_source: str | None
+    region: str | None
+    estimated_value: Decimal | None
+    currency: str | None
+    address: str | None
+    probability: int | None
+    expected_close_date: date | None
+    lost_reason: str | None
+    notes: str | None
+    is_active: bool
+    reseller_id: uuid.UUID | None
+    organization_id: uuid.UUID | None
+    region_zone_id: uuid.UUID | None
+    reseller_routed: bool
+    edit_key: uuid.UUID
+    edit_fingerprint: str
+
 
 _LEAD_SOURCE_NORMALIZED_MAP = {
     "facebook": "Facebook",
@@ -958,36 +988,45 @@ def _prepare_quote_ownership(
         data["sent_at"] = datetime.now(UTC)
 
 
-def _line_amount(quantity, unit_price, discount_percent) -> Decimal:
-    """Net line amount: quantity * unit_price, less the line discount percent."""
+def _line_amount(quantity, unit_price) -> Decimal:
+    """Gross Line Item amount; new discounts apply once at Quote level."""
     qty = Decimal(quantity or 0)
     price = Decimal(unit_price or 0)
-    discount = Decimal(discount_percent or 0)
-    if discount < 0:
-        discount = Decimal("0")
-    if discount > 100:
-        discount = Decimal("100")
     gross = qty * price
-    net = gross * (Decimal("100") - discount) / Decimal("100")
-    if net < 0:
-        net = Decimal("0")
-    return net.quantize(Decimal("0.01"))
+    return max(gross, Decimal("0")).quantize(Decimal("0.01"))
+
+
+def _assert_no_active_quote_discount(quote: Quote) -> None:
+    from app.models.sales import QuoteDiscountType
+    from app.services.sales import quote_authoring
+
+    quote_authoring.assert_line_mutation_allowed(
+        quote_id=quote.id,
+        discount_type=(
+            QuoteDiscountType(quote.discount_type) if quote.discount_type else None
+        ),
+    )
 
 
 def _recalculate_quote_totals(db: Session, quote: Quote) -> None:
     db.flush()
     items = db.query(QuoteLineItem).filter(QuoteLineItem.quote_id == quote.id).all()
-    # Subtotal is the sum of net (discounted) line amounts.
+    # Previous Quotes may still contain immutable net Line Item amounts. New
+    # Line Items are gross and the current Quote discount applies once here.
     subtotal = round_money(
         sum((Decimal(item.amount or 0) for item in items), Decimal("0.00"))
     )
     quote.subtotal = subtotal
+    discounted_subtotal = round_money(
+        subtotal - Decimal(quote.discount_amount or Decimal("0.00"))
+    )
     # Auto-derive tax from the applied rate when one is set; otherwise keep the
-    # manually entered tax_total. Tax always follows the (discounted) subtotal.
+    # manually entered tax_total. Configured tax follows the Quote-discounted
+    # subtotal.
     if quote.tax_rate is not None:
         rate = Decimal(quote.tax_rate or 0)
-        quote.tax_total = round_money(subtotal * rate / Decimal("100"))
-    quote.total = subtotal + Decimal(quote.tax_total or 0)
+        quote.tax_total = round_money(discounted_subtotal * rate / Decimal("100"))
+    quote.total = discounted_subtotal + Decimal(quote.tax_total or 0)
     db.flush()
 
 
@@ -1223,6 +1262,81 @@ class PipelineStages(ListResponseMixin):
             stage_map[stage_id].order_index = order_index
         db.commit()
         return stage_ids
+
+
+def stage_lead_maintenance(db: Session, command: LeadMaintenanceUpdate) -> Lead:
+    """Stage explicit Lead maintenance values without completing a transaction."""
+
+    lead = db.scalars(
+        select(Lead).where(Lead.id == command.lead_id).with_for_update()
+    ).one_or_none()
+    if lead is None:
+        raise DomainError(
+            code="sales.service.lead_not_found",
+            message="Lead not found.",
+            details={"lead_id": str(command.lead_id)},
+        )
+    clean_title = command.title.strip()
+    if not clean_title or len(clean_title) > 200:
+        raise DomainError(
+            code="sales.service.lead_title_invalid",
+            message="Lead Name is required and must be 200 characters or fewer.",
+            details={"field": "title"},
+        )
+    if command.status == LeadStatus.won and lead.status != LeadStatus.won.value:
+        raise DomainError(
+            code="sales.service.lead_won_transition_forbidden",
+            message="A Lead becomes Won only through Quote acceptance.",
+            details={"field": "status"},
+        )
+    if (
+        lead.origin_capture is not None
+        and command.lead_source != lead.origin_capture.lead_source
+    ):
+        raise DomainError(
+            code="sales.service.lead_origin_immutable",
+            message="Lead Source is fixed by the captured Lead origin.",
+            details={"field": "lead_source"},
+        )
+    if lead.subscriber_id is not None and command.reseller_id != lead.reseller_id:
+        raise DomainError(
+            code="sales.service.converted_lead_reseller_immutable",
+            message="Reseller ownership cannot change after account conversion.",
+            details={"field": "reseller_id"},
+        )
+
+    previous_status = lead.status
+    lead.title = clean_title
+    lead.status = command.status.value
+    lead.owner_agent_id = command.owner_agent_id
+    lead.pipeline_id = command.pipeline_id
+    lead.stage_id = command.stage_id
+    lead.lead_source = command.lead_source
+    lead.region = command.region
+    lead.estimated_value = command.estimated_value
+    lead.currency = command.currency
+    lead.address = command.address
+    lead.probability = command.probability
+    lead.expected_close_date = command.expected_close_date
+    lead.lost_reason = command.lost_reason
+    lead.notes = command.notes
+    lead.is_active = command.is_active
+    lead.reseller_id = command.reseller_id
+    _apply_lead_closed_at(lead, lead.status, previous_status=previous_status)
+    metadata = dict(lead.metadata_) if isinstance(lead.metadata_, dict) else {}
+    metadata["last_edit_key"] = str(command.edit_key)
+    metadata["last_edit_fingerprint"] = command.edit_fingerprint
+    metadata["organization_id"] = (
+        str(command.organization_id) if command.organization_id else None
+    )
+    metadata["reseller_id"] = str(command.reseller_id) if command.reseller_id else None
+    metadata["region_zone_id"] = (
+        str(command.region_zone_id) if command.region_zone_id else None
+    )
+    metadata["communication_routed_through_reseller"] = command.reseller_routed
+    lead.metadata_ = metadata
+    db.flush()
+    return lead
 
 
 class Leads(ListResponseMixin):
@@ -2168,13 +2282,14 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_create",
         )
+        _assert_no_active_quote_discount(quote)
         data = payload.model_dump()
         # ``inventory_item_id`` is a CRM inventory UUID carried verbatim —
         # inventory is so there is nothing to validate against.
-        # Always derive amount server-side (net of any line discount).
-        data["amount"] = _line_amount(
-            data.get("quantity"), data.get("unit_price"), data.get("discount_percent")
-        )
+        # Always derive gross amount server-side. The retained database column
+        # is zero for every new Line Item and exists only for previous Quotes.
+        data["discount_percent"] = Decimal("0.00")
+        data["amount"] = _line_amount(data.get("quantity"), data.get("unit_price"))
         item = QuoteLineItem(**data)
         db.add(item)
         _recalculate_quote_totals(db, quote)
@@ -2213,13 +2328,12 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_update",
         )
+        _assert_no_active_quote_discount(quote)
         data = payload.model_dump(exclude_unset=True)
         for key, value in data.items():
             setattr(item, key, value)
-        if {"quantity", "unit_price", "discount_percent"} & set(data):
-            item.amount = _line_amount(
-                item.quantity, item.unit_price, item.discount_percent
-            )
+        if {"quantity", "unit_price"} & set(data):
+            item.amount = _line_amount(item.quantity, item.unit_price)
         _recalculate_quote_totals(db, quote)
         _stage_quote_audit(
             db,
@@ -2257,6 +2371,7 @@ class QuoteLineItems(ListResponseMixin):
             quote,
             mutation="line_item_delete",
         )
+        _assert_no_active_quote_discount(quote)
         line_id = item.id
         description = item.description
         db.delete(item)

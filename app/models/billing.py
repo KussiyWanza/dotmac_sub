@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -37,6 +38,23 @@ class InvoiceStatus(enum.Enum):
     # adjustment in the ledger (the financial source of truth); the invoice
     # stays on record, excluded from outstanding/aging but NOT counted as cash.
     written_off = "written_off"
+
+
+class InvoiceDiscountType(enum.Enum):
+    percentage = "percentage"
+    fixed_amount = "fixed_amount"
+
+
+class InvoiceDiscountAction(enum.Enum):
+    applied = "applied"
+    changed = "changed"
+    removed = "removed"
+    inherited = "inherited"
+
+
+class InvoiceDiscountSource(enum.Enum):
+    manual = "manual"
+    quote = "quote"
 
 
 class InvoiceClosureType(enum.Enum):
@@ -519,6 +537,26 @@ class Invoice(Base):
             "is_active",
             "created_at",
         ),
+        CheckConstraint(
+            "discount_revision >= 0",
+            name="ck_invoices_discount_revision_nonnegative",
+        ),
+        CheckConstraint(
+            "(discount_type IS NULL AND discount_value IS NULL AND "
+            "discount_amount = 0 AND discount_reason IS NULL AND "
+            "discount_source IS NULL AND discount_source_quote_id IS NULL AND "
+            "discount_applied_by_system_user_id IS NULL AND "
+            "discount_applied_at IS NULL) OR "
+            "(discount_type IN ('percentage', 'fixed_amount') AND "
+            "discount_value > 0 AND discount_amount > 0 AND "
+            "discount_amount <= subtotal AND discount_revision > 0 AND "
+            "discount_source IN ('manual', 'quote') AND "
+            "discount_applied_by_system_user_id IS NOT NULL AND "
+            "discount_applied_at IS NOT NULL AND "
+            "((discount_source = 'manual' AND discount_source_quote_id IS NULL) OR "
+            "(discount_source = 'quote' AND discount_source_quote_id IS NOT NULL)))",
+            name="ck_invoices_discount_current_state",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -533,6 +571,23 @@ class Invoice(Base):
     )
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
+    discount_type: Mapped[str | None] = mapped_column(String(24))
+    discount_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
+    )
+    discount_reason: Mapped[str | None] = mapped_column(Text)
+    discount_source: Mapped[str | None] = mapped_column(String(20))
+    discount_source_quote_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("quotes.id", ondelete="RESTRICT")
+    )
+    discount_applied_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("system_users.id", ondelete="RESTRICT")
+    )
+    discount_applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    discount_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tax_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     balance_due: Mapped[Decimal] = mapped_column(
@@ -578,6 +633,122 @@ class Invoice(Base):
     )
     closure = relationship("InvoiceClosure", back_populates="invoice", uselist=False)
     pdf_exports = relationship("InvoicePdfExport", back_populates="invoice")
+    discount_applied_by = relationship(
+        "SystemUser", foreign_keys=[discount_applied_by_system_user_id]
+    )
+    discount_source_quote = relationship(
+        "Quote", foreign_keys=[discount_source_quote_id]
+    )
+    discount_history = relationship(
+        "InvoiceDiscountHistory",
+        back_populates="invoice",
+        order_by="InvoiceDiscountHistory.revision",
+    )
+
+    @property
+    def discounted_subtotal(self) -> Decimal:
+        return max(
+            Decimal("0.00"),
+            Decimal(self.subtotal or 0) - Decimal(self.discount_amount or 0),
+        )
+
+
+class InvoiceDiscountHistory(Base):
+    """Append-only evidence for every Invoice-level discount revision."""
+
+    __tablename__ = "invoice_discount_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "invoice_id", "revision", name="uq_invoice_discount_history_revision"
+        ),
+        UniqueConstraint("command_id", name="uq_invoice_discount_history_command_id"),
+        CheckConstraint(
+            "revision > 0", name="ck_invoice_discount_history_revision_positive"
+        ),
+        CheckConstraint(
+            "action IN ('applied', 'changed', 'removed', 'inherited')",
+            name="ck_invoice_discount_history_action",
+        ),
+        CheckConstraint(
+            "discount_type IN ('percentage', 'fixed_amount')",
+            name="ck_invoice_discount_history_type",
+        ),
+        CheckConstraint(
+            "source IN ('manual', 'quote')",
+            name="ck_invoice_discount_history_source",
+        ),
+        CheckConstraint(
+            "(source = 'manual' AND source_quote_id IS NULL) OR "
+            "(source = 'quote' AND source_quote_id IS NOT NULL)",
+            name="ck_invoice_discount_history_source_quote",
+        ),
+        CheckConstraint(
+            "discount_value > 0 AND discount_amount > 0 AND "
+            "discount_amount <= original_subtotal AND discounted_subtotal >= 0",
+            name="ck_invoice_discount_history_amounts",
+        ),
+        Index("ix_invoice_discount_history_applied_at", "applied_at"),
+        Index("ix_invoice_discount_history_actor", "actor_system_user_id"),
+        Index("ix_invoice_discount_history_type", "discount_type"),
+        Index("ix_invoice_discount_history_source_quote", "source_quote_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_quote_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("quotes.id", ondelete="RESTRICT")
+    )
+    discount_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    original_subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discounted_subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    total_after_discount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    actor_system_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("system_users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    command_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    invoice = relationship("Invoice", back_populates="discount_history")
+    actor = relationship("SystemUser", foreign_keys=[actor_system_user_id])
+    source_quote = relationship("Quote", foreign_keys=[source_quote_id])
+
+
+class InvoiceDiscountHistoryImmutableError(RuntimeError):
+    """Raised when code attempts to rewrite Invoice discount evidence."""
+
+
+@event.listens_for(InvoiceDiscountHistory, "before_update")
+def _reject_invoice_discount_history_update(*_args: object) -> None:
+    raise InvoiceDiscountHistoryImmutableError(
+        "Invoice discount history is append-only"
+    )
+
+
+@event.listens_for(InvoiceDiscountHistory, "before_delete")
+def _reject_invoice_discount_history_delete(*_args: object) -> None:
+    raise InvoiceDiscountHistoryImmutableError(
+        "Invoice discount history is append-only"
+    )
 
 
 class InvoiceClosure(Base):

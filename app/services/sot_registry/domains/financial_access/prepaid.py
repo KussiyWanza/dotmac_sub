@@ -829,6 +829,7 @@ SERVICES: tuple[SOTService, ...] = (
         owns=(
             "current prepaid service coverage classification",
             "unresolved paid-through projection classification",
+            "period-scoped prepaid service coverage history",
         ),
         depends_on=(
             "access.subscription_lifecycle",
@@ -847,6 +848,16 @@ SERVICES: tuple[SOTService, ...] = (
             concerns=(
                 ConcernContract(
                     name="current prepaid service coverage classification",
+                    role=OwnerRole.RESOLVER,
+                    input_names=(
+                        "canonical subscription projection",
+                        "funded service entitlement intervals",
+                        "non-cash grant service intervals",
+                        "explicit granted-service intervals",
+                    ),
+                ),
+                ConcernContract(
+                    name="period-scoped prepaid service coverage history",
                     role=OwnerRole.RESOLVER,
                     input_names=(
                         "canonical subscription projection",

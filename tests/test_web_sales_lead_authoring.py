@@ -18,13 +18,14 @@ from app.models.party import (
     PartyRelationship,
     PartyType,
 )
-from app.models.sales import Lead, Pipeline, PipelineStage
+from app.models.sales import Lead, LeadStatus, Pipeline, PipelineStage
 from app.models.service_team import ServiceTeam, ServiceTeamMember
-from app.models.subscriber import Reseller
+from app.models.subscriber import Reseller, Subscriber
 from app.models.system_user import SystemUser
 from app.models.team_inbox import InboxConversation
 from app.services import conversation_lead_relationships, web_sales
 from app.services.domain_errors import DomainError
+from app.services.owner_commands import CommandContext
 from app.services.sales import lead_authoring
 
 
@@ -169,7 +170,6 @@ def test_new_lead_template_excludes_legacy_and_forged_identity_fields():
     assert "Contact Type" not in template
     assert "Customer ID" not in template
     assert template.count('name="notes"') == 1
-    assert 'name="address"' not in template
     assert 'name="address_line1"' in template
     assert 'name="address_line2"' in template
     assert 'name="person_id"' not in template
@@ -263,6 +263,284 @@ def test_authoring_creates_one_party_lead_contacts_and_relationship(db_session):
         .one()
     )
     assert relationship.relationship_type == "contact_for"
+
+
+def test_edit_lead_updates_complete_record_and_preserves_party_identity(db_session):
+    actor = _staff_owner(db_session)
+    pipeline, stage = _pipeline(db_session)
+    region = _region(db_session)
+    organization, organization_party = _organization(db_session)
+    created = _author(
+        db_session,
+        actor,
+        emails=["keep@example.com", "remove@example.com"],
+        primary_email="0",
+        phones=["08031234567"],
+        primary_phone="0",
+        nin="12345678901",
+    )
+    lead = db_session.get(Lead, created.lead_id)
+    party = db_session.get(Party, created.party_id)
+    assert lead is not None and party is not None
+    original_party_id = lead.party_id
+    original_nin = party.metadata_["nin_encrypted"]
+    kept = (
+        db_session.query(PartyContactPoint)
+        .filter_by(
+            party_id=party.id,
+            channel_type=PartyContactPointType.email.value,
+            normalized_value="keep@example.com",
+        )
+        .one()
+    )
+    kept.verification_status = "verified"
+    db_session.commit()
+
+    context = web_sales.build_lead_edit_context(db_session, lead_id=str(lead.id))
+    assert context["form_title"] == "Edit Lead"
+    assert context["lead_form"].emails == (
+        "keep@example.com",
+        "remove@example.com",
+    )
+    assert context["lead_form"].display_name == "Amina Bello Yusuf"
+    actor_id = str(actor.id)
+    lead_id = str(lead.id)
+    organization_id = str(organization.id)
+    pipeline_id = str(pipeline.id)
+    stage_id = str(stage.id)
+    region_id = str(region.id)
+    db_session.commit()
+
+    outcome = web_sales.update_lead_from_form(
+        db_session,
+        actor_system_user_id=actor_id,
+        submission_id=str(uuid4()),
+        lead_id=lead_id,
+        title="Enterprise fibre renewal",
+        display_name="Amina Yusuf",
+        status="contacted",
+        owner_agent_id=actor_id,
+        emails=["keep@example.com", "new@example.com"],
+        primary_email="1",
+        phones=["08035557777"],
+        primary_phone="0",
+        whatsapp_phone_indices=["0"],
+        address_line1="12 Marina Road",
+        address_line2="Floor 3",
+        date_of_birth="1990-04-03",
+        gender="female",
+        nin="",
+        city="Lagos",
+        postal_code="100001",
+        country_code="ng",
+        organization_id=organization_id,
+        managed_by_reseller=False,
+        reseller_id=None,
+        pipeline_id=pipeline_id,
+        stage_id=stage_id,
+        lead_source="Website",
+        region_zone_id=region_id,
+        estimated_value="350000.00",
+        currency="ngn",
+        address="Victoria Island service location",
+        probability="75",
+        expected_close_date="2026-12-31",
+        lost_reason=None,
+        notes="Updated after qualification call.",
+        is_active=True,
+    )
+
+    db_session.expire_all()
+    updated_lead = db_session.get(Lead, created.lead_id)
+    updated_party = db_session.get(Party, created.party_id)
+    assert outcome.replayed is False
+    assert updated_lead is not None and updated_party is not None
+    assert updated_lead.party_id == original_party_id
+    assert updated_lead.title == "Enterprise fibre renewal"
+    assert updated_lead.pipeline_id == pipeline.id
+    assert updated_lead.stage_id == stage.id
+    assert updated_lead.region == region.name
+    assert updated_lead.address == "Victoria Island service location"
+    assert updated_party.display_name == "Amina Yusuf"
+    assert updated_party.metadata_["organization_id"] == str(organization.id)
+    assert updated_party.metadata_["nin_encrypted"] == original_nin
+
+    emails = (
+        db_session.query(PartyContactPoint)
+        .filter_by(
+            party_id=updated_party.id,
+            channel_type=PartyContactPointType.email.value,
+        )
+        .all()
+    )
+    by_email = {point.normalized_value: point for point in emails}
+    assert by_email["keep@example.com"].verification_status == "verified"
+    assert by_email["keep@example.com"].is_active is True
+    assert by_email["remove@example.com"].is_active is False
+    assert by_email["new@example.com"].is_primary is True
+    relationship = (
+        db_session.query(PartyRelationship)
+        .filter_by(
+            subject_party_id=updated_party.id,
+            object_party_id=organization_party.id,
+            relationship_type="contact_for",
+        )
+        .one()
+    )
+    assert relationship.status == "active"
+
+
+def test_edit_lead_exact_submission_replays_without_duplicate_contacts(db_session):
+    actor = _staff_owner(db_session)
+    created = _author(db_session, actor)
+    edit_id = str(uuid4())
+    fields = {
+        "actor_system_user_id": str(actor.id),
+        "submission_id": edit_id,
+        "lead_id": str(created.lead_id),
+        "title": "Amina Bello Yusuf",
+        "display_name": "Amina Bello Yusuf",
+        "status": "new",
+        "owner_agent_id": str(actor.id),
+        "emails": ["updated@example.com"],
+        "primary_email": "0",
+        "phones": ["08031234567"],
+        "primary_phone": "0",
+        "whatsapp_phone_indices": ["0"],
+        "address_line1": None,
+        "address_line2": None,
+        "date_of_birth": None,
+        "gender": "unknown",
+        "nin": None,
+        "city": None,
+        "postal_code": None,
+        "country_code": None,
+        "organization_id": None,
+        "managed_by_reseller": False,
+        "reseller_id": None,
+        "pipeline_id": None,
+        "stage_id": None,
+        "lead_source": "Website",
+        "region_zone_id": None,
+        "estimated_value": None,
+        "currency": "NGN",
+        "address": None,
+        "probability": "65",
+        "expected_close_date": "2026-12-31",
+        "lost_reason": None,
+        "notes": None,
+        "is_active": True,
+    }
+    db_session.commit()
+    first = web_sales.update_lead_from_form(db_session, **fields)
+    second = web_sales.update_lead_from_form(db_session, **fields)
+    assert first.replayed is False
+    assert second.replayed is True
+    assert (
+        db_session.query(PartyContactPoint)
+        .filter_by(
+            party_id=created.party_id,
+            channel_type=PartyContactPointType.email.value,
+            normalized_value="updated@example.com",
+        )
+        .count()
+        == 1
+    )
+
+
+def test_edit_canonicalizes_exact_legacy_subscriber_party_binding(db_session):
+    actor = _staff_owner(db_session)
+    person = Party(
+        party_type=PartyType.person.value,
+        display_name="Legacy Person",
+        status="active",
+    )
+    db_session.add(person)
+    db_session.flush()
+    subscriber = Subscriber(
+        first_name="Legacy",
+        last_name="Person",
+        email="legacy@example.com",
+        party_id=person.id,
+        party_bound_at=datetime.now(UTC),
+        party_binding_source="pytest",
+        party_binding_reason="Reviewed legacy Subscriber Party",
+    )
+    db_session.add(subscriber)
+    db_session.flush()
+    lead = Lead(
+        subscriber_id=subscriber.id,
+        title="Legacy Lead",
+        status="new",
+        lead_source="Website",
+        is_active=True,
+    )
+    db_session.add(lead)
+    db_session.commit()
+    actor_id = actor.id
+    person_id = person.id
+    lead_id = lead.id
+    db_session.commit()
+
+    outcome = lead_authoring.edit_lead(
+        db_session,
+        lead_authoring.EditLeadCommand(
+            context=CommandContext.system(
+                actor=str(actor_id),
+                scope="sales:lead-maintenance",
+                reason="Test exact legacy Lead Party binding",
+                idempotency_key=f"test-lead-edit:{lead_id}:{uuid4()}",
+            ),
+            edit_id=uuid4(),
+            lead_id=lead_id,
+            actor_system_user_id=actor_id,
+            title="Legacy Lead Updated",
+            status=LeadStatus.new,
+            owner_system_user_id=actor_id,
+            pipeline_id=None,
+            stage_id=None,
+            lead_source="Website",
+            region_zone_id=None,
+            estimated_value=None,
+            currency="NGN",
+            address=None,
+            probability=25,
+            expected_close_date=None,
+            lost_reason=None,
+            notes=None,
+            is_active=True,
+            person=lead_authoring.LeadPersonDraft(
+                display_name="Legacy Person",
+                emails=lead_authoring.LeadContactDraft(
+                    values=("legacy.updated@example.com",),
+                    primary_index=0,
+                ),
+                phones=lead_authoring.LeadContactDraft(
+                    values=("08031234567",),
+                    primary_index=0,
+                ),
+                whatsapp_phone_indices=(),
+                address_line1=None,
+                address_line2=None,
+                date_of_birth=None,
+                gender="unknown",
+                nin=None,
+                city=None,
+                postal_code=None,
+                country_code="NG",
+                organization_id=None,
+                reseller_id=None,
+            ),
+        ),
+    )
+
+    db_session.expire_all()
+    updated = db_session.get(Lead, lead_id)
+    assert updated is not None
+    assert outcome.party_id == person_id
+    assert updated.party_id == person_id
+    assert updated.party_bound_at is not None
+    assert updated.party_binding_source == "admin_sales_lead_edit"
 
 
 def test_exact_submission_replays_without_duplicates(db_session):

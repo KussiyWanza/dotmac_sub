@@ -51,6 +51,10 @@ from app.models.billing import (  # noqa: F401
     InvoiceClosureLedgerEvidence,
     InvoiceClosureOrigin,
     InvoiceClosureType,
+    InvoiceDiscountAction,
+    InvoiceDiscountHistory,
+    InvoiceDiscountSource,
+    InvoiceDiscountType,
     InvoiceLine,
     InvoicePdfExport,
     InvoicePdfExportStatus,
@@ -804,6 +808,9 @@ from app.models.sales import (  # noqa: F401
     QuoteDeliveryRequest,
     QuoteDeliveryRequestStatus,
     QuoteDepositInvoiceLink,
+    QuoteDiscountAction,
+    QuoteDiscountHistory,
+    QuoteDiscountType,
     QuoteLineItem,
     QuotePdfExport,
     QuoteStatus,
@@ -850,6 +857,11 @@ from app.models.service_team import (  # noqa: F401
     ServiceTeamScopeBinding,
     ServiceTeamScopeType,
     ServiceTeamType,
+)
+from app.models.sla import (  # noqa: F401
+    SlaEligibilityInterval,
+    SlaMonitoringInterval,
+    SlaPeriodScoreRevision,
 )
 from app.models.snmp import (  # noqa: F401
     SnmpAuthProtocol,

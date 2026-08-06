@@ -53,11 +53,17 @@ from app.services.owner_commands import (
     execute_owner_command,
 )
 from app.services.sales import lifecycle
+from app.services.sales import service as sales_service
 
 _AUTHOR_LEAD = OwnerCommandDefinition(
     owner="sales.lead_authoring",
     concern="atomic admin Person and Lead authoring",
     name="author_lead",
+)
+_EDIT_LEAD = OwnerCommandDefinition(
+    owner="sales.lead_authoring",
+    concern="atomic admin Person and Lead maintenance",
+    name="edit_lead",
 )
 _EMAIL = TypeAdapter(EmailStr)
 _NIN = re.compile(r"^[0-9]{11}$")
@@ -120,6 +126,38 @@ class AuthorLeadCommand:
 
 @dataclass(frozen=True, slots=True)
 class AuthorLeadOutcome:
+    lead_id: UUID
+    party_id: UUID
+    replayed: bool
+    reseller_routed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EditLeadCommand:
+    context: CommandContext
+    edit_id: UUID
+    lead_id: UUID
+    actor_system_user_id: UUID
+    title: str
+    status: LeadStatus
+    owner_system_user_id: UUID | None
+    pipeline_id: UUID | None
+    stage_id: UUID | None
+    lead_source: str | None
+    region_zone_id: UUID | None
+    estimated_value: Decimal | None
+    currency: str | None
+    address: str | None
+    probability: int | None
+    expected_close_date: date | None
+    lost_reason: str | None
+    notes: str | None
+    is_active: bool
+    person: LeadPersonDraft
+
+
+@dataclass(frozen=True, slots=True)
+class EditLeadOutcome:
     lead_id: UUID
     party_id: UUID
     replayed: bool
@@ -213,6 +251,68 @@ def _fingerprint(command: AuthorLeadCommand) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _edit_fingerprint(command: EditLeadCommand) -> str:
+    payload = {
+        "lead_id": str(command.lead_id),
+        "actor": str(command.actor_system_user_id),
+        "title": command.title,
+        "status": command.status.value,
+        "owner": (
+            str(command.owner_system_user_id) if command.owner_system_user_id else None
+        ),
+        "pipeline": str(command.pipeline_id) if command.pipeline_id else None,
+        "stage": str(command.stage_id) if command.stage_id else None,
+        "lead_source": command.lead_source,
+        "region_zone": str(command.region_zone_id) if command.region_zone_id else None,
+        "estimated_value": (
+            str(command.estimated_value)
+            if command.estimated_value is not None
+            else None
+        ),
+        "currency": command.currency,
+        "address": command.address,
+        "probability": command.probability,
+        "expected_close_date": (
+            command.expected_close_date.isoformat()
+            if command.expected_close_date
+            else None
+        ),
+        "lost_reason": command.lost_reason,
+        "notes": command.notes,
+        "is_active": command.is_active,
+        "person": {
+            "display_name": command.person.display_name,
+            "emails": command.person.emails.values,
+            "primary_email": command.person.emails.primary_index,
+            "phones": command.person.phones.values,
+            "primary_phone": command.person.phones.primary_index,
+            "whatsapp": command.person.whatsapp_phone_indices,
+            "address_line1": command.person.address_line1,
+            "address_line2": command.person.address_line2,
+            "date_of_birth": (
+                command.person.date_of_birth.isoformat()
+                if command.person.date_of_birth
+                else None
+            ),
+            "gender": command.person.gender,
+            "nin": command.person.nin,
+            "city": command.person.city,
+            "postal_code": command.person.postal_code,
+            "country_code": command.person.country_code,
+            "organization_id": (
+                str(command.person.organization_id)
+                if command.person.organization_id
+                else None
+            ),
+            "reseller_id": (
+                str(command.person.reseller_id) if command.person.reseller_id else None
+            ),
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _active_actor(db: Session, actor_id: UUID) -> SystemUser:
     actor = db.scalars(
         select(SystemUser)
@@ -222,7 +322,7 @@ def _active_actor(db: Session, actor_id: UUID) -> SystemUser:
     if actor is None:
         raise _error(
             "actor_not_eligible",
-            "The authenticated staff user cannot create Leads.",
+            "The authenticated staff user cannot create or edit Leads.",
         )
     return actor
 
@@ -425,9 +525,11 @@ def _phones(
 
 
 def _validate_scalar_fields(
-    command: AuthorLeadCommand,
+    command: AuthorLeadCommand | EditLeadCommand,
+    *,
+    allow_won: bool = False,
 ) -> tuple[str | None, str | None]:
-    if command.status == LeadStatus.won:
+    if command.status == LeadStatus.won and not allow_won:
         raise _error(
             "status_not_allowed",
             "A Lead becomes Won only through Quote acceptance.",
@@ -769,6 +871,221 @@ def _operation(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
     )
 
 
+def _edit_operation(db: Session, command: EditLeadCommand) -> EditLeadOutcome:
+    actor = _active_actor(db, command.actor_system_user_id)
+    fingerprint = _edit_fingerprint(command)
+    lead = db.scalars(
+        select(Lead).where(Lead.id == command.lead_id).with_for_update()
+    ).one_or_none()
+    if lead is None:
+        raise _error("lead_not_found", "Lead not found.")
+    party_id = lead.party_id or (
+        lead.subscriber.party_id if lead.subscriber is not None else None
+    )
+    if party_id is None:
+        raise _error(
+            "lead_party_missing",
+            "This Lead does not have an editable Person profile.",
+        )
+    party = db.get(Party, party_id)
+    if (
+        party is None
+        or party.party_type != PartyType.person.value
+        or party.status not in _ELIGIBLE_PARTY_STATUSES
+    ):
+        raise _error(
+            "party_not_editable",
+            "This Lead's Person profile is not editable.",
+        )
+    lifecycle.initialize_lead_party(
+        db,
+        lead=lead,
+        party_id=party_id,
+        source="admin_sales_lead_edit",
+        reason="Staff reviewed the existing Lead Person while editing the record",
+    )
+    metadata = dict(lead.metadata_) if isinstance(lead.metadata_, dict) else {}
+    if metadata.get("last_edit_key") == str(command.edit_id):
+        if metadata.get("last_edit_fingerprint") != fingerprint:
+            raise _error(
+                "edit_conflict",
+                "This edit submission was already used with different values.",
+            )
+        return EditLeadOutcome(
+            lead_id=lead.id,
+            party_id=party_id,
+            replayed=True,
+            reseller_routed=bool(metadata.get("communication_routed_through_reseller")),
+        )
+
+    currency, country_code = _validate_scalar_fields(
+        command, allow_won=lead.status == LeadStatus.won.value
+    )
+    owner_id = _eligible_owner(db, command.owner_system_user_id)
+    pipeline_id, stage_id = _pipeline_stage(db, command.pipeline_id, command.stage_id)
+    region = _region(db, command.region_zone_id)
+    organization = _organization(db, command.person.organization_id)
+    reseller = _reseller(db, command.person.reseller_id)
+    reseller_routed = bool(
+        reseller
+        or (
+            organization
+            and organization.account_type == OrganizationAccountType.reseller.value
+        )
+    )
+    emails, primary_email = _emails(command.person.emails)
+    phones, primary_phone, phone_indexes = _phones(db, command.person.phones)
+    whatsapp_indexes = tuple(
+        dict.fromkeys(
+            phone_indexes[index]
+            for index in command.person.whatsapp_phone_indices
+            if index in phone_indexes
+        )
+    )
+    whatsapp_values = tuple(phones[index] for index in whatsapp_indexes)
+    display_name, first_name, last_name = split_display_name(
+        command.person.display_name
+    )
+    organization_party_id = organization.party_id if organization is not None else None
+    if organization is not None and organization_party_id is None:
+        raise _error(
+            "organization_party_ineligible",
+            "The selected Organization does not have a usable identity.",
+            field="organization_id",
+        )
+
+    party_service.update_person_profile(
+        db,
+        party_service.PersonPartyProfileUpdate(
+            party_id=party_id,
+            display_name=display_name,
+            first_name=first_name,
+            last_name=last_name,
+            address_line1=command.person.address_line1,
+            address_line2=command.person.address_line2,
+            date_of_birth=(
+                command.person.date_of_birth.isoformat()
+                if command.person.date_of_birth
+                else None
+            ),
+            gender=command.person.gender,
+            nin_encrypted=(
+                encrypt_credential(command.person.nin)
+                if command.person.nin is not None
+                else None
+            ),
+            city=command.person.city,
+            postal_code=command.person.postal_code,
+            country_code=country_code,
+            organization_id=organization.id if organization else None,
+            reseller_id=reseller.id if reseller else None,
+            primary_email=emails[primary_email] if emails else None,
+            primary_phone=phones[primary_phone] if phones else None,
+            communication_routed_through_reseller=reseller_routed,
+        ),
+    )
+    party_service.reconcile_contact_points(
+        db,
+        party_service.PartyContactPointSet(
+            party_id=party_id,
+            channel_type=PartyContactPointType.email,
+            values=emails,
+            primary_index=primary_email if emails else None,
+            source="sales.lead_authoring",
+        ),
+    )
+    party_service.reconcile_contact_points(
+        db,
+        party_service.PartyContactPointSet(
+            party_id=party_id,
+            channel_type=PartyContactPointType.phone,
+            values=phones,
+            primary_index=primary_phone if phones else None,
+            source="sales.lead_authoring",
+        ),
+    )
+    party_service.reconcile_contact_points(
+        db,
+        party_service.PartyContactPointSet(
+            party_id=party_id,
+            channel_type=PartyContactPointType.whatsapp,
+            values=whatsapp_values,
+            primary_index=None,
+            source="sales.lead_authoring",
+        ),
+    )
+    party_service.set_contact_organization(
+        db,
+        person_party_id=party_id,
+        organization_party_id=organization_party_id,
+        source="sales.lead_authoring",
+    )
+
+    updated = sales_service.stage_lead_maintenance(
+        db,
+        sales_service.LeadMaintenanceUpdate(
+            lead_id=lead.id,
+            title=command.title,
+            status=command.status,
+            owner_agent_id=owner_id,
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            lead_source=command.lead_source,
+            region=region.name if region else None,
+            estimated_value=command.estimated_value,
+            currency=currency,
+            address=(command.address or "").strip() or None,
+            probability=command.probability,
+            expected_close_date=command.expected_close_date,
+            lost_reason=(
+                (command.lost_reason or "").strip() or None
+                if command.status == LeadStatus.lost
+                else None
+            ),
+            notes=(command.notes or "").strip() or None,
+            is_active=command.is_active,
+            reseller_id=reseller.id if reseller else None,
+            organization_id=organization.id if organization else None,
+            region_zone_id=region.id if region else None,
+            reseller_routed=reseller_routed,
+            edit_key=command.edit_id,
+            edit_fingerprint=fingerprint,
+        ),
+    )
+    emit_event(
+        db,
+        EventType.lead_updated,
+        {
+            "lead_id": str(updated.id),
+            "party_id": str(party_id),
+            "status": updated.status,
+            "pipeline_id": (str(updated.pipeline_id) if updated.pipeline_id else None),
+        },
+        actor=command.context.actor,
+    )
+    stage_audit_event(
+        db,
+        action="lead.updated",
+        entity_type="lead",
+        entity_id=str(updated.id),
+        actor_id=str(actor.id),
+        request_id=str(command.context.command_id),
+        metadata={
+            "party_id": str(party_id),
+            "status": updated.status,
+            "channel_count": len(emails) + len(phones) + len(whatsapp_values),
+            "reseller_routed": reseller_routed,
+        },
+    )
+    db.flush()
+    return EditLeadOutcome(
+        lead_id=updated.id,
+        party_id=party_id,
+        replayed=False,
+        reseller_routed=reseller_routed,
+    )
+
+
 def author_lead(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
     """Create one Person Party, its contacts, origin, and Lead atomically."""
 
@@ -777,4 +1094,15 @@ def author_lead(db: Session, command: AuthorLeadCommand) -> AuthorLeadOutcome:
         definition=_AUTHOR_LEAD,
         context=command.context,
         operation=lambda: _operation(db, command),
+    )
+
+
+def edit_lead(db: Session, command: EditLeadCommand) -> EditLeadOutcome:
+    """Update one existing Person Party and its Lead atomically."""
+
+    return execute_owner_command(
+        db,
+        definition=_EDIT_LEAD,
+        context=command.context,
+        operation=lambda: _edit_operation(db, command),
     )

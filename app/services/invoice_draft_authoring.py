@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,7 +26,7 @@ from app.models.idempotency import IdempotencyKey
 from app.models.subscriber import Subscriber
 from app.schemas.audit import AuditEventCreate
 from app.schemas.billing import InvoiceCreate, InvoiceLineCreate, InvoiceUpdate
-from app.services import numbering
+from app.services import invoice_discounts, numbering
 from app.services.audit import AuditEvents
 from app.services.billing._common import (
     _validate_invoice_line_amount,
@@ -78,6 +79,15 @@ _CONVERT_COMMAND = OwnerCommandDefinition(
 
 class InvoiceDraftAuthoringError(DomainError, ValueError):
     """Stable rejection from the invoice draft authoring owner."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        DomainError.__init__(self, code=code, message=message, details=details)
 
 
 def _error(suffix: str, message: str, **details: object) -> InvoiceDraftAuthoringError:
@@ -170,6 +180,8 @@ class CreateInvoiceDraftCommand:
     memo: str | None
     is_proforma: bool
     lines: tuple[DraftLineCommand, ...]
+    discount: invoice_discounts.InvoiceDiscountInput | None = None
+    actor_system_user_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +197,8 @@ class UpdateInvoiceDraftCommand:
     memo: str | None
     is_proforma: bool
     lines: tuple[DraftLineCommand, ...]
+    discount: invoice_discounts.InvoiceDiscountInput | None = None
+    actor_system_user_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +243,9 @@ def _normalized_key(context: CommandContext) -> str:
 def _create_fingerprint(command: CreateInvoiceDraftCommand) -> str:
     payload = {
         "account_id": str(command.account_id),
+        "actor_system_user_id": (
+            str(command.actor_system_user_id) if command.actor_system_user_id else None
+        ),
         "invoice_number": (command.invoice_number or "").strip() or None,
         "currency": command.currency.strip().upper(),
         "issued_at": command.issued_at.isoformat() if command.issued_at else None,
@@ -244,6 +261,15 @@ def _create_fingerprint(command: CreateInvoiceDraftCommand) -> str:
             }
             for line in command.lines
         ],
+        "discount": (
+            {
+                "type": command.discount.discount_type.value,
+                "value": str(command.discount.value),
+                "reason": command.discount.reason,
+            }
+            if command.discount
+            else None
+        ),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -381,7 +407,12 @@ def _stage_lines(
         for command, amount, tax_application in validated
     )
     try:
-        InvoiceLines.replace_admin_draft_lines(db, invoice.id, replacements)
+        InvoiceLines.replace_admin_draft_lines(
+            db,
+            invoice.id,
+            replacements,
+            allow_discount_reprice=True,
+        )
     except DraftInvoiceParticipantError as exc:
         if exc.reason == "line_not_found":
             raise _error(
@@ -530,6 +561,22 @@ def _create_invoice_draft(
         ),
     )
     _stage_lines(db, invoice=invoice, lines=command.lines)
+    if command.discount is not None:
+        if command.actor_system_user_id is None:
+            raise _error(
+                "discount_actor_required",
+                "A logged-in staff user is required to apply an Invoice discount.",
+            )
+        invoice_discounts.stage_invoice_discount(
+            db,
+            invoice,
+            invoice_discounts.StageInvoiceDiscountCommand(
+                invoice_id=invoice.id,
+                actor_system_user_id=command.actor_system_user_id,
+                command_id=context.command_id,
+                discount=command.discount,
+            ),
+        )
     _stage_audit(
         db,
         invoice=invoice,
@@ -610,6 +657,22 @@ def _update_invoice_draft(
         ),
     )
     _stage_lines(db, invoice=invoice, lines=command.lines)
+    if command.discount is not None or invoice.discount_type is not None:
+        if command.actor_system_user_id is None:
+            raise _error(
+                "discount_actor_required",
+                "A logged-in staff user is required to change an Invoice discount.",
+            )
+        invoice_discounts.stage_invoice_discount(
+            db,
+            invoice,
+            invoice_discounts.StageInvoiceDiscountCommand(
+                invoice_id=invoice.id,
+                actor_system_user_id=command.actor_system_user_id,
+                command_id=context.command_id,
+                discount=command.discount,
+            ),
+        )
     _stage_audit(
         db,
         invoice=invoice,

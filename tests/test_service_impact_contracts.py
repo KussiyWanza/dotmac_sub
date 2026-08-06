@@ -59,10 +59,18 @@ def test_sla_verdicts_include_no_contractual_sla():
 
 
 def test_policy_precedence_order():
+    """Declaration order IS the precedence, so this list is the contract.
+
+    plan_family sits below offer_version — a plan that negotiates its own terms
+    still beats the family default — and above internal_measurement, because a
+    family default is a promise while internal measurement only states what we
+    measure.
+    """
     assert [source.value for source in contracts.SlaPolicySource] == [
         "subscription_contract",
         "account_contract",
         "offer_version",
+        "plan_family",
         "internal_measurement",
     ]
 
@@ -255,13 +263,39 @@ def test_score_without_policy_cannot_claim_a_verdict():
 
 
 def test_unknown_seconds_make_the_score_provisional_not_uptime():
-    score = _score(unknown_seconds=7_200)
-    assert score.is_provisional is True
-    # Measured availability counts only proven unavailability against
-    # eligible time; unknown time flags the result instead of inflating it.
-    assert score.measured_availability_percent == round(
-        100.0 * (2_000_000 - 3_600) / 2_000_000, 3
+    score = _score(
+        unknown_seconds=7_200,
+        evidence_complete=False,
+        completeness_issues=("monitoring:unknown_eligible_coverage",),
+        verdict=contracts.SlaVerdict.unavailable,
     )
+    assert score.is_provisional is True
+    assert score.measured_availability_percent is None
+    assert score.availability_lower_bound_percent == round(
+        100.0 * (2_000_000 - 3_600 - 7_200) / 2_000_000, 4
+    )
+    assert score.availability_upper_bound_percent == round(
+        100.0 * (2_000_000 - 3_600) / 2_000_000, 4
+    )
+
+
+def test_incomplete_evidence_cannot_claim_passing_or_at_risk():
+    for verdict in (
+        contracts.SlaVerdict.passing,
+        contracts.SlaVerdict.at_risk,
+    ):
+        with pytest.raises(ValueError):
+            _score(
+                evidence_complete=False,
+                completeness_issues=("lifecycle:missing_supported_left_edge",),
+                verdict=verdict,
+            )
+
+
+def test_reviewed_exclusions_leave_the_availability_denominator():
+    score = _score(eligible_seconds=1000, excluded_seconds=100, unavailable_seconds=9)
+
+    assert score.measured_availability_percent == 99.0
 
 
 def test_score_accounting_cannot_exceed_eligible_time():

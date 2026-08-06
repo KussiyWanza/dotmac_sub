@@ -6,6 +6,7 @@ name, so each is pinned individually rather than inferred from a happy path.
 
 from __future__ import annotations
 
+import dataclasses
 from uuid import uuid4
 
 import pytest
@@ -19,14 +20,17 @@ from app.models.network import (
 )
 from app.services.network.pon_port_identity import (
     PonIdentityRefusal,
+    PonIdentityShape,
     PonPortIdentity,
     PonPortIdentityError,
+    SingleBoxPonIdentity,
     assert_assignable,
     canonical_name,
     classify,
     derive_from_card_port,
     derive_identity,
     read_name,
+    shape_for_vendor,
 )
 
 
@@ -46,12 +50,12 @@ def _hardware(db, *, frame=0, slot=2, port=3, olt_name="OLT-PON"):
     return olt, card_port
 
 
-def _pon(db, olt, *, name, card_port=None):
+def _pon(db, olt, *, name, card_port=None, is_active=True):
     pon = PonPort(
         olt_id=olt.id,
         name=name,
         olt_card_port_id=card_port.id if card_port is not None else None,
-        is_active=True,
+        is_active=is_active,
     )
     db.add(pon)
     db.flush()
@@ -191,6 +195,62 @@ def test_two_rows_claiming_one_identity_refuse_assignment(db_session):
     assert excinfo.value.code == PonIdentityRefusal.ambiguous
 
 
+def test_an_inactive_duplicate_does_not_refuse_assignment(db_session):
+    """Retired history cannot compete with active identity."""
+    olt, card_port = _hardware(db_session)
+    active = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    _pon(db_session, olt, name="pon-0/2/3", card_port=None, is_active=False)
+
+    assert assert_assignable(db_session, active) is None
+
+
+def test_ambiguity_carries_typed_immutable_evidence(db_session):
+    """A refusal states which rows contest the identity, not just that they do."""
+    olt, card_port = _hardware(db_session)
+    first = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    second = _pon(db_session, olt, name="0/2/3 ", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, first)
+
+    conflict = excinfo.value.conflict
+    assert conflict is not None
+    assert conflict.identity == PonPortIdentity(frame=0, slot=2, port=3)
+    assert set(conflict.claimants) == {first.id, second.id}
+    assert isinstance(conflict.claimants, tuple)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        conflict.identity = PonPortIdentity(frame=9, slot=9, port=9)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("twin_name", ["pon-0/2/3", "PON-0/2/3", "pon3", "board-2"])
+def test_a_row_pending_repair_cannot_veto_the_canonical_row(db_session, twin_name):
+    """The production regression this guard caused.
+
+    A prefixed or malformed sibling is already unassignable in its own right.
+    Treating its shadow claim as a contest refused the *correct* row on its
+    behalf: 459 of 502 production PON ports were refused, 212 carrying live
+    customers, purely because a ``pon-`` twin still existed beside them.
+    """
+    olt, card_port = _hardware(db_session)
+    canonical = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    _pon(db_session, olt, name=twin_name, card_port=None)
+
+    # Returns without raising; the refusal is the failure mode.
+    assert assert_assignable(db_session, canonical) is None
+
+
+def test_the_row_pending_repair_is_still_refused_itself(db_session):
+    """Unblocking the canonical twin must not unblock the bad row too."""
+    olt, card_port = _hardware(db_session)
+    _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    twin = _pon(db_session, olt, name="pon-0/2/3", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, twin)
+
+    assert excinfo.value.code == PonIdentityRefusal.name_not_canonical
+
+
 def test_a_canonical_name_without_a_hardware_link_is_still_assignable(db_session):
     """Deliberately narrower than the reconciliation gate.
 
@@ -204,3 +264,135 @@ def test_a_canonical_name_without_a_hardware_link_is_still_assignable(db_session
 
     assert classify(db_session, pon) == "underivable"
     assert assert_assignable(db_session, pon) is None
+
+
+# ── The board/port split used when writing ONT inventory ────────────────────
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("0/1/13", ("0/1", "13")),
+        # Splitting on "/" alone accepted this as three parts and returned
+        # board "pon-0/1" -- a board that names nothing -- instead of failing
+        # closed or reading the real identity.
+        ("pon-0/1/13", ("0/1", "13")),
+        ("pon1", (None, None)),
+        ("board-2", (None, None)),
+        ("0/1", (None, None)),
+        ("", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_board_port_split_never_emits_a_board_that_names_nothing(name, expected):
+    from app.services.network.ont_assignment_commands import _fsp_parts
+
+    assert _fsp_parts(name, vendor="Huawei") == expected
+
+
+# ── Single-box platforms have no chassis ────────────────────────────────────
+
+
+def _single_box_olt(db, *, name="UF-OLT-1"):
+    olt = OLTDevice(name=name, vendor="ubiquiti", model="UF-OLT", is_active=True)
+    db.add(olt)
+    db.flush()
+    return olt
+
+
+def test_shape_is_resolved_from_the_vendor():
+    assert shape_for_vendor("ubiquiti") is PonIdentityShape.single_box
+    assert shape_for_vendor("Ubiquiti") is PonIdentityShape.single_box
+    assert shape_for_vendor("Huawei") is PonIdentityShape.chassis
+    # Unknown vendors stay chassis: conservative, and fails toward refusing.
+    assert shape_for_vendor(None) is PonIdentityShape.chassis
+    assert shape_for_vendor("acme") is PonIdentityShape.chassis
+
+
+@pytest.mark.parametrize(
+    ("raw", "port"), [("pon1", 1), ("PON8", 8), ("3", 3), ("pon12", 12)]
+)
+def test_a_single_box_port_name_is_a_canonical_identity(raw, port):
+    identity = SingleBoxPonIdentity.parse(raw)
+
+    assert identity.port == port
+    assert canonical_name(identity) == f"pon{port}"
+
+
+@pytest.mark.parametrize("raw", ["", "0/1/13", "pon-0/1/13", "board-2", "ponX"])
+def test_a_non_port_name_is_not_a_single_box_identity(raw):
+    with pytest.raises(PonPortIdentityError):
+        SingleBoxPonIdentity.parse(raw)
+
+
+def test_a_single_box_port_is_assignable_without_any_hardware_link(db_session):
+    """The 678-customer regression.
+
+    A UF-OLT has no frame and no slot, so requiring a card-port chain -- or an
+    ``f/s/p`` name -- refused every correctly named port on the platform.
+    """
+    olt = _single_box_olt(db_session)
+    pon = _pon(db_session, olt, name="pon5", card_port=None)
+
+    assert derive_identity(db_session, pon) == SingleBoxPonIdentity(port=5)
+    assert classify(db_session, pon) == "canonical"
+    assert assert_assignable(db_session, pon) is None
+
+
+def test_a_single_box_row_with_a_chassis_name_is_refused(db_session):
+    """Shape cuts both ways: f/s/p names nothing on a box with no slots."""
+    olt = _single_box_olt(db_session, name="UF-OLT-2")
+    pon = _pon(db_session, olt, name="0/1/13", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, pon)
+
+    assert excinfo.value.code == PonIdentityRefusal.name_not_canonical
+    assert "pon<n>" in str(excinfo.value)
+
+
+def test_two_single_box_rows_claiming_one_port_are_ambiguous(db_session):
+    olt = _single_box_olt(db_session, name="UF-OLT-3")
+    first = _pon(db_session, olt, name="pon5", card_port=None)
+    _pon(db_session, olt, name="5", card_port=None)
+
+    with pytest.raises(PonPortIdentityError) as excinfo:
+        assert_assignable(db_session, first)
+
+    assert excinfo.value.code == PonIdentityRefusal.ambiguous
+    assert excinfo.value.conflict.identity == SingleBoxPonIdentity(port=5)
+
+
+def test_chassis_platforms_are_unaffected_by_the_variant(db_session):
+    """A Huawei row still requires f/s/p and still refuses a bare port number."""
+    olt, card_port = _hardware(db_session, olt_name="OLT-CHASSIS-REGRESSION")
+    good = _pon(db_session, olt, name="0/2/3", card_port=card_port)
+    bare = _pon(db_session, olt, name="pon5", card_port=None)
+
+    assert assert_assignable(db_session, good) is None
+    with pytest.raises(PonPortIdentityError):
+        assert_assignable(db_session, bare)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # There is no board on a single-box OLT; say so rather than invent one.
+        ("pon5", (None, "5")),
+        ("PON8", (None, "8")),
+        ("3", (None, "3")),
+        # A chassis name names nothing on a box with no slots.
+        ("0/1/13", (None, None)),
+        ("board-2", (None, None)),
+    ],
+)
+def test_board_port_split_on_a_single_box_keeps_the_port(name, expected):
+    """Reading a ``pon<n>`` name as a chassis name discarded the port number.
+
+    The type checker caught the union-attr error on ``identity.frame``; it could
+    not see this. Every UF-OLT assignment and move would have written
+    ``board=None, port=None`` and silently lost which port the ONT is on.
+    """
+    from app.services.network.ont_assignment_commands import _fsp_parts
+
+    assert _fsp_parts(name, vendor="ubiquiti") == expected

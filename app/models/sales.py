@@ -101,6 +101,17 @@ class QuoteStatus(enum.Enum):
     expired = "expired"
 
 
+class QuoteDiscountType(enum.StrEnum):
+    percentage = "percentage"
+    fixed_amount = "fixed_amount"
+
+
+class QuoteDiscountAction(enum.StrEnum):
+    applied = "applied"
+    changed = "changed"
+    removed = "removed"
+
+
 class QuoteDeliveryRequestStatus(enum.StrEnum):
     queued = "queued"
     suppressed = "suppressed"
@@ -488,6 +499,23 @@ class Quote(Base):
             "subscriber_id",
             postgresql_where=text("is_active"),
         ),
+        CheckConstraint(
+            "discount_revision >= 0",
+            name="ck_quotes_discount_revision_nonnegative",
+        ),
+        CheckConstraint(
+            "(discount_type IS NULL AND discount_value IS NULL AND "
+            "discount_amount = 0 AND discount_reason IS NULL AND "
+            "discount_applied_by_system_user_id IS NULL "
+            "AND discount_applied_at IS NULL) OR "
+            "(discount_type IN ('percentage', 'fixed_amount') AND "
+            "discount_value > 0 AND discount_amount > 0 AND "
+            "discount_amount <= subtotal AND "
+            "discount_revision > 0 AND "
+            "discount_applied_by_system_user_id IS NOT NULL AND "
+            "discount_applied_at IS NOT NULL)",
+            name="ck_quotes_discount_current_state",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -509,6 +537,19 @@ class Quote(Base):
     project_type: Mapped[str | None] = mapped_column(String(60))
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
+    discount_type: Mapped[str | None] = mapped_column(String(24))
+    discount_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
+    )
+    discount_reason: Mapped[str | None] = mapped_column(Text)
+    discount_applied_by_system_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("system_users.id", ondelete="RESTRICT")
+    )
+    discount_applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    discount_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Applied tax rate percent (e.g. 7.5). When set, tax_total is auto-derived
     # from the subtotal on every recalculation; null = manual tax_total.
     tax_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
@@ -546,6 +587,21 @@ class Quote(Base):
     deposit_invoice_links = relationship(
         "QuoteDepositInvoiceLink", back_populates="quote"
     )
+    discount_applied_by = relationship(
+        "SystemUser", foreign_keys=[discount_applied_by_system_user_id]
+    )
+    discount_history = relationship(
+        "QuoteDiscountHistory",
+        back_populates="quote",
+        order_by="QuoteDiscountHistory.revision",
+    )
+
+    @property
+    def discounted_subtotal(self) -> Decimal:
+        return max(
+            Decimal("0.00"),
+            Decimal(self.subtotal or 0) - Decimal(self.discount_amount or 0),
+        )
 
     @property
     def person_id(self) -> uuid.UUID | None:
@@ -567,6 +623,85 @@ class Quote(Base):
     @contact_id.expression  # type: ignore[no-redef]
     def contact_id(cls):
         return cls.subscriber_id
+
+
+class QuoteDiscountHistory(Base):
+    """Append-only evidence for every Quote-level discount revision."""
+
+    __tablename__ = "quote_discount_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "quote_id", "revision", name="uq_quote_discount_history_revision"
+        ),
+        UniqueConstraint("command_id", name="uq_quote_discount_history_command_id"),
+        CheckConstraint(
+            "revision > 0", name="ck_quote_discount_history_revision_positive"
+        ),
+        CheckConstraint(
+            "action IN ('applied', 'changed', 'removed')",
+            name="ck_quote_discount_history_action",
+        ),
+        CheckConstraint(
+            "discount_type IN ('percentage', 'fixed_amount')",
+            name="ck_quote_discount_history_type",
+        ),
+        CheckConstraint(
+            "discount_value > 0 AND discount_amount > 0 AND "
+            "discount_amount <= original_subtotal AND discounted_subtotal >= 0",
+            name="ck_quote_discount_history_amounts",
+        ),
+        Index("ix_quote_discount_history_applied_at", "applied_at"),
+        Index("ix_quote_discount_history_actor", "actor_system_user_id"),
+        Index("ix_quote_discount_history_type", "discount_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    quote_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("quotes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    discount_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    original_subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discounted_subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    total_after_discount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    actor_system_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("system_users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    command_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    command_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    quote = relationship("Quote", back_populates="discount_history")
+    actor = relationship("SystemUser", foreign_keys=[actor_system_user_id])
+
+
+class QuoteDiscountHistoryImmutableError(RuntimeError):
+    """Raised when code attempts to rewrite Quote discount evidence."""
+
+
+@event.listens_for(QuoteDiscountHistory, "before_update")
+def _reject_quote_discount_history_update(*_args: object) -> None:
+    raise QuoteDiscountHistoryImmutableError("Quote discount history is append-only")
+
+
+@event.listens_for(QuoteDiscountHistory, "before_delete")
+def _reject_quote_discount_history_delete(*_args: object) -> None:
+    raise QuoteDiscountHistoryImmutableError("Quote discount history is append-only")
 
 
 class QuotePdfExport(Base):
@@ -720,7 +855,8 @@ class QuoteLineItem(Base):
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), default=Decimal("1.000"))
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
-    # Line discount percent (0-100); amount is net of discount.
+    # Read-only legacy evidence for Quotes authored before migration 480.
+    # Every new writer stores zero; accepted historical values remain immutable.
     discount_percent: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), default=Decimal("0.00"), nullable=False
     )
@@ -771,6 +907,11 @@ class SalesOrder(Base):
     )
     currency: Mapped[str] = mapped_column(String(3), default="NGN")
     subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
+    discount_type: Mapped[str | None] = mapped_column(String(24))
+    discount_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), nullable=False
+    )
     tax_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     amount_paid: Mapped[Decimal] = mapped_column(

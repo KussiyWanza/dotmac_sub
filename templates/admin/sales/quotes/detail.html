@@ -9,6 +9,8 @@
     'rejected': 'error',
     'expired': 'inactive'
 } %}
+{% set has_legacy_line_discount = (items | selectattr('discount_percent') | list | length) > 0 %}
+{% set can_edit_lines = not is_accepted and not quote.discount_type %}
 
 {% block content %}
 <div class="space-y-4">
@@ -104,6 +106,14 @@
     <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
         The email was not queued because the recipient or communication policy suppressed delivery.
     </div>
+    {% elif request.query_params.get('notice') == 'discount_saved' %}
+    <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-200">
+        Quote discount saved and added to the discount history.
+    </div>
+    {% elif request.query_params.get('notice') == 'discount_removed' %}
+    <div class="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-200">
+        Quote discount removed. The previous discount remains in the history.
+    </div>
     {% endif %}
 
     {% if is_accepted %}
@@ -116,6 +126,56 @@
         {% endif %}
     </div>
     {% endif %}
+
+    <section class="rounded-xl border border-cyan-200 bg-cyan-50/40 p-5 shadow-sm dark:border-cyan-800 dark:bg-cyan-950/20" aria-labelledby="quote-discount-heading">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+                <h2 id="quote-discount-heading" class="text-base font-bold text-slate-900 dark:text-white">Quote Discount</h2>
+                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Applied to the complete subtotal before configured tax.</p>
+            </div>
+            <a href="/admin/sales/quote-discounts" class="text-sm font-semibold text-cyan-700 hover:underline dark:text-cyan-400">View discount history</a>
+        </div>
+
+        {% if quote.discount_type %}
+        <dl class="mt-4 grid grid-cols-1 gap-3 rounded-lg bg-white p-4 text-sm sm:grid-cols-2 lg:grid-cols-4 dark:bg-slate-900/40">
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Type and value</dt><dd class="mt-1 font-semibold text-slate-900 dark:text-white">{{ quote.discount_type|replace('_', ' ')|title }} · {% if quote.discount_type == 'percentage' %}{{ quote.discount_value }}%{% else %}{{ quote.currency }} {{ "{:,.2f}".format(quote.discount_value or 0) }}{% endif %}</dd></div>
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Final discount</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ quote.currency }} {{ "{:,.2f}".format(quote.discount_amount or 0) }}</dd></div>
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Subtotal after discount</dt><dd class="mt-1 font-semibold tabular-nums text-slate-900 dark:text-white">{{ quote.currency }} {{ "{:,.2f}".format(quote.discounted_subtotal) }}</dd></div>
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Applied by and date</dt><dd class="mt-1 font-semibold text-slate-900 dark:text-white">{{ discount_actor_label or 'Unavailable' }} · {{ quote.discount_applied_at | app_datetime('%Y-%m-%d', '-', include_tz=False) }}</dd></div>
+            {% if quote.discount_reason %}<div class="sm:col-span-2 lg:col-span-4"><dt class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Reason</dt><dd class="mt-1 text-slate-700 dark:text-slate-300">{{ quote.discount_reason }}</dd></div>{% endif %}
+        </dl>
+        {% else %}
+        <p class="mt-4 rounded-lg bg-white px-4 py-3 text-sm text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">No Quote-level discount is currently applied.</p>
+        {% endif %}
+
+        {% if can(request, "crm:quote:write") and discount_action.allowed %}
+        <form method="post" action="/admin/sales/quotes/{{ quote.id }}/discount" class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {% include "components/forms/csrf_input.html" %}
+            <input type="hidden" name="request_id" value="{{ discount_action.request_id }}">
+            <input type="hidden" name="expected_revision" value="{{ quote.discount_revision }}">
+            <div>
+                <label for="detail-discount-type" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Discount Type</label>
+                <select id="detail-discount-type" name="discount_type" required class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+                    {% for item in discount_types %}<option value="{{ item.value }}" {% if quote.discount_type == item.value %}selected{% endif %}>{{ item.label }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="detail-discount-value" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Discount Value</label>
+                <input id="detail-discount-value" name="discount_value" type="number" step="0.01" min="0.01" required value="{{ quote.discount_value or '' }}" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-right text-sm tabular-nums dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            </div>
+            <div>
+                <label for="detail-discount-reason" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">Reason <span class="font-normal text-slate-400">(optional)</span></label>
+                <input id="detail-discount-reason" name="discount_reason" type="text" maxlength="500" value="{{ quote.discount_reason or '' }}" class="block min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white">
+            </div>
+            <div class="flex items-end gap-2">
+                <button type="submit" name="action" value="save" class="min-h-10 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700">{{ 'Change Discount' if quote.discount_type else 'Apply Discount' }}</button>
+                {% if quote.discount_type %}<button type="submit" name="action" value="remove" formnovalidate onclick="return confirm('Remove this Quote discount? Its history will be kept.');" class="min-h-10 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 dark:border-red-900/40 dark:bg-slate-800 dark:text-red-300">Remove</button>{% endif %}
+            </div>
+        </form>
+        {% elif discount_action.reason %}
+        <p class="mt-4 text-xs font-medium text-slate-500 dark:text-slate-400">{{ discount_action.reason }}</p>
+        {% endif %}
+    </section>
 
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div class="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800">
@@ -235,9 +295,9 @@
                     <th class="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Description</th>
                     <th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Qty</th>
                     <th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Unit Price</th>
-                    <th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Discount</th>
+                    {% if has_legacy_line_discount %}<th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Previous Line Discount</th>{% endif %}
                     <th class="px-4 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Amount</th>
-                    {% if not is_accepted %}
+                    {% if can_edit_lines %}
                     <th class="px-4 py-2.5"><span class="sr-only">Remove</span></th>
                     {% endif %}
                 </tr>
@@ -253,9 +313,9 @@
                     </td>
                     <td class="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{{ item.quantity or 0 }}</td>
                     <td class="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{{ quote.currency }} {{ "{:,.2f}".format(item.unit_price or 0) }}</td>
-                    <td class="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{% if item.discount_percent %}{{ item.discount_percent }}%{% else %}-{% endif %}</td>
+                    {% if has_legacy_line_discount %}<td class="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">{% if item.discount_percent %}{{ item.discount_percent }}%{% else %}-{% endif %}</td>{% endif %}
                     <td class="px-4 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-200">{{ quote.currency }} {{ "{:,.2f}".format(item.amount or 0) }}</td>
-                    {% if not is_accepted %}
+                    {% if can_edit_lines %}
                     <td class="px-4 py-2.5 text-right">
                         <form method="post" action="/admin/sales/quotes/{{ quote.id }}/line-items/{{ item.id }}/delete"
                               onsubmit="return confirm('Remove this line?');">
@@ -267,7 +327,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="{{ 5 if is_accepted else 6 }}" class="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+                    <td colspan="{{ 4 + (1 if has_legacy_line_discount else 0) + (1 if can_edit_lines else 0) }}" class="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
                         No line items — this quote is worth {{ quote.currency }} 0.00 and cannot be sent or accepted until it has at least one line.
                     </td>
                 </tr>
@@ -275,7 +335,7 @@
             </tbody>
         </table>
 
-        {% if not is_accepted %}
+        {% if can_edit_lines %}
         <form method="post" action="/admin/sales/quotes/{{ quote.id }}/line-items"
               class="flex flex-wrap items-end gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
             {% include "components/forms/csrf_input.html" %}
@@ -295,13 +355,10 @@
                 <input id="li-price" type="text" inputmode="decimal" name="unit_price" value="0"
                        class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
             </div>
-            <div class="w-24">
-                <label for="li-discount" class="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Disc %</label>
-                <input id="li-discount" type="text" inputmode="decimal" name="discount_percent" value="0"
-                       class="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm tabular-nums focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-600 dark:bg-slate-700 dark:text-white">
-            </div>
             <button type="submit" class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-cyan-700">Add Line</button>
         </form>
+        {% elif quote.discount_type and not is_accepted %}
+        <p class="border-t border-slate-200 bg-slate-50 px-4 py-3 text-xs font-medium text-slate-500 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400">Remove the Quote discount before changing Line Items, then reapply it so the discount history stays exact.</p>
         {% endif %}
     </div>
 

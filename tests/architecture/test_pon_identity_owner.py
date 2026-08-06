@@ -76,6 +76,18 @@ def test_the_assignment_path_refuses_unidentifiable_pon_rows() -> None:
     assert "assert_assignable" in source
 
 
+def test_the_ambiguity_guard_scopes_competitors_to_active_rows() -> None:
+    """Preserved inactive history must not become current identity authority."""
+    tree = ast.parse(OWNER.read_text(encoding="utf-8"))
+    guard = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "assert_assignable"
+    )
+
+    assert "PonPort.is_active.is_(True)" in ast.unparse(guard)
+
+
 def test_the_create_schema_no_longer_invents_a_name() -> None:
     source = (APP / "schemas" / "network.py").read_text(encoding="utf-8")
 

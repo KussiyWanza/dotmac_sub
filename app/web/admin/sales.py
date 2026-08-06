@@ -67,13 +67,17 @@ def _quote_command_context(
     quote_id: str,
     *,
     action: str = "accept",
+    command_id: UUID | None = None,
 ) -> CommandContext:
     return CommandContext.system(
         actor=str(getattr(request.state, "actor_id", None) or "admin-sales-user"),
         scope=f"sales:quote-{action}",
         reason=f"Admin Quote {action}",
+        command_id=command_id,
         idempotency_key=(
-            f"quote-acceptance:{quote_id}" if action == "accept" else None
+            f"quote-acceptance:{quote_id}"
+            if action == "accept"
+            else (f"quote-{action}:{quote_id}:{command_id}" if command_id else None)
         ),
     )
 
@@ -540,7 +544,7 @@ def lead_edit(
     context = _ctx(request, db, "sales-leads")
     context.update(web_sales_service.build_lead_edit_context(db, lead_id=lead_id))
     context["inbox_conversation_id"] = inbox_conversation_id
-    return templates.TemplateResponse("admin/sales/leads/form.html", context)
+    return templates.TemplateResponse("admin/sales/leads/new_form.html", context)
 
 
 @router.post(
@@ -551,15 +555,33 @@ def lead_edit(
 def lead_update(
     request: Request,
     lead_id: str,
+    submission_id: str | None = Form(default=None),
     title: str | None = Form(default=None),
+    display_name: str | None = Form(default=None),
     status: str | None = Form(default=None),
-    party_id: str | None = Form(default=None),
-    contact_label: str | None = Form(default=None),
     owner_agent_id: str | None = Form(default=None),
+    emails: list[str] = Form(default=[]),
+    primary_email: str | None = Form(default=None),
+    phones: list[str] = Form(default=[]),
+    primary_phone: str | None = Form(default=None),
+    whatsapp_phone_indices: list[str] = Form(default=[]),
+    address_line1: str | None = Form(default=None),
+    address_line2: str | None = Form(default=None),
+    date_of_birth: str | None = Form(default=None),
+    gender: str | None = Form(default=None),
+    nin: str | None = Form(default=None),
+    city: str | None = Form(default=None),
+    postal_code: str | None = Form(default=None),
+    country_code: str | None = Form(default=None),
+    organization_id: str | None = Form(default=None),
+    organization_label: str | None = Form(default=None),
+    managed_by_reseller: str | None = Form(default=None),
+    reseller_id: str | None = Form(default=None),
+    reseller_label: str | None = Form(default=None),
     pipeline_id: str | None = Form(default=None),
     stage_id: str | None = Form(default=None),
     lead_source: str | None = Form(default=None),
-    region: str | None = Form(default=None),
+    region_zone_id: str | None = Form(default=None),
     estimated_value: str | None = Form(default=None),
     currency: str | None = Form(default=None),
     address: str | None = Form(default=None),
@@ -585,16 +607,35 @@ def lead_update(
         if not valid_return:
             raise HTTPException(status_code=404, detail="Conversation not found.")
     active = is_active is not None
-    fields: dict[str, str | bool | None] = {
+    actor_system_user_id = _lead_actor_system_user_id(request)
+    fields: dict[str, object] = {
+        "submission_id": submission_id,
         "title": title,
+        "display_name": display_name,
         "status": status,
-        "party_id": party_id,
-        "contact_label": contact_label,
         "owner_agent_id": owner_agent_id,
+        "emails": emails,
+        "primary_email": primary_email,
+        "phones": phones,
+        "primary_phone": primary_phone,
+        "whatsapp_phone_indices": whatsapp_phone_indices,
+        "address_line1": address_line1,
+        "address_line2": address_line2,
+        "date_of_birth": date_of_birth,
+        "gender": gender,
+        "nin": nin,
+        "city": city,
+        "postal_code": postal_code,
+        "country_code": country_code,
+        "organization_id": organization_id,
+        "organization_label": organization_label,
+        "managed_by_reseller": managed_by_reseller is not None,
+        "reseller_id": reseller_id,
+        "reseller_label": reseller_label,
         "pipeline_id": pipeline_id,
         "stage_id": stage_id,
         "lead_source": lead_source,
-        "region": region,
+        "region_zone_id": region_zone_id,
         "estimated_value": estimated_value,
         "currency": currency,
         "address": address,
@@ -608,16 +649,33 @@ def lead_update(
     try:
         web_sales_service.update_lead_from_form(
             db,
+            actor_system_user_id=actor_system_user_id,
+            submission_id=submission_id,
             lead_id=lead_id,
             title=title,
+            display_name=display_name,
             status=status,
-            party_id=party_id,
-            contact_label=contact_label,
             owner_agent_id=owner_agent_id,
+            emails=emails,
+            primary_email=primary_email,
+            phones=phones,
+            primary_phone=primary_phone,
+            whatsapp_phone_indices=whatsapp_phone_indices,
+            address_line1=address_line1,
+            address_line2=address_line2,
+            date_of_birth=date_of_birth,
+            gender=gender,
+            nin=nin,
+            city=city,
+            postal_code=postal_code,
+            country_code=country_code,
+            organization_id=organization_id,
+            managed_by_reseller=managed_by_reseller is not None,
+            reseller_id=reseller_id,
             pipeline_id=pipeline_id,
             stage_id=stage_id,
             lead_source=lead_source,
-            region=region,
+            region_zone_id=region_zone_id,
             estimated_value=estimated_value,
             currency=currency,
             address=address,
@@ -638,12 +696,12 @@ def lead_update(
         web_sales_service.LeadFormValidationError,
         ValidationError,
         HTTPException,
+        DomainError,
     ) as exc:
         context = _ctx(request, db, "sales-leads")
         context.update(
-            web_sales_service.build_lead_form_error_context(
+            web_sales_service.build_lead_edit_error_context(
                 db,
-                mode="update",
                 lead_id=lead_id,
                 field_errors=_lead_field_errors(exc),
                 **fields,
@@ -651,7 +709,7 @@ def lead_update(
         )
         context["inbox_conversation_id"] = inbox_conversation_id
         return templates.TemplateResponse(
-            "admin/sales/leads/form.html", context, status_code=400
+            "admin/sales/leads/new_form.html", context, status_code=400
         )
 
 
@@ -793,7 +851,7 @@ def pipeline_create(
             ),
             status_code=303,
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         error = _error_detail(exc)
 
@@ -1146,6 +1204,83 @@ def quotes_list(
     return templates.TemplateResponse("admin/sales/quotes/index.html", context)
 
 
+@router.get(
+    "/quote-discounts",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:quote:read"))],
+)
+def quote_discounts_list(
+    request: Request,
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    customer: str | None = Query(default=None),
+    salesperson_id: str | None = Query(default=None),
+    discount_type: str | None = Query(default=None),
+    quote_status: str | None = Query(default=None),
+    page: int = Query(default=1),
+    per_page: int = Query(default=25),
+    db: Session = Depends(get_db),
+):
+    context = _ctx(request, db, "sales-quote-discounts")
+    try:
+        context.update(
+            web_sales_service.build_quote_discounts_list_context(
+                db,
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "sales_quote_discounts_list_load_failed",
+            extra={
+                "error_type": type(exc).__name__,
+                "route": "/admin/sales/quote-discounts",
+                "has_customer_filter": bool((customer or "").strip()),
+            },
+        )
+        db_session_adapter.release_read_transaction(db)
+        context.update(
+            web_sales_service.build_quote_discounts_failure_context(
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+        return templates.TemplateResponse(
+            "admin/sales/quotes/discounts.html", context, status_code=503
+        )
+    except (DomainError, ValueError) as exc:
+        context.update(
+            web_sales_service.build_quote_discounts_failure_context(
+                date_from=date_from,
+                date_to=date_to,
+                customer=customer,
+                salesperson_id=salesperson_id,
+                discount_type=discount_type,
+                quote_status=quote_status,
+                page=page,
+                per_page=per_page,
+            )
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/discounts.html", context, status_code=400
+        )
+    return templates.TemplateResponse("admin/sales/quotes/discounts.html", context)
+
+
 # NOTE: `/quotes/new` must stay above `/quotes/{quote_id}` or the detail route
 # captures "new" as an id.
 @router.get(
@@ -1177,6 +1312,9 @@ def quote_create(
     project_type: str | None = Form(default=None),
     tax_rate_id: str | None = Form(default=None),
     manual_tax_total: str | None = Form(default=None),
+    discount_type: str | None = Form(default=None),
+    discount_value: str | None = Form(default=None),
+    discount_reason: str | None = Form(default=None),
     expires_at: str | None = Form(default=None),
     is_active: str | None = Form(default=None),
     notes: str | None = Form(default=None),
@@ -1187,7 +1325,6 @@ def quote_create(
     item_description: list[str] = Form(default=[]),
     item_quantity: list[str] = Form(default=[]),
     item_unit_price: list[str] = Form(default=[]),
-    item_discount_percent: list[str] = Form(default=[]),
     item_sub_offer_id: list[str] = Form(default=[]),
     item_inventory_item_id: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
@@ -1197,7 +1334,6 @@ def quote_create(
         descriptions=item_description,
         quantities=item_quantity,
         unit_prices=item_unit_price,
-        discount_percents=item_discount_percent,
         sub_offer_ids=item_sub_offer_id,
         inventory_item_ids=item_inventory_item_id,
     )
@@ -1209,6 +1345,9 @@ def quote_create(
         "project_type": project_type,
         "tax_rate_id": tax_rate_id,
         "manual_tax_total": manual_tax_total,
+        "discount_type": discount_type,
+        "discount_value": discount_value,
+        "discount_reason": discount_reason,
         "expires_at": expires_at,
         "is_active": active,
         "notes": notes,
@@ -1229,6 +1368,9 @@ def quote_create(
             project_type=project_type,
             tax_rate_id=tax_rate_id,
             manual_tax_total=manual_tax_total,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
             expires_at=expires_at,
             is_active=active,
             notes=notes,
@@ -1239,7 +1381,6 @@ def quote_create(
             descriptions=item_description,
             quantities=item_quantity,
             unit_prices=item_unit_price,
-            discount_percents=item_discount_percent,
             sub_offer_ids=item_sub_offer_id,
             inventory_item_ids=item_inventory_item_id,
         )
@@ -1427,7 +1568,6 @@ def quote_line_item_add(
     description: str | None = Form(default=None),
     quantity: str | None = Form(default=None),
     unit_price: str | None = Form(default=None),
-    discount_percent: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     try:
@@ -1437,10 +1577,9 @@ def quote_line_item_add(
             description=description,
             quantity=quantity,
             unit_price=unit_price,
-            discount_percent=discount_percent,
             context=_quote_command_context(request, quote_id, action="line-add"),
         )
-    except (ValidationError, ValueError) as exc:
+    except (DomainError, ValidationError, ValueError) as exc:
         db.rollback()
         context = _ctx(request, db, "sales-quotes")
         context.update(
@@ -1463,12 +1602,74 @@ def quote_line_item_delete(
     item_id: str,
     db: Session = Depends(get_db),
 ):
-    web_sales_service.delete_quote_line_item(
-        db,
-        item_id,
-        context=_quote_command_context(request, quote_id, action="line-remove"),
-    )
+    try:
+        web_sales_service.delete_quote_line_item(
+            db,
+            item_id,
+            context=_quote_command_context(request, quote_id, action="line-remove"),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
     return RedirectResponse(url=f"/admin/sales/quotes/{quote_id}", status_code=303)
+
+
+@router.post(
+    "/quotes/{quote_id}/discount",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("crm:quote:write"))],
+)
+def quote_discount_change(
+    request: Request,
+    quote_id: str,
+    request_id: str = Form(...),
+    expected_revision: str | None = Form(default=None),
+    discount_type: str | None = Form(default=None),
+    discount_value: str | None = Form(default=None),
+    discount_reason: str | None = Form(default=None),
+    action: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    try:
+        command_id = UUID(request_id)
+        remove = (action or "").strip() == "remove"
+        outcome = web_sales_service.change_quote_discount_from_form(
+            db,
+            quote_id=quote_id,
+            actor_system_user_id=_quote_actor_system_user_id(request),
+            expected_revision=expected_revision,
+            discount_type=discount_type,
+            discount_value=discount_value,
+            discount_reason=discount_reason,
+            remove=remove,
+            context=_quote_command_context(
+                request,
+                quote_id,
+                action="discount-remove" if remove else "discount-save",
+                command_id=command_id,
+            ),
+        )
+    except (DomainError, ValidationError, ValueError) as exc:
+        context = _ctx(request, db, "sales-quotes")
+        context.update(
+            web_sales_service.build_quote_detail_context(db, quote_id=quote_id)
+        )
+        context["error"] = _error_detail(exc)
+        return templates.TemplateResponse(
+            "admin/sales/quotes/detail.html", context, status_code=400
+        )
+    notice = (
+        "discount_removed" if outcome.action.value == "removed" else "discount_saved"
+    )
+    return RedirectResponse(
+        url=f"/admin/sales/quotes/{quote_id}?notice={notice}", status_code=303
+    )
 
 
 @router.post(

@@ -9,9 +9,15 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <style>
     #network-map {
-        height: calc(100vh - 200px);
-        min-height: 600px;
+        height: min(65vh, 34rem);
+        min-height: 26rem;
         border-radius: 0.75rem;
+    }
+    @media (min-width: 1024px) {
+        #network-map {
+            height: calc(100vh - 200px);
+            min-height: 600px;
+        }
     }
     .leaflet-popup-content-wrapper {
         border-radius: 0.5rem;
@@ -164,14 +170,17 @@
     .map-search {
         position: absolute;
         top: 10px;
-        left: 60px;
+        left: 3.5rem;
+        right: 0.75rem;
+        max-width: 24rem;
         z-index: 1000;
     }
     .map-search-container {
         position: relative;
+        width: 100%;
     }
     .map-search input {
-        width: 320px;
+        width: 100%;
         padding: 10px 36px 10px 12px;
         border: none;
         border-radius: 8px;
@@ -303,19 +312,81 @@
         background: var(--surface-primary);
         border-bottom-color: var(--border-default);
     }
+    .network-map-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "map"
+            "health"
+            "layers"
+            "inventory"
+            "legend"
+            "wireless"
+            "actions"
+            "elevation";
+        gap: 1.5rem;
+    }
+    .network-map-sidebar {
+        display: contents;
+    }
+    .network-map-canvas { grid-area: map; min-width: 0; }
+    .network-map-health { grid-area: health; }
+    .network-map-layers { grid-area: layers; }
+    .network-map-inventory { grid-area: inventory; }
+    .network-map-legend { grid-area: legend; }
+    .network-map-wireless { grid-area: wireless; }
+    .network-map-actions { grid-area: actions; }
+    .network-map-elevation { grid-area: elevation; }
+    .network-map-legend > summary {
+        cursor: pointer;
+        list-style: none;
+    }
+    .network-map-legend > summary::-webkit-details-marker {
+        display: none;
+    }
+    .network-map-legend[open] .legend-chevron {
+        transform: rotate(180deg);
+    }
+    .network-inventory-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.75rem;
+    }
+    .network-legend-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+        gap: 0.5rem 1rem;
+    }
+    .network-legend-grid > hr {
+        grid-column: 1 / -1;
+        width: 100%;
+    }
+    @media (min-width: 640px) {
+        .network-inventory-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+    }
+    @media (min-width: 1280px) {
+        .network-map-layout {
+            grid-template-columns: minmax(0, 1fr) minmax(20rem, 22rem);
+            grid-template-areas:
+                "map health"
+                "map layers"
+                "inventory inventory"
+                "legend legend"
+                "wireless actions"
+                "elevation elevation";
+            align-items: start;
+        }
+        .network-inventory-grid {
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+        }
+    }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="space-y-6">
-    <div>
-        <a href="/admin/network" class="inline-flex items-center gap-1 text-sm font-medium text-blue-600 transition-colors hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300">
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-            </svg>
-            Back to Network
-        </a>
-    </div>
     {% call page_header(
         title="Network Map",
         subtitle="Comprehensive view of network infrastructure and customers",
@@ -334,9 +405,9 @@
         </button>
     {% endcall %}
 
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
+    <div class="network-map-layout">
         <!-- Map -->
-        <div class="lg:col-span-4">
+        <div class="network-map-canvas">
             <div class="relative rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800 overflow-hidden">
                 <div id="network-map"></div>
                 <!-- Search box -->
@@ -376,93 +447,78 @@
         </div>
 
         <!-- Sidebar -->
-        <div class="space-y-6">
+        <div class="network-map-sidebar">
             <!-- Stats -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="network-map-health rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-                    <h2 class="font-semibold text-slate-900 dark:text-white">Network Stats</h2>
+                    <h2 class="font-semibold text-slate-900 dark:text-white">Network Health</h2>
+                    <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Current operational summary</p>
                 </div>
-                <div class="p-4 space-y-3 text-sm">
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">POP Sites</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.pop_sites }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">FDH Cabinets</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.fdh_cabinets }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Splice Closures</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.splice_closures }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Access Points</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.access_points }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Support Structures</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.support_structures }}</span>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Fiber Segments</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.fiber_segments }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Network Devices</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.network_devices }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-positive flex items-center gap-1"><span class="status-tone-dot status-tone-dot-positive h-2 w-2 rounded-full"></span>Device Working</span>
-                        <span class="status-foreground status-tone-positive font-medium">{{ stats.network_devices_working }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-negative flex items-center gap-1"><span class="status-tone-dot status-tone-dot-negative h-2 w-2 rounded-full"></span>Device Not Working</span>
-                        <span class="status-foreground status-tone-negative font-medium">{{ stats.network_devices_not_working }}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">ONT Units (GPS)</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.onts }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-positive flex items-center gap-1"><span class="status-tone-dot status-tone-dot-positive h-2 w-2 rounded-full"></span>ONT Working</span>
-                        <span class="status-foreground status-tone-positive font-medium">{{ stats.onts_working }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-negative flex items-center gap-1"><span class="status-tone-dot status-tone-dot-negative h-2 w-2 rounded-full"></span>ONT Not Working</span>
-                        <span class="status-foreground status-tone-negative font-medium">{{ stats.onts_not_working }}</span>
-                    </div>
-                    {% if stats.onts_warning %}
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-warning flex items-center gap-1"><span class="status-tone-dot status-tone-dot-warning h-2 w-2 rounded-full"></span>ONT Low Signal</span>
-                        <span class="status-foreground status-tone-warning font-medium">{{ stats.onts_warning }}</span>
-                    </div>
-                    {% endif %}
-                    <hr class="border-slate-200 dark:border-slate-700">
-                    <div class="flex justify-between">
-                        <span class="text-slate-500 dark:text-slate-400">Customers</span>
-                        <span class="font-medium text-slate-900 dark:text-white">{{ stats.customers }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-positive flex items-center gap-1"><span class="status-tone-dot status-tone-dot-positive h-2 w-2 rounded-full"></span>Online</span>
-                        <span class="status-foreground status-tone-positive font-medium">{{ stats.customers_online }}</span>
-                    </div>
-                    <div class="flex justify-between pl-3">
-                        <span class="status-foreground status-tone-negative flex items-center gap-1"><span class="status-tone-dot status-tone-dot-negative h-2 w-2 rounded-full"></span>Offline</span>
-                        <span class="status-foreground status-tone-negative font-medium">{{ stats.customers_offline }}</span>
-                    </div>
+                <div class="space-y-3 p-4 text-sm">
+                    <section class="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/30" aria-labelledby="device-health-heading">
+                        <div class="flex items-center justify-between gap-3">
+                            <h3 id="device-health-heading" class="font-semibold text-slate-700 dark:text-slate-200">Network Devices</h3>
+                            <span class="text-lg font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.network_devices }}</span>
+                        </div>
+                        <dl class="mt-3 grid grid-cols-2 gap-2">
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-positive text-xs">Working</dt><dd class="status-foreground status-tone-positive mt-0.5 font-semibold tabular-nums">{{ stats.network_devices_working }}</dd></div>
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-negative text-xs">Not Working</dt><dd class="status-foreground status-tone-negative mt-0.5 font-semibold tabular-nums">{{ stats.network_devices_not_working }}</dd></div>
+                        </dl>
+                    </section>
+                    <section class="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/30" aria-labelledby="ont-health-heading">
+                        <div class="flex items-center justify-between gap-3">
+                            <h3 id="ont-health-heading" class="font-semibold text-slate-700 dark:text-slate-200">ONT Units (GPS)</h3>
+                            <span class="text-lg font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.onts }}</span>
+                        </div>
+                        <dl class="mt-3 grid grid-cols-2 gap-2">
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-positive text-xs">Working</dt><dd class="status-foreground status-tone-positive mt-0.5 font-semibold tabular-nums">{{ stats.onts_working }}</dd></div>
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-negative text-xs">Not Working</dt><dd class="status-foreground status-tone-negative mt-0.5 font-semibold tabular-nums">{{ stats.onts_not_working }}</dd></div>
+                            {% if stats.onts_warning %}
+                            <div class="col-span-2 rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-warning text-xs">Low Signal</dt><dd class="status-foreground status-tone-warning mt-0.5 font-semibold tabular-nums">{{ stats.onts_warning }}</dd></div>
+                            {% endif %}
+                        </dl>
+                    </section>
+                    <section class="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/30" aria-labelledby="customer-health-heading">
+                        <div class="flex items-center justify-between gap-3">
+                            <h3 id="customer-health-heading" class="font-semibold text-slate-700 dark:text-slate-200">Customers</h3>
+                            <span class="text-lg font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.customers }}</span>
+                        </div>
+                        <dl class="mt-3 grid grid-cols-2 gap-2">
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-positive text-xs">Online</dt><dd class="status-foreground status-tone-positive mt-0.5 font-semibold tabular-nums">{{ stats.customers_online }}</dd></div>
+                            <div class="rounded-lg bg-white p-2 dark:bg-slate-800"><dt class="status-foreground status-tone-negative text-xs">Offline</dt><dd class="status-foreground status-tone-negative mt-0.5 font-semibold tabular-nums">{{ stats.customers_offline }}</dd></div>
+                        </dl>
+                    </section>
                     {% if customer_map_count is defined and customer_count is defined and customer_map_count < customer_count %}
-                    <div class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    <div class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-900/30 dark:text-slate-400">
                         Showing {{ customer_map_count }} of {{ customer_count }} customers on the map.
                     </div>
                     {% endif %}
                 </div>
             </div>
 
-            <!-- Legend -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <!-- Infrastructure Inventory -->
+            <section class="network-map-inventory rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800" aria-labelledby="infrastructure-inventory-heading">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-                    <h2 class="font-semibold text-slate-900 dark:text-white">Legend</h2>
+                    <h2 id="infrastructure-inventory-heading" class="font-semibold text-slate-900 dark:text-white">Infrastructure Inventory</h2>
+                    <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Physical assets represented on the map</p>
                 </div>
-                <div class="p-4 space-y-2">
+                <dl class="network-inventory-grid p-4">
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">POP Sites</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.pop_sites }}</dd></div>
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">FDH Cabinets</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.fdh_cabinets }}</dd></div>
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Splice Closures</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.splice_closures }}</dd></div>
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Access Points</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.access_points }}</dd></div>
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Support Structures</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.support_structures }}</dd></div>
+                    <div class="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/30"><dt class="text-xs font-medium text-slate-500 dark:text-slate-400">Fiber Segments</dt><dd class="mt-1 text-xl font-bold tabular-nums text-slate-900 dark:text-white">{{ stats.fiber_segments }}</dd></div>
+                </dl>
+            </section>
+
+            <!-- Legend -->
+            <details class="network-map-legend rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+                <summary class="flex items-center justify-between gap-3 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-inset dark:focus:ring-cyan-400">
+                    <span><span class="block font-semibold text-slate-900 dark:text-white">Map Legend</span><span class="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">Open to review map symbols and cable styles</span></span>
+                    <svg class="legend-chevron h-5 w-5 flex-none text-slate-400 transition-transform" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </summary>
+                <div class="network-legend-grid p-4">
                     <div class="legend-item">
                         <div class="legend-color bg-purple-500">
                             <svg class="h-3 w-3 text-white" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
@@ -562,14 +618,14 @@
                         <span class="text-sm text-slate-700 dark:text-slate-300">48-core Fiber</span>
                     </div>
                 </div>
-            </div>
+            </details>
 
             <!-- Layer Controls -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="network-map-layers rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
                     <h2 class="font-semibold text-slate-900 dark:text-white">Layers</h2>
                 </div>
-                <div class="p-4 space-y-3">
+                <div class="grid grid-cols-2 gap-3 p-4">
                     <label class="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" id="layer-pop" checked class="h-4 w-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500">
                         <span class="text-sm text-slate-700 dark:text-slate-300">POP Sites</span>
@@ -602,7 +658,7 @@
                         <input type="checkbox" id="layer-customers" checked class="h-4 w-4 rounded border-slate-300 text-green-600 focus:ring-green-500">
                         <span class="text-sm text-slate-700 dark:text-slate-300">Customers</span>
                     </label>
-                    <hr class="border-slate-200 dark:border-slate-700">
+                    <hr class="col-span-2 border-slate-200 dark:border-slate-700">
                     <label class="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" id="layer-feeder" checked class="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500">
                         <span class="text-sm text-slate-700 dark:text-slate-300">Feeder Cables</span>
@@ -619,7 +675,7 @@
             </div>
 
             <!-- Wireless Planning -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="network-map-wireless rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
                     <h2 class="font-semibold text-slate-900 dark:text-white">Wireless Planning</h2>
                 </div>
@@ -630,7 +686,7 @@
             </div>
 
             <!-- Quick Actions -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="network-map-actions rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
                     <h2 class="font-semibold text-slate-900 dark:text-white">Quick Actions</h2>
                 </div>
@@ -650,7 +706,7 @@
                 </div>
             </div>
             <!-- Elevation Info -->
-            <div class="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
+            <div class="network-map-elevation rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
                 <div class="border-b border-slate-200 px-4 py-3 dark:border-slate-700">
                     <h2 class="font-semibold text-slate-900 dark:text-white">Elevation Lookup</h2>
                 </div>

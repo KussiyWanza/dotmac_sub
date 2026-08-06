@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, cast
 from urllib.parse import quote_plus
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -118,6 +119,21 @@ def _assignment_form_context(
     assignment=None,
 ) -> dict[str, object]:
     deps = web_network_ont_assignments_service.assignment_form_dependencies(db, ont=ont)
+    account_id: UUID | None = None
+    selected_subscription_id = ""
+    if form:
+        try:
+            account_id = UUID(str(form.get("account_id") or ""))
+        except (TypeError, ValueError, AttributeError):
+            account_id = None
+        selected_subscription_id = str(form.get("subscription_id") or "")
+    subscription_options = (
+        web_network_ont_assignments_service.assignment_subscription_options(
+            db, subscriber_id=account_id
+        )
+        if account_id is not None
+        else ()
+    )
     context = _base_context(request, db, active_page="onts")
     context.update(
         {
@@ -128,6 +144,9 @@ def _assignment_form_context(
             "form": form,
             "form_mode": mode,
             "assignment": assignment,
+            "assignment_account_id": str(account_id) if account_id else "",
+            "assignment_subscription_options": subscription_options,
+            "selected_assignment_subscription_id": selected_subscription_id,
         }
     )
     return context
@@ -135,6 +154,34 @@ def _assignment_form_context(
 
 def _is_htmx_request(request: Request) -> bool:
     return request.headers.get("HX-Request", "").lower() == "true"
+
+
+@router.get(
+    "/ont-assignment/subscriptions",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_permission("network:ont:read"))],
+)
+def ont_assignment_subscription_options(
+    request: Request,
+    account_id: UUID | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    options = (
+        web_network_ont_assignments_service.assignment_subscription_options(
+            db, subscriber_id=account_id
+        )
+        if account_id is not None
+        else ()
+    )
+    return templates.TemplateResponse(
+        "admin/network/onts/_assignment_subscription_options.html",
+        {
+            "request": request,
+            "assignment_account_id": str(account_id) if account_id else "",
+            "assignment_subscription_options": options,
+            "selected_assignment_subscription_id": "",
+        },
+    )
 
 
 @router.get(
