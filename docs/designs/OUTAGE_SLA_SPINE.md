@@ -131,8 +131,10 @@ once the new owner has run armed through a full incident cycle.
   Internal operational targets stay visibly separate from contract.
 - Policies are immutable effective-dated versions. Precedence:
   subscription-specific contract → customer/account contract → subscribed
-  offer version → internal measurement policy. A mid-period change splits the
-  calculation by policy version.
+  offer version → SLA-enabled commercial plan-family default → internal
+  measurement policy. A mid-period change splits the calculation by policy
+  version. The plan-family subset is a closed typed protocol; catalog
+  classification alone never creates contractual terms.
 - Default reporting period: calendar month in Africa/Lagos.
 - Eligibility is the intersection of proven-active lifecycle time and exact
   service-entitlement time. Prepaid entitlement comes from funded

@@ -1479,9 +1479,10 @@ DOMAIN = DomainSOT(
             ),
             notes=(
                 "Shadow-phase read-time scorer (OUTAGE_SLA_SPINE §4): "
-                "resolves the effective policy (offer-version precedence "
-                "today; subscription/account contracts and persisted "
-                "immutable policy versions arrive with cutover), merges "
+                "resolves persisted subscription, account, offer, "
+                "SLA-enabled plan-family, and internal-measurement policy "
+                "versions under one precedence order, with the mutable "
+                "offer profile retained only as the shadow fallback; merges "
                 "the accrual ledger's qualifying intervals per "
                 "Africa/Lagos calendar month, and never invents a "
                 "contractual SLA — no policy renders measured "
@@ -1610,9 +1611,10 @@ DOMAIN = DomainSOT(
                         owner="service_intent.catalog_policy",
                         kind=AuthorityKind.AUTHORITATIVE_RECORD,
                         source=(
+                            "CatalogOffer.plan_family classification plus "
                             "CatalogOffer.sla_profile_id and SlaProfile "
-                            "uptime/credit fields as display-only policy "
-                            "evidence until effective-dated versions land"
+                            "uptime/credit fields as display-only fallback "
+                            "evidence during shadow verification"
                         ),
                     ),
                 ),
@@ -1694,6 +1696,7 @@ DOMAIN = DomainSOT(
                         "customer.service_level.scope_required",
                         "customer.service_level.invalid_scope",
                         "customer.service_level.unknown_scope",
+                        "customer.service_level.unknown_plan_family",
                         "customer.service_level.idempotency_conflict",
                         "customer.service_level.duplicate_policy_terms",
                         "customer.service_level.invalid_policy_version",
@@ -1711,6 +1714,7 @@ DOMAIN = DomainSOT(
                         "a precedence claim with no matching scope",
                         "a scope id that does not belong to the source",
                         "a scope id with no such parent record",
+                        "a plan-family scope outside the SLA-enabled protocol",
                         "an idempotency key reused for different terms",
                         "identical terms already recorded under another key",
                         "a concurrent writer winning the series race",
@@ -1764,12 +1768,14 @@ DOMAIN = DomainSOT(
                 steward="customer operations",
                 design_refs=(
                     "docs/designs/OUTAGE_SLA_SPINE.md",
+                    "docs/PLAN_FAMILY_ARCHITECTURE.md",
                     "docs/SOT_RELATIONSHIP_MAP.md",
                 ),
                 test_refs=(
                     "tests/test_customer_service_level.py",
                     "tests/integration/test_sla_policy_versions_postgres.py",
                     "tests/integration/test_sla_period_scores_postgres.py",
+                    "tests/architecture/test_customer_service_level_boundary.py",
                 ),
             ),
         ),
