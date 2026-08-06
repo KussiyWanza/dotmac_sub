@@ -901,7 +901,7 @@ SERVICES: tuple[SOTService, ...] = (
             "project-task relationship integrity and completion readiness",
             "project and task assignment and scheduling",
             "project manager assistant manager service-team and task-assignee changes",
-            "existing project-task reassignment email consequence",
+            "project and task staff assignment notification consequence",
             "Project-to-ProjectTask and project/task-to-work-order relationships",
             "project audit records and transactional domain events",
             "project derived-state reconciliation",
@@ -987,11 +987,11 @@ SERVICES: tuple[SOTService, ...] = (
                     canonical_writer="operations.project_lifecycle",
                 ),
                 ConcernContract(
-                    name="existing project-task reassignment email consequence",
+                    name="project and task staff assignment notification consequence",
                     role=OwnerRole.EVENT_POLICY,
                     input_names=(
                         "canonical project aggregate",
-                        "active project-task assignee contact identity",
+                        "active project assignment audience",
                         "staff notification delivery queue",
                     ),
                 ),
@@ -1052,12 +1052,13 @@ SERVICES: tuple[SOTService, ...] = (
                     source="native WorkOrder.project_id and WorkOrder.project_task_id foreign keys",
                 ),
                 AuthorityInput(
-                    name="active project-task assignee contact identity",
+                    name="active project assignment audience",
                     owner="auth.staff_provisioning",
                     kind=AuthorityKind.AUTHORITATIVE_RECORD,
                     source=(
-                        "active SystemUser identity and email resolved from a "
-                        "new task-assignee SystemUser or canonical Person identifier"
+                        "active SystemUser identity and email resolved from direct "
+                        "Project or ProjectTask SystemUser/canonical Person assignments "
+                        "and active assigned Service Team membership"
                     ),
                 ),
                 AuthorityInput(

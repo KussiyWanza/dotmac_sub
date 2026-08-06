@@ -63,6 +63,9 @@ class TicketBase(BaseModel):
 
 
 class TicketCreate(TicketBase):
+    # Retained on TicketBase for historical response compatibility only.
+    site_coordinator_person_id: None = None
+
     @field_validator("status", "priority", "ticket_type", mode="before")
     @classmethod
     def _normalize_text_fields(cls, value):

@@ -885,11 +885,12 @@ def test_merge_moves_comments_assignees_and_blocks_source_mutations(
     assert exc.value.code == "ticket_merged_source"
 
 
-def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
+def test_assignment_notifications_send_push_and_email_without_legacy_toggle(
+    db_session, subscriber
+):
     technician = _system_user(display_name="Technician")
     manager = _system_user(display_name="Manager")
-    coordinator = _system_user(display_name="Coordinator")
-    db_session.add_all([technician, manager, coordinator])
+    db_session.add_all([technician, manager])
     db_session.commit()
 
     ticket = support_service.tickets.create(
@@ -901,8 +902,6 @@ def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
             customer_account_id=subscriber.id,
             technician_person_id=technician.id,
             ticket_manager_person_id=manager.id,
-            site_coordinator_person_id=coordinator.id,
-            service_team_id=uuid4(),
         ),
         actor_id=str(subscriber.id),
     )
@@ -914,15 +913,20 @@ def test_assignment_notifications_wired_but_disabled(db_session, subscriber):
         actor_id=str(subscriber.id),
     )
 
-    assert db_session.query(Notification).count() == 0
+    rows = db_session.query(Notification).all()
+    assert {(row.channel, row.recipient) for row in rows} == {
+        (NotificationChannel.push, str(technician.id)),
+        (NotificationChannel.email, technician.email),
+        (NotificationChannel.push, str(manager.id)),
+        (NotificationChannel.email, manager.email),
+    }
 
 
 def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
     technician = _system_user(display_name="Field Tech")
     manager = _system_user(display_name="Project Manager")
-    coordinator = _system_user(display_name="Site Coordinator")
     assignee = _system_user(display_name="Queue Assignee")
-    db_session.add_all([technician, manager, coordinator, assignee])
+    db_session.add_all([technician, manager, assignee])
     db_session.commit()
 
     ticket = support_service.tickets.create(
@@ -934,7 +938,6 @@ def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
             customer_account_id=subscriber.id,
             technician_person_id=technician.id,
             ticket_manager_person_id=manager.id,
-            site_coordinator_person_id=coordinator.id,
             assignee_person_ids=[assignee.id],
         ),
         actor_id=str(subscriber.id),
@@ -949,7 +952,7 @@ def test_ticket_assignments_accept_system_user_ids(db_session, subscriber):
 
     assert ticket.technician_person_id == technician.id
     assert ticket.ticket_manager_person_id == manager.id
-    assert ticket.site_coordinator_person_id == coordinator.id
+    assert ticket.site_coordinator_person_id is None
     assert any(row.person_id == assignee.id for row in assignee_rows)
 
 

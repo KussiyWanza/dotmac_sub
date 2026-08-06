@@ -1945,6 +1945,50 @@ def _person_label(user: SystemUser | None) -> str:
     return user.email
 
 
+def _project_assignment_users(db: Session, project: Project) -> list[SystemUser]:
+    from app.services.staff_notifications import resolve_assignment_users
+
+    return resolve_assignment_users(
+        db,
+        person_ids={
+            str(value)
+            for value in (
+                project.owner_person_id,
+                project.manager_person_id,
+                project.project_manager_person_id,
+            )
+            if value
+        },
+        service_team_ids=(str(project.service_team_id),)
+        if project.service_team_id
+        else (),
+    )
+
+
+def _notify_project_assignments(
+    db: Session,
+    project: Project,
+    *,
+    actor_id: str | None,
+    previous_user_ids: frozenset[str] = frozenset(),
+) -> None:
+    from app.services.staff_notifications import queue_staff_assignment_notifications
+
+    users = [
+        user
+        for user in _project_assignment_users(db, project)
+        if str(user.id) not in previous_user_ids
+    ]
+    reference = project.number or str(project.id)
+    queue_staff_assignment_notifications(
+        db,
+        users=users,
+        subject=f"Project assigned: {reference}",
+        body=f"You were assigned to project {reference}: {project.name}.",
+        actor_id=actor_id,
+    )
+
+
 def _format_dt(value: datetime | None) -> str | None:
     if not value:
         return None
@@ -1961,10 +2005,6 @@ def _notify_project_task_assigned(
     *,
     include_push: bool = True,
 ) -> bool:
-    if not assigned_to.email:
-        logger.warning("project_task_assigned_missing_email task_id=%s", task.id)
-        return False
-
     assignee_name = html.escape(_person_label(assigned_to))
     due_label = _format_dt(task.due_at)
     start_label = _format_dt(task.start_at)
@@ -2074,19 +2114,19 @@ def _notify_project_task_assigned(
         "</div>"
     )
 
-    queue_staff_email(
-        db,
-        recipient=assigned_to.email,
-        subject=subject,
-        body=body,
-    )
-    if include_push:
-        queue_staff_push(
+    if assigned_to.email:
+        queue_staff_email(
             db,
             recipient=assigned_to.email,
             subject=subject,
+            body=body,
+        )
+    if include_push:
+        queue_staff_push(
+            db,
+            recipient=str(assigned_to.id),
+            subject=subject,
             body=f"You have been assigned a project task: {task.title or 'Task'}",
-            delivered=False,
         )
     db.flush()
     return True
@@ -2370,14 +2410,13 @@ class Projects(ListResponseMixin):
                 data["service_team_id"] = creation_rule.team_id
         # Auto-assign PM based on region if not already specified
         if data.get("region") and not creation_rule:
-            auto_pm, auto_spc = Projects._get_region_pm_assignments(db, data["region"])
+            auto_pm, _auto_spc = Projects._get_region_pm_assignments(db, data["region"])
             if auto_pm:
                 if not data.get("project_manager_person_id"):
                     data["project_manager_person_id"] = coerce_uuid(auto_pm)
                 if not data.get("manager_person_id"):
                     data["manager_person_id"] = coerce_uuid(auto_pm)
-            if auto_spc and not data.get("assistant_manager_person_id"):
-                data["assistant_manager_person_id"] = coerce_uuid(auto_spc)
+            # Site Project Coordinator is retained only on historical records.
         fields_set = payload.model_fields_set
         if "status" not in fields_set:
             default_status = _read_text_setting(
@@ -2429,6 +2468,14 @@ class Projects(ListResponseMixin):
             _maybe_auto_assign_project(db, project, context=context)
         else:
             _maybe_auto_assign_project(db, project, context=context)
+
+        _notify_project_assignments(
+            db,
+            project,
+            actor_id=str(payload.created_by_person_id)
+            if payload.created_by_person_id
+            else None,
+        )
 
         # Emit project created event after core project setup so failed
         # handlers cannot prevent template task creation or other intrinsic
@@ -2759,6 +2806,9 @@ class Projects(ListResponseMixin):
         )
         if not project:
             raise _project_error("not_found", "Project not found")
+        previous_assignment_user_ids = frozenset(
+            str(user.id) for user in _project_assignment_users(db, project)
+        )
         previous_status = project.status
         previous_template_id = (
             str(project.project_template_id) if project.project_template_id else None
@@ -2791,7 +2841,7 @@ class Projects(ListResponseMixin):
             else project.manager_person_id
         )
         if new_region:
-            auto_pm, auto_spc = Projects._get_region_pm_assignments(db, new_region)
+            auto_pm, _auto_spc = Projects._get_region_pm_assignments(db, new_region)
             if auto_pm and not current_pm:
                 data["manager_person_id"] = coerce_uuid(auto_pm)
             if (
@@ -2800,12 +2850,6 @@ class Projects(ListResponseMixin):
                 and "project_manager_person_id" not in data
             ):
                 data["project_manager_person_id"] = coerce_uuid(auto_pm)
-            if (
-                auto_spc
-                and not project.assistant_manager_person_id
-                and "assistant_manager_person_id" not in data
-            ):
-                data["assistant_manager_person_id"] = coerce_uuid(auto_spc)
         changed_fields = [
             key for key, value in data.items() if getattr(project, key) != value
         ]
@@ -2819,6 +2863,18 @@ class Projects(ListResponseMixin):
         _sync_project_sla_clock(db, project)
         db.flush()
         db.refresh(project)
+        if {
+            "owner_person_id",
+            "manager_person_id",
+            "project_manager_person_id",
+            "service_team_id",
+        }.intersection(changed_fields):
+            _notify_project_assignments(
+                db,
+                project,
+                actor_id=actor_id,
+                previous_user_ids=previous_assignment_user_ids,
+            )
 
         # Emit events based on status changes
         new_status = project.status

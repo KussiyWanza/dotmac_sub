@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from app.models.rbac import (
     SystemUserPermission,
     SystemUserRole,
 )
+from app.models.service_team import ServiceTeam, ServiceTeamMember
 from app.models.system_user import SystemUser
 from app.schemas.notification import NotificationCreate
 from app.services import admin_alerts
@@ -38,6 +40,82 @@ class PermissionReviewNotificationResult:
     whatsapp_count: int
     sla_policy_count: int
     sla_delivery_count: int
+
+
+def resolve_assignment_users(
+    db: Session,
+    *,
+    person_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
+    service_team_ids: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> list[SystemUser]:
+    """Resolve active users assigned directly or through active service teams."""
+    normalized_people = {str(value) for value in person_ids if value}
+    normalized_teams = {str(value) for value in service_team_ids if value}
+    user_ids: set[UUID] = set()
+    if normalized_people:
+        direct = (
+            db.query(SystemUser.id)
+            .filter(SystemUser.is_active.is_(True))
+            .filter(
+                or_(
+                    SystemUser.id.in_(normalized_people),
+                    SystemUser.person_party_id.in_(normalized_people),
+                )
+            )
+            .all()
+        )
+        user_ids.update(row[0] for row in direct)
+    if normalized_teams:
+        team_members = (
+            db.query(SystemUser.id)
+            .select_from(ServiceTeamMember)
+            .join(ServiceTeam, ServiceTeam.id == ServiceTeamMember.team_id)
+            .join(SystemUser, SystemUser.person_party_id == ServiceTeamMember.person_id)
+            .filter(ServiceTeam.id.in_(normalized_teams))
+            .filter(ServiceTeam.is_active.is_(True))
+            .filter(ServiceTeamMember.is_active.is_(True))
+            .filter(SystemUser.is_active.is_(True))
+            .all()
+        )
+        user_ids.update(row[0] for row in team_members)
+    if not user_ids:
+        return []
+    return (
+        db.query(SystemUser)
+        .filter(SystemUser.id.in_(user_ids))
+        .order_by(SystemUser.id.asc())
+        .all()
+    )
+
+
+def queue_staff_assignment_notifications(
+    db: Session,
+    *,
+    users: list[SystemUser],
+    subject: str,
+    body: str,
+    actor_id: str | None = None,
+) -> tuple[str, ...]:
+    """Queue in-app and email assignment notifications for active staff."""
+    notified: list[str] = []
+    for user in users:
+        if actor_id and str(user.id) == str(actor_id):
+            continue
+        queue_staff_push(
+            db,
+            recipient=str(user.id),
+            subject=subject,
+            body=body,
+        )
+        if user.email:
+            queue_staff_email(
+                db,
+                recipient=user.email,
+                subject=subject,
+                body=body,
+            )
+        notified.append(str(user.id))
+    return tuple(notified)
 
 
 def queue_staff_notification(

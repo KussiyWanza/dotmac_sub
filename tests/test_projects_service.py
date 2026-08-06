@@ -679,10 +679,10 @@ class TestTaskStateMachine:
             db_session.query(Notification)
             .filter(
                 Notification.channel == NotificationChannel.push,
-                Notification.recipient == second_user.email,
+                Notification.recipient == str(second_user.id),
             )
             .count()
-            == 0
+            == 1
         )
 
         project_tasks.update(

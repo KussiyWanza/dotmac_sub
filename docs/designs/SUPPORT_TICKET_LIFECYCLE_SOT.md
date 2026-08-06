@@ -108,6 +108,15 @@ comments do not trigger this consequence. The durable notification queue owns
 post-commit SMTP delivery and retry; transport failure never removes the saved
 reply.
 
+Ticket assignment consequences are independent of the legacy customer-support
+notification toggle. Newly assigned direct users and active members of an
+assigned Service Team receive an in-app notification and, when an email address
+exists, a queued email. Explicit comment mentions use the same individual and
+Service Team group semantics and the same two channels. The retired Site
+Project Coordinator column remains readable and filterable on historical
+Tickets, but new-ticket input and assignment configuration no longer populate
+it.
+
 ## Related owners
 
 `support.ticket_sla_clock` remains the Ticket SLA clock and breach owner.
