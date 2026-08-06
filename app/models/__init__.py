@@ -935,8 +935,12 @@ from app.models.task_execution import (  # noqa: F401
     TaskExecutionStatus,
 )
 from app.models.team_inbox import (  # noqa: F401
+    InboxAgentIntroductionPreference,
     InboxAgentPresence,
     InboxAgentPresenceStatus,
+    InboxAutomationActionType,
+    InboxAutomationRule,
+    InboxAutomationTrigger,
     InboxChannelType,
     InboxComment,
     InboxContactLink,
@@ -944,6 +948,7 @@ from app.models.team_inbox import (  # noqa: F401
     InboxConversationAssignment,
     InboxConversationLabel,
     InboxConversationLeadLink,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
@@ -952,6 +957,7 @@ from app.models.team_inbox import (  # noqa: F401
     InboxMessageDirection,
     InboxMessageTemplate,
     InboxReplyMacro,
+    InboxReplyReminder,
     InboxSavedFilter,
     InboxTeamRole,
     InboxTeamSource,

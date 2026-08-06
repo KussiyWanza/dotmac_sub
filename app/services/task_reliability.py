@@ -611,6 +611,22 @@ TASK_RELIABILITY_CONTRACTS: dict[str, TaskReliabilityContract] = {
         "Retries failed native inbox outbound messages up to a retry cap; "
         "already-sent and over-cap rows are skipped on re-run.",
     ),
+    "app.tasks.team_inbox.promote_queued_conversations": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "Locks FIFO queue entries and team capacity before promotion; settled "
+        "entries are skipped and stale entries are durably cancelled on re-run.",
+    ),
+    "app.tasks.team_inbox.send_reply_reminders": _c(
+        "support",
+        SWEEP,
+        IDEMP,
+        STATUS,
+        "A durable assignment reminder row owns the next due time and repeat count; "
+        "an agent reply settles it and re-runs before next_due_at are no-ops.",
+    ),
     "app.tasks.team_inbox.recover_stale_ai_intake": _c(
         "support",
         SWEEP,

@@ -19,15 +19,18 @@ from app.models.team_inbox import (
     InboxConversation,
     InboxConversationAssignment,
     InboxConversationLabel,
+    InboxConversationQueueEntry,
     InboxConversationStatus,
     InboxConversationTeam,
     InboxLabel,
     InboxMediaAsset,
     InboxMessage,
     InboxMessageDirection,
+    InboxQueueEntryStatus,
 )
 from app.services import (
     service_team_composition,
+    team_inbox_assignment,
     team_inbox_field_job,
     team_inbox_media,
     team_inbox_read_state,
@@ -106,6 +109,9 @@ class InboxConversationTimeline:
     created_at: datetime
     updated_at: datetime
     metadata: dict | None
+    queue_position: int | None
+    queued_at: datetime | None
+    estimated_wait_minutes: int | None
     teams: list[InboxTimelineTeam]
     assignments: list[InboxTimelineAssignment]
     messages: list[InboxTimelineMessage]
@@ -139,6 +145,9 @@ class InboxConversationListRow:
     latest_delivery_status: str | None
     latest_delivery_error: str | None
     active_assigned_person_id: str | None
+    queue_position: int | None
+    queued_at: datetime | None
+    estimated_wait_minutes: int | None
     needs_response: bool
     needs_attention: bool
     has_ticket: bool
@@ -1013,6 +1022,39 @@ def list_conversations(
         messages_by_conversation,
     )
     ticketed_conversation_ids = _ticketed_conversation_ids(db, conversation_ids)
+    queue_entries = (
+        db.query(InboxConversationQueueEntry)
+        .filter(
+            InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+        )
+        .filter(
+            InboxConversationQueueEntry.service_team_id.in_(
+                [
+                    conversation.primary_service_team_id
+                    for conversation in conversations
+                    if conversation.primary_service_team_id is not None
+                ]
+            )
+        )
+        .order_by(
+            InboxConversationQueueEntry.service_team_id.asc(),
+            InboxConversationQueueEntry.entered_at.asc(),
+            InboxConversationQueueEntry.queue_position.asc(),
+        )
+        .all()
+        if conversations
+        else []
+    )
+    queue_by_conversation: dict[UUID, tuple[InboxConversationQueueEntry, int]] = {}
+    team_rank: dict[UUID, int] = {}
+    for entry in queue_entries:
+        rank = team_rank.get(entry.service_team_id, 0) + 1
+        team_rank[entry.service_team_id] = rank
+        queue_by_conversation[entry.conversation_id] = (entry, rank)
+    capacity_by_team = {
+        team_id: team_inbox_assignment.team_capacity_snapshot(db, team_id)
+        for team_id in team_rank
+    }
     active_assignments = (
         {
             assignment.conversation_id: assignment
@@ -1078,6 +1120,7 @@ def list_conversations(
         latest = latest_messages.get(conversation.id)
         contact_identity = contact_identities[conversation.id]
         active_assignment = active_assignments.get(conversation.id)
+        queue_projection = queue_by_conversation.get(conversation.id)
         resolution_status = _contact_resolution_status(conversation)
         cohort = response_cohort(
             conversation,
@@ -1137,6 +1180,21 @@ def list_conversations(
                 active_assigned_person_id=str(active_assignment.person_id)
                 if active_assignment is not None
                 else None,
+                queue_position=queue_projection[1] if queue_projection else None,
+                queued_at=queue_projection[0].entered_at if queue_projection else None,
+                estimated_wait_minutes=(
+                    team_inbox_assignment.estimate_queue_wait_minutes(
+                        queue_position=queue_projection[1],
+                        active_assignments=capacity_by_team[
+                            queue_projection[0].service_team_id
+                        ].active_assignments,
+                        total_capacity=capacity_by_team[
+                            queue_projection[0].service_team_id
+                        ].total_capacity,
+                    )
+                    if queue_projection
+                    else None
+                ),
                 needs_response=row_needs_response,
                 needs_attention=row_needs_attention,
                 has_ticket=conversation.id in ticketed_conversation_ids,
@@ -1215,6 +1273,48 @@ def get_conversation_timeline(
         conversation=conversation,
         messages=messages,
     )
+    queue_entry = (
+        db.query(InboxConversationQueueEntry)
+        .filter(InboxConversationQueueEntry.conversation_id == conversation.id)
+        .filter(
+            InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+        )
+        .one_or_none()
+    )
+    queue_position = None
+    estimated_wait_minutes = None
+    if queue_entry is not None:
+        queue_position = int(
+            db.query(func.count(InboxConversationQueueEntry.id))
+            .filter(
+                InboxConversationQueueEntry.service_team_id
+                == queue_entry.service_team_id
+            )
+            .filter(
+                InboxConversationQueueEntry.status == InboxQueueEntryStatus.queued.value
+            )
+            .filter(
+                or_(
+                    InboxConversationQueueEntry.entered_at < queue_entry.entered_at,
+                    and_(
+                        InboxConversationQueueEntry.entered_at
+                        == queue_entry.entered_at,
+                        InboxConversationQueueEntry.queue_position
+                        <= queue_entry.queue_position,
+                    ),
+                )
+            )
+            .scalar()
+            or 0
+        )
+        capacity = team_inbox_assignment.team_capacity_snapshot(
+            db, queue_entry.service_team_id
+        )
+        estimated_wait_minutes = team_inbox_assignment.estimate_queue_wait_minutes(
+            queue_position=queue_position,
+            active_assignments=capacity.active_assignments,
+            total_capacity=capacity.total_capacity,
+        )
 
     return InboxConversationTimeline(
         id=str(conversation.id),
@@ -1240,6 +1340,9 @@ def get_conversation_timeline(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         metadata=conversation.metadata_,
+        queue_position=queue_position,
+        queued_at=queue_entry.entered_at if queue_entry else None,
+        estimated_wait_minutes=estimated_wait_minutes,
         teams=[
             InboxTimelineTeam(
                 service_team_id=str(link.service_team_id),
